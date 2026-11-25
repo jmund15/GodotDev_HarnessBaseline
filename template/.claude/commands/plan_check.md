@@ -54,7 +54,7 @@ Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment ne
 
 Before the panel, write the seats and the reviewed plan paths to `<run dir>/spec.json`. The seats are the seat map's keys, each at its lenses' `seat_tier`, with no effort unless the owner named one; an owner-named effort also sets the seat's `"pick": "owner"`, so it runs as named.
 
-Seat only the mandates the ledger returns. A design mandate covered at the unchanged design hash is not re-judged; that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness`, `plc-memory-alignment` and `plc-whole-plan` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds*. Owner-fork answers no reviewer has seen still get the full check.
+A first round seats the mandates the ledger returns. A later round's seats come from [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 3 rounds, and the ledger's list is only their ceiling. A design mandate covered at the unchanged design hash is not re-judged; that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness`, `plc-memory-alignment` and `plc-whole-plan` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds*. Owner-fork answers no reviewer has seen still get the full check.
 
 Set the spec's `noNewDecision` true when the §1b facts show no new decision. The post-check's ledger step carries it too, so each row it writes carries `noNewDecision: true`.
 

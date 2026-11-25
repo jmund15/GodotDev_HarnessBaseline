@@ -20,15 +20,16 @@ modified-since-read check. `git ls-files --eol` is the detector; `git status` is
 import sys as _cli_usage_sys
 from pathlib import Path as _cli_usage_path
 _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parents[1] / "hooks"))
+from _git_run import run as git_run
 from cli_usage import usage
 
 
-import subprocess
 import sys
 
 
 def run(*args):
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+    return git_run(args, timeout=None).check(args).text
 
 
 def crlf_working_copies(root):

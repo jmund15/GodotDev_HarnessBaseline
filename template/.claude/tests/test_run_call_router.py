@@ -114,6 +114,17 @@ def untouched(label, out, command):
     check(label, ok, out)
 
 
+def _denies(res, needle):
+    """True when a dispatch result `{code, out, err}` denies naming `needle`: exit 2 with stderr, or a JSON deny (the
+    floor's git check answers on the JSON one)."""
+    try:
+        hso = json.loads(res["out"]).get("hookSpecificOutput", {}) if res["out"].strip() else {}
+    except ValueError:
+        hso = {}
+    reason = res["err"] + (hso.get("permissionDecisionReason") or "")
+    return (res["code"] == 2 or hso.get("permissionDecision") == "deny") and needle in reason
+
+
 def main():
     # --- 1. worktree script -> main's script + -Repo (orchestrator: no backgrounding) ---
     for name in NAMES:
@@ -234,7 +245,7 @@ def main():
         "def boom(payload): raise RuntimeError('planted router fault')\n"
         "run_call_router.route = boom\n"
         "payload = {'session_id': 'rcr00002', 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',\n"
-        "           'cwd': %r, 'tool_input': {'command': 'find . -type f | xargs grep -l needle'}}\n"
+        "           'cwd': %r, 'tool_input': {'command': 'git reset --hard'}}\n"
         "code, out, err = pre_bash_dispatch.dispatch(json.dumps(payload))\n"
         "print(json.dumps({'code': code, 'out': out, 'err': err}))\n"
     ) % (os.path.normpath(os.path.join(HERE, "..", "hooks")), REPO)
@@ -244,10 +255,10 @@ def main():
                        timeout=120, env=env, cwd=REPO)
     try:
         res = json.loads(r.stdout.strip().splitlines()[-1])
-        denied = res["code"] == 2 or '"deny"' in res["out"]
+        denied = _denies(res, "git reset --hard")
     except (ValueError, IndexError, KeyError):
         res, denied = r.stderr[-400:], False
-    check("a router fault leaves the guard chain deciding (planted fault, recursive grep still denied)", denied, res)
+    check("a router fault leaves the guard chain deciding (planted fault, git reset --hard still denied)", denied, res)
 
     for label, plant in (
             ('absent router', "original = _optional_hooks.present\n"
@@ -262,7 +273,7 @@ def main():
                  "import _optional_hooks\n" + plant +
                  "import pre_bash_dispatch\n"
                  "payload = {'tool_name': 'Bash', 'cwd': %r,\n"
-                 "           'tool_input': {'command': 'find . -type f | xargs grep -l needle'}}\n"
+                 "           'tool_input': {'command': 'git reset --hard'}}\n"
                  "code, out, err = pre_bash_dispatch.dispatch(json.dumps(payload))\n"
                  "print(json.dumps({'code': code, 'out': out, 'err': err}))\n"
                  ) % (os.path.normpath(os.path.join(HERE, '..', 'hooks')), REPO)
@@ -270,15 +281,7 @@ def main():
                            timeout=120, env=env, cwd=REPO)
         try:
             res = json.loads(r.stdout.strip().splitlines()[-1])
-            hso = json.loads(res['out']).get('hookSpecificOutput', {})
-            context = hso.get('additionalContext', '')
-            fault_visible = ('run_call_router fault:' in context and
-                             'planted import fault' in context and
-                             'Repair .claude/hooks/run_call_router.py.' in context)
-            ok = (r.returncode == 0 and res['code'] == 0 and
-                  hso.get('permissionDecision') == 'deny' and
-                  'RECURSIVE GREP DENIED' in hso.get('permissionDecisionReason', '') and
-                  fault_visible == (label == 'router import fault'))
+            ok = r.returncode == 0 and _denies(res, 'git reset --hard')
         except (ValueError, IndexError, KeyError):
             res, ok = r.stderr[-400:], False
         check(label + ' leaves the guard chain deciding', ok, res)

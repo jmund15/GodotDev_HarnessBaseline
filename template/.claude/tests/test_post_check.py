@@ -185,11 +185,9 @@ class InRunLedgerTests(unittest.TestCase):
                 '--out', 'out.json'])
             src = post_check.Source()
             src.record = ('--workflow-dir', 'live')
-            with mock.patch.object(post_check, 'ledger', return_value=(0, '', '')) as call:
+            with mock.patch.object(review_ledger, 'record', return_value=[]) as call:
                 post_check.record_panel(ROOT, args, src, [])
-        argv = list(call.call_args.args[1:])
-        self.assertIn('--files', argv)
-        self.assertEqual(argv[argv.index('--files') + 1:argv.index('--files') + 3], ['a.md', 'b.md'])
+        self.assertEqual(call.call_args.args[0].files, ['a.md', 'b.md'])
 
     def test_a_foldless_review_with_no_blobs_or_scope_refuses_to_record_a_row_that_covers_nothing(self):
         # Session 69255593: a fold-less architecture seat recorded `files: {}`; its review covered no file and
@@ -198,7 +196,7 @@ class InRunLedgerTests(unittest.TestCase):
             '--subject', SUBJECT, '--roster', 'roster.json', '--out', 'out.json'])
         src = post_check.Source()
         src.record = ('--sidecar-result', 'out/a.record.json')
-        with mock.patch.object(post_check, 'ledger', return_value=(0, '', '')) as call:
+        with mock.patch.object(review_ledger, 'record', return_value=[]) as call:
             code, _out, err = post_check.record_panel(ROOT, args, src, [])
         call.assert_not_called()
         self.assertNotEqual(code, 0)
@@ -209,10 +207,10 @@ class InRunLedgerTests(unittest.TestCase):
             '--subject', SUBJECT, '--roster', 'roster.json', '--scope-json', 'scope.json', '--out', 'out.json'])
         src = post_check.Source()
         src.record = ('--sidecar-result', 'out/a.record.json')
-        with mock.patch.object(post_check, 'ledger', return_value=(0, '', '')) as call:
+        with mock.patch.object(review_ledger, 'record', return_value=[]) as call:
             code, _out, _err = post_check.record_panel(ROOT, args, src, [])
         self.assertEqual(code, 0)
-        self.assertIn('--scope-json', call.call_args.args)
+        self.assertEqual(call.call_args.args[0].scope_json, 'scope.json')
 
     def test_saved_result_does_not_mix_live_and_completed_ledger_sources(self):
         args = post_check.build_parser().parse_args(['review', '--result', 'saved.json', '--seats-file', 'seats.json',
@@ -220,9 +218,9 @@ class InRunLedgerTests(unittest.TestCase):
             '--out', 'out.json'])
         src = post_check.Source()
         src.record = ('--result', 'saved.json')
-        with mock.patch.object(post_check, 'ledger', return_value=(0, '', '')) as call:
+        with mock.patch.object(review_ledger, 'record', return_value=[]) as call:
             post_check.record_panel(ROOT, args, src, [])
-        self.assertNotIn('--seats-file', call.call_args.args)
+        self.assertIsNone(call.call_args.args[0].seats_file)
 
     def test_record_panel_forwards_frozen_flags_unchanged(self):
         args = post_check.build_parser().parse_args(['review', '--workflow-dir', 'live', '--seats-file', 'seats.json',
@@ -230,12 +228,12 @@ class InRunLedgerTests(unittest.TestCase):
             '--premise-commits', 'premises.json', '--head', 'frozen-head', '--blobs', 'frozen-blobs.json', '--out', 'out.json'])
         src = post_check.Source()
         src.record = ('--workflow-dir', 'live')
-        with mock.patch.object(post_check, 'ledger', return_value=(0, '', '')) as call:
+        with mock.patch.object(review_ledger, 'record', return_value=[]) as call:
             post_check.record_panel(ROOT, args, src, [])
-        argv = call.call_args.args[1:]
-        for flag, value in [('--seats-file', 'seats.json'), ('--premise-commits', 'premises.json'),
-                            ('--head', 'frozen-head'), ('--blobs', 'frozen-blobs.json')]:
-            self.assertEqual(argv[argv.index(flag) + 1], value)
+        request = call.call_args.args[0]
+        for field, value in [('seats_file', 'seats.json'), ('premise_commits', 'premises.json'),
+                             ('head', 'frozen-head'), ('blobs', 'frozen-blobs.json')]:
+            self.assertEqual(getattr(request, field), value)
 
 
 class SnapshotTests(unittest.TestCase):
@@ -533,16 +531,41 @@ class ScopedRecordingTests(unittest.TestCase):
         env.plan.write_text(POST, encoding="utf-8")
         checked_blob = git(env.root, "hash-object", "plan.md").strip()
         env.digest()
-        real = post_check.ledger
-        def ledger(cwd, *args):
-            if args[0] == "rows":
+        real = review_ledger.record
+        wrote = []
+        def recording(request, cwd):
+            if not wrote:
+                wrote.append(True)
                 env.plan.write_text(POST + "peer's later line\n", encoding="utf-8")
-            return real(cwd, *args)
-        with mock.patch.object(post_check, "ledger", side_effect=ledger):
+            return real(request, cwd)
+        with mock.patch.object(review_ledger, "record", side_effect=recording):
             code, text = env.review([env.fix_row()])
         self.assertEqual(code, 0, text)
         row = [r for r in env.ledger_rows() if r.get("reviewer") == "inline:fold"][0]
         self.assertEqual(row["files"], {"plan.md": checked_blob})
+
+    @needs_coding_mandates
+    def test_recording_appends_without_spawning_the_ledger(self):
+        env = Env(self)
+        env.plan.write_text(PRE, encoding="utf-8")
+        env.plant_panel_row()
+        env.snapshot()
+        env.plan.write_text(POST, encoding="utf-8")
+        env.digest()
+        real, launched = subprocess.run, []
+
+        def guarded(command, *args, **kwargs):
+            if isinstance(command, (list, tuple)) and any(str(part).endswith("review_ledger.py")
+                                                          for part in command):
+                launched.append(list(command))
+                raise AssertionError("post_check spawned review_ledger.py: %r" % (command,))
+            return real(command, *args, **kwargs)
+
+        with mock.patch.object(subprocess, "run", side_effect=guarded):
+            code, text = env.review([env.fix_row()])
+        self.assertEqual(launched, [])
+        self.assertEqual(code, 0, text)
+        self.assertTrue([r for r in env.ledger_rows() if r.get("reviewer") == "inline:fold"])
 
     def test_ledger_record_failure_names_all_subject_files(self):
         env = Env(self)
@@ -616,6 +639,23 @@ class AppliedTests(unittest.TestCase):
         row = env.ledger_rows()[-1]
         self.assertEqual(row["reviewer"], "inline:fold")
         self.assertEqual(row["from"], {"plan.md": old})
+
+    @needs_coding_mandates
+
+    def test_applier_judges_pairs_against_the_snapshot_the_seats_reviewed(self):
+        env = Env(self)
+        env.plan.write_text(PRE, encoding="utf-8")
+        env.plant_panel_row()
+        env.snapshot()
+        env.plan.write_text(POST, encoding="utf-8")
+        env.digest()
+        code, text = env.review([env.fix_row()])
+        self.assertEqual(code, 0, text)
+        self.assertTrue([r for r in env.ledger_rows() if r.get("reviewer") == "inline:fold"],
+                        "the fold run records the post-fold bytes first")
+        code, text = self.applied(env, [env.fix_row()])
+        self.assertEqual(code, 0, text)
+        self.assertEqual([f for f in env.report()["failures"] if f["kind"] == "fold-old-missing"], [])
 
     @needs_coding_mandates
 

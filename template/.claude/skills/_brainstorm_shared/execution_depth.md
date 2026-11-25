@@ -192,8 +192,7 @@ Re-triage when a fact changes, with `task_record.py triage --reason`:
 - the diff leaves the declared scope or touches a tagged path;
 - an owner design decision changes a field, such as a fork answered toward external reach;
 - the gate fails because of the change or its merge-base move;
-- a delegate escalates;
-- a drive resumes in a new session, which re-triages to bind its record.
+- a delegate escalates.
 
 A gate failure outside the change, including a red already on the target branch, goes to the gate's own adjudication
 (fix now, known issue or abort) or into the merge approval. It re-triages only on fix now. Re-triage can lower

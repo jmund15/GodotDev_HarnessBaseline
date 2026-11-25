@@ -58,24 +58,17 @@ def main() -> int:
             ("shipped_proofs skips a mention and a `_` fixture",
              got is not None and not {".claude/tests/test_mentions.py", ".claude/tests/_test_engine_helper.py"} & set(got)),
         ]
-        by_tool = getattr(ht, "shipped_proofs_by_tool", None)
+        from unittest.mock import patch
+        from _proof_runner import catalog
+
         tools3 = [".claude/tools/engine.py", ".claude/tools/user.py", ".claude/tools/none.py"]
-        calls = {"discover": 0, "sources": 0}
-        real_discover, real_sources = ht.discover, ht._module_sources
-
-        def counted_discover(*a, **k):
-            calls["discover"] += 1
-            return real_discover(*a, **k)
-
-        def counted_sources(*a, **k):
-            calls["sources"] += 1
-            return real_sources(*a, **k)
-
-        ht.discover, ht._module_sources = counted_discover, counted_sources
-        try:
-            many = by_tool(str(root), tools3) if by_tool else None
-        finally:
-            ht.discover, ht._module_sources = real_discover, real_sources
+        view = catalog.View.worktree(root)
+        with patch.object(view, 'discover', wraps=view.discover) as discover, patch.object(
+            catalog.os, 'listdir', wraps=catalog.os.listdir
+        ) as listdir:
+            inventory = catalog.Catalog.open(view)
+            many = {tool: inventory.shipped_for(tool) for tool in tools3}
+        calls = {"discover": discover.call_count, "sources": listdir.call_count}
         literal = {
             ".claude/tools/engine.py": [".claude/tests/engine_spill_test.js", ".claude/tests/engine_test.js",
                                         ".claude/tests/test_engine_core.py", ".claude/tests/test_engine_more.py",

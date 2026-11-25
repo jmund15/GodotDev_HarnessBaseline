@@ -41,6 +41,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
+from _git_run import run as git_run  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
 from _transcript_summary import TranscriptSummaryBuilder, owner_line  # noqa: E402
 from _owner_text import classify, meta_arguments  # noqa: E402
@@ -106,8 +107,8 @@ def project_dirs(cwd: str) -> list[Path]:
     A directory outside git contributes only its own checkout slug per login."""
     roots = [cwd]
     try:
-        listing = subprocess.run(["git", "-C", cwd, "worktree", "list", "--porcelain"], capture_output=True,
-                                 text=True, encoding="utf-8", timeout=15, check=True).stdout
+        argv = ["worktree", "list", "--porcelain"]
+        listing = git_run(argv, cwd=cwd, timeout=15).check(argv).text
         roots += [line[len("worktree "):].strip() for line in listing.splitlines() if line.startswith("worktree ")]
     except (OSError, subprocess.SubprocessError):
         pass
@@ -504,22 +505,22 @@ def _aw_stat(path, cwd):
 
 
 def _aw_git(cwd, *args):
-    done = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=AW_GIT_TIMEOUT_S)
+    done = git_run(args, cwd=cwd, timeout=AW_GIT_TIMEOUT_S)
+    err = done.err_text
     if done.returncode != 0:
-        raise OSError((done.stderr or "git failed").strip().splitlines()[0] if (done.stderr or "").strip() else "git failed")
-    return done.stdout
+        raise OSError(err.strip().splitlines()[0] if err.strip() else "git failed")
+    return done.text
 
 
 def _aw_patch_ids(cwd, window):
     """Full commit hash -> patch-id for the window's commits on every local branch. A cherry-pick shares its
     source's patch-id; a commit with no diff has none."""
     diff = _aw_git(cwd, "log", "--branches", *window, "-p", "--no-color", "--no-decorate")
-    done = subprocess.run(["git", "-C", cwd, "patch-id", "--stable"], input=diff, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=AW_GIT_TIMEOUT_S)
+    done = git_run(["patch-id", "--stable"], cwd=cwd, input=diff.encode("utf-8"), timeout=AW_GIT_TIMEOUT_S)
     if done.returncode != 0:
-        raise OSError((done.stderr or "git patch-id failed").strip().splitlines()[0])
-    return {parts[1]: parts[0] for parts in (line.split() for line in done.stdout.splitlines()) if len(parts) == 2}
+        raise OSError(done.err_text.strip().splitlines()[0])
+    return {parts[1]: parts[0] for parts in
+            (line.split() for line in done.text.splitlines()) if len(parts) == 2}
 
 
 def _aw_one_per_change(rows, ids, on_head):

@@ -49,6 +49,7 @@ STATE_KEY = "harness_edit_reminder"
 # edit fires (/codify Step 4): one home, nothing to drift. EDIT_NOTES holds rules whose only home is the note.
 OWNED_NOTES = {
     "reference/model_ladder_evidence.md": ("Ladder edit", "commands/ladder_ingest.md", "What lands on the ladder"),
+    "reference/external_models.json": ("Registry edit", "commands/ladder_ingest.md", "What lands on the ladder"),
 }
 CLAUDE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 EDIT_NOTES = {

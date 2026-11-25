@@ -93,6 +93,35 @@ else
   bad "A6 the marker is written with a 30-minute expiry when no reset time is known" "no marker at $MARKER"
 fi
 
+# --- J: a child's own exit status is never a launcher code
+# The launcher contract (lib/sidecar_common.sh header) gives 3 to a missing credential and 10 to a
+# provider usage limit. A child CLI's status is not that namespace: agy exits 3 on a quota refusal,
+# and forwarding it labelled the refusal "credential missing" in the fan-out's results.
+child_exits_three() {
+  init_line S-J
+  printf '{"type":"result","session_id":"S-J","is_error":true,"result":"the child failed"}\n'
+  return 3
+}
+reset_run ul-j; rm -rf "$SIDECAR_EXHAUSTED_DIR"; SC_STALL_SEC=900
+sc_run_watched child_exits_three "" 2>"$TMPD/j.err"
+[ "$rc" = 1 ] && [ "$SC_USAGE_LIMITED" = 0 ] && [ ! -f "$MARKER" ] \
+  && ok "J1 a child status 3 without a usage limit becomes the launcher's child-failure code 1" \
+  || bad "J1 a child status 3 becomes the child-failure code 1" "rc=$rc limited=${SC_USAGE_LIMITED:-unset}"
+# The same child status with the provider's own quota refusal stays quota: exit 10, marker at its reset.
+_ts="$(date -u +%Y-%m-%dT%H:%M:%S)Z"
+agy_quota_refusal() {
+  printf '{"event":"init","conversation_id":"c1","init":{"model":"claude-sonnet-5-5"}}\n'
+  printf '{"event":"result","timestamp":"%s","result":{"status":"ERROR","response":"","error":"Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 95h34m36s."}}\n' "$_ts"
+  return 3
+}
+reset_run ul-j2; rm -rf "$SIDECAR_EXHAUSTED_DIR"
+sc_run_watched agy_quota_refusal "" 2>"$TMPD/j2.err"
+_want=$(( $(date -u -d "$_ts" +%s) + 95 * 3600 + 34 * 60 + 36 ))
+_got="$(marker_field resetsAt)"
+[ "$rc" = 10 ] && [ -n "$_got" ] && [ "$_got" -ge $((_want - 2)) ] && [ "$_got" -le $((_want + 2)) ] \
+  && ok "J2 an agy quota refusal with its reset becomes exit 10 and a marker expiring at that reset" \
+  || bad "J2 an agy quota refusal becomes exit 10 and a marker at its reset" "rc=$rc got=${_got:-none} want=$_want"
+
 # --- H/I: the x2b-s2 retry shape has no allowance evidence; wait for the child's own result
 bare_retries() {
   init_line S-H

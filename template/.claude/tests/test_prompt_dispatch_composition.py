@@ -24,10 +24,9 @@ TOOLS = CLAUDE / "tools"
 DISPATCH_SRC = CLAUDE / "hooks" / "prompt_dispatch.py"
 DISPATCH_NAME = "prompt_dispatch.py"
 
-PURE_MEMBERS = ("prompt_memory_loader", "critical_analysis_reminder", "prompt_git_state_delta",
-                "shell_census", "sidecar_watch_rearm", "budget_posture", "overnight_ask_guard")
-CODING_MEMBERS = ("tool_routing_cumulative_reset", "tool_routing_prompt_synthesis")
-GODOT_MEMBERS = ("activity_registry",)
+PURE_MEMBERS = ("prompt_git_state_delta", "sidecar_watch_rearm", "overnight_ask_guard")
+CODING_MEMBERS = ()
+GODOT_MEMBERS = ()
 GODOT_STANDIN = {"hooks": {"SessionStart": [{"hooks": [{
     "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\"",
     "timeout": 30, "type": "command"}]}]}}

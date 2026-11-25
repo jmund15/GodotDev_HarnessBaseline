@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import traceback
+import json
 
 _HOOKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
 if _HOOKS not in sys.path:
@@ -18,6 +19,14 @@ if _HOOKS not in sys.path:
 import _inprocess_hook  # noqa: E402
 
 _serial = itertools.count()
+
+
+def compact_start(hook_path, env, session_id, agent_id=None):
+    payload = {"hook_event_name": "SessionStart", "source": "compact", "session_id": session_id}
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    return call(hook_path, payload, env=dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"],
+                                             CC_CACHESTAT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
 
 
 def call(hook_path, payload, env=None, cwd=None, argv=()):

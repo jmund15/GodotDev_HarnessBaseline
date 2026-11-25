@@ -55,7 +55,8 @@ def plant(name, table):
         src = os.path.join(TOOLS, tool)
         if os.path.exists(src):
             shutil.copy(src, os.path.join(root, ".claude", "tools", tool))
-    shutil.copy(os.path.join(HERE, "..", "hooks", "_wide_runs.py"), os.path.join(root, ".claude", "hooks", "_wide_runs.py"))
+    for hook in ("_wide_runs.py", "_git_commit.py", "_git_run.py", "_command_text.py"):
+        shutil.copy(os.path.join(HERE, "..", "hooks", hook), os.path.join(root, ".claude", "hooks", hook))
     if table is not None:
         with open(os.path.join(root, ".claude", "skills", "project_subsystems", "adaptation.json"),
                   "w", encoding="utf-8", newline="\n") as fh:

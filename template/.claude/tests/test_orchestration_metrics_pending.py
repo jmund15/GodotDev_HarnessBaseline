@@ -484,15 +484,15 @@ def main():
 
     # --- a benchmark instrument's internal stages are not rating debt (D29, 2026-09-09) ---
     wdir = os.path.join(session, "workflows")
-    write_run(wdir, "wf_sc", ["judge:ARM-T1-X#1", "verify:ARM-T1-X", "persist:ARM-T1-X"], workflow_name="score-cell")
-    write_run(wdir, "wf_kr", ["reach:F1.1"], workflow_name="key-reachability")
+    write_run(wdir, "wf_sc", ["judge:ARM-T1-X#1", "verify:ARM-T1-X", "persist:ARM-T1-X"], workflow_name="harness-bloat-probe")
+    write_run(wdir, "wf_kr", ["reach:F1.1"], workflow_name="agenttype-input-cost-probe")
     write_run(wdir, "wf_rf", ["review:lens"], workflow_name="review-fanout")
     write_run(wdir, "wf_nn", ["review:noname"])
     write_verdicts(om.PENDING_VERDICTS, {})
     items = om.pending_labels(session)
     runs_pending = {rid for rid, _ in items}
-    cases.append(("score-cell stages are not pending", "wf_sc" not in runs_pending))
-    cases.append(("key-reachability judges are not pending", "wf_kr" not in runs_pending))
+    cases.append(("a core measurement workflow's stages are not pending", "wf_sc" not in runs_pending))
+    cases.append(("a second core measurement workflow's judges are not pending", "wf_kr" not in runs_pending))
     cases.append(("a delivered-work workflow still is", ("wf_rf", "review:lens") in items))
     cases.append(("a run with no workflowName still counts", ("wf_nn", "review:noname") in items))
 

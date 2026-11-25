@@ -399,13 +399,12 @@ class ClaimTracer(unittest.TestCase):
         self.rows(first, other)
         git(str(self.repo), "add", "-A")
         git(str(self.repo), "commit", "-q", "-m", "independent bindings")
-        runner = en._proof_runner()
-        actual = runner._PassCache.reach
+        actual = en.evidence.Reach.reach
         reached = []
-        def observe(cache, proof):
+        def observe(reach, proof):
             reached.append(Path(proof).name)
-            return actual(cache, proof)
-        with patch.object(runner._PassCache, "reach", observe):
+            return actual(reach, proof)
+        with patch.object(en.evidence.Reach, "reach", observe):
             en.behavior_report(self.repo, [DOC], proof_results=[])
         self.assertEqual(reached, [Path(PROOF).name])
 

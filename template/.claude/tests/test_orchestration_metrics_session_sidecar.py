@@ -495,6 +495,307 @@ def _run(root):
     cases.append(("a subagent transcript, whose every row is a sidechain, still reads its own model",
                   om.transcript_identity(identity_b) == ("claude-haiku-5-5", "medium")))
 
+    # Real-session fixtures trimmed from session b9a508a5-bcd1-46de-a460-e64e9c86d48e:
+    # 1. `for n in hooks-fix runner-fix; do D=.../$n; ... sidecar_fanout.py $D/jobs.json --detach ...; done`
+    #    where a script wrote jobs.json and each out dir holds its fanout-*.inventory.json and record.
+    # 2. Two native-only probe launches (`jobs_old.json`, `jobs_old2.json`) sharing probe/fanout/native.args.json.
+    # 3. A sidecar launched via an opaque wrapper script (`bash close_call_run.sh`) registered by dispatch_table
+    #    and already pruned from dispatch_table_pending after completion.
+    real_root = os.path.join(root, "b9a508a5_case")
+    real_sid = "b9a508a5-bcd1-46de-a460-e64e9c86d48e"
+    real_session = os.path.join(real_root, real_sid)
+    os.makedirs(real_session)
+    real_state_dir = os.path.join(real_root, "routing_state")
+    os.makedirs(real_state_dir)
+
+    hooks_dir = os.path.join(real_root, ".claude", "scratch", "overhaul", "hooks-fix", "fanout")
+    runner_dir = os.path.join(real_root, ".claude", "scratch", "overhaul", "runner-fix", "fanout")
+    hooks_rec = os.path.join(hooks_dir, "hooks-fix.record.json")
+    runner_rec = os.path.join(runner_dir, "runner-fix.record.json")
+    dump(hooks_rec, {
+        "launchId": "1b47bc30-4266-4eed-bf5f-bf33ad72ab7c",
+        "parentSessionId": real_sid,
+        "sessionId": "859301d1-2701-47cb-b65c-58662a40d412",
+        "label": "hooks-fix",
+        "transport": "codex",
+        "costModel": "plan-quota",
+        "servedModel": "gpt-6.2-sol",
+        "requestedModel": "gpt-6.2-sol",
+        "effort": "high",
+        "inputTokens": 169750,
+        "cacheReadTokens": 7649408,
+        "cacheWriteTokens": 0,
+        "outputTokens": 21381,
+        "costUSD": 1.318251,
+        "costBasis": "list-price (plan-quota; not spend)",
+        "costTierBasis": "per-request",
+        "priceMultiplier": 1.0,
+        "numTurns": 90,
+        "durationMs": 725961,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T02:22:04Z",
+        "attestedModel": "gpt-6.2-sol",
+        "attestedEffort": "high",
+    })
+    dump(os.path.join(hooks_dir, "fanout-fd9ea951-479f-4f5b-84a3-f3aa64b61b2a.inventory.json"), {
+        "schemaVersion": 1,
+        "fanoutId": "fd9ea951-479f-4f5b-84a3-f3aa64b61b2a",
+        "parentSessionId": real_sid,
+        "writtenAt": "2026-11-25T02:08:33Z",
+        "jobs": [{
+            "label": "hooks-fix",
+            "launchId": "1b47bc30-4266-4eed-bf5f-bf33ad72ab7c",
+            "recordPath": hooks_rec,
+            "launcher": "codex_proxy",
+            "requestedEffort": "high",
+            "effort": "high",
+        }],
+    })
+    dump(runner_rec, {
+        "launchId": "51cd8ce8-6820-46d2-9960-1961aed6c525",
+        "parentSessionId": real_sid,
+        "sessionId": "931e3aba-ed00-4deb-b7a9-c82663a6f12c",
+        "label": "runner-fix",
+        "transport": "codex",
+        "costModel": "plan-quota",
+        "servedModel": "gpt-6.2-sol",
+        "requestedModel": "gpt-6.2-sol",
+        "effort": "medium",
+        "inputTokens": 129672,
+        "cacheReadTokens": 6724608,
+        "cacheWriteTokens": 0,
+        "outputTokens": 21234,
+        "costUSD": 1.144145,
+        "costBasis": "list-price (plan-quota; not spend)",
+        "costTierBasis": "per-request",
+        "priceMultiplier": 1.0,
+        "numTurns": 93,
+        "durationMs": 868161,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T02:25:35Z",
+        "attestedModel": "gpt-6.2-sol",
+        "attestedEffort": "medium",
+    })
+    dump(os.path.join(runner_dir, "fanout-6b143fe7-9c0f-40fb-be28-1ee9ac94f9ea.inventory.json"), {
+        "schemaVersion": 1,
+        "fanoutId": "6b143fe7-9c0f-40fb-be28-1ee9ac94f9ea",
+        "parentSessionId": real_sid,
+        "writtenAt": "2026-11-25T02:09:07Z",
+        "jobs": [{
+            "label": "runner-fix",
+            "launchId": "51cd8ce8-6820-46d2-9960-1961aed6c525",
+            "recordPath": runner_rec,
+            "launcher": "codex_proxy",
+            "requestedEffort": "medium",
+            "effort": "medium",
+        }],
+    })
+    probe_dir = os.path.join(real_root, ".claude", "scratch", "codify_b9a508a5_1", "probe")
+    dump(os.path.join(probe_dir, "jobs_old.json"), [
+        {"label": "probe-old-1", "kind": "reviewer", "tier": "orchestrator", "rows": {"opus": "medium"}, "probe": True}
+    ])
+    dump(os.path.join(probe_dir, "jobs_old2.json"), [
+        {"label": "probe-old-2", "kind": "reviewer", "tier": "orchestrator", "rows": {"opus": "medium"}}
+    ])
+    dump(os.path.join(probe_dir, "fanout", "native.args.json"), {
+        "jobs": [{"label": "probe-old-2", "model": "opus", "effort": "medium", "kind": "reviewer"}],
+        "spillDir": ".claude/scratch/codify_b9a508a5_1/probe/fanout",
+    })
+    mixed_dir = os.path.join(real_root, ".claude", "scratch", "mixed_probe")
+    dump(os.path.join(mixed_dir, "jobs.json"), [{"label": "m-native"}, {"label": "m-sidecar"}])
+    dump(os.path.join(mixed_dir, "fanout", "native.args.json"), {"jobs": [{"label": "m-native"}]})
+    dump(os.path.join(mixed_dir, "fanout", "sidecar.jobs.json"), {"jobs": [{"label": "m-sidecar"}]})
+
+    script_rec = os.path.join(real_root, ".claude", "scratch", "overhaul", "sa_code", "arch", "review-fold-1.record.json")
+    dump(script_rec, {
+        "launchId": "44739ddd-8399-4c60-9dd8-47efef189f36",
+        "parentSessionId": real_sid,
+        "label": "review-fold-1",
+        "transport": "anthropic",
+        "costModel": "plan-quota",
+        "servedModel": "claude-haiku-5-5",
+        "requestedModel": "haiku",
+        "effort": "low",
+        "inputTokens": 100,
+        "cacheReadTokens": 500,
+        "cacheWriteTokens": 0,
+        "outputTokens": 50,
+        "costUSD": 0.01,
+        "costBasis": "list-price (plan-quota; not spend)",
+        "numTurns": 2,
+        "durationMs": 1200,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T02:34:03Z",
+    })
+    stale_dt_rec = os.path.join(real_root, ".claude", "scratch", "overhaul", "stale-dt.record.json")
+    dump(stale_dt_rec, {
+        "launchId": "00000000-0000-4000-8000-000000000001",
+        "parentSessionId": real_sid,
+        "label": "stale-dt",
+        "transport": "anthropic",
+        "costModel": "plan-quota",
+        "servedModel": "claude-haiku-5-5",
+        "requestedModel": "haiku",
+        "effort": "low",
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "numTurns": 1,
+        "durationMs": 100,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T01:00:00Z",
+    })
+    relaunch_dt_rec = os.path.join(real_root, ".claude", "scratch", "overhaul", "relaunch-dt.record.json")
+    dump(relaunch_dt_rec, {
+        "launchId": "00000000-0000-4000-8000-000000000004",
+        "parentSessionId": real_sid,
+        "label": "relaunch-dt",
+        "transport": "anthropic",
+        "costModel": "plan-quota",
+        "servedModel": "claude-haiku-5-5",
+        "requestedModel": "haiku",
+        "effort": "low",
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "numTurns": 1,
+        "durationMs": 100,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T02:10:00Z",
+    })
+    foreign_dt_rec = os.path.join(real_root, ".claude", "scratch", "overhaul", "foreign-dt.record.json")
+    dump(foreign_dt_rec, {
+        "launchId": "00000000-0000-4000-8000-000000000002",
+        "parentSessionId": "other-session-id",
+        "label": "foreign-dt",
+        "transport": "anthropic",
+        "costModel": "plan-quota",
+        "servedModel": "claude-haiku-5-5",
+        "requestedModel": "haiku",
+        "effort": "low",
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "numTurns": 1,
+        "durationMs": 100,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T02:40:00Z",
+    })
+    adopted_rec = os.path.join(real_root, ".claude", "scratch", "overhaul", "adopted.record.json")
+    dump(adopted_rec, {
+        "launchId": "00000000-0000-4000-8000-000000000003",
+        "parentSessionId": "dead-parent-session",
+        "label": "adopted",
+        "transport": "anthropic",
+        "costModel": "plan-quota",
+        "servedModel": "claude-haiku-5-5",
+        "requestedModel": "haiku",
+        "effort": "low",
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "numTurns": 1,
+        "durationMs": 100,
+        "exitCode": 0,
+        "timestamp": "2026-11-25T02:40:00Z",
+    })
+
+    real_rows = [
+        tool_use(
+            "for n in hooks-fix runner-fix; do D=.claude/scratch/overhaul/$n; "
+            "python3 .claude/tools/dispatch_size.py $D/jobs.json 2>&1 | grep -E '^preflight'; "
+            "python3 .claude/tools/sidecar_fanout.py $D/jobs.json --detach 2>&1 | grep -E 'detached'; done",
+            real_root,
+            "2026-11-25T02:08:29.226Z",
+        ),
+        tool_use(
+            "P=.claude/scratch/codify_b9a508a5_1/probe && "
+            "python3 .claude/tools/sidecar_fanout.py $P/jobs_old.json --detach 2>&1 | grep -E '^NATIVE'",
+            real_root,
+            "2026-11-25T02:27:04.203Z",
+        ),
+        tool_use(
+            "P=.claude/scratch/codify_b9a508a5_1/probe && "
+            "python3 .claude/tools/sidecar_fanout.py $P/jobs_old2.json --detach 2>&1 | grep -E '^NATIVE'",
+            real_root,
+            "2026-11-25T02:28:27.054Z",
+        ),
+        tool_use(
+            "python3 .claude/tools/sidecar_fanout.py .claude/scratch/mixed_probe/jobs.json --detach",
+            real_root,
+            "2026-11-25T02:29:00.000Z",
+        ),
+        tool_use(
+            "bash .claude/scratch/overhaul/sa_code/arch/close_call_run.sh",
+            real_root,
+            "2026-11-25T02:33:00.000Z",
+        ),
+    ]
+    with open(real_session + ".jsonl", "w", encoding="utf-8", newline="\n") as handle:
+        for row in real_rows:
+            handle.write(json.dumps(row) + "\n")
+
+    old_state_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = real_state_dir
+    try:
+        import sys
+        hooks_dir_path = os.path.join(HERE, "..", "hooks")
+        if hooks_dir_path not in sys.path:
+            sys.path.insert(0, hooks_dir_path)
+        import dispatch_table
+        # Register an opaque-script sidecar through dispatch_table's real actual=True path, then
+        # let complete() prune it from dispatch_table_pending: attribution must still find it.
+        t_launch = om._iso_instant("2026-11-25T02:33:10Z").timestamp()
+        t_stale = om._iso_instant("2026-11-25T02:00:00Z").timestamp()
+        t_relaunch_1 = om._iso_instant("2026-11-25T02:09:00Z").timestamp()
+        t_relaunch_2 = om._iso_instant("2026-11-25T02:35:00Z").timestamp()
+        dt_payload = {"session_id": real_sid, "transcript_path": real_session + ".jsonl", "cwd": real_root}
+        dispatch_table.register_sidecars(dt_payload, [
+            {"kind": "sidecar", "id": script_rec, "record": script_rec, "fanout_dir": None,
+             "task_id": None, "launched_at": t_launch, "jobs": [{"label": "review-fold-1", "record": script_rec}]},
+            {"kind": "sidecar", "id": stale_dt_rec, "record": stale_dt_rec, "fanout_dir": None,
+             "task_id": None, "launched_at": t_stale, "jobs": [{"label": "stale-dt", "record": stale_dt_rec}]},
+            {"kind": "sidecar", "id": relaunch_dt_rec, "record": relaunch_dt_rec, "fanout_dir": None,
+             "task_id": None, "launched_at": t_relaunch_1, "jobs": [{"label": "relaunch-dt", "record": relaunch_dt_rec}]},
+            {"kind": "sidecar", "id": foreign_dt_rec, "record": foreign_dt_rec, "fanout_dir": None,
+             "task_id": None, "launched_at": t_launch, "jobs": [{"label": "foreign-dt", "record": foreign_dt_rec}]},
+            {"kind": "sidecar", "id": adopted_rec, "record": adopted_rec, "fanout_dir": None,
+             "adopted_from": "dead-parent-session", "task_id": None, "launched_at": t_launch,
+             "jobs": [{"label": "adopted", "record": adopted_rec}]},
+        ], actual=True)
+        # Second actual launch of the same record path advances its launch timestamp past the old record.
+        dispatch_table.register_sidecars(dt_payload, [
+            {"kind": "sidecar", "id": relaunch_dt_rec, "record": relaunch_dt_rec, "fanout_dir": None,
+             "task_id": None, "launched_at": t_relaunch_2, "jobs": [{"label": "relaunch-dt", "record": relaunch_dt_rec}]},
+        ], actual=True)
+        # Simulate Stop pruning dispatch_table_pending once those runs finish.
+        dispatch_table._update_pending(dt_payload, lambda _pending: [])
+
+        real_collected = om.collect_session_sidecar(real_session)
+        real_labels = {r["label"] for r in real_collected}
+        real_uncaptured = {os.path.normcase(p) for p in om.uncaptured_fanout_jobs(real_session)}
+    finally:
+        if old_state_env is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = old_state_env
+
+    cases.append(("for-loop fanout assigning D=.../$n after do attributes both hooks-fix and runner-fix",
+                  {"hooks-fix", "runner-fix"} <= real_labels))
+    cases.append(("for-loop fanout whose inventories attributed its records is not reported uncaptured",
+                  not any("$d" in p or "hooks-fix" in p or "runner-fix" in p for p in real_uncaptured)))
+    cases.append(("native-only fanout launches (jobs_old, jobs_old2) are not reported uncaptured",
+                  os.path.normcase(os.path.join(probe_dir, "jobs_old.json")) not in real_uncaptured
+                  and os.path.normcase(os.path.join(probe_dir, "jobs_old2.json")) not in real_uncaptured))
+    cases.append(("mixed native+sidecar fanout without inventory or Write is still reported uncaptured",
+                  os.path.normcase(os.path.join(mixed_dir, "jobs.json")) in real_uncaptured))
+    cases.append(("opaque-script sidecar registered in dispatch_table is attributed after Stop prunes pending",
+                  "review-fold-1" in real_labels))
+    cases.append(("dispatch_table entry older than its launch timestamp is excluded (stale identity rule)",
+                  "stale-dt" not in real_labels))
+    cases.append(("relaunching the same record path advances launch timestamp and excludes the earlier record",
+                  "relaunch-dt" not in real_labels))
+    cases.append(("dispatch_table entry whose record carries another parentSessionId is excluded",
+                  "foreign-dt" not in real_labels))
+    cases.append(("adopted sidecar entry in dispatch_table is never attributed to the adopting session",
+                  "adopted" not in real_labels))
+
     failed = [name for name, ok in cases if not ok]
     for name, ok in cases:
         print(("ok   " if ok else "FAIL ") + name)

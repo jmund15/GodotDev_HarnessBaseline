@@ -241,7 +241,7 @@ case("a refused job set prints the refusal and no fit line", refused_set_prints_
 
 # A job whose reading is past the point it compacts at is refused like an unfit pin: the fit line used to print the
 # overage and the launch went on (2026-11-10: 523,580 tokens against a 467,000-token window). The measure is
-# `dispatch_size`'s `over`, the one `lens_briefs.seat_overage` refuses a review seat on.
+# `dispatch_size`'s `residentOver`, the one `lens_briefs.seat_overage` refuses a review seat on.
 import dispatch_size  # noqa: E402
 
 OVER_ALIAS = FIT[0]
@@ -289,7 +289,7 @@ def the_refusal_uses_the_seat_measure():
     seat = lens_briefs.seat_reading(key="k", token=OVER_ALIAS, body=open(BIG, encoding="utf-8").read(),
                                     context_path=empty, entries=[], data=DATA)
     _code, out, err, *_ = run([over_job()], "--dry-run")
-    return seat["over"] > 0 and ("over by %d" % seat["over"]) in out + err
+    return seat["residentOver"] > 0 and ("over by %d" % seat["residentOver"]) in out + err
 
 
 case("the over-window refusal's overage is the review seat's own measure", the_refusal_uses_the_seat_measure)
@@ -463,6 +463,115 @@ def later_launch_removes_it():
 case("a refusal before any inventory writes launch-refused.txt with message, exit code and UTC time", refusal_is_persisted)
 case("an argument error writes launch-refused.txt too", argument_error_is_persisted)
 case("a later dry-run or detached launch into the same out dir removes launch-refused.txt", later_launch_removes_it)
+
+
+TASK_SID = "76ed7baa-8baf-4db4-b89f-6f971ca2d5c0"
+ACCEPTANCE_HEAD = "## Acceptance test (task hsr)"
+
+
+def with_planted_record(fn):
+    """Run `fn(work)` with a record `hsr` owned by TASK_SID in a temp store and that session in the env."""
+    import task_record
+    work = tempfile.mkdtemp(dir=TMP)
+    saved = {k: os.environ.get(k) for k in ("HARNESS_TASK_RECORD_DIR", "CLAUDE_CODE_SESSION_ID")}
+    os.environ["HARNESS_TASK_RECORD_DIR"] = os.path.join(work, "tasks")
+    os.environ["CLAUDE_CODE_SESSION_ID"] = TASK_SID
+    try:
+        task_record.open_record("hsr", TASK_SID, "carry")
+        task_record.add_item("hsr", "requirement", "ships the carry")
+        task_record.add_item("hsr", "exclusion", "no new guard")
+        return fn(work)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def prompt_file(work, name, text):
+    path = os.path.join(work, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return path
+
+
+def carry_jobs(work):
+    plain = prompt_file(work, "plain.md", "Review the subject.\n")
+    briefed = prompt_file(work, "briefed.md", "x\n%s\n\nseat text\n" % ACCEPTANCE_HEAD)
+    return [{"label": "plain", "promptFile": plain, "contextFiles": ["ctx.md"]},
+            {"label": "briefed", "promptFile": briefed, "contextFiles": ["ctx.md"]}]
+
+
+def carries_acceptance_first():
+    def body(work):
+        out_dir = os.path.join(work, "out")
+        jobs = sf.carry_acceptance(carry_jobs(work), None, out_dir)
+        acceptance = os.path.join(out_dir, "acceptance_hsr.md")
+        return (os.path.isfile(acceptance) and "ships the carry" in open(acceptance, encoding="utf-8").read()
+                and jobs[0]["contextFiles"][0] == acceptance and jobs[0]["contextFiles"][1:] == ["ctx.md"])
+    return with_planted_record(body)
+
+
+def skips_a_brief_that_holds_the_heading():
+    def body(work):
+        jobs = sf.carry_acceptance(carry_jobs(work), None, os.path.join(work, "out"))
+        return jobs[1]["contextFiles"] == ["ctx.md"]
+    return with_planted_record(body)
+
+
+def opt_out_carries_nothing():
+    def body(work):
+        out_dir = os.path.join(work, "out")
+        jobs = sf.carry_acceptance(carry_jobs(work), False, out_dir)
+        return (not os.path.exists(os.path.join(out_dir, "acceptance_hsr.md"))
+                and all(j["contextFiles"] == ["ctx.md"] for j in jobs))
+    return with_planted_record(body)
+
+
+def explicit_id_without_record_refuses():
+    def body(work):
+        try:
+            sf.carry_acceptance(carry_jobs(work), "no-such-task", os.path.join(work, "out"))
+        except sf.JobError as exc:
+            return "no-such-task" in str(exc)
+        return False
+    return with_planted_record(body)
+
+
+def jobs_file_task_key_has_three_states():
+    def body(work):
+        def write(spec):
+            path = os.path.join(work, "jobs-%d.json" % len(os.listdir(work)))
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(spec, fh)
+            return path
+        bare = sf.jobs_task(write([{"label": "a"}]))
+        named = sf.jobs_task(write({"jobs": [{"label": "a"}], "task": "hsr"}))
+        optout = sf.jobs_task(write({"jobs": [{"label": "a"}], "task": False})) is False
+        try:
+            sf.jobs_task(write({"jobs": [{"label": "a"}], "task": 5}))
+            refused = False
+        except sf.JobError:
+            refused = True
+        return bare is None and named == "hsr" and optout and refused
+    return with_planted_record(body)
+
+
+def run_prints_the_carry_line():
+    def body(work):
+        code, _out, err, *_rest = run({"jobs": [job("fit-only", FIT[0], promptFile=prompt_file(work, "fit.md", "x\n"))],
+                                       "task": "hsr"}, "--dry-run")
+        return code == 0 and "[fanout] task hsr: acceptance carried to 1 job(s)" in err
+    return with_planted_record(body)
+
+
+case("a task record's acceptance test becomes each job's first context file", carries_acceptance_first)
+case("a job whose prompt already holds the acceptance heading gets no second copy", skips_a_brief_that_holds_the_heading)
+case("a jobs file with task false carries no acceptance test", opt_out_carries_nothing)
+case("a jobs file naming a task with no record refuses by name", explicit_id_without_record_refuses)
+case("the jobs file's task key reads as an id, absent (session default) or false", jobs_file_task_key_has_three_states)
+case("a launch names how many jobs carried the acceptance test", run_prints_the_carry_line)
 
 
 failed = []

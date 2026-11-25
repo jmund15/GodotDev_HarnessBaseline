@@ -129,30 +129,6 @@ class Env:
         check(run.returncode == 0 and not run.stderr.strip(), "the watcher exited cleanly", run.stderr)
         return run.stdout
 
-    def watch_stays_armed(self):
-        """(exited, stdout) of a session watcher after two finished polls: a session watch exits only on a decision
-        event, because an idle exit is itself a paid notification. The marks are the watcher's own poll-finished
-        events, so a loaded machine slows the verdict's poll and never the verdict."""
-        mark = self.root / "polls.log"
-        mark.write_text("", encoding="utf-8")
-        proc = subprocess.Popen([sys.executable, str(WATCH), "--session", "--wake"], stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                env=dict(self.env, CLAUDE_CODE_SESSION_ID=SID, WATCH_RECORDS_POLL_SEC="0.05",
-                                         WATCH_RECORDS_CHECKIN_SEC="600", WATCH_RECORDS_POLL_MARK=str(mark)))
-        deadline = time.time() + HANG_BOUND
-        while time.time() < deadline and proc.poll() is None:
-            try:
-                polls = len(mark.read_text(encoding="utf-8").splitlines())
-            except OSError:
-                polls = 0
-            if polls >= 2:
-                break
-            time.sleep(0.02)
-        exited = proc.poll() is not None
-        if not exited:
-            proc.kill()
-        return exited, proc.communicate()[0]
-
 
 # ------------------------------------------------------- A: refused, crashed, relaunched in one out dir
 e = Env()
@@ -201,9 +177,9 @@ woke = e.watch()
 check("STILL RUNNING 0" in woke and "ENDED" not in woke and "UNRESOLVED" not in woke
       and "DONE plc-c exit=0" in woke and "DONE plc-d exit=0" in woke,
       "one wake for the relaunch's real ends; neither dead call's entry counts", woke)
-exited, again = e.watch_stays_armed()
-check(not exited and not again.strip(),
-      "a second watcher on the same state stays armed and silent: no dead entry re-wakes, no acknowledged end returns",
+again = e.watch()
+check(again.strip() == "NONE",
+      "a second watcher on the same state reports nothing and exits: no dead entry re-wakes, no acknowledged end returns",
       again)
 text = e.stop()
 check("never started" not in (text or ""),

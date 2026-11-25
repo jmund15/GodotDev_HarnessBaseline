@@ -269,7 +269,7 @@ class TiersRows(Planted):
         with open(os.path.join(os.path.dirname(stamp), "harness_proof_durations.json"), "w", encoding="utf-8") as fh:
             json.dump({"test_alpha.py": 4.0, "test_orphan.py": 20.0, "test_scan.py": 40.0, "test_serial.py": 31.0,
                        "test_heavy.py": 9.0, "test_off.py": 1.0}, fh)
-        with patch.object(runner, "_DIR_SCANNING", ("test_scan.py",)), \
+        with patch.object(runner._catalog, "ALWAYS", ("test_scan.py",)), \
                 patch.object(runner, "SERIAL", {"test_serial.py": "owns the machine"}), \
                 patch.object(runner, "HEAVY", {"test_heavy.py": "slow"}), \
                 patch.object(runner, "EXCLUDED", {"test_off.py": "off"}):
@@ -277,7 +277,8 @@ class TiersRows(Planted):
         self.assertEqual(set(rows), set(proofs))
         self.assertEqual((rows["test_alpha.py"]["seconds"], rows["test_alpha.py"]["budget"],
                           rows["test_alpha.py"]["runs"]), (4.0, "inner", "bound"))
-        self.assertEqual((rows["test_orphan.py"]["budget"], rows["test_orphan.py"]["runs"]), ("commit", "bound"))
+        self.assertEqual((rows["test_orphan.py"]["budget"], rows["test_orphan.py"]["runs"]), ("close", "bound"))
+        self.assertEqual({r["budget"] for r in rows.values()} - {"unrecorded"}, {"inner", "close"})
         self.assertEqual((rows["test_scan.py"]["budget"], rows["test_scan.py"]["runs"]), ("close", "always"))
         self.assertEqual(rows["test_serial.py"]["runs"], "serial")
         self.assertEqual(rows["test_heavy.py"]["runs"], "heavy")
@@ -302,7 +303,7 @@ class CorpusBinding(Planted):
         git(self.repo, "init", "-q")
         git(self.repo, "add", "-A")
         git(self.repo, "add", "-f", ".claude/tests")
-        with patch.object(runner, "_CORPUS_SCANNING", {"test_corpus.py": (".claude/guards",)}):
+        with patch.object(runner._catalog, "CORPUS", {"test_corpus.py": (".claude/guards",)}):
             bound = runner.bindings(self.repo, [".claude/guards/unnamed.md", ".claude/tools/elsewhere.py"])
         names = {t: [os.path.basename(p) for p in ps] for t, ps in bound.items()}
         self.assertIn("test_corpus.py", names[".claude/guards/unnamed.md"])

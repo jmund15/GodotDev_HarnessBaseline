@@ -22,7 +22,7 @@
 param(
     # A planted copy of the module, to show a case detects the defect the plant carries.
     [string] $ModulePath = '',
-    # Comma- or space-separated case ids (T0..T38). Default: every case, run as parallel shards of this proof.
+    # Comma- or space-separated case ids (T0..T39). Default: every case, run as parallel shards of this proof.
     [string] $Case = '',
     # Shards for the default run; each is a child of this script given its own -Case list.
     [int] $Shards = 4
@@ -38,7 +38,7 @@ $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $scriptsDir = Join-Path $repoRoot '.claude\scripts'
 if (-not $ModulePath) { $ModulePath = Join-Path $scriptsDir 'RuntimeSlots.ps1' }
 $ModulePath = [System.IO.Path]::GetFullPath($ModulePath)
-$allCases = @(0..38 | ForEach-Object { "T$_" })
+$allCases = @(0..39 | ForEach-Object { "T$_" })
 $selected = if ($Case) { @($Case -split '[,\s]+' | Where-Object { $_ }) } else { $allCases }
 . (Join-Path $scriptsDir 'GodotProcess.ps1')
 $Pwsh = Get-PwshStart
@@ -1534,6 +1534,43 @@ Remove-Item -LiteralPath $rec -Recurse -Force -ErrorAction SilentlyContinue
             $lines = @(Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue)
             Assert-True 'T38 a holder that never lets go costs the append its line, not the gate its time' ($heldStill -and @($lines | Where-Object { $_ -match ' tag=T38b$' }).Count -eq 0) ($lines -join "`n")
         } finally { $script:RuntimeSlotTriggerWaitMs = $saved }
+    }
+
+    Invoke-Case 'T39' {
+        $n = New-Names
+        $repo = Join-Path $work 'checkout with spaces'
+        $label = 'gate with "quotes"'
+        $stub = Join-Path $work 'slot broker.py'
+        @'
+import json
+import sys
+print(json.dumps({'held': 1}), flush=True)
+print(json.dumps({'argv': sys.argv[1:]}), flush=True)
+sys.stdin.read()
+'@ | Set-Content -LiteralPath $stub -Encoding utf8
+        $savedBudget = $env:HARNESS_SLOT_BUDGET
+        $savedScript = $env:HARNESS_SLOT_SCRIPT
+        $lease = $null
+        try {
+            $env:HARNESS_SLOT_BUDGET = $null
+            $env:HARNESS_SLOT_SCRIPT = $stub
+            $lease = Enter-RunLocks -Repo $repo -Label $label -SlotNames $n.names `
+                -CheckoutLockName ($n.ckPrefix + 'broker') -RecordDir $n.rec
+            Assert-True 'T39 the broker grants the machine lease' $lease.Acquired
+            if (-not $lease.Acquired) { return }
+            $argv = ($lease.MachineWork.StandardOutput.ReadLine() | ConvertFrom-Json).argv
+            $index = [array]::IndexOf($argv, '--holder')
+            Assert-True 'T39 the broker receives --holder and one JSON argument' ($index -ge 0 -and $argv.Count -eq ($index + 2))
+            if ($index -ge 0 -and $argv.Count -eq ($index + 2)) {
+                $holder = $argv[$index + 1] | ConvertFrom-Json
+                Assert-True 'T39 the holder names the calling PID, label and repo' `
+                    ($holder.pid -eq $PID -and $holder.command.Contains($label) -and $holder.checkout -eq $repo)
+            }
+        } finally {
+            if ($null -ne $lease) { Exit-RunLocks -Lease $lease }
+            $env:HARNESS_SLOT_BUDGET = $savedBudget
+            $env:HARNESS_SLOT_SCRIPT = $savedScript
+        }
     }
 } finally {
     Stop-All

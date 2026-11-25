@@ -40,24 +40,13 @@ sys.path.insert(0, HERE)
 import _settings_probe  # noqa: E402
 
 EXPECTED_CHAIN = (
-    ("prompt_memory_loader", 30),
-    ("critical_analysis_reminder", 30),
     ("prompt_git_state_delta", 15),
-    ("tool_routing_cumulative_reset", 15),
-    ("tool_routing_prompt_synthesis", 15),
-    ("shell_census", 25),
     ("sidecar_watch_rearm", 5),
-    ("budget_posture", 15),
-    ("activity_registry", 15),
     ("overnight_ask_guard", 5),
 )
 
 # Members with no reachable positive control: why each one is proven by `ok` status alone.
-KNOWN_SILENT = {
-    "shell_census": "its text comes from a live machine process table that main() lists itself; "
-                    "no env seam plants one, and its emission logic is proven with injected process "
-                    "lists in test_shell_census.py",
-}
+KNOWN_SILENT = {}
 
 SYNTHESIS = """Compare the existing hook files and summarize how routing decisions flow across
 multiple modules. I need the exact source evidence preserved, the current contract checked, and a
@@ -200,10 +189,6 @@ def statuses(record):
     return {name: entry.get("status") for name, entry in (record or {}).get("hooks", {}).items()}
 
 
-def suggestion_reminder_emitted(out):
-    return "Suggestion-shape prompt" in out
-
-
 def machine_env(state, project, tmp, timing):
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, CLAUDE_PROJECT_DIR=project, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
                HARNESS_PROMPT_DISPATCH_TIMING=timing, PYTHONUTF8="1",
@@ -232,21 +217,6 @@ def run_runner(env, chain, payload, extra_env=None, cwd=None):
                             capture_output=True, env=full, cwd=cwd, timeout=60)
     elapsed = time.monotonic() - started
     return (result.returncode, result.stdout, result.stderr.decode("utf-8", "replace"), elapsed)
-
-
-def write_capture(tmp, session, used_pct):
-    """The rate_limits snapshot statusline.py writes every turn (half the window elapsed)."""
-    now = time.time()
-    write_file(os.path.join(tmp, "cc-cachestat-%s.json" % session), json.dumps({"rate_limits": {
-        "captured_at": now,
-        "seven_day": {"used_percentage": used_pct, "resets_at": now + 7 * 24 * 3600 / 2}}}))
-
-
-def write_registry_record(tmp, pid, label):
-    """A registry record of the shape regression_gate.ps1 writes."""
-    write_file(os.path.join(tmp, "harness-activity", "gate-%d.json" % pid), json.dumps({
-        "pid": pid, "kind": "gate", "checkout": "C:/other/checkout", "sessionId": None, "label": label,
-        "startedAt": time.time(), "heartbeatAt": time.time(), "expectedSec": 300}))
 
 
 def init_git_repo(path):
@@ -324,47 +294,6 @@ def main():
         def last_ok():
             record = (read_records(timing) or [None])[-1]
             return record is not None and all(s == "ok" for s in statuses(record).values())
-
-        _, out, _ = run_dispatcher(env, payload_for("crit0001", "I think we should split this hook, right?"),
-                                   plain)
-        controls["critical_analysis_reminder"] = suggestion_reminder_emitted(out) and last_ok()
-        case("case 2: the reminder control rejects a hook tag that carries no reminder token",
-             not suggestion_reminder_emitted("<user-prompt-submit-hook>\nHIGH-RISK TASK\n</user-prompt-submit-hook>"))
-
-        _, out, _ = run_dispatcher(env, payload_for("syn00001", SYNTHESIS), plain)
-        lowered = out.lower()
-        # Which route the bulk-copyable arm names is a per-machine fact (ai-worker registered or
-        # not), so the control asserts the arm AND a route, not one machine's wording.
-        controls["tool_routing_prompt_synthesis"] = (
-            "bulk copyable" in lowered
-            and ("read_files" in lowered or "bounded read" in lowered) and last_ok())
-
-        prompt = "Debug why the freeze effect is not working on critters"
-        _, out, _ = run_dispatcher(env, payload_for("cum00001", prompt), plain)
-        try:
-            with open(os.path.join(state, "cum00001.json"), encoding="utf-8") as fh:
-                planted_prompt = json.load(fh).get("last_prompt")
-        except (OSError, ValueError):
-            planted_prompt = None
-        controls["tool_routing_cumulative_reset"] = planted_prompt == prompt and last_ok()
-        controls["prompt_memory_loader"] = "HIGH-RISK TASK" in out and last_ok()
-
-        write_capture(tmp, "bpc00001", 40.0)
-        _, out, _ = run_dispatcher(env, payload_for("bpc00001", "next slice"), plain)
-        case("case 2: spendable telemetry speaks at the first prompt, before any dispatch",
-             "[budget-posture]" in out and last_ok())
-        write_capture(tmp, "bpc00002", 100.0)
-        _, out, _ = run_dispatcher(env, payload_for("bpc00002", "next slice"), plain)
-        controls["budget_posture"] = "[budget-posture]" in out and "Exhausted" in out and last_ok()
-
-        peer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        try:
-            write_registry_record(tmp, peer.pid, "gate: final")
-            _, out, _ = run_dispatcher(env, payload_for("arc00001", "next slice", cwd="C:/repo"), plain)
-            controls["activity_registry"] = "[activity]" in out and "peer gate live" in out and last_ok()
-        finally:
-            peer.terminate()
-            peer.wait(timeout=30)
 
         night = os.path.join(root, "night")
         marker = os.path.join(night, ".claude", "scratch", "overnight", "active-ovn00001.json")
@@ -447,8 +376,7 @@ def main():
         record = (read_records(fault_timing) or [None])[-1]
         case("case 4: a swallowing member keeps its printed output and is still recorded as a fault",
              out == "kept-partial\ngood-output" and statuses(record).get("pd_swallow") == "fault")
-        case("case 4: the real swallowing members are the two whose __main__ block swallows",
-             saved_swallow == frozenset({"budget_posture", "activity_registry"}))
+        case("case 4: no real CHAIN member swallows in its __main__ block", saved_swallow == frozenset())
         case("case 4: streams are restored after a faulting chain",
              (sys.stdin, sys.stdout, sys.stderr, list(sys.argv)) == real_streams)
 
@@ -661,27 +589,6 @@ def main():
         case("hardening: _SWALLOWS is exactly the CHAIN members whose own __main__ block swallows (%s)"
              % sorted(detected), detected == set(pd._SWALLOWS) & installed)
 
-        parity_prompt = "I think we should split this hook, right?"
-        parity_members = (("prompt_memory_loader", 30), ("critical_analysis_reminder", 30))
-        alone_state = os.path.join(root, "alone_state")
-        os.makedirs(alone_state, exist_ok=True)
-        alone_env = machine_env(alone_state, project, tmp, os.path.join(root, "alone.jsonl"))
-        alone_parts = []
-        for member, _budget in parity_members:
-            result = subprocess.run([sys.executable, os.path.join(HOOKS, member + ".py")],
-                                    input=payload_for("par00001", parity_prompt, cwd=plain).encode("utf-8"),
-                                    capture_output=True, env=alone_env, cwd=plain, timeout=60)
-            text = result.stdout.decode("utf-8", "replace").replace("\r\n", "\n").strip()
-            if text and text != "{}":
-                alone_parts.append(text)
-        joined_state = os.path.join(root, "joined_state")
-        os.makedirs(joined_state, exist_ok=True)
-        with planted_machine(joined_state, project, tmp, plain, os.path.join(root, "joined.jsonl")):
-            code, out, err = pd.dispatch(payload_for("par00001", parity_prompt, cwd=plain), chain=parity_members,
-                                         timing_path=os.path.join(root, "joined.jsonl"))
-        case("hardening: dispatcher text equals the standalone hooks' text modulo line endings",
-             bool(alone_parts) and out == "\n".join(alone_parts))
-
         for label, raw in (("empty stdin", ""), ("malformed JSON", "not json {"), ("a JSON list", "[]"),
                            ("JSON null", "null"), ("a bare number", "123")):
             code, out, err = run_dispatcher(machine_env(state, project, tmp, os.path.join(root, "adv.jsonl")),
@@ -722,6 +629,26 @@ def main():
 
         scan_patterns = (r"sys\.__stdout__", r"os\.write\(\s*1\b", r"redirect_std(?:out|err)",
                          r"sys\.std(?:out|err)\s*=[^=]", r"os\.chdir\(", r"\batexit\b", r"signal\.signal\(")
+        import_time_patterns = (r"redirect_std(?:out|err)", r"os\.chdir\(")
+
+        def import_time_calls(text, patterns):
+            """True when a call matching a pattern runs at import time: a top-level statement or a class body. A
+            function body runs only when called, and the dispatcher only imports its members, so a restored
+            `os.chdir` or a captured `redirect_stdout` inside a function is proved by running the members below."""
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                return True
+            pending = list(tree.body)
+            while pending:
+                node = pending.pop()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    continue
+                if isinstance(node, ast.Call) and any(re.search(pattern, ast.unparse(node.func) + "(")
+                                                      for pattern in patterns):
+                    return True
+                pending.extend(ast.iter_child_nodes(node))
+            return False
 
         def module_stream_rebind(text):
             """True when a module rebinds sys.stdout/sys.stderr at import time. A function-local rebind runs
@@ -767,8 +694,12 @@ def main():
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
             for pattern in scan_patterns:
-                hit = (module_stream_rebind(text) if pattern == r"sys\.std(?:out|err)\s*=[^=]"
-                       else re.search(pattern, text))
+                if pattern == r"sys\.std(?:out|err)\s*=[^=]":
+                    hit = module_stream_rebind(text)
+                elif pattern in import_time_patterns:
+                    hit = import_time_calls(text, (pattern,))
+                else:
+                    hit = re.search(pattern, text)
                 if hit:
                     scan_hits.append("%s:%s" % (os.path.basename(path), pattern))
         case("hardening: no CHAIN member or local module it imports rebinds a stream, writes fd 1, chdirs or "
@@ -779,12 +710,49 @@ def main():
         with open(planted_bad, encoding="utf-8") as fh:
             planted_text = fh.read()
         case("hardening: the stream-rebinding scan fires on a planted redirect_stdout",
-             any(re.search(pattern, planted_text) for pattern in scan_patterns))
+             import_time_calls(planted_text, import_time_patterns))
+        case("hardening: the import-time scan fires on a planted module-level chdir and a class-body redirect, "
+             "and not on the same calls inside a function",
+             import_time_calls("import os\nos.chdir('x')\n", import_time_patterns)
+             and import_time_calls("import contextlib\nclass A:\n    with contextlib.redirect_stderr(None):\n"
+                                   "        pass\n", import_time_patterns)
+             and not import_time_calls("import os, contextlib\ndef f():\n    os.chdir('x')\n"
+                                       "    with contextlib.redirect_stdout(None):\n        pass\n",
+                                       import_time_patterns))
+
+        spied = []
+        real_chdir, real_redirects = os.chdir, (contextlib.redirect_stdout, contextlib.redirect_stderr)
+
+        def spy_chdir(path):
+            spied.append("os.chdir")
+            return real_chdir(path)
+
+        def spy_redirect(real):
+            def spy(*args, **kwargs):
+                spied.append(real.__name__)
+                return real(*args, **kwargs)
+            return spy
+
+        spy_state = os.path.join(root, "spy_state")
+        os.makedirs(spy_state, exist_ok=True)
+        with planted_machine(spy_state, project, tmp, plain, os.path.join(root, "spy.jsonl")):
+            stdout_before = sys.stdout
+            os.chdir, contextlib.redirect_stdout, contextlib.redirect_stderr = (
+                spy_chdir, spy_redirect(real_redirects[0]), spy_redirect(real_redirects[1]))
+            try:
+                spy_code, _spy_out, _spy_err = pd.dispatch(payload_for("spy00001"), chain=pd.CHAIN,
+                                                           timing_path=os.path.join(root, "spy.jsonl"))
+            finally:
+                os.chdir, contextlib.redirect_stdout, contextlib.redirect_stderr = (real_chdir, *real_redirects)
+            router_intact = sys.stdout is stdout_before
+        case("hardening: the real CHAIN, run in process, calls no os.chdir, redirect_stdout or redirect_stderr "
+             "(%s) and leaves sys.stdout as it found it" % (spied or "none seen"),
+             spy_code == 0 and not spied and router_intact)
 
         # ---- 9. registration and CHAIN contract ----------------------------------------------
         literal = chain_source()
         case("case 9: CHAIN is a plain literal that ast.literal_eval reads", literal == pd.CHAIN)
-        case("case 9: CHAIN names exactly the nine expected members with their budgets",
+        case("case 9: CHAIN names exactly the three expected members with their budgets",
              literal == EXPECTED_CHAIN)
         # A lower-layer dispatcher runs the higher-layer guards its consumer adopted, and
         # `_optional_hooks` skips a member this lane does not install (`_optional_hooks.py` docstring).

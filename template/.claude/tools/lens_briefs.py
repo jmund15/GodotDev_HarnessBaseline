@@ -33,7 +33,8 @@ seat's `rows` or its pin and effort) and no plan, so the fan-out places it; `exp
 the lenses of every transport. Spec keys: `mode` (`explore`, `session-audit`,
 `plan-check`, `pr-review`, `design-redteam`, `pr-ready`), `prefix`, `topic`, `questions`, `seats`
 (`{key, mandates?, tier?, effort?, pin?, mustRead?, brief?}`) or `roster` or `lenses`, `pins`,
-`efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task`,
+`efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task` (default: the session's
+active task record as each seat's acceptance test; `false` opts out),
 `sessionAudit`, `ledger`, `spillDir`, `transcriptDir`, `checker`, `target`, `subs`, `round`, `root`,
 `engine`, `prNum`, `branch`, `session`, `commands`.
 `mode: "delegate"` is the ad-hoc dispatch shape (`commands/delegate.md`): `jobs` in the fan-out's own fields, each
@@ -131,7 +132,6 @@ from cli_usage import refusal as shape_lines, usage
 
 
 import argparse
-import difflib
 import functools
 import hashlib
 import json
@@ -155,9 +155,12 @@ import explore_result  # noqa: E402  (the claims contract an explore lens brief 
 import lens  # noqa: E402  (sibling module: registry parsing)
 import model_registry  # noqa: E402  (the tier vocabulary, and the sidecar alias resolution)
 import finding_bar  # noqa: E402  (the run's bar words; a sidecar prompt has no engine contract to carry them)
+import task_record  # noqa: E402  (the session's task record: the acceptance test every seat judges)
 import plan_job_map_guard  # noqa: E402  (the `## Job map` heading rule, one home)
 import review_result  # noqa: E402  (the Read window a must-read brief states)
+import review_snapshot  # noqa: E402  (the one address for reviewed bytes)
 import tool_profiles  # noqa: E402  (the review kind's built-ins)
+from _git_run import run as _run_git  # noqa: E402
 
 TIERS = list(model_registry.TIER_ORDER) + sorted(model_registry._TIER_ALIASES)
 
@@ -220,6 +223,77 @@ def subject_plans(specs: list[str]) -> list[tuple[str, str]]:
     return found
 
 
+def subject_stem(path: str, stems) -> str:
+    """The plan's file stem, with a short hash of its full path when another subject shares the stem."""
+    stem = Path(path).stem
+    if stems[stem] > 1:
+        stem += "_" + hashlib.sha256(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
+    return stem
+
+
+FIX_WINDOW_DAYS = 30
+JOB_MAP_SECTION_RE = re.compile(plan_job_map_guard.JOB_MAP_HEADING + r".*?(?=^#{1,6}\s|\Z)",
+                                re.IGNORECASE | re.MULTILINE | re.DOTALL)
+BACKTICK_PATH_RE = re.compile(r"`([^`\s]+)`")
+
+
+def fix_paths(path: str, shape: str) -> list[str]:
+    """The code-file paths a subject plan touches as written: the backticked code paths in its `## Job map`, plus a meta
+    plan's `path` surfaces. Test and scratch paths are skipped, as the census's fix counts skip them."""
+    import citers
+    import mechanism_census
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    section = JOB_MAP_SECTION_RE.search(text)
+    written = [m for m in BACKTICK_PATH_RE.findall(section.group(0) if section else "")]
+    if shape == "meta":
+        try:
+            written += [s["surface"] for s in citers.plan_surfaces(path) if s["kind"] == "path"]
+        except citers.Usage:
+            pass
+    return [p for p in dict.fromkeys(written)
+            if p.endswith(mechanism_census.CODE_EXT) and not re.search(r"(^|/)(tests|scratch)/|[{}*?]", p)
+            and not re.match(r"test_|.*_test\.", Path(p).name)]
+
+
+def fix_history_section(subjects: list[tuple[str, str]], repo: Path, *, out: Path, prefix: str) -> str:
+    """Write each subject plan's counted fix history to `<prefix>_<stem>_fixes.json` and return a blockquoted summary:
+    one count row per touched code file, a bare or `.claude/`-prefixed path resolved to the tracked one, and an
+    unresolved row (never a count) for a path that resolves nowhere (`mechanism_census.fix_history`)."""
+    from collections import Counter
+    import mechanism_census
+    if not subjects:
+        return "# FIX_HISTORY\n\nNo subject plan was passed: no code file is named.\n"
+    stems = Counter(Path(path).stem for _shape, path in subjects)
+    lines = ["# FIX_HISTORY", ""]
+    reading = mechanism_census.latest_reading(str(repo))
+    for shape, path in dict.fromkeys(subjects):
+        written = fix_paths(path, shape)
+        forms = {w: [w] if w.startswith(".claude/") else [".claude/" + w, w] for w in written}
+        history = mechanism_census.fix_history(str(repo), sorted({f for fs in forms.values() for f in fs}),
+                                               ref="HEAD", days=FIX_WINDOW_DAYS, reading=reading) if written else {}
+        rows, full = [], {}
+        for raw in written:
+            hit = next((f for f in forms[raw] if not history[f].get("unresolved")), None)
+            if hit is None:
+                rows.append({"path": raw, "unresolved": True})
+                continue
+            row = history[hit]
+            full[hit] = row
+            rows.append({"path": hit, "fixes": row["count"], "listed": row["listed"], "sinceListing": row["sinceListing"]})
+        fixes_file = out / f"{prefix}_{subject_stem(path, stems)}_fixes.json"
+        fixes_file.write_text(json.dumps(full, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+        lines += [f"> ## {path}", ">",
+                  f"> Counted fixes in the census window ({FIX_WINDOW_DAYS} days) for the code files this plan touches. "
+                  "Facts only: a count is a lead for judging a redesign against a patch, never the verdict.",
+                  "> `sinceListing` counts fixes since a listed file's listing date, past the window: `cited` of `fixes` "
+                  "carry a plan tag." if reading else
+                  "> `listed` is null: no census reading is recorded, so which files the census lists is unknown.",
+                  f"> Full history: `{fixes_file.resolve().as_posix()}`. Grep that file for the files you judge.", ">"]
+        lines += ["> " + json.dumps(row, ensure_ascii=False) for row in rows]
+        lines.append(">")
+    return "\n".join(lines) + "\n"
+
+
 def inbound_refs_section(subjects: list[tuple[str, str]], vault: str | None, *, out: Path, prefix: str) -> str:
     """Write each meta subject's full JSON beside the briefs and return a blockquoted summary.
     Summary size follows surfaces, never citer, duty or truncation rows. Code subjects are not swept;
@@ -240,10 +314,7 @@ def inbound_refs_section(subjects: list[tuple[str, str]], vault: str | None, *, 
         except citers.Unresolved as err:
             print(f"citers.py: unresolved at HEAD: {err}", file=sys.stderr)
             sys.exit(1)
-        stem = Path(path).stem
-        if stems[stem] > 1:
-            stem += "_" + hashlib.sha256(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
-        sweep_file = out / f"{prefix}_{stem}_citers.json"
+        sweep_file = out / f"{prefix}_{subject_stem(path, stems)}_citers.json"
         sweep_file.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
         coverage = result["coverage"]
         citer_counts = Counter(row["surface"] for row in result["citers"])
@@ -579,24 +650,24 @@ def seat_size_line(key: str, seat: dict, brief_bytes: int) -> str:
     """The seat's required reading, printed before any brief is written so a split is planned from sizes."""
     if seat.get("fitError"):
         return f"seat reading: {key}: not sized: {seat['fitError']}"
-    percent = round(100 * seat["tokens"] / seat["usable"]) if seat.get("usable") else 0
-    return (f"seat reading: {key}: {seat['tokens']} tokens, {percent}% of {seat.get('usable') or 0} usable; "
+    percent = round(100 * seat["residentTokens"] / seat["usable"]) if seat.get("usable") else 0
+    return (f"seat reading: {key}: {seat['residentTokens']} tokens, {percent}% of {seat.get('usable') or 0} usable; "
             f"brief {brief_bytes:,}B, must-read {seat['bytes'] - brief_bytes:,}B")
 
 
 def seat_overage(*, key: str, token: str, body: str, context_path: str, entries: list[dict],
                  data: dict, reading: dict | None = None) -> str | None:
     """None when the seat's brief, context and must-read files fit its pin's compaction point, else the refusal
-    line naming the overage. `dispatch_size` owns the reading and the fit. A must-read path that does not
+    line naming the overage. `dispatch_size` owns the reading and the fit; a file the body only names is not counted. A must-read path that does not
     exist adds nothing: its seat reports it `missing`. `reading` is a `seat_reading` already computed."""
     seat = reading or seat_reading(key=key, token=token, body=body, context_path=context_path,
                                    entries=entries, data=data)
     if seat["fitError"]:
         return f"{key}: {token} {seat['fitError']}"
-    if not seat["over"]:
+    if not seat["residentOver"]:
         return None
-    return (f"{key}: {seat['tokens']} tokens of brief, context and must-read files on {token} exceed its usable "
-            f"window of {seat['usable']} tokens; over by {seat['over']}")
+    return (f"{key}: {seat['residentTokens']} tokens of brief, context and must-read files on {token} exceed its usable "
+            f"window of {seat['usable']} tokens; over by {seat['residentOver']}")
 
 
 def lens_tier_refusal(*, panel: dict, native: bool, data: dict, owner_keys=frozenset()) -> list[str]:
@@ -696,21 +767,15 @@ def must_read_command(argv: list[str]) -> None:
     print(json.dumps(must_read_entries(must_read_list(a.list, "must-read"))))
 
 
-def acceptance_section(task_id: str) -> str:
-    """The task record's requirements and exclusions as the seat's acceptance test, so a goal the owner set for
-    the work reaches every seat without the brief author copying it into the shared context."""
-    import task_record
-    rec = task_record.load(task_id)
-    if not rec:
-        sys.exit(f"--task: no task record {task_id} under {task_record.record_dir()}")
-    lines = ["", "## Acceptance test (task %s)" % task_id,
-             "Judge the subject against each item below as well as your mandate. A subject that passes your checks "
-             "but misses one of these has a finding."]
-    lines += ["- Requirement: %s" % item for item in rec.get("requirements") or []]
-    lines += ["- Exclusion: %s" % item for item in rec.get("exclusions") or []]
-    if len(lines) == 3:
-        lines.append("- The record holds no requirement or exclusion yet.")
-    return "\n".join(lines) + "\n"
+def acceptance_for(task: str | bool | None, session: str | None = None) -> tuple[str | None, str]:
+    """(resolved task id, its acceptance section): the explicit id, the session's record, or none when opted out."""
+    task_id = task_record.task_for(task, session=session)
+    if not task_id:
+        return None, ""
+    try:
+        return task_id, task_record.acceptance_text(task_id)
+    except task_record.RecordMissing as exc:
+        raise ArgumentRefused(f"--task: {exc}")
 
 
 PREP_MODES = ("explore", "session-audit", "plan-check", "pr-review", "design-redteam", "pr-ready")
@@ -756,18 +821,38 @@ def _registry_seat(key: str, found: dict) -> bool:
     return all(part in found for part in key.split("+"))
 
 
-def _must_read_for(seat: dict, spec: dict, packet_views: dict) -> list[str]:
-    """A seat's must-read paths: its own list, the frozen packet's view of its mandates, or the shared subject."""
+def _frozen_subject_reads(paths: list[str], packet: dict, root: Path) -> list[str]:
+    """Each §1b path as the packet's frozen `subject-diff` of it; a path the packet does not cover stays as given.
+
+    The frozen diff is the audit's `git diff <base>..HEAD` plus the uncommitted diff, and a new file's whole
+    text sits inside it, so a code seat reads the change rather than the working tree's whole file."""
+    diffs = {}
+    for entry in packet.get("artifacts") or []:
+        if entry.get("kind") == "subject-diff" and isinstance(entry.get("file"), str) and entry.get("file"):
+            rel = Path(entry["file"])
+            diffs[_rel(rel if rel.is_absolute() else root / rel, root)] = entry["artifact"]
+    out = []
+    for path in paths:
+        rel = Path(path)
+        out.append(diffs.get(_rel(rel if rel.is_absolute() else root / rel, root), path))
+    return out
+
+
+def _must_read_for(seat: dict, spec: dict, packet_views: dict, packet: dict | None = None,
+                   root: Path | None = None) -> list[str]:
+    """A seat's must-read paths: its own list, the frozen packet's view of its mandates, or the shared subject.
+
+    A session audit's seat the packet holds no view for reads its §1b files as the packet's frozen diffs
+    (`_frozen_subject_reads`), never the working tree's whole files."""
     if isinstance(seat.get("mustRead"), list) and seat["mustRead"]:
         return list(seat["mustRead"])
     mandates = seat.get("mandates") or lens.seat_mandates(seat["key"]) or []
-    packet = [path for mandate in mandates for path in packet_views.get(mandate, [])]
-    if packet:
-        return list(dict.fromkeys(packet))
+    view = [path for mandate in mandates for path in packet_views.get(mandate, [])]
+    if view:
+        return list(dict.fromkeys(view))
     per_seat = (spec.get("seatFiles") or {}).get(seat["key"])
-    if per_seat:
-        return list(per_seat)
-    return list(spec.get("subjectFiles") or [])
+    paths = list(per_seat) if per_seat else list(spec.get("subjectFiles") or [])
+    return _frozen_subject_reads(paths, packet, root) if packet and root else paths
 
 
 def _write_list(path: Path, paths: list[str]) -> Path:
@@ -775,19 +860,42 @@ def _write_list(path: Path, paths: list[str]) -> Path:
     return path
 
 
-def _change_file(root: Path, out: Path, prefix: str, key: str, rel: str, blob: str) -> str | None:
-    """The change from the reviewed `blob` to the file's current bytes, written under the run dir; None when the
-    blob is gone from the object store or the file is absent."""
-    stored = subprocess.run(["git", "-C", str(root), "cat-file", "blob", blob], capture_output=True)
-    current = root / rel
-    if stored.returncode != 0 or not current.is_file():
+def _delta_pair(root: Path, out: Path, rel: str, blob: str) -> dict | None:
+    """One pair's frozen diff and hunk ids, written once under the run dir: None when the base object or
+    the file is absent, so the seat falls back to the whole file."""
+    before = review_snapshot.cat_blob(root, blob)
+    current_path = root / rel
+    if before is None or not current_path.is_file():
         return None
-    before = stored.stdout.decode("utf-8", "replace").splitlines(keepends=True)
-    now = current.read_bytes().decode("utf-8", "replace").splitlines(keepends=True)
-    text = "".join(difflib.unified_diff(before, now, fromfile=f"{rel} @ {blob[:12]}", tofile=rel))
-    path = out / f"{prefix}_{key.replace('+', '_')}_{rel.replace('/', '__')}.diff"
-    path.write_text(text, encoding="utf-8", newline="\n")
-    return _rel(path, root)
+    after = current_path.read_bytes()
+    state = review_snapshot.open(root, review_snapshot.Disk()).hash(rel)
+    if not isinstance(state, review_snapshot.Blob):
+        return None
+    directory = out / "delta"
+    directory.mkdir(parents=True, exist_ok=True)
+    diff_path = directory / ("delta_" + hashlib.sha1((rel + blob).encode("utf-8")).hexdigest()[:12] + ".diff")
+    diff_path.write_text(review_snapshot.diff(before, after, fromfile=f"{rel} @ {blob[:12]}", tofile=rel),
+                         encoding="utf-8", newline="\n")
+    return {"base": blob, "current": state.sha, "hunks": review_snapshot.hunks(before, after),
+            "diff": _rel(diff_path, root)}
+
+
+def _delta_artifacts(root: Path, out: Path, seats: list[dict]) -> dict:
+    """One frozen diff per (path, base blob) that every seat reading that pair shares: {path: pair}. A path
+    whose seats name more than one base builds nothing, so each of those seats reads the whole file."""
+    bases = {}
+    for seat in seats:
+        for entry in seat.get("earlierReviewedBlobs") or []:
+            rel = _rel(Path(entry["file"]) if Path(entry["file"]).is_absolute() else root / entry["file"], root)
+            bases.setdefault(rel, set()).add(entry["blob"])
+    made = {}
+    for rel, blobs in bases.items():
+        if len(blobs) != 1:
+            continue
+        built = _delta_pair(root, out, rel, next(iter(blobs)))
+        if built is not None:
+            made[rel] = built
+    return made
 
 
 def _citer_paths(root: Path, rel: str) -> list[str] | None:
@@ -802,25 +910,30 @@ def _citer_paths(root: Path, rel: str) -> list[str] | None:
     return sorted({row["path"] for row in result["citers"] if row["path"] != rel})
 
 
-def _later_round_reads(root: Path, out: Path, prefix: str, seat: dict, paths: list[str]) -> tuple[list[str], list[str]]:
+def _later_round_reads(root: Path, seat: dict, paths: list[str], made: dict,
+                       *, expand: bool = True) -> tuple[list[str], list[str]]:
     """(must-read, context) for a seat. A file `plan` re-owes after an earlier reviewed blob (`earlierReviewedBlobs`)
     is read as its change from that blob plus the files citing it; the whole file becomes context. Any other path,
-    and a file whose change or citers cannot be built, stays whole in the must-read list."""
-    earlier = {}
+    and a file whose change or citers cannot be built, stays whole in the must-read list. `expand=False` (a
+    session audit, whose contract is the frozen subject diff) keeps every listed path as given."""
+    if not expand:
+        return list(dict.fromkeys(paths)), []
+    earlier, states = {}, {}
     for entry in seat.get("earlierReviewedBlobs") or []:
         earlier.setdefault(entry["file"], set()).add(entry["blob"])
+    for entry in seat.get("pairStates") or []:
+        states.setdefault(entry["file"], set()).add(entry["state"])
     reads, context = [], []
     for path in paths:
         rel = _rel(Path(path) if Path(path).is_absolute() else root / path, root)
         blobs = earlier.get(rel, set())
-        change = citers_of = None
-        if len(blobs) == 1:
-            change = _change_file(root, out, prefix, seat["key"], rel, next(iter(blobs)))
-            citers_of = _citer_paths(root, rel) if change else None
-        if change is None or citers_of is None:
+        changed = states.get(rel) == {"ChangedSince"}
+        built = made.get(rel) if changed and len(blobs) == 1 and made[rel]["base"] in blobs else None
+        citers_of = _citer_paths(root, rel) if built else None
+        if built is None or citers_of is None:
             reads.append(path)
             continue
-        reads += [change, *citers_of]
+        reads += [built["diff"], *citers_of]
         context.append(path)
     return list(dict.fromkeys(reads)), context
 
@@ -862,8 +975,7 @@ def _base_sizes(root: Path, base: str | None, files: list[str]) -> dict[str, int
     if not base or not files:
         return {}
     wanted = set(files)
-    out = subprocess.run(["git", "ls-tree", "-r", "-l", base], cwd=root, capture_output=True,
-                         text=True, encoding="utf-8", errors="replace").stdout
+    out = _run_git(["ls-tree", "-r", "-l", base], cwd=str(root)).stdout.decode("utf-8", errors="replace")
     sizes = {}
     for line in out.splitlines():
         meta, _, path = line.partition("\t")
@@ -958,16 +1070,6 @@ def _context_text(spec: dict, additions: list[str]) -> str:
     return "\n".join(lines + additions) + "\n"
 
 
-def _task_text(task_id: str) -> str:
-    import task_record
-    record = task_record.load(task_id)
-    if not record:
-        sys.exit(f"prepare: --task {task_id} has no record under {task_record.record_dir()}")
-    rows = [f"- Requirement: {item}" for item in record.get("requirements") or []]
-    rows += [f"- Exclusion: {item}" for item in record.get("exclusions") or []]
-    return "\n".join([f"## Task record {task_id} (saved output, not a command to run)", ""] + (rows or ["- no rows"]))
-
-
 def _later_round_diff(spec: dict, root: Path) -> str:
     """The change diff between the reviewed copy and the current plan, written for the seat as evidence."""
     import subprocess
@@ -975,9 +1077,8 @@ def _later_round_diff(spec: dict, root: Path) -> str:
     reviewed, current = shown.get("reviewed"), shown.get("current")
     if not reviewed or not current:
         return ""
-    run = subprocess.run(["git", "diff", "--no-index", "--", str(reviewed), str(current)],
-                         cwd=str(root), capture_output=True, text=True)
-    return "## Change since the reviewed copy\n\n```diff\n" + run.stdout + "\n```"
+    run = _run_git(["diff", "--no-index", "--", str(reviewed), str(current)], cwd=str(root))
+    return "## Change since the reviewed copy\n\n```diff\n" + run.stdout.decode("utf-8", errors="replace") + "\n```"
 
 
 def _seat_effort(seat: dict, key: str, alias, kind: str, efforts: dict, measured: bool):
@@ -997,7 +1098,7 @@ def _seat_effort(seat: dict, key: str, alias, kind: str, efforts: dict, measured
 
 
 def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list[dict], manual: list[dict],
-                  lists: dict, context: Path, reads: dict) -> list[dict]:
+                  lists: dict, context: Path, reads: dict, task_id: str | None, acceptance: str) -> list[dict]:
     """Materialize registry seats through `build_briefs` and registry-less seats from the spec's own brief text,
     then write the run's one job record (`jobs_<prefix>.json`) after `record_problems` accepts it."""
     kind = MODE_KIND[spec["mode"]]
@@ -1020,7 +1121,8 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
             pr_num=None if spec.get("prNum") is None else str(spec["prNum"]),
             branch=str(spec["branch"]) if spec.get("branch") else None,
             subject_plan=[str(plan_arg) for plan_arg in spec.get("subjectPlans") or []],
-            sub=[str(sub) for sub in spec.get("subs") or []], kfm_root=str(out / "kfm"), kind=kind)
+            sub=[str(sub) for sub in spec.get("subs") or []], kfm_root=str(out / "kfm"), kind=kind,
+            task=task_id or False)
         for seat in registry:
             key = seat["key"]
             if key in lists:
@@ -1050,7 +1152,7 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
         path = out / f"{prefix}_{key}.md"
         body = text.rstrip() + "\n" + ("\n" + explore_result.claims_contract() if spec["mode"] == "explore" else "")
         pending.append((path, f"<!-- lens brief: {key} — generated by tools/lens_briefs.py prepare; do not edit -->\n\n"
-                              + body))
+                              + acceptance + body))
         pins = spec.get("pins") or {}
         efforts = spec.get("efforts") or {}
         jobs.append({"label": f"{prefix}-{key}", "key": key,
@@ -1218,11 +1320,13 @@ def _refuse_bad_spec(spec: dict, root: Path) -> None:
 
 def prepare_command(argv: list[str]) -> None:
     """One prep call: compose the ledger plan, the frozen inputs, the briefs, the fold snapshot and the
-    engine `args.json` the `argsFile` member expands. Prints the bounded summary and the next call.
+    `args.json` the `argsFile` member expands. Prints the bounded summary, the delta artifact path when a
+    later-round pair exists, and the next call.
 
     Spec keys: `mode` (required), `engine` (required when the mode's engine is not beside this tool),
     `prefix`, `topic`, `questions`, `seats`/`roster`/`lenses`, `pins`,
-    `efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task`,
+    `efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task` (default: the session's
+    active task record as each seat's acceptance test; `false` opts out),
     `sessionAudit`, `ledger`, `spillDir`, `transcriptDir`, `checker`, `target`, `subs`, `round`, `root`,
     `prNum`, `branch`, `session`, `commands`."""
     import argparse
@@ -1250,6 +1354,10 @@ def prepare_command(argv: list[str]) -> None:
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     prefix = spec.get("prefix") or spec["mode"]
+    try:
+        task_id, acceptance = acceptance_for(spec.get("task"), session=spec.get("session"))
+    except ArgumentRefused as exc:
+        sys.exit(f"prepare: {exc}")
 
     packets = _run_freeze(root, spec, out, _prep_seats(spec)) if spec.get("sessionAudit") else None
     packet_views = {}
@@ -1291,20 +1399,22 @@ def prepare_command(argv: list[str]) -> None:
     if unknown:
         sys.exit("prepare: no such lens and no `brief` text: " + ", ".join(unknown) + " — run `lens.py index`")
 
+    made = _delta_artifacts(root, out, seats) if spec["mode"] != "explore" else {}
     lists, reads = {}, {}
     for seat in seats:
         is_registry = _registry_seat(seat["key"], found)
-        paths = _must_read_for(seat, spec, packet_views if is_registry else {})
+        paths = _must_read_for(seat, spec, packet_views if is_registry else {}, packets, root)
         if is_registry and not paths:
             sys.exit(f"prepare: seat {seat['key']} has no must-read input; name `subjectFiles` or `seatFiles`")
-        reads[seat["key"]] = _later_round_reads(root, out, prefix, seat, paths)
+        reads[seat["key"]] = _later_round_reads(root, seat, paths, made, expand=not spec.get("sessionAudit"))
         if is_registry:
             lists[seat["key"]] = _write_list(out / ("must_" + seat["key"].replace("+", "_") + ".txt"),
                                              reads[seat["key"]][0])
+    if made:
+        artifact = {rel: {key: pair[key] for key in ("base", "current", "hunks")} for rel, pair in made.items()}
+        (out / "delta.json").write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     additions = []
-    if spec.get("task"):
-        additions.append(_task_text(str(spec["task"])))
     diff = _later_round_diff(spec, root)
     if diff:
         additions.append(diff)
@@ -1326,7 +1436,7 @@ def prepare_command(argv: list[str]) -> None:
     elif not context.exists():
         context.write_text(_context_text(spec, []), encoding="utf-8", newline="\n")
 
-    jobs = _write_briefs(root, spec, out, prefix, registry, manual, lists, context, reads)
+    jobs = _write_briefs(root, spec, out, prefix, registry, manual, lists, context, reads, task_id, acceptance)
     whole_as_context = {f"{prefix}-{key}": files for key, (_, files) in reads.items() if files}
     for job in jobs:
         if job["label"] in whole_as_context:
@@ -1387,6 +1497,8 @@ def prepare_command(argv: list[str]) -> None:
 
     for row in dropped:
         print(f"dropped: {row.get('mandate')} coveredBy {row.get('coveredBy')}")
+    if made:
+        print("delta: " + _rel(out / "delta.json", root))
     if cross_family:
         candidates = ", ".join(str(c) for c in cross_family.get("candidates") or []) or "none"
         print("crossFamily: required=%s candidates=%s — %s"
@@ -1439,8 +1551,8 @@ class BriefParams:
 def build_briefs(a: BriefParams) -> list[dict]:
     """Write the selected seats' brief files and `jobs_<prefix>.json` once `record_problems` accepts the rows;
     returns the job rows."""
-    acceptance = acceptance_section(a.task) if a.task else ""
-    rigor = finding_bar.run_rigor(a.task, REPO) if a.target == "sidecar" else None
+    task_id, acceptance = acceptance_for(a.task)
+    rigor = finding_bar.run_rigor(task_id, REPO) if a.target == "sidecar" else None
     bar = finding_bar.bar_contract(rigor) + "\n" if rigor else ""
 
     a.keys = seat_keys(a.keys, a.plan)
@@ -1492,6 +1604,8 @@ def build_briefs(a: BriefParams) -> list[dict]:
                  f"(a code plan is not swept)")
     inbound = inbound_refs_section(subjects, a.vault, out=out, prefix=a.prefix) if subjects and (
         citer_seats or any(shape == "meta" for shape, _path in subjects)) else ""
+    fix_seats = [k for k in a.keys if any(found[m].fixes for m in seats[k])]
+    fix_history = fix_history_section(subjects, REPO, out=out, prefix=a.prefix) if fix_seats else ""
 
     cq = CHECKLISTS / "code_quality.md"
     tq = CHECKLISTS / "test_quality.md"
@@ -1634,6 +1748,8 @@ def build_briefs(a: BriefParams) -> list[dict]:
             lens_part += "\n" + (kfm_section(a.kfm_root) if a.kfm_root else kfm_section())
         if inbound and (any(found[key].citers for key in seats[k]) or any(shape == "meta" for shape, _path in subjects)):
             lens_part += "\n" + inbound
+        if k in fix_seats:
+            lens_part += "\n" + fix_history
         if grounding and k in grounding_seats:
             lens_part += "\n" + grounding
         preloaded = lens.doctrine([found[key] for key in seats[k]])
@@ -1836,10 +1952,14 @@ def main() -> None:
     ap.add_argument("--vault", default=None, metavar="ROOT",
                     help="the Obsidian vault root a citers sweep reads (default: vault_read.DEFAULT_VAULT)")
     ap.add_argument("--task", default=None, metavar="ID",
-                    help="task record whose requirements and exclusions every seat judges as its acceptance test")
+                    help="task record whose requirements and exclusions every seat judges as its acceptance test "
+                         "(default: the session's active record)")
+    ap.add_argument("--no-task", action="store_true", help="write no acceptance test into the seat briefs")
     a = ap.parse_args()
+    opts = vars(a)
+    opts["task"] = False if opts.pop("no_task") else opts["task"]
     try:
-        build_briefs(BriefParams(**vars(a)))
+        build_briefs(BriefParams(**opts))
     except ArgumentRefused as exc:
         ap.error(str(exc))
 

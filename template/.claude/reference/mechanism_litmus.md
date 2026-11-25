@@ -10,7 +10,14 @@ keep a mechanism only when all four hold.
 - **L2. Not removable.** Correcting or deleting the cause (`CLAUDE.core.md` §Core Principles, *One rule, one owner*)
   does not end the failure.
 - **L3. Would escape.** Nothing cheaper already catches it. A silent failure escapes (a stale cached pass, a guard
-  that fails open, a skipped step); a loud one (a crash, a red, a visible error) is caught by use.
+  that fails open, a skipped step); a loud one (a crash, a red, a visible error) is caught by use. Cost counts the
+  mechanism's code and test lines, which `tools/mechanism_census.py` reports by area, beside its run time and the
+  context it loads. A change that adds or lengthens tests measures that run time at the change
+  (`tools/proof_cost.py`), with load held level across what it compares: the base and the changed test file run
+  alternately on one machine at one time, or the added tests' own times from one run where the runner reports
+  them, because machine load moves a single run more than a few cases add. Its report gives the difference with
+  its spread, and whoever judges the change weighs it
+  against what the cases catch.
 - **L4. Decidable.** It decides from facts. A deny meets `instruction_quality` §3's bar (wrong in every case its
   predicate matches); a check that does not block needs near-zero false alarms. A check that needs judgment is a line
   of text at the decision point, never a guard. A proof a valid edit can turn red fails L4 until it is cut to its
@@ -31,6 +38,15 @@ skipped or thinned for being reversible.
 > by, fix the decision: make it decide on the property the cases share, observed as a fact. When no observed fact
 > carries that property (the input is prose, free shell text, an owner's wording or model output), the decision fails
 > L4. It becomes text at the decision point, or reported facts, unless the mechanism guards the floor.
+>
+> A fix to a file the census lists as most-fixed is planned as a redesign of that file. The plan states whether the
+> redesign or the patch is the smaller total, and the plan check's smallest-system question rules on it, so a patch
+> passes when the redesign is the larger change. Two cases land first and their redesign plan follows: a fix that
+> restores a broken floor (a red main, a guard denying every call), and a fix to a guard that wrongly denies justified
+> work. A fix to a file whose redesign a roadmap Part plan already owns joins that plan. The commit that lands a
+> redesign carries the trailers `Redesigns: <path>` and `Plan: .claude/plans/<file>.md`; the census restarts the
+> path's fix count at that commit only when the plan file exists there. The Read of a listed file names its facts
+> once per window (`hooks/post_read_dispatch.py`).
 
 > **Holds where it runs.** A mechanism, new or fixed, names the values its author's runs held fixed that vary in use,
 > and holds across each. Examples: another session or worktree acting at once, the OS and shell, machine load and

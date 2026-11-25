@@ -113,9 +113,18 @@
       "capacityProbe": {"command": "python", "args": [".claude/scripts/go_quota_probe.py"], "kind": "quota", "timeoutSeconds": 20},
       "_limitsSource": "models.dev, the `opencode-go` provider's entries only (the cross-provider first hit disagrees for many Go ids) - refreshed by scripts/opencode_refresh_models.py --go. A row without a Go-owned entry keeps null limits."
     },
+    "local": {
+      "imageRoute": {"state": "unverified"},
+      "_comment": "A llama-server on this machine, started and held by ai-worker's backend_hold.py for the dispatch's life (GPU lock, crash restart, effort as the server's launch default); the Claude Code child reaches it through opencode_sidecar.sh's LiteLLM proxy. Port, window and upstream id must match ai-worker models.yaml backends.llama_server; the launcher's --check compares them.",
+      "baseUrl": "http://127.0.0.1:8091/v1",
+      "launcher": ".claude/scripts/local_llama_sidecar.sh",
+      "costModel": "marginal-usd",
+      "capacityUnsupported": {"reason": "A local GPU has no account; availability is the backend's health, which the launcher's --check reads."},
+      "effortValues": ["low", "medium", "high", "xhigh", "max"]
+    },
     "opencode-cli": {
       "imageRoute": {"state": "unverified"},
-      "_comment": "The genuine OpenCode CLI (`opencode run`) against Zen's free ids: survey and review (read-only), and arm and author (writes confined to the `-d` root), no .claude hooks, web search available. The launcher's pattern-rule permission config, effective-policy probe and session-export attestation carry the confinement; a cell whose tools include Bash is not citable (benchmark_campaign/README.md Arm isolation).",
+      "_comment": "The genuine OpenCode CLI (`opencode run`) against Zen's free ids: survey and review (read-only), and arm and author (writes confined to the `-d` root), no .claude hooks, web search available. The launcher's pattern-rule permission config, effective-policy probe and session-export attestation carry the confinement; a cell whose tools include Bash is not citable (HarnessBench/.claude/scripts/benchmark_campaign/README.md Arm isolation).",
       "launcher": ".claude/scripts/opencode_run_sidecar.sh",
       "costModel": "marginal-usd",
       "capacityUnsupported": {"reason": "The OpenCode CLI's free tier publishes no account amount endpoint."},
@@ -203,6 +212,48 @@
         "since": "2026-10-10",
         "reason": "Probe built (S3): the same reading as anthropic-console, offset against this organization's own `credit` cycle. Structural --check verifies the launcher, ANTHROPIC_CONSOLE_KEY_SECONDARY's presence and the plan's fields; --check --deep dispatches one turn and prices it into the default ledger."
       }
+    },
+    "antigravity": {
+      "imageRoute": {"state": "unverified"},
+      "_comment": "Google's official Antigravity CLI (`agy`), run unchanged and headless on the owner's Google AI Pro login (owner route ruling 2026-11-21, ban risk accepted). scripts/antigravity_sidecar.sh never reads ~/.gemini; tools/agy_seat.py holds every agy-specific decision.",
+      "launcher": ".claude/scripts/antigravity_sidecar.sh",
+      "costModel": "plan-quota",
+      "capacityProbe": {"command": "python", "args": [".claude/scripts/agy_quota_probe.py", "antigravity"], "kind": "quota", "timeoutSeconds": 35},
+      "_capacityComment": "The Pro plan's quota is three separate buckets (Gemini models, Claude and GPT models, Gemini 4 Argon), each drawn only by its own models (live `/usage` readings around one call each, 2026-11-21), so each bucket is its own transport on this launcher: antigravity, antigravity-claude, antigravity-argon.",
+      "maxChildren": {
+        "count": 2,
+        "basis": "The owner's ban-risk limit for the Pro login (2026-11-21): a hypothesis against Google's 'unattended high-frequency' warning, not a measurement.",
+        "asOf": "2026-11-21"
+      },
+      "effortValues": ["low", "medium", "high", "xhigh"],
+      "_limitsSource": "`agy models` (2026-11-21) and antigravity.google/docs/models: Gemini 4 Neon serves up to 512K tokens; Hydrogen shares Neon's window (agentspulse.github.io/tutorials/gemini-4-models, P3)."
+    },
+    "antigravity-claude": {
+      "imageRoute": {"state": "unverified"},
+      "_comment": "The Pro plan's Claude and GPT bucket, served by the same unmodified `agy` seat (transport antigravity's _comment). A small bucket: one short Sonnet call drew about 1% weekly and 2% of the five-hour window (2026-11-21), so its rows run as overflow.",
+      "launcher": ".claude/scripts/antigravity_sidecar.sh",
+      "costModel": "plan-quota",
+      "capacityProbe": {"command": "python", "args": [".claude/scripts/agy_quota_probe.py", "antigravity-claude"], "kind": "quota", "timeoutSeconds": 35},
+      "maxChildren": {
+        "count": 1,
+        "basis": "The owner's ban-risk limit is per Pro login, shared with antigravity (2 children); one more child per extra bucket keeps the login's total near it. A hypothesis, not a measurement.",
+        "asOf": "2026-11-21"
+      },
+      "effortValues": ["low", "medium", "high"],
+      "_limitsSource": "Anthropic first-party model limits (platform.claude.com/docs/en/about-claude/models/overview, the claude-sonnet-5-5 and claude-opus-5-5 rows' source); antigravity.google/docs/models (2026-11-21) states no smaller cap for agy."
+    },
+    "antigravity-argon": {
+      "imageRoute": {"state": "unverified"},
+      "_comment": "The Pro plan's own Gemini 4 Argon weekly bucket, served by the same unmodified `agy` seat (transport antigravity's _comment). It shows no five-hour window.",
+      "launcher": ".claude/scripts/antigravity_sidecar.sh",
+      "costModel": "plan-quota",
+      "capacityProbe": {"command": "python", "args": [".claude/scripts/agy_quota_probe.py", "antigravity-argon"], "kind": "quota", "timeoutSeconds": 35},
+      "maxChildren": {
+        "count": 1,
+        "basis": "The owner's ban-risk limit is per Pro login, shared with antigravity (2 children); one more child per extra bucket keeps the login's total near it. A hypothesis, not a measurement.",
+        "asOf": "2026-11-21"
+      },
+      "effortValues": ["low", "medium", "high"]
     }
   },
   "_aliasHistoryComment": "Which id each alias served, and until when (`until` exclusive, UTC; `since` on the first entry marks the earliest evidenced service, and a date before it resolves to nothing). Read by model_registry.resolve_alias_at for records with no attested or served id (sealed rows, Workflow-transport cells). An alias absent here has only ever served its current row. The last entry is always the row holding the alias now. Every boundary names its evidence; a boundary that cannot be evidenced is left out rather than guessed.",
@@ -920,7 +971,7 @@
       "label": "Haiku 5.5", "family": "haiku", "version": "claude-haiku-5-5", "lifecycle": "current", "order": 49, "costRank": 0, "prior": "small",
       "roles": ["fanout", "scout", "executor"],
       "supplementary": ["architect"],
-      "_rolesComment": "Owner-directed intake (2026-10-07: 'should take over a lot of fanout and/or cheap tasks (probably even judging some tasks for cheaper)'), resting on the vendor's release evidence (https://www.anthropic.com/claude-haiku-5-5: OSWorld 2.1 72.4% vs Sonnet 5.5 83.9%, GDPval-AA 1620 vs 1840, Terminal-Bench 4.0 39.2% vs 70.6%). Re-judge both claims from this model's battery cells; a judge seat needs the judge-admission probes (benchmark_design reference/scoring.md §Judge tier). Battery 2026-10-08: the fanout claim stands; no architect or review claim (review ranks in the lower third); converged-plan execution ranks at the top of its task on two cells; executor claim added by owner ruling (2026-10-08, 'Q2 - yes'), for converged plans only, per the ladder row.",
+      "_rolesComment": "Owner-directed intake (2026-10-07: 'should take over a lot of fanout and/or cheap tasks (probably even judging some tasks for cheaper)'), resting on the vendor's release evidence (https://www.anthropic.com/claude-haiku-5-5: OSWorld 2.1 72.4% vs Sonnet 5.5 83.9%, GDPval-AA 1620 vs 1840, Terminal-Bench 4.0 39.2% vs 70.6%). Re-judge both claims from this model's battery cells; a judge seat needs the judge-admission probes (HarnessBench/.claude/skills/benchmark_design/reference/scoring.md §Judge tier). Battery 2026-10-08: the fanout claim stands; no architect or review claim (review ranks in the lower third); converged-plan execution ranks at the top of its task on two cells; executor claim added by owner ruling (2026-10-08, 'Q2 - yes'), for converged plans only, per the ladder row.",
       "effort": {
         "avoid": [],
         "evidence": "see-ladder",
@@ -2344,7 +2395,13 @@
       "effortValues": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "authTier": "open",
       "gate": {"minBand": "Surplus"}
-    }
+    },
+    {"id": "antigravity/gemini-4-neon", "input": ["text"], "alias": "neon", "transport": "antigravity", "upstreamId": "gemini-4-neon", "label": "Gemini 4 Neon (Antigravity)", "family": "neon", "version": "gemini-4-neon", "lifecycle": "current", "order": 226, "costRank": 2, "prior": "frontier", "roles": ["architect", "executor"], "_rolesComment": "Owner claim from public evidence (reference/model_ladder_evidence.md row `neon`), unmeasured here; real use and a bench replace it.", "effort": {"evidence": "owner", "evidenceRef": "2026-11-21 owner ruling in this session: \"Owner claim now\"; \"please use public info on the available gemini models (hydrogen and neon) to influence their initial roles as best as possible, will obviously need eral world usage/metrics and later benchmarks to solidify\"; \"no need for argon btw\""}, "effortValues": ["low", "medium", "high", "xhigh"], "authTier": "open", "gate": {"minBand": "Surplus"}, "servedIds": ["gemini-4-neon"], "limits": {"contextTokens": 512000, "maxOutputTokens": null, "concurrency": null}, "price": {"cacheMissPer1M": 3.0, "cacheHitPer1M": 0.15, "outputPer1M": 15.0, "currency": "USD", "asOf": "2026-11-21", "source": "aistudio.google.com/docs/pricing (Gemini API list price; the seat spends the Pro plan, so this prices the record only)"}},
+    {"id": "antigravity/gemini-4-argon", "input": ["text"], "alias": "argon", "transport": "antigravity-argon", "upstreamId": "gemini-4-argon", "label": "Gemini 4 Argon (Antigravity)", "family": "argon", "version": "gemini-4-argon", "lifecycle": "current", "order": 228, "costRank": 1, "prior": "frontier", "roles": ["architect", "executor"], "_rolesComment": "Owner claim from public evidence (reference/model_ladder_evidence.md row `argon`): Google's flagship before neon, on its own Argon bucket, so it is the Google fallback for neon's shapes and an added seat from a third bucket. Unmeasured here; real use and a bench replace it.", "effort": {"evidence": "owner", "evidenceRef": "2026-11-21 owner ruling in this session: \"D2 yes\" (add argon as an extra architect/reviewer row on its own bucket), after live /usage readings showed an Argon call draws only the Argon bucket"}, "effortValues": ["low", "medium", "high"], "authTier": "open", "gate": {"minBand": "Surplus"}, "servedIds": ["gemini-4-argon"], "limits": {"contextTokens": null, "maxOutputTokens": null, "concurrency": null}, "windowGap": {"reason": "no first-party page states an Argon context window", "checked": "aistudio.google.com/docs/pricing; antigravity.google/docs/models", "asOf": "2026-11-21"}, "price": {"cacheMissPer1M": 2.0, "cacheHitPer1M": 0.1, "outputPer1M": 10.0, "currency": "USD", "asOf": "2026-11-21", "source": "aistudio.google.com/docs/pricing (Gemini API list price through 2026-11-30; it doubles from 2026-12-01. The seat spends the Pro plan, so this prices the record only)"}},
+    {"id": "antigravity/claude-sonnet-5-5", "input": ["text"], "alias": "agy-sonnet", "transport": "antigravity-claude", "upstreamId": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5 (Antigravity)", "family": "sonnet", "version": "claude-sonnet-5-5", "lifecycle": "current", "order": 229, "costRank": 1, "prior": "mid", "roles": ["architect", "executor", "fanout"], "_rolesComment": "The sonnet family's claims on the Pro plan's small Claude bucket: an overflow route when the Anthropic plans run low (owner ruling 2026-11-21 \"D3 yes\"). Served inside agy with the project's .agents workspace, not inside Claude Code.", "effort": {"evidence": "see-ladder"}, "effortValues": ["low", "medium", "high"], "authTier": "open", "gate": {"minBand": "Surplus"}, "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000, "concurrency": null}, "price": {"cacheMissPer1M": 2, "outputPer1M": 10, "cacheHitPer1M": 0.1, "currency": "USD", "asOf": "2026-10-09", "source": "https://platform.claude.com/docs/en/about-claude/pricing (Anthropic list price; the seat spends the Pro plan, so this prices the record only)"}},
+    {"id": "antigravity/claude-opus-5-5", "input": ["text"], "alias": "agy-opus", "transport": "antigravity-claude", "upstreamId": "claude-opus-5-5", "label": "Claude Opus 5.5 (Antigravity)", "family": "opus", "version": "claude-opus-5-5", "lifecycle": "current", "order": 230, "costRank": 2, "prior": "frontier", "roles": ["architect", "executor"], "_rolesComment": "The opus family's delegate claims on the Pro plan's small Claude bucket: an overflow route when the Anthropic plans run low (owner ruling 2026-11-21 \"D3 yes\"). Orchestrator is a session tier, which a sidecar job never holds. Served inside agy with the project's .agents workspace, not inside Claude Code.", "effort": {"evidence": "see-ladder"}, "effortValues": ["low", "medium", "high"], "authTier": "open", "gate": {"minBand": "Surplus"}, "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000, "concurrency": null}, "price": {"cacheMissPer1M": 4, "outputPer1M": 20, "cacheHitPer1M": 0.2, "currency": "USD", "asOf": "2026-09-24", "source": "https://platform.claude.com/docs/en/about-claude/pricing (Anthropic list price; the seat spends the Pro plan, so this prices the record only)"}},
+    {"id": "antigravity/gemini-4-hydrogen", "input": ["text"], "alias": "hydrogen", "transport": "antigravity", "upstreamId": "gemini-4-hydrogen", "label": "Gemini 4 Hydrogen (Antigravity)", "family": "hydrogen", "version": "gemini-4-hydrogen", "lifecycle": "current", "order": 227, "costRank": 1, "prior": "mid", "roles": ["executor", "fanout", "scout"], "supplementary": ["architect"], "_rolesComment": "Owner claim from public evidence (reference/model_ladder_evidence.md row `hydrogen`), unmeasured here; real use and a bench replace it.", "effort": {"evidence": "owner", "evidenceRef": "2026-11-21 owner ruling in this session: \"Owner claim now\"; \"please use public info on the available gemini models (hydrogen and neon) to influence their initial roles as best as possible, will obviously need eral world usage/metrics and later benchmarks to solidify\"; \"no need for argon btw\""}, "effortValues": ["low", "medium", "high", "xhigh"], "authTier": "open", "gate": {"minBand": "Surplus"}, "servedIds": ["gemini-4-hydrogen"], "limits": {"contextTokens": 512000, "maxOutputTokens": null, "concurrency": null}, "price": {"cacheMissPer1M": 1.5, "cacheHitPer1M": 0.075, "outputPer1M": 7.5, "currency": "USD", "asOf": "2026-11-21", "source": "aistudio.google.com/docs/pricing (Gemini API list price; the seat spends the Pro plan, so this prices the record only)"}},
+    {"id": "local/inkling-2-mini-ud-q3_k_xl", "input": ["text"], "upstreamId": "inkling-2-mini-ud-q3_k_xl", "alias": "inkling-local", "transport": "local", "label": "Inkling 2 Mini UD-Q3_K_XL (local llama-server)", "family": "inkling", "version": "inkling-2-mini-ud-q3_k_xl", "lifecycle": "current", "order": 231, "costRank": 0, "prior": "small", "status": {"state": "available"}, "roles": [], "limits": {"contextTokens": 98304, "maxOutputTokens": 32768, "concurrency": 1}, "_limitsSource": "contextTokens is ai-worker models.yaml backends.llama_server.models.inkling-2-mini-ud-q3_k_xl.ctx; concurrency is its -np 1; maxOutputTokens is the free CLI rows' cap, chosen to fit beside a ~19K first request in the window","price": {"cacheHitPer1M": 0.0, "cacheMissPer1M": 0.0, "outputPer1M": 0.0, "currency": "USD", "asOf": "2026-11-22", "source": "local GPU, no per-token charge"}, "effort": {"evidence": "unmeasured"}, "effortValues": ["low", "medium", "high", "xhigh", "max"], "apiMode": "chat", "authTier": "open", "gate": {"minBand": "Surplus"}}
   ],
   "_rosterComment": "Rows stay so stored records resolve; a row with no `status` of its own is excluded by its transport's status."
 }

@@ -69,6 +69,31 @@ def test_condition_command_args(tmp_path, monkeypatch):
     assert tr._condition_row(condition)["status"] == "UNRESOLVED"
 
 
+def test_condition_quote_restores_git_bash_path_rewrite(tmp_path, monkeypatch):
+    """Git Bash rewrites an argv value that starts with `/` into `<Git root>/...` before Python reads it
+    (measured 2026-11-21: `--quote "/feature_drive --lean"` arrived as `C:/Program Files/Git/feature_drive
+    --lean`). The quote is restored only under MSYS and only for that root's prefix."""
+    tr = load()
+    monkeypatch.setenv("HARNESS_TASK_RECORD_DIR", str(tmp_path / "records"))
+    monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
+    tr.open_record("msys", "owner-session", "MSYS quote")
+    transcript = tmp_path / "session.jsonl"
+    row = {"uuid": "a625ae7a-b355-4d82-ace2-fb4da63cccab", "type": "user",
+           "message": {"role": "user", "content": "That is good. /feature_drive --lean and my google account"}}
+    transcript.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    mangled = "C:/Program Files/Git/feature_drive --lean"
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setenv("EXEPATH", "C:\\Program Files\\Git\\bin")
+    condition = tr.record_condition("msys", "request", mangled, "lean", session_id="owner-session",
+                                    transcript=transcript)
+    assert condition["quote"] == "/feature_drive --lean"
+    assert tr._condition_row(condition)["status"] == "fresh"
+    import pytest
+    monkeypatch.delenv("MSYSTEM")
+    with pytest.raises(tr.ConditionRefused):
+        tr.record_condition("msys", "request", mangled, "lean", session_id="owner-session", transcript=transcript)
+
+
 def test_condition_command_args_refuses_non_owner(tmp_path, monkeypatch):
     import pytest
     tr = load()
@@ -141,11 +166,85 @@ def test_optional_kind_cli(tmp_path, monkeypatch):
     assert r.returncode != 0 and "invalid choice" in r.stderr
 
 
+TASK_SID = "76ed7baa-8baf-4db4-b89f-6f971ca2d5c0"
+
+
+def task_for_checks():
+    """`task_for` resolves an explicit id, the opt-out, or the session's active record; `acceptance_text`
+    renders that record's requirements and exclusions for a brief."""
+    tr = load()
+    saved = {k: os.environ.get(k) for k in ("HARNESS_TASK_RECORD_DIR", "CLAUDE_CODE_SESSION_ID")}
+    with tempfile.TemporaryDirectory() as fixture:
+        os.environ["HARNESS_TASK_RECORD_DIR"] = os.path.join(fixture, "tasks")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = TASK_SID
+        try:
+            tr.open_record("hsr", TASK_SID, "carry the record")
+            tr.add_item("hsr", "requirement", "ships the carry")
+            tr.add_item("hsr", "exclusion", "no new guard")
+            check("task_for: no id resolves the env session's active record", tr.task_for(None) == "hsr",
+                  tr.task_for(None))
+            check("task_for: a session argument picks that session's record",
+                  tr.task_for(None, session=TASK_SID[:8]) == "hsr")
+            check("task_for: a session with no record resolves no task",
+                  tr.task_for(None, session="00000000-0000") is None)
+            check("task_for: an explicit id wins over the active record", tr.task_for("other") == "other")
+            check("task_for: False opts out", tr.task_for(False) is None)
+            text = tr.acceptance_text("hsr")
+            check("acceptance_text: heads the section with the task id", "## Acceptance test (task hsr)" in text, text)
+            check("acceptance_text: lists each requirement and exclusion",
+                  "- Requirement: ships the carry" in text and "- Exclusion: no new guard" in text, text)
+            try:
+                tr.acceptance_text("no-such-task")
+                refused = False
+            except tr.RecordMissing:
+                refused = True
+            check("acceptance_text: a missing record raises RecordMissing", refused)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+def rebind_checks():
+    """A session that writes a record is driving it: any write binds the record to the writer's
+    CLAUDE_CODE_SESSION_ID, so a picked-up drive's record comes back at the new session's compactions."""
+    tr = load()
+    saved = {k: os.environ.get(k) for k in ("HARNESS_TASK_RECORD_DIR", "CLAUDE_CODE_SESSION_ID")}
+    old_sid, new_sid = "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002"
+    with tempfile.TemporaryDirectory() as fixture:
+        os.environ["HARNESS_TASK_RECORD_DIR"] = os.path.join(fixture, "tasks")
+        try:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = old_sid
+            tr.open_record("drive", old_sid, "a drive picked up by a new session")
+            os.environ["CLAUDE_CODE_SESSION_ID"] = new_sid
+            tr.set_fields("drive", next_action="continue")
+            got = tr.active(new_sid)
+            check("rebind: a set from a new session makes the record that session's active one",
+                  bool(got) and got.get("task_id") == "drive", got)
+            check("rebind: the old session no longer holds it", tr.active(old_sid) is None)
+            os.environ["CLAUDE_CODE_SESSION_ID"] = old_sid
+            tr.add_item("drive", "requirement", "the old session writes again")
+            check("rebind: an add binds too", (tr.active(old_sid) or {}).get("task_id") == "drive")
+            os.environ.pop("CLAUDE_CODE_SESSION_ID")
+            tr.set_fields("drive", next_action="no session in env")
+            check("rebind: a write with no session id keeps the binding",
+                  (tr.active(old_sid) or {}).get("task_id") == "drive")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
 def main():
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import patch
     for case in (test_optional_kind_cli, test_rigor_cli, test_mode_cli, test_condition_command_args,
+                 test_condition_quote_restores_git_bash_path_rewrite,
                  test_condition_command_args_refuses_non_owner):
         with tempfile.TemporaryDirectory() as fixture, patch.dict(os.environ):
             try:
@@ -1017,6 +1116,15 @@ def main():
     copies = subprocess.run(["git", "grep", "-n", "logs/tasks", "--", ".claude/tools/*.py", ":!.claude/tools/task_record.py"],
                             cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8").stdout
     check("no other tool resolves the task record directory itself", not copies.strip(), copies)
+
+    try:
+        task_for_checks()
+    except Exception as exc:
+        check("task_for_checks ran", False, repr(exc))
+    try:
+        rebind_checks()
+    except Exception as exc:
+        check("rebind_checks ran", False, repr(exc))
 
     print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
     for f in FAILURES:

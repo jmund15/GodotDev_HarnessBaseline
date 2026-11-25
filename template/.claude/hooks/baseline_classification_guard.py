@@ -20,6 +20,9 @@ cwd (payload cwd + any `cd`/`-C` the command carries). The guard acts only when 
 holds `.claude/baseline.lock.json` -- so a commit made inside a baseline author worktree under
 `.claude/.cache/baseline-worktrees/<id>/` is never judged: that worktree mirrors the baseline
 repo's own layout (`template/`, `tools/`, `tests/`), which has no `.claude/` at its root.
+A call whose repository the parser cannot prove (an unexpanded `-C`, a call behind env/sudo/xargs)
+carries no cwd and is not judged here: git run for it would read the hook process's own repository,
+an unrelated one. `dangerous_shell_guard` denies every such publish (`UNPROVED_TARGET`).
 
 Fail-closed: `main()` catches every exception, including a `baseline.lock.json` the JSON
 parser cannot read, and denies rather than allow an unverified lock through.
@@ -47,9 +50,8 @@ for _p in (_HOOKS_DIR, _TOOLS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from _git_commit import (base_rev, commit_invocations, parse_commit_args, resolve_index, run_git, staged_paths,
-                         full_pathspec, unexpanded_hint)  # noqa: E402
-from _commit_scope import publishes_index  # noqa: E402
+from _git_commit import commit_invocations, resolve_index, run_git, unexpanded_hint  # noqa: E402
+from _commit_scope import publication, publishes_index  # noqa: E402
 import baseline_sync  # noqa: E402
 
 
@@ -61,21 +63,17 @@ def _repo_root_for(cwd: str) -> str | None:
 def _committed_lock_text(rest: list, cwd: str, root: str, env: dict | None = None):
     """`(text, None)`, `("", None)` when the commit does not carry the lock, or `(None, failing-step)`.
     The committed copy is the working tree's for `-a` or a pathspec naming the lock, else the index's."""
-    committed, failed_cmd = staged_paths(rest, cwd, env)
+    published = publication("commit", rest, cwd, env)
+    committed, failed_cmd = published.selection
     if committed is None:
         return None, failed_cmd
     lock = baseline_sync.LOCK_RELPATH
     if lock not in committed:
         return "", None
-    include_dirty, _amend, pathspec = parse_commit_args(rest)
-    pathspec, failed_spec = full_pathspec(rest, cwd, pathspec)
-    if pathspec is None:
-        return None, failed_spec
-    base = base_rev(cwd, env)
-    named = run_git(["diff", "--name-only", base, "--"] + pathspec, cwd, env) if pathspec else ""
-    if named is None:
-        return None, "diff --name-only %s -- %s" % (base, " ".join(pathspec))
-    if include_dirty or lock in {ln.strip() for ln in named.splitlines()}:
+    source = published.sources.get(lock, "unknown")
+    if source == "unknown":
+        return None, "read published source of " + lock
+    if source == "worktree":
         return (Path(root) / lock).read_text(encoding="utf-8"), None
     new_text = run_git(["show", ":" + lock], cwd, env)
     return (new_text, None) if new_text is not None else (None, "show :" + lock)
@@ -180,7 +178,7 @@ def _run() -> int:
     command = (payload.get("tool_input") or {}).get("command") or ""
     cwd = payload.get("cwd") or "."
     for invocation in commit_invocations(command, cwd):
-        if not publishes_index(invocation.sub, invocation.rest):
+        if invocation.cwd is None or not publishes_index(invocation.sub, invocation.rest):
             continue
         reason = _judge_commit(invocation.rest, invocation.cwd, invocation.git_env)
         if reason:

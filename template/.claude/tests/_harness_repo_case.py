@@ -1,9 +1,11 @@
 """Shared fixture for harness_tests.py proofs: a throwaway git repo with an origin/main upstream and
 the runner's module state patched to it, so a proof can plant harness paths and run `close`."""
+import atexit
 import contextlib
 import io
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,13 +15,31 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.claude/scripts'))
 import harness_tests as runner
+from _hook_call import _writable, copy_repo
+
+
+_TEMPLATES = {}  # one built repository per `seed_repo` implementation, shared by every class that inherits it
 
 
 class RepoCase(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='harness_close_')
-        self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name)
+    """Each `seed_repo` implementation builds its repository once (on a prototype case) and each case resets to it by
+    copying the built tree, `.git` included (`_hook_call.copy_repo`). A subclass that plants more files or commits
+    extends `seed_repo` and calls super first; its cases then start from that state too."""
+
+    @classmethod
+    def _template(cls):
+        # Built on first use, not in setUpClass: some proofs construct a case and call setUp directly.
+        if cls.seed_repo not in _TEMPLATES:
+            root = tempfile.mkdtemp(prefix='harness_close_template_')
+            atexit.register(shutil.rmtree, root, onerror=_writable)
+            proto = cls('setUp')
+            proto.repo = Path(root) / 'repo'
+            proto.repo.mkdir()
+            proto.seed_repo()
+            _TEMPLATES[cls.seed_repo] = (proto.repo, proto.base)
+        return _TEMPLATES[cls.seed_repo]
+
+    def seed_repo(self):
         for args in [('init', '-q'), ('config', 'user.email', 't@t'), ('config', 'user.name', 't')]:
             self.git(*args)
         self.write('README.md', 'seed\n')
@@ -29,8 +49,15 @@ class RepoCase(unittest.TestCase):
         branch = self.git('branch', '--show-current')
         self.git('config', 'branch.' + branch + '.remote', 'origin')
         self.git('config', 'branch.' + branch + '.merge', 'refs/heads/main')
-        self.git('config', 'remote.origin.url', str(self.repo / 'unused.git'))
         self.git('config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='harness_close_')
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        template, self.base = type(self)._template()
+        copy_repo(template, self.repo)
+        self.git('config', 'remote.origin.url', str(self.repo / 'unused.git'))  # a path, so it is set per case
         self.stamp = self.repo / 'stamp.json'
         self.env = {'HARNESS_TEST_STAMP': str(self.stamp), 'HARNESS_NO_PASS_CACHE': '1',
                     'HARNESS_SLOT_DIR': str(self.repo / 'slots'),

@@ -126,6 +126,26 @@ class Admission(unittest.TestCase):
         table[OTHER] = None
         self.assertIsNone(sf.admission_refusal([job()], DATA, read=planted(table)))
 
+    def test_an_unpinned_job_with_every_plan_unreadable_launches_with_a_warning(self):
+        err = io.StringIO()
+        with patch.object(provider_bands, 'read_capacity', planted({name: None for name in PLANS})), \
+                patch.object(sf, 'plan_load', lambda data: {}), contextlib.redirect_stderr(err):
+            label, argv, _out = sf.plan_job(job(), DATA, TMP, False)
+        self.assertEqual(label, 'fix-r3')
+        self.assertTrue(any(PAID in str(arg) or OTHER in str(arg) for arg in argv), argv)
+        self.assertIn('can be read', err.getvalue())
+
+    def test_a_rate_limited_meter_with_a_fresh_good_reading_places_the_job(self):
+        fallback = dict(ROOMY, sourceKind='cache',
+                        liveFailure={'kind': 'rate-limit', 'message': 'meter rate limited'})
+        label, _argv, _out = plan(job(), {PAID: fallback})
+        self.assertEqual(label, 'fix-r3')
+
+    def test_an_exhausted_reading_still_refuses(self):
+        with self.assertRaises(sf.JobError) as caught:
+            plan(job(), everyone(SPENT))
+        self.assertIn('has room', str(caught.exception))
+
     def test_one_message_names_every_refused_job_and_leaves_the_rest(self):
         jobs = [job('a', plan=PAID), job('b', plan=PAID), job('c', plan=OTHER), job('d')]
         table = {PAID: FLOOR, OTHER: dict(ROOMY, transport=OTHER)}

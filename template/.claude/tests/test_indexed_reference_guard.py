@@ -13,7 +13,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 HOOK = os.path.join(ROOT, ".claude", "hooks", "indexed_reference_guard.py")
-DISPATCH = os.path.join(ROOT, ".claude", "hooks", "pre_read_dispatch.py")
+DISPATCH = HOOK
 sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
 import indexed_reference_guard as guard  # noqa: E402
 

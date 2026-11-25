@@ -15,9 +15,7 @@ holes; this module is the single home, so a fix lands in every guard at once.
     memoized()                          context: run_git answers a repeated read-only query once
     in_project(cwd, project_root, env)  -> bool  the commit targets this project's repo (worktrees included)
     incoming_paths(sub, rest, cwd, env) -> same shape, for merge / cherry-pick / revert
-    merge_refs(rest), merge_strategy(rest) -> the refs, and (strategy, [options]), a `git merge` names
     resolve_index(git_env, cwd)         -> (git_env, None) | (None, reason the index is unreadable)
-    git_environ(git_env)                -> os.environ with a command's GIT_* variables applied
     bypass_declared(inline_env, VAR)    -> True when VAR=1 in the hook's env OR inline on the command
 
 A commit publishes the index its GIT_* variables name (`GIT_INDEX_FILE=<f> git commit`, or an
@@ -32,50 +30,68 @@ import os
 import re
 import sys
 import shlex
-import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+# `tools/` behind `hooks/`, as v1's parser left it: the v1 hooks that load this module import `tools/sidecar_argv.py`
+# (the sidecar launcher readers) by name.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from sidecar_argv import literal_launcher_body, executable_index
-except Exception:  # each guard that needs the parser imports it itself and denies on its failure
-    literal_launcher_body = executable_index = None
+    from _shell_lex import (literal_launcher_body, executable_index, lex, options,
+                            executable_text, executable_spans, command_words, executable_word, SHELLS)
+except Exception as _exc:  # each guard that needs the parser imports it itself and denies on its failure
+    literal_launcher_body = executable_index = lex = options = None
+    executable_spans = command_words = executable_word = None
+    SHELLS = frozenset()
+    LEXER_ERROR = '%s: %s' % (type(_exc).__name__, _exc)
 
-try:
-    from _command_text import executable_text, executable_spans, command_words, executable_word, strip_heredocs
-except Exception:  # pragma: no cover - a missing sibling degrades to raw matching
     def executable_text(command):
         return command
+else:
+    LEXER_ERROR = None
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _git_run import git_environ, soft_text  # noqa: E402,F401  git_environ: v1 importers until cutover
 
 __all__ = [
     "CommitInvocation", "LauncherWord", "COMMIT_LIKE", "GLOBAL_FLAGS_WITH_VALUE",
-    "segments", "join_continuations", "git_invocation", "base_rev", "git_invocations", "cd_target", "commit_invocations",
+    "segments", "git_invocation", "base_rev", "git_invocations", "cd_target", "commit_invocations",
     "parse_commit_args", "run_git", "staged_paths", "incoming_paths", "bypass_declared",
     "commit_source", "commit_message",
-    "export_assignments", "command_git_env", "resolve_index", "git_environ",
+    "export_assignments", "command_git_env", "resolve_index",
     "resolve_cd", "literal_assignments", "expand_literal",
     "common_dir", "in_project", "memoized",
 ]
-
-# A lone `&` separates commands; the `&` of a redirect (`2>&1`, `&>log`) does not.
-SEGMENT_SPLIT = re.compile(r"\|\||&&|[;|\n]|(?<![<>])&(?!>)")
-# A redirect and its target (`2>&1`, `> log`, `2>/dev/null`, `<<'EOF'`) is shell plumbing, not an
-# argument: read as one, it becomes a pathspec that narrows the commit a guard judges.
-_REDIRECT = re.compile(r"(?:(?<=\s)|^)\d*(?:&>>?|>>?|<<<|<<-?|<>|<)(?:&(?:\d+-?|-)|\s*[^\s;&|<>]+)")
 
 # Global git flags that may precede the subcommand; these take a value.
 # Global flags that select the repository; git treats each as the GIT_* variable beside it, and the
 # invocation's `git_env` carries them so every read made to judge the commit targets the same repo.
 _REPO_FLAGS = (("--git-dir", "GIT_DIR"), ("--work-tree", "GIT_WORK_TREE"))
-GLOBAL_FLAGS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+GLOBAL_FLAGS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env",
+                           "--super-prefix", "--attr-source"}
 
 # Subcommands that create a commit whose content is not the index alone.
 COMMIT_LIKE = {"commit", "merge", "cherry-pick", "revert"}
 
-_COMMIT_VALUE_FLAGS = {"-m", "--message", "-F", "--file", "-c", "-C", "--author", "--date",
-                       "--reuse-message", "--fixup", "--squash", "--trailer", "--pathspec-from-file"}
-_SHORT_VALUE_LETTERS = "mFcC"
+# `git commit`'s options as git's parse-options reads them (`commit_options`): short letters taking a value (`cCFmt`)
+# or an attached one only (`Su`), long names, long names taking a value, and the long names that spell a short letter.
+_COMMIT_OPTIONS = dict(
+    short_values="cCFmt", short_optional="Su",
+    long=("all", "amend", "branch", "dry-run", "edit", "no-edit", "gpg-sign", "no-gpg-sign", "include", "interactive",
+          "long", "no-post-rewrite", "post-rewrite", "no-status", "status", "no-verify", "verify", "null", "only",
+          "patch", "pathspec-file-nul", "porcelain", "quiet", "reset-author", "short", "signoff", "no-signoff",
+          "untracked-files", "verbose", "allow-empty", "allow-empty-message"),
+    long_values=("author", "cleanup", "date", "file", "fixup", "message", "reedit-message", "reuse-message", "squash",
+                 "template", "trailer", "pathspec-from-file"),
+    aliases={"all": "a", "reuse-message": "C", "reedit-message": "c", "edit": "e", "file": "F", "include": "i",
+             "message": "m", "no-verify": "n", "only": "o", "patch": "p", "quiet": "q", "signoff": "s",
+             "gpg-sign": "S", "template": "t", "untracked-files": "u", "verbose": "v", "null": "z"})
+
+
+def commit_options(rest):
+    """`git commit <rest>` (or a merge's, cherry-pick's or revert's arguments) parsed once: `_shell_lex.Options`."""
+    return options(list(rest), **_COMMIT_OPTIONS)
 
 
 @dataclass(frozen=True)
@@ -98,52 +114,27 @@ class CommitInvocation:
     body_path: tuple[LauncherWord, ...] | None = field(default=None, compare=False)
 
 
-_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 _CONTINUATION = re.compile(r"\\\r?\n")
 
 
 def join_continuations(command):
-    """`command` with each backslash-newline blanked to spaces of the same length, so every offset
-    still reads the source. A wrapped argument list then stays one segment and one token run."""
+    """`command` with each backslash-newline blanked to spaces of the same length, so every offset still reads the
+    source (`bash_backslash_fidelity` finds a wrapped segment's place in the command this way)."""
     return _CONTINUATION.sub(lambda match: " " * len(match.group(0)), command)
 
 
 def segments(command):
-    """Segments split at `||`, `&&`, `;`, `|`, a lone `&` and newlines outside quotes. A separator inside a
-    quoted argument (a search pattern naming a git command) does not split. An unbalanced quote splits
-    at every separator, so a malformed command can only over-block. A backslash-newline continues the
-    line, so it splits nothing."""
-    command = join_continuations(command)
-    blanked = _QUOTED.sub(lambda match: " " * len(match.group(0)), command)
-    if "'" in blanked or '"' in blanked:
-        blanked = command
-    start = 0
-    for match in SEGMENT_SPLIT.finditer(blanked):
-        raw = command[start:match.start()].strip()
-        if raw:
-            yield raw
-        start = match.end()
-    raw = command[start:].strip()
-    if raw:
-        yield raw
+    """The source text of each simple command `command` runs at its top level (`_shell_lex.lex`): split at `||`,
+    `&&`, `;`, `|`, `&`, `(`, `)` and newlines outside quotes and substitutions, heredoc bodies and comments
+    excluded."""
+    command = command or ""
+    for seg in lex(command):
+        yield command[seg.start:seg.end]
 
 
 def _tokens(segment):
-    parsed = command_words(segment)
-    if parsed is not None:
-        return [word.value for word in parsed[0]]
-    masked = _QUOTED.sub(lambda match: "x" * len(match.group(0)), segment)
-    comment = re.search(r'(?<!\S)#[^\n]*', masked)
-    if comment:
-        segment = segment[:comment.start()]
-        masked = masked[:comment.start()]
-    if "'" not in masked and '"' not in masked:
-        for match in reversed(list(_REDIRECT.finditer(masked))):
-            segment = segment[:match.start()] + " " + segment[match.end():]
-    try:
-        return shlex.split(segment, posix=True)
-    except ValueError:
-        return segment.split()
+    """The word values of a segment, redirections and comments excluded."""
+    return [w.value for seg in lex(segment) for w in seg.words]
 
 
 class _GitChdir(str):
@@ -172,8 +163,8 @@ def git_invocation(segment):
         i += 1
     if i >= len(tokens):
         return None
-    head = tokens[i].replace("\\", "/").rsplit("/", 1)[-1]
-    if head not in ("git", "git.exe"):
+    # The program the shell runs: any case and `.exe` reach git on Windows (`_shell_lex.base`'s reading).
+    if os.path.basename(tokens[i].replace("\\", "/")).lower().removesuffix(".exe") != "git":
         return None
     args = tokens[i + 1:]
     j = 0
@@ -181,6 +172,10 @@ def git_invocation(segment):
     while j < len(args) and args[j].startswith("-"):
         if args[j] == "-C" and j + 1 < len(args):
             chdirs.append(args[j + 1])
+        if args[j] == "-c" and j + 1 < len(args):
+            # `-c key=value` reaches the judging reads as git's own env form, so `git config --get` sees it.
+            entry = "'%s'" % args[j + 1].replace("'", "'\\''")
+            inline_env["GIT_CONFIG_PARAMETERS"] = (inline_env.get("GIT_CONFIG_PARAMETERS", "") + " " + entry).strip()
         for flag, var in _REPO_FLAGS:
             if args[j] == flag and j + 1 < len(args):
                 inline_env[var] = args[j + 1]
@@ -224,9 +219,14 @@ def resolve_cd(cwd, moved):
 
 
 def literal_assignments(command, cwd=None):
-    """Once-assigned literal variables, including known path expansions and `$(pwd)`.
-    Unknown substitutions and names assigned or mutated more than once stay unresolved."""
-    found, known = {}, {}
+    """Once-assigned literal variables, including known path expansions and `$(pwd)`, plus every variable of this
+    hook's environment the command never names bare: the guarded shell inherits that same environment, so `$TEMP`
+    means the same path to both. Unknown substitutions and names assigned or mutated more than once stay unresolved."""
+    found = {}
+    known = {name: value for name, value in os.environ.items()
+             if re.fullmatch(r'[A-Za-z_]\w*', name) and '$' not in value
+             and not re.search(r'(?<![A-Za-z0-9_$])(?<!\$\{)' + re.escape(name) + r'(?![A-Za-z0-9_])', command)}
+    inherited = dict(known)
     if cwd is not None:
         known['PWD'] = cwd
     for segment in segments(command):
@@ -255,7 +255,7 @@ def literal_assignments(command, cwd=None):
                 value = os.path.expanduser(value)
                 found.setdefault(m.group(1), []).append(value)
                 known[m.group(1)] = value
-    result = {}
+    result = inherited
     for name, values in found.items():
         bare = re.findall(r"(?<![A-Za-z0-9_$])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])", command)
         if len(values) == 1 and len(bare) == 1:
@@ -350,20 +350,17 @@ def _launcher_context(segment, cwd, exported, assignments):
         elif token in ('-i', '--ignore-environment'):
             inherited = {key: None for key in set(inherited) | set(os.environ) if key.startswith('GIT_')}
         prefix += 1
-    return body, cwd, inherited
+    return body, cwd, inherited, parsed, tokens
 
 
-def _body_source(segment, body):
+def _body_source(segment, body, parsed, tokens):
     """Safe literal body word and decoded-character boundaries in its segment."""
-    parsed = command_words(segment)
-    if parsed is None or executable_index is None:
+    if parsed is None:
         return None
     words = parsed[0]
-    tokens, index = executable_index([word.value for word in words])
-    literal = literal_launcher_body(tokens, index)
-    if (literal is None or literal.end != literal.start + 1 or len(tokens) != len(words)):
+    if body.end != body.start + 1 or len(tokens) != len(words):
         return None
-    word = words[literal.start]
+    word = words[body.start]
     raw = segment[word.start:word.end]
     if word.value != body.body:
         return None
@@ -386,31 +383,86 @@ def _body_source(segment, body):
 
 
 def _subcommand_end(segment, args):
-    index = len(_tokens(segment)) - len(args)
-    parsed = command_words(segment)
-    if parsed is not None:
-        words = parsed[0]
-        return words[index].end if 0 <= index < len(words) else None
-    token_text = segment
-    quoted = _QUOTED.sub(lambda m: 'x' * len(m.group(0)), segment)
-    for redirect in reversed(list(_REDIRECT.finditer(quoted))):
-        token_text = token_text[:redirect.start()] + ' ' * len(redirect.group(0)) + token_text[redirect.end():]
-    tokens = list(re.finditer(r"(?:\\.|[^\s'\"]|'[^']*'|\"(?:[^\"\\]|\\.)*\")+", token_text))
-    return tokens[index].end() if 0 <= index < len(tokens) else None
+    words = [w for seg in lex(segment) for w in seg.words]
+    index = len(words) - len(args)
+    return words[index].end if 0 <= index < len(words) else None
+
+
+_OPAQUE_WRAPPERS = {  # commands that run their operand with state this parser cannot prove
+    'sudo': frozenset({'-u', '-g', '-h', '-p', '-C', '--user', '--group', '--host', '--prompt', '--chdir'}),
+    'xargs': frozenset({'-I', '-i', '-L', '-l', '-n', '-P', '-a', '-d', '-E', '-e', '--replace', '--max-lines',
+                        '--max-args', '--max-procs', '--arg-file', '--delimiter', '--eof'}),
+}
+
+
+def _wrapped_git(segment):
+    """A git call behind `env`, `sudo` or `xargs`, or nothing. The wrapper owns the cwd and environment it
+    passes, and xargs appends arguments, so the call's repository cannot be proved: its cwd is None."""
+    if executable_index is None:
+        return None
+    tokens, index = executable_index(_tokens(segment))
+    if index >= len(tokens):
+        return None
+    head = os.path.basename(tokens[index].replace('\\', '/')).lower()
+    if head in _OPAQUE_WRAPPERS:
+        values = _OPAQUE_WRAPPERS[head]
+        index += 1
+        while index < len(tokens) and tokens[index].startswith('-'):
+            option = tokens[index]
+            index += 2 if option in values else 1
+            if option == '--':
+                break
+        tokens, index = executable_index(tokens[index:])
+    elif not (head in ('git', 'git.exe')
+              and any(os.path.basename(t.replace('\\', '/')).lower() == 'env' for t in tokens[:index])):
+        return None
+    if index >= len(tokens) or os.path.basename(tokens[index].replace('\\', '/')).lower() not in ('git', 'git.exe'):
+        return None
+    parsed = git_invocation(shlex.join(tokens[index:]))
+    if parsed is None or not parsed[0]:
+        return None
+    return CommitInvocation(parsed[0][0], parsed[0][1:], None, {}, {}, {})
+
+
+def _wrapped_launcher_calls(segment):
+    """Opaque git calls inside a shell launcher run behind `sudo` or `xargs`: the wrapper owns the cwd and
+    environment, so every call the body runs is opaque even when the body's own `-C` is literal."""
+    if executable_index is None:
+        return []
+    tokens, index = executable_index(_tokens(segment))
+    if index >= len(tokens):
+        return []
+    values = _OPAQUE_WRAPPERS.get(os.path.basename(tokens[index].replace('\\', '/')).lower())
+    if values is None:
+        return []
+    index += 1
+    while index < len(tokens) and tokens[index].startswith('-'):
+        option = tokens[index]
+        index += 2 if option in values else 1
+        if option == '--':
+            break
+    tokens, index = executable_index(tokens[index:])
+    body = literal_launcher_body(tokens, index)
+    if body is None:
+        return []
+    return [CommitInvocation(call.sub, call.rest, None, {}, {}, {})
+            for call in _git_invocations(body.body, '.', {}, {})[0]]
 
 
 def _git_invocations(command, cwd, exported, inherited, source_offsets=None, body_path=()):
     found = []
-    text = join_continuations(strip_heredocs(command or '', preserve_offsets=True))
+    text = command or ''
     if source_offsets is None and body_path is not None:
-        source_offsets = tuple(range(len(command or '') + 1))
+        source_offsets = tuple(range(len(text) + 1))
     assigned_once = dict(inherited)
-    assigned_once.update(literal_assignments(text, cwd))
-    cursor = 0
-    for segment in segments(text):
-        start = text.index(segment, cursor)
-        cursor = start + len(segment)
+    assigned_once.update(literal_assignments(executable_text(text), cwd))
+    for seg in lex(text):
+        start, segment = seg.start, text[seg.start:seg.end]
         assigned_once['PWD'] = cwd
+        # A substitution body, or a heredoc a shell reads, runs in a child shell the parser launches: like a `bash -c`
+        # body it borrows no worktree ownership (body_path None) and its cwd and exports do not leak back.
+        for body in [sub.body for sub in seg.substitutions] + [hd.body for hd in seg.heredocs if hd.reader in SHELLS]:
+            found.extend(_git_invocations(body, cwd, dict(exported), assigned_once, None, None)[0])
         moved = cd_target(segment)
         if moved is not None:
             cwd = resolve_cd(cwd, expand_literal(moved, assigned_once) or moved)
@@ -422,10 +474,10 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
             continue
         launched = _launcher_context(segment, cwd, exported, assigned_once)
         if launched is not None:
-            body, target, child_env = launched
+            body, target, child_env, parsed_words, launcher_tokens = launched
             child_known = ({key: value for key, value in child_env.items() if value is not None}
                            if body.scoped else assigned_once)
-            source = _body_source(segment, body) if source_offsets is not None else None
+            source = _body_source(segment, body, parsed_words, launcher_tokens) if source_offsets is not None else None
             child_offsets, child_path = None, None
             if source is not None:
                 word, quote, offsets = source
@@ -441,15 +493,25 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
             continue
         parsed = git_invocation(segment)
         if parsed is None:
+            opaque = _wrapped_git(segment)
+            if opaque is not None:
+                found.append(opaque)
+            else:
+                found.extend(_wrapped_launcher_calls(segment))
             continue
         args, chdir, inline_env = parsed
         if not args:
             continue
-        target = resolve_cd(cwd, expand_literal(chdir, assigned_once) or chdir) if chdir else cwd
+        if chdir:
+            moved = expand_literal(chdir, assigned_once)
+            target = resolve_cd(cwd, moved) if moved is not None else None
+        else:
+            target = cwd
         git_env = command_git_env(exported, inline_env, assigned_once)
-        for var in ('GIT_DIR', 'GIT_WORK_TREE'):
-            if git_env.get(var) and '$' not in git_env[var]:
-                git_env[var] = resolve_cd(target, git_env[var])
+        if target is not None:
+            for var in ('GIT_DIR', 'GIT_WORK_TREE'):
+                if git_env.get(var) and '$' not in git_env[var]:
+                    git_env[var] = resolve_cd(target, git_env[var])
         end = _subcommand_end(segment, args) if source_offsets is not None else None
         offset = source_offsets[start + end] if end is not None else None
         found.append(CommitInvocation(args[0], args[1:], target, inline_env, git_env, dict(assigned_once),
@@ -458,7 +520,9 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
 
 
 def git_invocations(command, cwd):
-    """Every literal git call in execution order with cwd/env and outermost rewrite coordinates.
+    """Every git call the shell runs, in execution order. A call whose repository cannot be proved — an
+    unexpandable `-C` value, or a call behind env/sudo/xargs — carries cwd=None and no GIT_* environment;
+    its caller judges it conservatively and borrows no repository, ownership or preservation evidence for it.
     subcommand_end is just after its token; body_path lists enclosing word spans/quotes, outer first.
     Both are None for unsafe source forms; rewrite metadata does not participate in equality."""
     return _git_invocations(command, cwd or '.', {}, {})[0]
@@ -470,55 +534,10 @@ def commit_invocations(command, cwd):
 
 
 def parse_commit_args(rest):
-    """(include_dirty, amend, pathspec) — pathspec is everything after `--`, or trailing bare
-    args. Combined short flags (`-am`, `-aF`) are split letter by letter: `a` anywhere sets
-    include_dirty, and a value-taking letter in last position consumes the next token."""
-    include_dirty = False
-    amend = False
-    pathspec = []
-    i = 0
-    while i < len(rest):
-        a = rest[i]
-        if a == "--":
-            pathspec.extend(rest[i + 1:])
-            break
-        if a in ("-a", "--all"):
-            include_dirty = True
-            i += 1
-            continue
-        if a == "--amend":
-            amend = True
-            i += 1
-            continue
-        if a in _COMMIT_VALUE_FLAGS:
-            i += 2
-            continue
-        if a.startswith("--"):
-            i += 1
-            continue
-        if a.startswith("-") and len(a) > 1:
-            letters = a[1:]
-            if "a" in letters:
-                include_dirty = True
-            i += 2 if letters[-1] in _SHORT_VALUE_LETTERS else 1
-            continue
-        pathspec.append(a)
-        i += 1
-    return include_dirty, amend, pathspec
-
-
-def git_environ(git_env):
-    """os.environ with `git_env` applied (a None value unsets), or None when `git_env` is empty, so the
-    subprocess inherits the hook's environment unchanged."""
-    if not git_env:
-        return None
-    env = dict(os.environ)
-    for key, value in git_env.items():
-        if value is None:
-            env.pop(key, None)
-        else:
-            env[key] = value
-    return env
+    """(include_dirty, amend, pathspec): `-a`/`--all` (in a bundle, or any prefix) sets include_dirty, `--amend`
+    (any prefix) amend, and the pathspec is every operand, those after `--` included (`commit_options`)."""
+    parsed = commit_options(rest)
+    return "a" in parsed.flags, "amend" in parsed.flags, list(parsed.operands)
 
 
 # Subcommands that only read the repository, so one answer serves a whole dispatch.
@@ -530,8 +549,9 @@ _memo = None
 @contextmanager
 def memoized():
     """Inside the block, `run_git` answers a repeated `_READ_ONLY` query (same argv, cwd and git_env)
-    from its first answer. `pre_bash_dispatch` holds it for one tool call: its sub-hooks read one repo
-    state and would otherwise spawn the same git query once each. Outside it every call runs git."""
+    from its first answer, and `cached` answers any keyed read the same way. `pre_bash_dispatch.dispatch` holds it
+    for one tool call: its checks read one repo state and would otherwise spawn the same git query once each. Outside it
+    every call runs git."""
     global _memo
     outer = _memo
     _memo = {} if outer is None else outer
@@ -539,6 +559,16 @@ def memoized():
         yield
     finally:
         _memo = outer
+
+
+def cached(key, compute):
+    """`compute()` once per `key` inside `memoized()` (one floor decision), so every check that asks the same
+    question reads one answer; outside it, every call computes. The one memo the floor's modules share."""
+    if _memo is None:
+        return compute()
+    if key not in _memo:
+        _memo[key] = compute()
+    return _memo[key]
 
 
 def _subcommand(args):
@@ -553,24 +583,13 @@ def run_git(args, cwd, env=None):
     invocation's `git_env`."""
     key = None
     if _memo is not None and _subcommand(args) in _READ_ONLY:
-        key = (tuple(args), os.path.normcase(os.path.abspath(cwd or ".")), tuple(sorted((env or {}).items())))
+        key = (tuple(args), os.path.normcase(os.path.realpath(cwd or ".")), tuple(sorted((env or {}).items())))
         if key in _memo:
             return _memo[key]
-    out = _run_git(args, cwd, env)
+    out = soft_text(args, cwd=cwd, env=env)
     if key is not None:
         _memo[key] = out
     return out
-
-
-def _run_git(args, cwd, env):
-    try:
-        result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=30, env=git_environ(env))
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
 
 
 def _lines(out):
@@ -599,30 +618,16 @@ def in_project(cwd, project_root, env=None):
 
 
 def _pathspec_file(rest):
-    """The `--pathspec-from-file` value, or None when the flag is absent."""
-    for i, a in enumerate(rest):
-        if a == "--":
-            break
-        if a.startswith("--pathspec-from-file="):
-            return a.split("=", 1)[1]
-        if a == "--pathspec-from-file":
-            return rest[i + 1] if i + 1 < len(rest) else ""
-    return None
+    """The `--pathspec-from-file` value ('' when it has none), or None when the flag is absent."""
+    parsed = commit_options(rest)
+    if "pathspec-from-file" not in parsed.flags:
+        return None
+    return (parsed.values.get("pathspec-from-file") or [""])[-1]
 
 
 def _includes_index(rest):
     """True for `-i`/`--include`: the index is published alongside the pathspec."""
-    for a in rest:
-        if a == "--":
-            break
-        if a in ("-i", "--include"):
-            return True
-        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
-            letters = a[1:]
-            cut = min((letters.index(ch) for ch in _SHORT_VALUE_LETTERS if ch in letters), default=len(letters))
-            if "i" in letters[:cut]:
-                return True
-    return False
+    return "i" in commit_options(rest).flags
 
 
 def unexpanded_hint(text):
@@ -760,38 +765,10 @@ def _mixed_publication(rest, cwd, env):
     return differing is None or bool(differing.strip())
 
 
-def _flag_values(rest, long_name, short_letter):
-    """(values, stdin) for a repeatable value flag: `--long v`, `--long=v`, `-x v`, `-xv`, and the letter
-    inside a combined run such as `-am v`. `stdin` is True when a value is `-`."""
-    values, i = [], 0
-    while i < len(rest):
-        a = rest[i]
-        if a == "--":
-            break
-        if a == long_name and i + 1 < len(rest):
-            values.append(rest[i + 1])
-            i += 2
-            continue
-        if a.startswith(long_name + "="):
-            values.append(a.split("=", 1)[1])
-        elif a.startswith("-") and not a.startswith("--") and len(a) > 1:
-            letters = a[1:]
-            cut = min((letters.index(ch) for ch in _SHORT_VALUE_LETTERS if ch in letters), default=None)
-            if cut is not None and short_letter and letters[cut] == short_letter:
-                attached = letters[cut + 1:]
-                if attached:
-                    values.append(attached)
-                elif i + 1 < len(rest):
-                    values.append(rest[i + 1])
-                    i += 2
-                    continue
-            elif cut is not None and cut == len(letters) - 1 and i + 1 < len(rest):
-                i += 2
-                continue
-        elif a in _COMMIT_VALUE_FLAGS:
-            i += 2
-            continue
-        i += 1
+def _flag_values(rest, key):
+    """(values, stdin) for a repeatable value option of `git commit <rest>` (`commit_options` key: `m`, `F`,
+    `trailer`), in order; `stdin` is True when a value is `-`."""
+    values = commit_options(rest).values.get(key, [])
     return values, "-" in values
 
 
@@ -799,7 +776,7 @@ def commit_trailer_lines(rest):
     """Each `--trailer` of `git commit <rest>` as a `Key: value` line. Readable when the message is not, such as
     an `-F` file the same command writes after the hook runs."""
     lines = []
-    for trailer in _flag_values(rest, "--trailer", None)[0]:
+    for trailer in _flag_values(rest, "trailer")[0]:
         cut = min((trailer.index(sep) for sep in ":=" if sep in trailer), default=None)
         lines.append("%s: %s" % (trailer[:cut].strip(), trailer[cut + 1:].strip()) if cut is not None else trailer)
     return lines
@@ -809,8 +786,8 @@ def commit_message(rest, cwd):
     """The message `git commit <rest>` carries: every `-m`/`--message` as a paragraph, `-F`/`--file` read
     relative to `cwd`, and each `--trailer` as a trailer line, in that order. None when the message cannot be
     known here: `-F -` (stdin), an editor commit (no `-m`, `-F` or `--trailer`), or an unreadable `-F` file."""
-    messages, _ = _flag_values(rest, "--message", "m")
-    files, from_stdin = _flag_values(rest, "--file", "F")
+    messages, _ = _flag_values(rest, "m")
+    files, from_stdin = _flag_values(rest, "F")
     if from_stdin:
         return None
     parts = list(messages)
@@ -843,7 +820,7 @@ def fold_tracked_adds(command, cwd, *, _exported=None, _inherited=None):
         launched = _launcher_context(segment, target, before_env, known)
         if launched is None:
             continue
-        body, target, child_env = launched
+        body, target, child_env = launched[:3]
         if any(re.search(r'[$`]', re.sub(r"'[^']*'", '', segment[word.start:word.end]))
                for word in words[body.start:body.end]):
             continue
@@ -957,47 +934,6 @@ def _first_ref(rest):
         elif not a.startswith("-"):
             return a
     return None
-
-
-def merge_refs(rest):
-    """The refs a `git merge` invocation merges, in order (`--into-name` and option values skipped)."""
-    refs, skip = [], False
-    for a in rest:
-        if skip:
-            skip = False
-        elif a in _VALUE_OPTIONS:
-            skip = True
-        elif a == "--":
-            continue
-        elif not a.startswith("-"):
-            refs.append(a)
-    return refs
-
-
-def merge_strategy(rest):
-    """(strategy or None, [strategy options]) a `git merge` invocation names: `-s X`, `-sX`,
-    `--strategy=X`, `-X o`, `-Xo`, `--strategy-option=o`; the last strategy wins, as in git."""
-    strategy, options, want = None, [], None
-    for a in rest:
-        if want:
-            if want == "s":
-                strategy = a
-            else:
-                options.append(a)
-            want = None
-        elif a in ("-s", "--strategy"):
-            want = "s"
-        elif a in ("-X", "--strategy-option"):
-            want = "X"
-        elif a.startswith("--strategy="):
-            strategy = a.split("=", 1)[1]
-        elif a.startswith("--strategy-option="):
-            options.append(a.split("=", 1)[1])
-        elif a.startswith("-s") and len(a) > 2 and not a.startswith("--"):
-            strategy = a[2:]
-        elif a.startswith("-X") and len(a) > 2:
-            options.append(a[2:])
-    return strategy, options
 
 
 def incoming_paths(sub, rest, cwd, env=None):

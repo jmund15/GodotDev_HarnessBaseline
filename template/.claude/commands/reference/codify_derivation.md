@@ -4,7 +4,7 @@ disable-model-invocation: true
 
 # `/codify` — independent derivation
 
-Read at `/codify` §Independent derivation when the owner asked for the codification. Entrypoint: [`../codify.md`](../codify.md).
+Read at `/codify` §Independent derivation for an owner's correction. Entrypoint: [`../codify.md`](../codify.md).
 
 Two derivations meet because the session that made the mistake diagnoses it under the same momentum that produced it.
 

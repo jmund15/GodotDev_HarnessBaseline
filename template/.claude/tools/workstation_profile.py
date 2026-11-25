@@ -42,6 +42,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+from _git_run import run as git_run  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
 
 __all__ = [
@@ -316,10 +317,8 @@ def main_checkout_root(root):
     """
     root = os.path.abspath(str(root))
     try:
-        result = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=root,
-                                capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=15)
-        common = (result.stdout or "").strip()
+        result = git_run(["rev-parse", "--git-common-dir"], cwd=root, timeout=15)
+        common = result.text.strip()
         if result.returncode == 0 and common:
             resolved = common if os.path.isabs(common) else os.path.join(root, common)
             parent = os.path.dirname(os.path.abspath(resolved))

@@ -24,12 +24,13 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
 import gate_growth  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 
 LIMIT = 40
 _NAME = re.compile(r"gate_run_(\d{8}-\d{6})-\d+\.out$")
@@ -102,8 +103,8 @@ def added_classes(repo, prev_head, units):
         return {}
 
     def git(*args):
-        r = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
-        return r.stdout.splitlines() if r.returncode == 0 else None
+        r = git_run(args, cwd=repo)
+        return r.text.splitlines() if r.returncode == 0 else None
     added = git("diff", "--name-only", "--diff-filter=A", prev_head, "--", "Tests/Integration")
     if added is None:
         return {}

@@ -246,7 +246,7 @@ class FindingsTests(unittest.TestCase):
                                "sys.exit(v.verify_findings(%r, %r, {}, False, root=%r))" % (
                                    str(ROOT / ".claude/tools"), str(self.put("rooted-in.json", [row])), str(out),
                                    str(self.root))],
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=30, env=_tool_env())
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["verdicts"][0]["verdict"], "VERIFIED")
 

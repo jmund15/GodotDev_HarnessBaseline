@@ -362,8 +362,9 @@ def main():
     deny_cmd = "rm -rf build" + PAIR + "out"
     # Run from the filesystem root: the repo may sit under the system temp, which the guard exempts.
     p, hso, crashed = run(DISPATCH, payload(deny_cmd, transcript, cwd=os.path.abspath(os.sep)), base_env)
-    check("dangerous_shell_guard deny still wins through the dispatcher (exit 2, no updatedInput)",
-          p.returncode == 2 and "updatedInput" not in p.stdout, "rc=%s %s %s" % (p.returncode, p.stdout, p.stderr))
+    check("dangerous_shell_guard deny still wins through the dispatcher (a deny, no updatedInput)",
+          (p.returncode == 2 or hso.get("permissionDecision") == "deny") and "updatedInput" not in p.stdout,
+          "rc=%s %s %s" % (p.returncode, p.stdout, p.stderr))
     p, hso, crashed = run(DISPATCH, payload(QUOTE_STRINGS[0], transcript), base_env)
     upd = (hso.get("updatedInput") or {}).get("command", "")
     check("the dispatcher forwards the rewrite (client(updated) == original)",

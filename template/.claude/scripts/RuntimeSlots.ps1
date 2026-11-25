@@ -802,7 +802,7 @@ function Test-OtherSlotBusy {
 }
 
 function Enter-MachineWorkLease {
-    param([int] $TimeoutMs = 600000)
+    param([int] $TimeoutMs = 600000, [string] $Holder = '')
     if ($env:HARNESS_SLOT_BUDGET -eq '1') { return $null }
     $tool = if ($env:HARNESS_SLOT_SCRIPT) { $env:HARNESS_SLOT_SCRIPT } else { Join-Path $PSScriptRoot '../tools/machine_slots.py' }
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -813,7 +813,10 @@ function Enter-MachineWorkLease {
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $deadline = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + [Math]::Max(0, $TimeoutMs)) / 1000.0
-    foreach ($arg in @($tool, 'broker', '--deadline', $deadline.ToString([Globalization.CultureInfo]::InvariantCulture))) {
+    # `--holder` names the work in the lane's lock file; without it the lock names only the broker process.
+    $arguments = @($tool, 'broker', '--deadline', $deadline.ToString([Globalization.CultureInfo]::InvariantCulture))
+    if ($Holder) { $arguments += @('--holder', $Holder) }
+    foreach ($arg in $arguments) {
         $start.ArgumentList.Add($arg)
     }
     $proc = [System.Diagnostics.Process]::new()
@@ -930,7 +933,9 @@ function Enter-RunLocks {
         }
 
         if ($env:HARNESS_SLOT_BUDGET -ne '1') {
-            $lease.MachineWork = Enter-MachineWorkLease -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
+            $work = if ($Label) { "RuntimeSlots $Label" } else { 'RuntimeSlots' }
+            $holder = @{ pid = $PID; command = $work; checkout = $Repo } | ConvertTo-Json -Compress
+            $lease.MachineWork = Enter-MachineWorkLease -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds) -Holder $holder
             if ($null -eq $lease.MachineWork) { & $fail 'machine-slots'; return $lease }
         }
         if ($Runtime) {

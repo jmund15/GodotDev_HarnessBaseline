@@ -372,6 +372,17 @@ urllib.request.urlopen = urlopen
         self.assertEqual(rows[-1]['call'], 'toolu_direct', rows)
 
 
-if __name__ == '__main__':
+PARTS = 2
+
+
+def main(part=1):
+    """Run this part's share of the cases, round-robin; `test_sidecar_common_registration_part2.py` runs the other."""
     from _case_pool import run_cases, unittest_cases
-    sys.exit(run_cases(unittest_cases(Registration)))
+    for n in range(2, PARTS + 1):
+        name = 'test_sidecar_common_registration_part%d.py' % n
+        assert (CLAUDE / 'tests' / name).is_file(), 'missing part file ' + name
+    return run_cases(unittest_cases(Registration)[part - 1::PARTS])
+
+
+if __name__ == '__main__':
+    sys.exit(main())

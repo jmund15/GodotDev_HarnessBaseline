@@ -6,6 +6,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import patch
 
 CLAUDE = Path(__file__).resolve().parents[1]
 TOOLS = CLAUDE / "tools"
@@ -84,8 +88,21 @@ class Replay(unittest.TestCase):
         return done.stdout.strip()
 
     def cli(self, tool, *args, code=0):
-        done = subprocess.run([sys.executable, str(TOOLS / (tool + ".py")), *args], cwd=self.root,
-                              capture_output=True, text=True, env=self.env)
+        if self._testMethodName == "test_mechanical_fold_inherits_coverage_and_the_parent_s_design_owes_the_game_round":
+            done = subprocess.run([sys.executable, str(TOOLS / (tool + ".py")), *args], cwd=self.root,
+                                  capture_output=True, text=True, env=self.env)
+        else:
+            import post_check
+
+            stdout, stderr, cwd = StringIO(), StringIO(), os.getcwd()
+            with patch.dict(os.environ, self.env, clear=True), redirect_stdout(stdout), redirect_stderr(stderr):
+                os.chdir(self.root)
+                try:
+                    entry = review_ledger.main if tool == "review_ledger" else post_check.main
+                    status = entry(list(args))
+                finally:
+                    os.chdir(cwd)
+            done = SimpleNamespace(returncode=status, stdout=stdout.getvalue(), stderr=stderr.getvalue())
         self.assertEqual(done.returncode, code, done.stdout + done.stderr)
         return done
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Re-runnable proof for hooks/post_read_dispatch.py — the PostToolUse reader dispatcher.
 
-Feeds real PostToolUse payloads through the dispatcher and checks routing/memory logs plus the
-compaction-scoped model-ladder marker. A malformed payload still exits 0 because advisory readers fail open.
+Feeds real PostToolUse payloads through the dispatcher and checks the compaction-scoped model-ladder marker.
+A malformed payload still exits 0 because advisory readers fail open.
 
     python3 .claude/tests/test_post_read_dispatch.py
 """
@@ -15,8 +15,6 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 DISPATCH = os.path.join(HERE, "..", "hooks", "post_read_dispatch.py")
 sys.path.insert(0, os.path.dirname(DISPATCH))
-import routing_audit  # noqa: E402
-VAULT_DOC = (r"C:\Users\x\ObsidianVault\DevProjects\{{PROJECT_NAME}}\Claude\Design\Push System Design.md")
 
 
 def run(payload_text, env):
@@ -40,10 +38,7 @@ def valid_hook_output(stdout):
 def main():
     failures = []
     tmp = tempfile.mkdtemp(prefix="prd_")
-    log_mem = os.path.join(tmp, "memory_hits.jsonl")
-    log_audit = os.path.join(tmp, "routing_audit.jsonl")
-    env = dict(os.environ, HARNESS_MEMORY_HITS_LOG=log_mem, HARNESS_ROUTING_AUDIT_LOG_PATH=log_audit,
-               HARNESS_HOOK_STATE_DIR=os.path.join(tmp, "state"), CLAUDE_PROJECT_DIR=tmp)
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=os.path.join(tmp, "state"), CLAUDE_PROJECT_DIR=tmp)
 
     def check(label, cond, detail=""):
         check.calls += 1
@@ -59,43 +54,18 @@ def main():
     check("dispatcher no longer loads or calls the retired post-Grep fallback",
           "tool_routing_post_grep" not in dispatch_source)
 
-    # 1. A Read of an auto-memory file reaches the last sub-hook.
+    # 1. A Read of an auto-memory file exits 0 with an empty or valid payload.
     r = run(json.dumps({"tool_name": "Read", "session_id": "prd00001", "agent_id": "",
                         "tool_input": {"file_path": os.path.join(tmp, ".claude", "auto-memory", "g.md")},
                         "tool_response": {"content": "x"}}), env)
     check("dispatcher exits 0 on a memory Read", r.returncode == 0, r.stderr[:200])
-    lines = [json.loads(ln) for ln in open(log_mem, encoding="utf-8")] if os.path.exists(log_mem) else []
-    check("memory-hits sub-hook logged the read", any(l.get("via") == "read" for l in lines), repr(lines))
     check("stdout is empty or a valid PostToolUse JSON object",
           valid_hook_output(r.stdout) and "Traceback" not in (r.stderr or ""),
           r.stdout[:200])
 
-    # 2. A vault Read reaches the routing-audit sub-hook. The path alone is not a verdict; the
-    #    parent request asking for bulk copyable extraction is, and a subagent inherits it.
-    r = run(json.dumps({"tool_name": "Read", "session_id": "prd00002", "agent_id": "agent001",
-                        "tool_input": {"file_path": VAULT_DOC}, "tool_response": {"content": "x"}}), env)
-    check("dispatcher exits 0 on a vault Read", r.returncode == 0, r.stderr[:200])
-    rows = [json.loads(ln) for ln in open(log_audit, encoding="utf-8")] if os.path.exists(log_audit) else []
-    check("a vault Read with no bulk-copyable request logs no routing-audit row",
-          not any(row.get("session_id") == "prd00002" for row in rows), repr(rows)[:300])
+    # 2. A successful full ladder Read arms exactly the model-selection marker.
     state_dir = os.path.join(tmp, "state")
     os.makedirs(state_dir, exist_ok=True)
-    with open(os.path.join(state_dir, "prd00003.json"), "w", encoding="utf-8") as fh:
-        json.dump({"last_prompt": "Extract the same raw fields from every file and return one "
-                                  "copyable entry per input path."}, fh)
-    r = run(json.dumps({"tool_name": "Read", "session_id": "prd00003", "agent_id": "agent001",
-                        "tool_input": {"file_path": VAULT_DOC}, "tool_response": {"content": "x"}}), env)
-    rows = [json.loads(ln) for ln in open(log_audit, encoding="utf-8")] if os.path.exists(log_audit) else []
-    logged = any(row.get("session_id") == "prd00003" and row.get("classification") == "cue-exempt"
-                 and row.get("rule") == "native-read-bulk-copyable" for row in rows)
-    if routing_audit.classify_call is not None:
-        check("routing-audit sub-hook logged the subagent's bulk-copyable vault read as cue-exempt",
-              logged, repr(rows)[:300])
-    else:
-        check("without the coding-layer classifier the routing-audit sub-hook logs nothing and the dispatcher survives",
-              not rows and r.returncode == 0, repr(rows)[:300] + r.stderr[:200])
-
-    # 3. A successful full ladder Read arms exactly the model-selection marker.
     ladder = os.path.join(tmp, ".claude", "reference", "model_ladder_evidence.md")
     os.makedirs(os.path.dirname(ladder), exist_ok=True)
     with open(ladder, "w", encoding="utf-8") as fh:
@@ -134,60 +104,7 @@ def main():
     check("a bounded SKILL.md Read records nothing",
           r.returncode == 0 and not (partial.get("skills_loaded") or []), repr(partial))
 
-    # 3c. Advance notice at the first Read of a harness-edit-governed file, once per window.
-    marker_hook = os.path.join(HERE, "..", "hooks", "skill_load_marker.py")
-
-    def read_ctx(session, path, agent=""):
-        payload = {"tool_name": "Read", "session_id": session, "tool_input": {"file_path": path},
-                   "tool_response": {"content": "x"}}
-        if agent:
-            payload["agent_id"] = agent
-        r = run(json.dumps(payload), env)
-        ctx = ""
-        if r.stdout.strip():
-            doc = json.loads(r.stdout)
-            ctx = (doc.get("hookSpecificOutput") or {}).get("additionalContext") or ""
-        return r, [ln for ln in ctx.splitlines() if ln.startswith("Harness file")]
-
-    def load_skill(session, agent=""):
-        payload = {"tool_name": "Skill", "session_id": session,
-                   "tool_input": {"skill": "instruction_quality"}}
-        if agent:
-            payload["agent_id"] = agent
-        subprocess.run([sys.executable, marker_hook], input=json.dumps(payload),
-                       capture_output=True, text=True, timeout=60, env=env)
-
-    hook_read = os.path.join(tmp, ".claude", "hooks", "practice.py")
-    r, notes = read_ctx("prd0010", hook_read)
-    check("the first Read of a governed hook names the edit gate and reference/hooks.md",
-          r.returncode == 0 and len(notes) == 1 and "instruction_quality" in notes[0]
-          and "hooks.md" in notes[0] and "denies any edit" in notes[0], repr(notes))
-    check("the notice is one line", bool(notes) and "\n" not in notes[0], repr(notes))
-    r, notes = read_ctx("prd0017", os.path.join(tmp, ".claude", "CLAUDE.md"))
-    check("an unmapped class's notice names the reference directory",
-          r.returncode == 0 and len(notes) == 1 and "instruction_quality/reference/" in notes[0],
-          repr(notes))
-    r, notes = read_ctx("prd0010", os.path.join(tmp, ".claude", "commands", "practice.md"))
-    check("a second governed Read in the same window is silent", r.returncode == 0 and not notes,
-          repr(notes))
-    r, notes = read_ctx("prd0013", os.path.join(tmp, ".claude", "commands", "practice.md"))
-    check("a command Read names reference/skills_and_commands.md",
-          len(notes) == 1 and "skills_and_commands.md" in notes[0], repr(notes))
-    load_skill("prd0011")
-    r, notes = read_ctx("prd0011", hook_read)
-    check("a Read with instruction_quality already loaded is silent", r.returncode == 0 and not notes,
-          repr(notes))
-    for session, rel in (("prd0012", ("plans", "x.md")), ("prd0015", ("auto-memory", "x.md"))):
-        r, notes = read_ctx(session, os.path.join(tmp, ".claude", *rel))
-        check("a %s Read emits no notice" % rel[0], r.returncode == 0 and not notes, repr(notes))
-    r, notes = read_ctx("prd0014", hook_read, agent="agent9")
-    check("a subagent's first governed Read gets its own notice",
-          len(notes) == 1 and "instruction_quality" in notes[0], repr(notes))
-    r, notes = read_ctx("prd0014", hook_read)
-    check("the parent thread's first governed Read still fires after the subagent's",
-          len(notes) == 1, repr(notes))
-
-    # 4. Malformed payload: the dispatcher fails open.
+    # 3. Malformed payload: the dispatcher fails open.
     r = run("{not json", env)
     check("malformed payload exits 0 with an empty or valid hook payload",
           r.returncode == 0 and valid_hook_output(r.stdout)

@@ -4,7 +4,9 @@
 `main_checkout_root(start)` is the directory holding the repository's `.git` directory, whichever
 checkout `start` lies in; `start` itself when git cannot answer or the common dir is not a `.git`
 directory (a submodule's gitdir). `linked_main_root(start)` is that root only when `start` is in a linked
-worktree, else "". `session_checkout(payload)` is the checkout a hook payload's `cwd` lies in, the root that
+worktree, else "". `worktree_chain(start, rev_parse)` yields each working-tree root from `start` outward
+through its superprojects, nearest first (a submodule inside a linked worktree yields both).
+`session_checkout(payload)` is the checkout a hook payload's `cwd` lies in, the root that
 repository-relative paths resolve against. `repo_arg(argv)` pops a `--repo <path>` pair from an argv list and returns
 that checkout resolved, or None. CLI: `_checkout_root.py <dir>` prints `linked_main_root` in posix form.
 """
@@ -13,13 +15,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _git_run
+
 
 def git_dirs(start):
     """(git-dir, git-common-dir) resolved for `start`, or None when git cannot answer."""
+    args = ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
     try:
-        out = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-                             cwd=start, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                             timeout=10, check=True).stdout.splitlines()
+        out = _git_run.run(args, cwd=start, timeout=10).check(args).text.splitlines()
     except (OSError, TypeError, subprocess.SubprocessError):
         return None
     return (Path(out[0].strip()).resolve(), Path(out[1].strip()).resolve()) if len(out) == 2 else None
@@ -37,6 +40,17 @@ def linked_main_root(start):
     return str(dirs[1].parent) if dirs and dirs[0] != dirs[1] and dirs[1].name == ".git" else ""
 
 
+def worktree_chain(start, rev_parse):
+    """Each working-tree root from `start` outward through its superprojects, nearest first. `rev_parse(flag, cwd)`
+    returns git's stdout for `git rev-parse <flag>` at `cwd`, or None when git cannot answer; the chain is read
+    lazily, so a caller that matches the nearest root spawns no call for the ones above it."""
+    current = rev_parse("--show-toplevel", start)
+    while current and current.strip():
+        root = current.strip()
+        yield root
+        current = rev_parse("--show-superproject-working-tree", root)
+
+
 def payload_cwd(payload):
     """The hook payload's working directory as an absolute forward-slash path, or "" when it is missing,
     relative or holds a `..` segment (review_fanout.js refuses such a `fold.repoRoot`)."""
@@ -49,10 +63,10 @@ def payload_cwd(payload):
 
 def _git_line(cwd, *argv):
     try:
-        done = subprocess.run(["git", "-C", cwd, *argv], capture_output=True, text=True, timeout=10)
+        done = _git_run.run(["-C", cwd, *argv], timeout=10)
     except (OSError, subprocess.SubprocessError):
         return ""
-    return done.stdout.strip().replace("\\", "/").rstrip("/") if done.returncode == 0 else ""
+    return done.text.strip().replace("\\", "/").rstrip("/") if done.returncode == 0 else ""
 
 
 def session_checkout(payload):

@@ -65,6 +65,7 @@ for _d in (os.path.normpath(os.path.join(HERE, "..", "hooks")), HERE):
 import _git_commit  # noqa: E402
 import _hook_state  # noqa: E402
 import review_ledger  # noqa: E402
+import review_snapshot as _snapshot  # noqa: E402
 import triage  # noqa: E402
 
 WRITERS = ("self_evaluate", "debugging")
@@ -119,12 +120,12 @@ def rows(path=None):
 def _checks_ran(sha, paths, base_ref):
     """The sorted ids of the ledger rows that cover a path at its blob in `sha` (`review_ledger.cover_at`)."""
     root = Path(project_root())
-    blobs = {}
-    for path in paths:
-        out = _git_commit.run_git(["rev-parse", "-q", "--verify", "%s:%s" % (sha, path)], str(root))
-        blobs[path] = out.strip() if out else None
+    snap = _snapshot.open(root, _snapshot.Commit(sha))
+    blobs = {path: (value.sha if isinstance(value, _snapshot.Blob) else None)
+             for path, value in snap.blobs(paths).items()}
     try:
-        return review_ledger.cover_at(root, blobs, base_ref).covering_ids(paths)
+        cover = review_ledger.cover_at(root, {}, base_ref)
+        return cover.covering_ids(paths, mode=review_ledger.Mode(overrides=blobs))
     except review_ledger.ToolError as exc:
         print("escape_log: checksRan left empty: %s" % exc, file=sys.stderr)
         return []

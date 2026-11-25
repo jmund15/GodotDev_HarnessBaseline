@@ -2,15 +2,14 @@
 """
 Library for harness markdown edits; it emits nothing and is not wired as a hook.
 
-Callers: `self_eval_archive_guard.py` (`pre_edit_text`, `added_lines`), `_owner_text.py`'s turn rule
-(`_starts_turn`, `_latest_turn_key`, proved by `test_owner_text.py`) and `git_guardrails.py`'s
-commit-time density advisory (`UNIT`, `EXCLUDED`, `DENSITY_AUDIT`, so there is one definition of a
-rule-unit).
+Callers: `self_eval_archive_guard.py` and `check_logger_tag_prefix.py` (`pre_edit_text`, `added_lines`), `_owner_text.py`'s turn rule
+(`_starts_turn`, `_latest_turn_key`, proved by `test_owner_text.py`). `UNIT`, `EXCLUDED` and `DENSITY_AUDIT`
+have no caller: the commit-time density advisory that read them was not carried into the floor port
+(`tests/floor/test_floor_ported.md`).
 
 The per-edit `[harness-growth]` report was removed: a note on a call a hook already admits arrives after
 the decision (`instruction_quality` §3). Its measures live later: `triage.py sentences (--staged | --rev R)`
-lists the added and removed doctrine sentences before the kind call, `git_guardrails.py` advises a commit
-whose staged `.md` adds a rule-unit over `DENSITY_AUDIT`, and `load_census.py` `over_baseline`
+lists the added and removed doctrine sentences before the kind call, and `load_census.py` `over_baseline`
 feeds the close's hot-set review.
 """
 

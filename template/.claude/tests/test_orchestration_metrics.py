@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import orchestration_metrics as metrics
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _plugin_plant as plug
 
 
 class MetricsConformance(unittest.TestCase):
@@ -104,6 +106,33 @@ class MetricsConformance(unittest.TestCase):
         instrument = next(iter(metrics.MEASUREMENT_WORKFLOWS))
         row = metrics._agent_base('wf', dict(workflowName=instrument, args={'measurement': 'pin-ab-r1'}), entry, {})
         self.assertNotIn('measurement', row)
+
+    def test_instrument_workflows_union_the_core_set_with_each_ready_plugins_registration(self):
+        with tempfile.TemporaryDirectory() as root:
+            ready = plug.plant(Path(root) / 'ready', measurement_workflows=['planted-instrument'])
+            self.assertEqual(metrics.instrument_workflows(ready), metrics.MEASUREMENT_WORKFLOWS | {'planted-instrument'})
+            run = dict(workflowName='planted-instrument')
+            with patch.object(metrics, 'CLAUDE_DIR', str(ready)):
+                self.assertTrue(metrics.is_instrument_run(run))
+            absent = plug.plant_absent(Path(root) / 'absent')
+            self.assertEqual(metrics.instrument_workflows(absent), metrics.MEASUREMENT_WORKFLOWS)
+            with patch.object(metrics, 'CLAUDE_DIR', str(absent)):
+                self.assertFalse(metrics.is_instrument_run(run))
+
+    def test_an_unreadable_plugin_leaves_the_core_names_and_names_itself_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            broken = plug.plant_unreadable(Path(root))
+            metrics._WARNED.clear()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                first = metrics.instrument_workflows(broken)
+                metrics.instrument_workflows(broken)
+            self.assertEqual(first, metrics.MEASUREMENT_WORKFLOWS)
+            self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
+
+    def test_the_core_keeps_only_the_workflows_it_drives_or_measures_itself(self):
+        self.assertEqual(metrics.MEASUREMENT_WORKFLOWS, {'test-agents-fixtures', 'test-skill-pressure',
+                                                          'harness-bloat-probe', 'agenttype-input-cost-probe'})
 
     def test_actual_lenses_still_sample(self):
         for workflow, phase in [('review-fanout', 'Review'), ('explore-fanout', 'Explore')]:

@@ -137,6 +137,17 @@ def iso(seconds_ago=0):
 
 
 class MainCheckCase(RepoCase):
+    def seed_repo(self):
+        super().seed_repo()
+        self.write('.github/workflows/main_check.yml', WORKFLOW)
+        self.write('.claude/scripts/harness_tests.py', SHIM)
+        self.write('.claude/scripts/planted_gate.ps1', GATE_STUB.replace('@NAME@', 'gate'))
+        self.declare_gate()
+        self.write('.claude/tests/test_main_check_planted.py', 'print("planted proof ran")\n')
+        self.write('.gitignore', '.claude/scratch/\n/stamp.json\n/slots/\n/harness_*\n*.lock\n')
+        self.commit('planted main check inputs')
+        self.base = self.git('rev-parse', 'HEAD')
+
     def setUp(self):
         super().setUp()
         self.aux = tempfile.TemporaryDirectory(prefix='main_check_aux_')
@@ -146,14 +157,6 @@ class MainCheckCase(RepoCase):
         self.git('config', 'remote.origin.url', self.remote.as_uri())
         for key, value in SUB_ENV.items():
             os.environ[key] = value
-        self.write('.github/workflows/main_check.yml', WORKFLOW)
-        self.write('.claude/scripts/harness_tests.py', SHIM)
-        self.write('.claude/scripts/planted_gate.ps1', GATE_STUB.replace('@NAME@', 'gate'))
-        self.declare_gate()
-        self.write('.claude/tests/test_main_check_planted.py', 'print("planted proof ran")\n')
-        self.write('.gitignore', '.claude/scratch/\n/stamp.json\n/slots/\n/harness_*\n*.lock\n')
-        self.commit('planted main check inputs')
-        self.base = self.git('rev-parse', 'HEAD')
         self.push()
         self.seed_state(self.base)
         self.tips = [self.base]
@@ -1226,7 +1229,18 @@ class BaselineLinuxSource(MainCheckCase):
         self.assertTrue(self.source()['reason'], out)
 
 
+PARTS = 2
+
+
+def parts_present():
+    """Every part file exists: a deleted one would silently drop its cases."""
+    for n in range(2, PARTS + 1):
+        part = HERE / ('test_main_check_part%d.py' % n)
+        assert part.is_file(), 'missing part file ' + part.name
+
+
 if __name__ == '__main__':
     sys.path.insert(0, str(HERE))
     from _case_pool import run_sharded
-    sys.exit(run_sharded(__file__))
+    parts_present()
+    sys.exit(run_sharded(__file__, 0, PARTS))

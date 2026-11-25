@@ -230,7 +230,7 @@ def main():
         judge = judges[0] if judges else None
         alpha = [p for p in harness_tests.discover(os.path.join(os.path.dirname(harness_tests.STAMP_PATH), ".claude", "tests"))
                  if p.endswith("test_alpha.py")]
-        verdict = judge({alpha[0]: "\n".join(old)}) if judge and alpha else "no judge"
+        verdict = judge.makes_run_red({alpha[0]: "\n".join(old)}) if judge and alpha else "no judge"
         check("(o) a --base run's red judge excuses a red pre-existing at base, so it never cuts the timeout retries",
               verdict is False and stamped and reruns == 1, "verdict=%r stamped=%s reruns=%s" % (verdict, stamped, reruns))
     except Exception as exc:
@@ -242,11 +242,17 @@ def main():
         def launch(path, root=None, **_kw):
             seen["root"] = root
             return "fail", 0.0, "FAIL: seed tree absent (%s/runs) and %s" % (root.replace("\\", "/"), root)
-        real_launch, harness_tests._launch = harness_tests._launch, launch
+        real_make, harness_tests._run_context = harness_tests._run_context, None
+
+        def make(*args, **kwargs):
+            ctx = real_make(*args, **kwargs)
+            ctx.launch = lambda job: launch(job.proof, job.root)
+            return ctx
+        harness_tests._run_context = make
         try:
             detail = harness_tests._reds_at(repo, "HEAD", [proof]).get(proof, "")
         finally:
-            harness_tests._launch = real_launch
+            harness_tests._run_context = real_make
         checkout = seen.get("root") or "?"
         check("(m) a failure line naming the comparison checkout reads as the repo's own root, in either slash form",
               checkout not in detail and checkout.replace("\\", "/") not in detail

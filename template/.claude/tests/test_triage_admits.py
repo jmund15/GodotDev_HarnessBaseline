@@ -268,8 +268,10 @@ def test_rigor_read_prefers_the_session_level_over_a_later_record(tmp_path, monk
     task_record._mutate('read-level', lambda state: state.update(updated='2026-01-01T00:00:00'))
     task_record.open_record('read-later', 'readfirst-session', 'Later')
     task_record._mutate('read-later', lambda state: state.update(updated='2026-02-01T00:00:00'))
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'readsecond-session')
     task_record.open_record('read-other', 'readsecond-session', 'Other session')
     task_record.set_fields('read-other', rigor='thorough')
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'readfirst-session')
     assert triage.rigor(root=tmp_path) == 'light'
     assert triage.rigor(root=tmp_path, session_id='readsecond-session') == 'thorough'
 

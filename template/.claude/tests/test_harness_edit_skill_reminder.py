@@ -14,10 +14,12 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 HOOKS = os.path.join(HERE, "..", "hooks")
 sys.path.insert(0, HOOKS)
 HOOK = os.path.join(HOOKS, "harness_edit_skill_reminder.py")
-PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
+COMPACT_START = os.path.join(HOOKS, "subagent_compaction_rail.py")
 MARKER = os.path.join(HOOKS, "skill_load_marker.py")
 POST_READ = os.path.join(HOOKS, "post_read_dispatch.py")
 SKILL_MD = "C:/repo/.claude/skills/instruction_quality/SKILL.md"
@@ -87,12 +89,9 @@ def run(hook, payload, env):
     return ALLOW, out
 
 
-def precompact(env, session=SID):
-    """Fire the real PreCompact hook — it prints prose, not hook JSON."""
-    subprocess.run([sys.executable, PRECOMPACT],
-                   input=json.dumps({"session_id": session, "trigger": "auto"}),
-                   capture_output=True, text=True, timeout=60,
-                   env=dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+def compact_start(env, session=SID):
+    """Fire the real SessionStart(compact) hook that clears the compaction-scoped state."""
+    _hook_call.compact_start(COMPACT_START, env, session)
 
 
 def edit(path, env, session=SID, tool="Edit", agent=""):
@@ -173,7 +172,7 @@ def main():
     got, _ = edit(HARNESS, env, session="hesr0009")
     cases.append(("a subagent's load does not pass its parent", got == DENY))
 
-    precompact(env)
+    compact_start(env)
     got, reason = edit(HARNESS, env)
     cases.append(("a compaction drops the skill from context, so the gate denies again", got == DENY))
     mark_skill_loaded(tmp, SID)
@@ -190,7 +189,7 @@ def main():
                   % (len(missing), (missing or [""])[0][:80]), got == NUDGE and not missing))
     got, reason = edit(LADDER, env)
     cases.append(("a later ladder edit in the same context window repeats no note", got == ALLOW))
-    precompact(env)
+    compact_start(env)
     mark_skill_loaded(tmp, SID)
     got, reason = edit(LADDER, env)
     cases.append(("a compaction drops the note from context, so the next ladder edit carries it again",

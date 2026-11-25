@@ -31,7 +31,8 @@ long-context multiplier applies past its threshold); when the row or the pin can
 (`model_registry.compaction_point`), and whether
 the reading is past its long-context point. These are facts for the reader: no check in this module denies on them.
 `spare_plan_fact(tier, transport, data)` adds one fact when a row claiming `tier` on another plan projects
-quota unused at its reset: `<alias> on <plan>: ~N% unused at reset in Dd`, read from the capacity cache only.
+quota unused at its reset: `<alias> on <plan>: <window> window, ~N% on course to go unused at its reset
+in Dd`, from the one `provider_bands.unused_text` clause, read from the capacity cache only.
 
 `wide_run_refusal(kind, brief_text, root)` is the deny for a job whose brief orders a wide test run: `gate`
 is the one kind that may, and every other kind's `task` block `check` entries are classified, plus the
@@ -545,7 +546,8 @@ def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=
 
 def spare_plan_fact(tier, transport, data=None, now=None, read=None):
     """One terse fact per row claiming `tier` on another plan whose quota projects unused at its reset,
-    joined with `; `, or None: `<alias> on <plan>: ~N% unused at reset in Dd`.
+    joined with `; `, or None: `<alias> on <plan>: <window> window, ~N% on course to go unused at its
+    reset in Dd`.
 
     Facts only, never a pick: it names quota that moving the job to that plan's row could spend. Every
     qualifying plan is named, and percents are never compared across plans. `read` defaults to the
@@ -564,12 +566,13 @@ def spare_plan_fact(tier, transport, data=None, now=None, read=None):
             if not rows:
                 continue
             row = provider_bands.plan_room(plan, data, read, now)
-            pct = provider_bands.spare_pct(row) if row.get("room") is not None else None
-            if pct is None:
+            if row.get("room") is None:
                 continue
-            days = row["unusedAtReset"].get("daysLeft")
-            facts.append("%s on %s: ~%d%% unused at reset in %dd" % (
-                _name(rows[0]), plan, pct, round(days if isinstance(days, (int, float)) else 0)))
+            clause = provider_bands.unused_text(row.get("unusedAtReset"))
+            if not clause:
+                continue
+            window = provider_bands.window_name({"name": row.get("window")})
+            facts.append("%s on %s: %s window, %s" % (_name(rows[0]), plan, window, clause))
         return "; ".join(facts) or None
     except Exception:
         return None

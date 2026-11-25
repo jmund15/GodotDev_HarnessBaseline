@@ -4,6 +4,16 @@
 // to `<dir>/<pid>.jsonl`. ESM module loads bypass `fs` and stay unrecorded.
 const LOG = process.env.HARNESS_READ_LOG;
 if (LOG) {
+  // A pass with no events cannot say whether this recorder ever loaded; the beacon can.
+  try {
+    const fs0 = require('fs');
+    const path0 = require('path');
+    fs0.mkdirSync(LOG, { recursive: true });
+    fs0.writeFileSync(path0.join(LOG, process.pid + '.beacon'), JSON.stringify({
+      recorder: 'node', log: LOG, pid: process.pid, cwd: process.cwd(),
+      node_options: process.env.NODE_OPTIONS || null,
+    }) + '\n');
+  } catch (e) { /* a recorder fault never fails the proof */ }
   const fs = require('fs');
   const path = require('path');
   const { fileURLToPath } = require('url');

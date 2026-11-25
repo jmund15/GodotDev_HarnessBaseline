@@ -101,21 +101,21 @@ finally:
     os.environ.pop("HARNESS_WORKFLOW_ARGS_OWNER", None)
 
 # Through the real output channel on the host transport, in the Surplus band.
-real = (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.refusal,
+real = (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.provider_capacity.reading,
         wpg._session_transport._registry, wpg.model_registry.load)
 capture = io.StringIO()
 real_stdin = sys.stdin
 try:
     wpg._session_transport.resolve = lambda **_k: ("host", "test")
     wpg.band_and_pressure = lambda *_a, **_k: ("Surplus", None)
-    wpg.provider_capacity_guard.refusal = lambda _t: None
+    wpg.provider_capacity_guard.provider_capacity.reading = lambda _t, data=None: {"status": "available", "sourceKind": "live"}
     wpg._session_transport._registry = lambda: DATA
     wpg.model_registry.load = lambda *_a, **_k: DATA
     sys.stdin = io.StringIO(json.dumps(wf(dict(JOBS))))
     with contextlib.redirect_stdout(capture):
         wpg.main()
 finally:
-    (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.refusal,
+    (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.provider_capacity.reading,
      wpg._session_transport._registry, wpg.model_registry.load) = real
     sys.stdin = real_stdin
 out = capture.getvalue().strip()
@@ -128,20 +128,20 @@ check("...and __railsText with the assembled rail text",
 
 def guard_output(payload):
     """The PreToolUse document `main()` emits for `payload` on the host transport in the Surplus band."""
-    real = (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.refusal,
+    real = (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.provider_capacity.reading,
             wpg._session_transport._registry, wpg.model_registry.load)
     capture, real_stdin = io.StringIO(), sys.stdin
     try:
         wpg._session_transport.resolve = lambda **_k: ("host", "test")
         wpg.band_and_pressure = lambda *_a, **_k: ("Surplus", None)
-        wpg.provider_capacity_guard.refusal = lambda _t: None
+        wpg.provider_capacity_guard.provider_capacity.reading = lambda _t, data=None: {"status": "available", "sourceKind": "live"}
         wpg._session_transport._registry = lambda: DATA
         wpg.model_registry.load = lambda *_a, **_k: DATA
         sys.stdin = io.StringIO(json.dumps(payload))
         with contextlib.redirect_stdout(capture):
             wpg.main()
     finally:
-        (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.refusal,
+        (wpg._session_transport.resolve, wpg.band_and_pressure, wpg.provider_capacity_guard.provider_capacity.reading,
          wpg._session_transport._registry, wpg.model_registry.load) = real
         sys.stdin = real_stdin
     text = capture.getvalue().strip()

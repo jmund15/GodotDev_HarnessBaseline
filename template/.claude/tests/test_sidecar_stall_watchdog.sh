@@ -29,24 +29,38 @@ stalling_child() { printf '{"type":"system","subtype":"init"}\n'; sleep 6; print
 # journal_event <record> <event>: 0 when the record's journal holds that row
 journal_event() { grep -q "\"event\": \"$2\"" "$1.journal.jsonl" 2>/dev/null; }
 
+# Case 1's child: silent after init until the proof has seen the `stalled` row and opened $GATE; the assistant line is the
+# work event, and the run ends only once the watcher wrote `resumed`. The order decides the case, not seconds, so machine
+# load that delays a poll cannot fail it. Each wait has a ceiling, so a broken watcher fails the case and never hangs it.
+gated_child() {
+  printf '{"type":"system","subtype":"init"}\n'
+  local n=0
+  while [ ! -f "$GATE" ] && [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done
+  printf '{"type":"assistant","n":1}\n'
+  n=0
+  while ! journal_event "$REC" resumed && [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done
+  printf '{"type":"result","subtype":"success","result":"recovered"}\n'
+}
+
 # --- case 1: the stall writes a journal row, kills nothing, and the next work event writes resumed
 d="$(mktemp -d)"; P="$d/progress.jsonl"; : > "$P"
-REC="$d/stall.record.json"
+REC="$d/stall.record.json"; GATE="$d/gate"
 rcfile="$d/rc"; outfile="$d/out"
 (
   SC_RECORD="$REC" SC_STALL_SEC=3 SC_WATCH_POLL_SEC=1 OUTPUT="" rc=""
-  sc_run_watched stalling_child "$P"
+  sc_run_watched gated_child "$P"
   printf '%s' "$rc" > "$rcfile"; printf '%s' "$OUTPUT" > "$outfile"
 ) &
 bg=$!
 alive_when_marked=0; waited=0
-while [ "$waited" -lt 12 ]; do
+while [ "$waited" -lt 60 ]; do
   if journal_event "$REC" stalled; then
     kill -0 "$bg" 2>/dev/null && alive_when_marked=1
     break
   fi
   sleep 1; waited=$((waited + 1))
 done
+: > "$GATE"
 if wait "$bg" 2>/dev/null; then :; fi
 rc="$(cat "$rcfile" 2>/dev/null)"
 if [ "$alive_when_marked" = 1 ] && [ "$rc" = 0 ] && journal_event "$REC" resumed \
@@ -107,21 +121,21 @@ else
   say "FAIL progress default: -R='$got_r' -R+-P='$got_p' -R+-o='$got_o' none='$got_n'"; fail=1
 fi
 P4="${got_r%%|*}"; : > "$P4"
-short_stall_child() { printf '{"type":"system","subtype":"init"}
-'; sleep 5; printf '{"type":"assistant","n":1}
-'; printf '{"type":"result","subtype":"success","result":"done4"}
-'; }
+# Silent after init until the watcher writes its `stalled` row (a ceiling ends the wait, so an unwatched run still ends).
+short_stall_child() {
+  printf '{"type":"system","subtype":"init"}\n'
+  local n=0
+  while ! journal_event "$REC4" stalled && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+  printf '{"type":"assistant","n":1}\n'; printf '{"type":"result","subtype":"success","result":"done4"}\n'
+}
 err4="$d/err4"; seen4=0
 (
   SC_RECORD="$REC4" SC_STALL_SEC=2 SC_WATCH_POLL_SEC=1 OUTPUT="" rc=""
   sc_run_watched short_stall_child "$P4" 2> "$err4"
 ) &
 bg4=$!
-for _ in 1 2 3 4 5 6 7 8; do
-  if journal_event "$REC4" stalled; then seen4=1; break; fi
-  sleep 1
-done
 wait "$bg4" 2>/dev/null || :
+journal_event "$REC4" stalled && seen4=1
 if [ "$seen4" = 1 ] && ! grep -q 'watchdog is OFF' "$err4"; then
   say "OK   a -R run with no -P is watched: the stall row appears and no OFF notice prints"
 else

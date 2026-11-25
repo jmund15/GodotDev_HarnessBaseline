@@ -177,7 +177,7 @@ def a_one_row_job_prints_the_spare_plan_fact_when_another_plan_has_room():
                           read=reader(readings))
     quiet = sf.spare_facts([job(alias="sonnet", effort="medium")], data, now=NOW,
                            read=reader({"anthropic": reading("anthropic", 0.8)}))
-    return (len(one) == 1 and "`j`" in one[0] and "on codex: ~" in one[0] and "unused at reset" in one[0]
+    return (len(one) == 1 and "`j`" in one[0] and "on codex: 7d window, ~" in one[0] and "unused at its reset" in one[0]
             and many == [] and quiet == []), repr((one, many, quiet))
 
 
@@ -330,7 +330,8 @@ def fact_lines_attach_the_spare_plan_fact_with_no_cheaper_same_transport_claiman
                                      read=lambda name, _d=None: {"go": go}.get(name))
     quiet = dispatch_size.fact_lines({"jobs": [one]}, TMP, data=data, ladder=ladder, now=now,
                                      read=lambda name, _d=None: None)
-    return (any("go-exec on go: ~72% unused at reset in 2d" in line and "`exec`" in line for line in lines)
+    return (any("go-exec on go: 7d window, ~72% on course to go unused at its reset in 2.0d" in line
+                and "`exec`" in line for line in lines)
             and quiet == ["pin is the cheapest claimant: exec"]), repr((lines, quiet))
 
 
@@ -427,6 +428,32 @@ def a_plan_ahead_of_its_pace_never_takes_a_job_over_a_plan_with_more_room():
     argv, err = plan(readings, job(alias="sonnet", effort="medium"), data, samples)
     return (argv_plan(argv) == os.path.basename(launcher_of("anthropic-secondary"))
             and "plan anthropic-secondary" in err and "unused at reset" not in err), str(argv)[:200] + err[-400:]
+
+
+def unmetered_data():
+    """A planted registry with one unmetered plan (plan-quota + capacityUnsupported) and one row on it."""
+    return {"transports": {"agy": {"costModel": "plan-quota", "capacityUnsupported": {"reason": "no quota reader"},
+                                   "launcher": ".claude/scripts/agy_planted.sh"}},
+            "models": [{"transport": "agy", "id": "agy/m", "alias": "agy-m", "roles": ["scout"]}]}
+
+
+UNSUPPORTED = {"schemaVersion": 1, "transport": "agy", "costModel": "plan-quota", "sourceKind": "unsupported",
+               "observedAt": "2027-01-15T08:00:00Z", "status": "unsupported", "error": None, "liveFailure": None,
+               "quota": None, "balance": None}
+
+
+@case
+def an_unmetered_plan_decides_nothing_so_its_launcher_gate_decides():
+    fresh()
+    data = unmetered_data()
+    placed = sf.place_job(["agy"], data, reader({"agy": UNSUPPORTED}), NOW, {}, ())
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        try:
+            got = sf.pick_plan("j", "agy", ["agy"], data, read=reader({"agy": UNSUPPORTED}))
+        except sf.JobError as exc:
+            got = "REFUSED: " + str(exc)
+    return (placed.blind and got == "agy" and "unreadable" not in err.getvalue()), f"blind={placed.blind} got={got} {err.getvalue()[-300:]}"
 
 
 failed = []

@@ -403,6 +403,17 @@ class FoldCheckTests(unittest.TestCase):
         self.assertEqual(routed, {"F1": 0, "F2": 1, "F3": 0})
         self.assertEqual((unrouted, ambiguous), (["F4"], []))
 
+    def test_an_unprefixed_citation_routes_to_the_repo_relative_path(self):
+        rel = ".claude/plans/plan.md"
+        pre = "# Plan\n\nStep 3: teh default is local.\n"
+        row = {"id": "F1", "action": "FIX", "file": "plan.md:3", "description": "typo",
+               "old": "teh default", "new": "the default",
+               "evidence": [{"file": "plan.md:3", "quote": "teh default is local"}]}
+        report, _kinds = self.case({rel: (pre, pre.replace("teh", "the"))}, [row], {"F1": "finding"})
+        entry = next(d for d in report["dispositions"] if d["id"] == "F1")
+        self.assertEqual(entry["file"], rel, "the citation names the sole subject file")
+        self.assertNotEqual(entry["disposition"], "out-of-subject")
+
     def test_an_absolute_citation_routes_case_insensitively_where_normcase_does_nothing(self):
         subject = self.fx.subject()
         cited = str(self.fx.plan).upper().replace(self.fx.plan.name.upper(), self.fx.plan.name)

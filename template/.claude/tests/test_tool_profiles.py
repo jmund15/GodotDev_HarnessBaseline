@@ -765,8 +765,9 @@ else:
 # this proof is not its own finding.
 _KIND_LIST = "scout" + "|lens|reviewer|author"
 _COPY_RE = re.compile(r"[a-z][a-z-]*(?:\|[a-z][a-z-]*)+")
-# A parked `.patch` is a diff someone may apply, never a list a reader takes kinds from.
-_grep = subprocess.run(["git", "-C", ROOT, "grep", "-n", _KIND_LIST, "--", ".claude/", ":!*.patch"],
+# Plans, memory and parked `.patch` diffs are history and evidence, never a list a reader takes kinds from.
+_grep = subprocess.run(["git", "-C", ROOT, "grep", "-n", _KIND_LIST, "--", ".claude/", ":!*.patch",
+                        ":!.claude/plans/", ":!.claude/auto-memory/"],
                        capture_output=True, text=True)
 check("the kind-list sweep finds the written-out copies", True, bool(_grep.stdout.strip()))
 _stale = []
@@ -787,6 +788,13 @@ check("a read-only kind's spec still names the ai-worker server", True,
       "mcp__ai-worker" in tp.resolve_kind("scout", route="launcher", candidates=CANDIDATES)[1].split(","))
 raises("denyTools on a kind must be a list of mcp__ names", "denyTools",
        lambda: tp._validate_kinds({"x": dict(TABLE["kinds"]["scout"], denyTools=["write_doc"])}))
+
+for _bad in ("", 3, ["bench"]):
+    raises("a kind's plugin must be a non-empty string or absent: %r" % (_bad,), "plugin",
+           lambda bad=_bad: tp._validate_kinds({"x": dict(TABLE["kinds"]["scout"], plugin=bad)}))
+tp._validate_kinds({"x": dict(TABLE["kinds"]["scout"], plugin="bench")})
+check("the arm, bench-score and bench-review kinds name the bench plugin", ["bench"] * 3,
+      [TABLE["kinds"][k].get("plugin") for k in ("arm", "bench-score", "bench-review")])
 
 # ---- the brief scan is gone; a retired flag names its replacement
 import re  # noqa: E402

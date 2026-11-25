@@ -68,10 +68,9 @@ def run_plan(config_dir, exhausted, rooms, data=PLAN_SYN):
     st, mr, checks = wpg._session_transport, wpg.model_registry, wpg._dispatch_checks
     asked = []
 
-    def refusal(plan, *_a, **_k):
+    def capacity(plan, data=None):
         asked.append(plan)
-        return ("Provider capacity exhausted for %s; native Workflow/Agent dispatch is blocked" % plan
-                if plan == exhausted else None)
+        return {"status": "exhausted" if plan == exhausted else "available", "sourceKind": "live"}
 
     payload = {"tool_name": "Workflow", "session_id": "plan0001", "tool_input": {
         "scriptPath": ".claude/workflows/dispatch.js",
@@ -81,7 +80,7 @@ def run_plan(config_dir, exhausted, rooms, data=PLAN_SYN):
     with open(os.path.join(state_dir, "plan0001.json"), "w", encoding="utf-8", newline="\n") as fh:
         json.dump({"skills_loaded": ["orchestration"]}, fh)
     saved = [(st, "_registry"), (st, "HOST_TRANSPORT"), (wpg, "band_and_pressure"),
-             (wpg.provider_capacity_guard, "refusal"), (mr, "load"), (mr, "role_tiers"),
+             (wpg.provider_capacity_guard.provider_capacity, "reading"), (mr, "load"), (mr, "role_tiers"),
              (wpg._hook_state, "state_path"), (checks, "read_capacity"), (sys, "stdin"),
              (wpg._tp(), "load_registrations")]
     saved = [(o, a, getattr(o, a)) for o, a in saved]
@@ -95,7 +94,7 @@ def run_plan(config_dir, exhausted, rooms, data=PLAN_SYN):
         st._registry = lambda: data
         st.HOST_TRANSPORT = "host"
         wpg.band_and_pressure = lambda *_a, **_k: ("On pace", None)
-        wpg.provider_capacity_guard.refusal = refusal
+        wpg.provider_capacity_guard.provider_capacity.reading = capacity
         mr.load = lambda *_a, **_k: data
         mr.role_tiers = lambda *_a, **_k: {"executor": ["h-exec"]}
         wpg._hook_state.state_path = lambda s: os.path.join(state_dir, str(s or "default")[:8] + ".json")

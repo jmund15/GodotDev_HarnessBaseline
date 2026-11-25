@@ -144,6 +144,12 @@ def main():
          "warming" in str(why.get("blind")) and "unreadable" in str(why.get("broken")), repr(why))
     case("dropped plans are named in the reason", all(n in got["reason"] for n in ("full", "blind")),
          got["reason"])
+    rate_limited = {"status": "rate-limited", "sourceKind": "live", "quota": None, "balance": None,
+                    "error": {"kind": "rate-limit", "message": "rate limited until 12:00Z"}}
+    row = pb.plan_room("plan", registry(["plan"]), reader({"plan": rate_limited}), NOW)
+    case("a rate-limited plan row reads unreadable with its rate-limit reason",
+         row.get("room") is None and str(row.get("why", "")).startswith("unreadable")
+         and "rate limited until 12:00Z" in str(row.get("why", "")), str(row))
     case("a spent window keeps its plain figures in the human reason",
          "full Exhausted: 7d 0% left, 50% to go, resets " in got["reason"], got["reason"])
     case("pick reasons contain no retired display dialect and each plan has one entry",
@@ -301,8 +307,9 @@ def main():
         capacity_go = {"status": "available", "quota": {"routingWindow": "thirty_day",
                                                         "windows": [month, short]}}
         entry = pb.plan_entry("go", capacity_go, NOW)
-        case("the plan entry appends the unused share to its routing window's figures",
-             entry.startswith("go Surplus: 30d 50% left, 40% to go, ~45% goes unused at reset (this week's use)"),
+        case("the plan entry appends the unused share, with its reset, to its routing window's figures",
+             entry.startswith("go Surplus: 30d 50% left, 40% to go, "
+                              "~45% on course to go unused at its reset in 12.0d"),
              entry)
         tight = {"name": "seven_day", "usedPercent": 99, "resetsAt": NOW + 3600,
                  "windowDurationMins": WEEK_MIN}
@@ -317,11 +324,12 @@ def main():
             finally:
                 pb._samples = saved
 
-        case("the entry names the plan's own recent use as the basis",
-             "(recent use)" in entry_with(recent) and "~" in entry_with(recent), entry_with(recent))
+        case("the entry states the forecast with its share and reset, never an internal basis word",
+             "~" in entry_with(recent) and "unused at its reset" in entry_with(recent)
+             and "recent use" not in entry_with(recent), entry_with(recent))
         none = pb.plan_entry("x", capacity_tight, NOW)
         case("a projection under one percent adds no clause",
-             "goes unused" not in none and "unused at reset" not in none, none)
+             "goes unused" not in none and "unused at" not in none, none)
         slow = {"transport": "slow", "room": 3.0,
                 "unusedAtReset": {"pct": 40, "basis": "recent", "daysLeft": 5}}
         earlier = {"transport": "earlier", "room": 2.0,
@@ -353,9 +361,9 @@ def main():
     tight["secondary"]["quota"]["windows"][0]["band"] = "Surplus"
     got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(tight), now=NOW)
     sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
-    case("a nearly spent 5-hour window ranks its plan below one with weekly room only",
-         got.get("transport") == "codex" and sec.get("binding") == "five_hour"
-         and round(sec.get("bindingRoom") or 0, 2) == 0.37, repr(got))
+    case("a nearly spent 5-hour window keeps its plan's weekly rank",
+         got.get("transport") == "secondary" and sec.get("binding") is None
+         and round(sec.get("room") or 0, 2) == 1.13, repr(got))
     case("the weekly room stays the plan's room, so the ahead-of-pace share still reads the weekly window",
          round(sec.get("room") or 0, 2) == 1.13, repr(sec))
     case("the pick's reason names the binding window",
@@ -374,11 +382,11 @@ def main():
     try:
         got = pb.pick('executor', None, data=registry(list(credited)), read=reader(credited), now=NOW)
         sec = next(r for r in got['ranked'] if r['transport'] == 'secondary')
-        ok = got['transport'] == 'codex' and sec.get('bindingRoom') == 0 and sec.get('binding') == 'five_hour'
+        ok = sec.get('room') is not None and 'bindingRoom' not in sec and sec.get('binding') is None
         detail = repr(got)
     except Exception as exc:
         ok, detail = False, repr(exc)
-    case('a zero-room short window with credits gates the plan without raising', ok, detail)
+    case('a zero-room short window with credits does not demote the plan', ok, detail)
 
     # A short window at or above even pace constrains nothing (observed 2026-10-05: a dormant
     # five_hour window held a plan with 32% weekly left and 0.39d to reset below codex at 1.29).
@@ -396,8 +404,9 @@ def main():
     below = {"secondary": with_short(reading("secondary", 68, 32 / 568), 70, 0.5), "codex": reading("codex", 29, 0.55)}
     got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(below), now=NOW)
     sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
-    case("a 5-hour window below even pace (0.6) still ranks its plan by 0.6",
-         got.get("transport") == "codex" and round(sec.get("bindingRoom") or 0, 2) == 0.6, repr(got))
+    case("a 5-hour window below even pace keeps its plan's weekly rank",
+         got.get("transport") == "secondary" and sec.get("binding") is None
+         and round(sec.get("room") or 0, 2) == 5.68, repr(got))
 
     # A short window within the reading's whole-percent resolution of even pace gates nothing
     # (observed 2026-10-05: five_hour rooms 0.98 at 58% used and 0.994 bound a plan at 5.87/5.94
@@ -413,9 +422,9 @@ def main():
     late = {"secondary": with_short(reading("secondary", 68, 32 / 587), 83, 0.2), "codex": reading("codex", 35, 0.5)}
     got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(late), now=NOW)
     sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
-    case("a 5-hour window 83% used with an hour to reset gates its plan below a plan at 1.30",
-         got.get("transport") == "codex" and sec.get("binding") == "five_hour"
-         and round(sec.get("bindingRoom") or 0, 2) == 0.85, repr(got))
+    case("a 5-hour window 83% used with an hour to reset keeps its plan's weekly rank",
+         got.get("transport") == "secondary" and sec.get("binding") is None
+         and round(sec.get("room") or 0, 2) == 5.87, repr(got))
 
     plan_cases(case)
     pace_cases(case)
@@ -423,6 +432,7 @@ def main():
     credit_cases(case)
     facts_cases(case)
     reopen_cases(case)
+    unmetered_cases(case)
     names = [pb.window_name(w) for w in ({"windowDurationMins": 43200}, {"windowDurationMins": 300},
                                          {"windowDurationMins": 90, "name": "ninety"}, {"name": "seven_day"},
                                          {"name": "five_hour"}, {"name": "odd"}, {})]
@@ -1154,6 +1164,41 @@ def retired_cli_cases(case):
         case("CLI `%s` exits 2 naming its replacement" % argv[0],
              r.returncode == 2 and "retired" in r.stderr and replacement in r.stderr
              and "Traceback" not in r.stderr, (r.stdout + r.stderr)[-300:])
+
+
+def unsupported_reading(transport):
+    """provider_capacity's answer for a transport that declares `capacityUnsupported`."""
+    return {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota", "sourceKind": "unsupported",
+            "observedAt": "2027-01-15T08:00:00Z", "status": "unsupported", "error": None, "liveFailure": None,
+            "quota": None, "balance": None}
+
+
+def unmetered_cases(case):
+    """An unmetered plan: plan-quota plus `capacityUnsupported`. Its room is unknowable, so it never ranks as
+    roomy, and it is marked so placement leaves the decision to the launcher's own gate."""
+    data = registry(["go", "agy"], pay=())
+    data["transports"]["agy"]["capacityUnsupported"] = {"reason": "no headless quota reader"}
+    row = pb.plan_room("agy", data, reader({"agy": unsupported_reading("agy")}), NOW)
+    case("an unmetered plan reads unmetered with no room",
+         row.get("unmetered") is True and row.get("room") is None
+         and str(row.get("why", "")).startswith("unmetered: no headless quota reader"), str(row))
+    got = pb.pick("executor", data=data, now=NOW,
+                  read=reader({"go": reading("go", 30, 0.9), "agy": unsupported_reading("agy")}))
+    case("pick never ranks an unmetered plan over a readable one",
+         got["transport"] == "go" and any(r["transport"] == "agy" and r.get("unmetered") for r in got["ranked"]),
+         str(got)[:400])
+    row = pb.plan_room("agy", data, reader({}), NOW)
+    case("an unmetered plan reads unmetered with no cached reading (a cache-only reader)",
+         row.get("unmetered") is True and not row.get("stale"), str(row))
+    marginal = registry(["go"], pay=("free",))
+    marginal["transports"]["free"]["capacityUnsupported"] = {"reason": "no amount endpoint"}
+    row = pb.plan_room("free", marginal, reader({"free": dict(unsupported_reading("free"), costModel="marginal-usd")}), NOW)
+    case("a marginal-usd capacityUnsupported transport is not an unmetered plan",
+         not row.get("unmetered") and row.get("room") is None, str(row))
+    data["transports"]["agy"].pop("capacityUnsupported")
+    row = pb.plan_room("agy", data, reader({"agy": unknown_reading("agy")}), NOW)
+    case("a plan-quota probe answering unknown still reads unreadable",
+         not row.get("unmetered") and str(row.get("why", "")).startswith("unreadable"), str(row))
 
 
 def report(cases):

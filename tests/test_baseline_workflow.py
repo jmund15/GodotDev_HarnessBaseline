@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Re-runnable proof (baseline-repo root): baseline.yml bootstraps every consumer profile once.
+"""Re-runnable proof (baseline-repo root): baseline.yml bootstraps every consumer profile once, runs every lane's
+tests under `pytest -n auto`, and prints its totals and byte readouts without failing on them.
 
     python3 tests/test_baseline_workflow.py
 
@@ -89,7 +90,7 @@ def _gate_run(results: str) -> int:
         body.append(line[indent + 2:])
     env = dict(os.environ, RESULTS=results)
     return subprocess.run([bash_exe(), "--noprofile", "--norc", "-eo", "pipefail", "-c", "\n".join(body)],
-                          env=env, capture_output=True).returncode
+                          env=env, stdin=subprocess.DEVNULL, capture_output=True).returncode
 
 
 def test_gate_step_passes_only_on_all_success() -> None:
@@ -107,14 +108,55 @@ def test_one_bootstrap_step_per_profile() -> None:
             profile, count, layers)
 
 
+PYTEST_RUN = re.compile(r"python3? -m pytest -n auto -q --durations=20 (\S+)")
+LANE_TESTS = {"root": "tests", "template": "template/.claude/tests", "pure": ".claude/tests",
+              "pure-coding": ".claude/tests", "pure-coding-godot": ".claude/tests"}
+
+
 def test_each_profile_step_runs_the_consumer_battery() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     for step in _steps(text):
         match = LAYERS_FLAG.search(step)
         if not match or match.group(1) not in PROFILES:
             continue
-        assert "python3 .claude/scripts/harness_tests.py" in step, (
-            "--layers %s step does not run the consumer's harness battery:\n%s" % (match.group(1), step))
+        run = PYTEST_RUN.search(step)
+        assert run and run.group(1) == ".claude/tests" and 'cd "$target"' in step, (
+            "--layers %s step does not run the consumer's harness battery under pytest:\n%s" % (match.group(1), step))
+
+
+def test_each_lane_runs_its_tests_under_pytest_n_auto_with_the_slowest_printed() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "harness_tests.py" not in text, "a lane still runs the serial harness runner"
+    for lane, folder in LANE_TESTS.items():
+        job = _job(text, lane)
+        assert "pytest-xdist" in job, "lane %s does not install pytest-xdist" % lane
+        assert [m.group(1) for m in PYTEST_RUN.finditer(job)] == [folder], "lane %s runs %s" % (
+            lane, PYTEST_RUN.findall(job))
+
+
+SERIAL_RUN = re.compile(r"python3 -m pytest -p no:xdist -q --harness-serial (\S+)")
+
+
+def test_each_install_lane_runs_its_serial_proofs_in_their_own_pass() -> None:
+    """`pytest -n auto` skips every `proof_serial` proof, so each lane that holds the tests conftest runs them alone."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for lane, folder in LANE_TESTS.items():
+        found = [m.group(1) for m in SERIAL_RUN.finditer(_job(text, lane))]
+        assert found == ([] if lane == "root" else [folder]), "lane %s serial pass runs %s" % (lane, found)
+
+
+def test_totals_and_byte_readouts_print_and_never_fail_the_run() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    root = _job(text, "root")
+    assert "fetch-depth: 0" in root, "the totals step reads the previous run's commit"
+    totals = [s for s in _steps(root) if "ci_totals.py" in s]
+    assert len(totals) == 1 and "github.event.before || github.event.pull_request.base.sha" in totals[0] \
+        and "template/.claude/" in totals[0], totals
+    readouts = [s for s in _steps(root) if "load_census.py" in s]
+    assert len(readouts) == 1, readouts
+    assert "--budgets" not in text, "a byte budget fails the run; the owner's ruling makes budgets readouts"
+    assert "continue-on-error" not in text, (
+        "load_census.py exits 0 without --budgets, so a step that tolerates failure only masks a crash")
 
 
 if __name__ == "__main__":
@@ -123,4 +165,7 @@ if __name__ == "__main__":
     test_gate_step_passes_only_on_all_success()
     test_one_bootstrap_step_per_profile()
     test_each_profile_step_runs_the_consumer_battery()
+    test_each_lane_runs_its_tests_under_pytest_n_auto_with_the_slowest_printed()
+    test_each_install_lane_runs_its_serial_proofs_in_their_own_pass()
+    test_totals_and_byte_readouts_print_and_never_fail_the_run()
     print("PASS: test_baseline_workflow")

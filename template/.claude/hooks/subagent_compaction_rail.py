@@ -1,74 +1,45 @@
-"""PreCompact / SessionStart(compact) — the compaction rail for a native Workflow subagent.
+"""Compaction rail for native Workflow subagents, and the parent's compaction-state clear.
 
-A Workflow subagent that compacts got the client's default summary, and nothing re-injects its brief. Measured
-2026-10-14 (`.claude/scratch/a2_probe/hook_log.jsonl`, real payloads): both hooks fire for a subagent's compaction and
-reach it. The payload carries no `agent_id`; its `session_id` and `transcript_path` are the parent's, so
-`_hook_state.is_subagent_payload` is the one test that tells a subagent from the parent.
+PreCompact: print the shared rail (`_compaction_rail.rail_text`, route `subagent`) for a subagent.
+`_hook_state.is_subagent_payload` also handles older PreCompact payloads without `agent_id`.
 
-PreCompact, subagent: print the shared rail (`_compaction_rail.rail_text`, route `subagent`) on stdout, which the
-client appends to the summary prompt, and leave a marker for the SessionStart after it. A SessionStart payload has no
-`trigger`, so the predicate cannot judge it: SessionStart(compact) prints the resume line only when a fresh marker
-exists, and consumes it. A parent PreCompact clears the markers, so a parent's compaction never reads one.
-Silent for the parent, for a sidecar child (`CLAUDE_CODE_SIDECAR_PROMPT_FILE` set: `sidecar_recompact_reprompt.py`
-owns that route, so no child gets two rails), and on any error (advisory: exit 0, nothing printed).
+SessionStart(compact): a non-empty `agent_id` gets the resume line without touching parent state.
+The client sends it on Workflow subagent starts, but not on parent starts (session b9a508a5,
+`logs/compaction_hooks.jsonl`, 2026-11-24). If a client omits it on a subagent start, the hook
+cannot tell it from a parent start and takes the parent path.
 
-Scope: lanes of independent items gain from the rail. A review seat's pick is unchanged: the A2b measurement showed
-the rail does not rescue a plan-check seat (`.claude/plans/workflow-compaction-rail.md` item 1).
+On the parent path, clear the skill and ladder markers and stamp the clear. PreCompact is too early:
+the old context can keep working for up to 99 minutes. On the measured parent compactions the client
+writes the boundary after SessionStart runs, so a skill re-attached in that batch counts.
+
+Sidecar children (`CLAUDE_CODE_SIDECAR_PROMPT_FILE` set) still clear their own parent state but
+print nothing: `sidecar_recompact_reprompt.py` owns their rail. Errors are silent (advisory).
+
+The A2b measurement did not change the pick for a plan-check seat
+(`.claude/plans/workflow-compaction-rail.md` item 1).
 """
 import json
 import os
 import sys
-import tempfile
-import time
 
 from _compaction_rail import SUBAGENT_RESUME, rail_text, selected_rail
-from _hook_state import is_subagent_payload, update_json_locked
-
-MARKER_TTL_SECONDS = 900  # a SessionStart(compact) follows its PreCompact within one summary call
-
-
-def _marker_path(session_id) -> str:
-    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64]
-    return os.path.join(os.environ.get("CC_CACHESTAT_DIR") or tempfile.gettempdir(),
-                        "subagent-compaction-%s.json" % (safe or "unknown"))
-
-
-def _set_pending(session_id, change) -> None:
-    """Apply `change(count)` to the pending-subagent-compaction count, dropping a count older than the TTL."""
-    def update(state):
-        fresh = time.time() - float(state.get("at") or 0) < MARKER_TTL_SECONDS
-        state["pending"] = max(0, change(int(state.get("pending") or 0) if fresh else 0))
-        state["at"] = time.time()
-    update_json_locked(_marker_path(session_id), update)
-
-
-def _consume(session_id) -> bool:
-    taken = []
-
-    def update(state):
-        fresh = time.time() - float(state.get("at") or 0) < MARKER_TTL_SECONDS
-        pending = int(state.get("pending") or 0) if fresh else 0
-        taken.append(pending > 0)
-        state["pending"] = max(0, pending - 1)
-        state["at"] = time.time()
-    update_json_locked(_marker_path(session_id), update)
-    return bool(taken and taken[0])
+from _hook_state import clear_compaction_keys, is_subagent_payload
 
 
 def main() -> int:
-    if os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "").strip():
-        return 0
+    sidecar = bool(os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "").strip())
     payload = json.load(sys.stdin)
     session_id = payload.get("session_id")
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if payload.get("hook_event_name") == "PreCompact":
-        if is_subagent_payload(payload):
-            _set_pending(session_id, lambda n: n + 1)
+        if not sidecar and is_subagent_payload(payload):
             print(rail_text(selected_rail(os.environ), "subagent"))
+    elif payload.get("source") == "compact":
+        if str(payload.get("agent_id") or "").strip():
+            if not sidecar:
+                print(SUBAGENT_RESUME)
         else:
-            _set_pending(session_id, lambda n: 0)
-    elif payload.get("source") == "compact" and _consume(session_id):
-        print(SUBAGENT_RESUME)
+            clear_compaction_keys(session_id)
     return 0
 
 

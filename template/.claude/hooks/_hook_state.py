@@ -24,8 +24,8 @@ Three properties close that:
                        other's fields from stale snapshots.
 
 Also here: the two cadence gates every advisory hook shares. `fire_once` delivers an advisory
-once per session; `fire_once_since_compaction` re-arms when `transcript_backup.py` calls
-`clear_compaction_keys` on PreCompact, because a compacted session lost the first delivery from
+once per session; `fire_once_since_compaction` re-arms when `subagent_compaction_rail.py` calls
+`clear_compaction_keys` at SessionStart(compact), because a compacted session lost the first delivery from
 its context. Both replace turn-count heartbeats and wall-clock re-fire windows, neither of which
 tracks whether the model still has the text. A key is spent when asked, so a line a dispatcher then
 drops (a later hook blocks the call) gives its keys back with `unspend`: told means delivered.
@@ -80,8 +80,7 @@ __all__ = [
     "append_jsonl_rotating",
 ]
 
-# The harness code set: what `scripts/harness_tests.py` hashes into the stamp and what
-# `hooks/git_guardrails.py`'s skill advisory counts as code. One home so the two never disagree.
+# The harness code set: what `scripts/harness_tests.py` hashes into the stamp.
 HARNESS_DIRS = (
     ".claude/hooks",
     ".claude/tools",
@@ -130,7 +129,7 @@ def in_harness_dirs(rel):
 # Files outside HARNESS_DIRS whose change must still run their bound proofs (pins, and a cloud script
 # that copies them). The list is project data, `reference/setup_surfaces.txt`, so this shared module
 # names no project file; absent file -> no surfaces. Read by `scripts/harness_tests.py` (staging and
-# the stamped tree) and `hooks/git_guardrails.py` (the stamp requirement).
+# the stamped tree).
 def _setup_surfaces():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "reference", "setup_surfaces.txt")
@@ -156,8 +155,8 @@ SKILL_REATTACH_CHARS = 20_000
 def reattach_over_cap(root) -> list[dict]:
     """Invocable skill and command bodies under the `.claude` directory `root` longer than SKILL_REATTACH_CHARS
     characters, longest first. The client cuts a re-attached body at that length, counted in characters with
-    newlines kept. `tools/load_census.py` reports these rows and `git_guardrails.py` reports the touched ones at
-    commit; the definition lives here because both ship to projects that may hold an older census."""
+    newlines kept. `tools/load_census.py` reports these rows; the definition lives here because it ships to
+    projects that may hold an older census."""
     root = Path(root)
     rows = []
     paths = (list(root.glob("commands/*.md")) + list(root.glob("commands/checklists/*.md"))
@@ -562,17 +561,18 @@ def _live_subagents(transcript_path, now):
 
 def is_subagent_payload(payload):
     """True when a PreCompact payload comes from a dispatched subagent, whose `session_id` and
-    `transcript_path` are the parent's. Every PreCompact hook calls this and does nothing for a
-    subagent: its compaction is not the parent's. A non-empty `agent_id` marks one. The client may send
-    none, so an `auto` trigger also marks one when a subagent transcript was written after the parent's,
-    within SUBAGENT_LIVE_SECONDS, and either the parent has been quiet PARENT_QUIET_SECONDS or that
-    subagent holds over SUBAGENT_OVER_PARENT times the parent's pending context. A compacting context
-    writes its trigger row just before PreCompact, and a parent mid-turn keeps writing. The context
-    window is not a test: the `autoCompactWindow` setting puts the parent's compaction anywhere from 100k
-    to the model's window, a subagent's model may have another, and the status-line gauge measures against
-    the model's window. A `manual` trigger (`/compact` acts on the main conversation), no live subagent,
-    an unreadable transcript, and any payload that is not an object count as the parent, so an unknown
-    keeps the parent's hooks running.
+    `transcript_path` are the parent's. A non-empty `agent_id` marks a subagent. Without it, an `auto`
+    trigger marks a subagent when a subagent transcript was written after the parent's within
+    SUBAGENT_LIVE_SECONDS, and either the parent has been quiet PARENT_QUIET_SECONDS or that
+    subagent holds over SUBAGENT_OVER_PARENT times the parent's pending context.
+
+    `subagent_compaction_rail.py` reads `agent_id` directly at SessionStart(compact), where there
+    is no `trigger` for the fallback. At PreCompact, a compacting context writes its trigger row
+    just before the hook fires, and a parent mid-turn keeps writing. The context window is not a
+    test: the `autoCompactWindow` setting puts the parent's compaction anywhere from 100k to the
+    model's window, a subagent's model may have another, and the status-line gauge measures against
+    the model's window. With no `agent_id`, a manual trigger, no live subagent, or an unreadable
+    transcript counts as the parent. A payload that is not an object also counts as the parent.
     """
     try:
         if str(payload.get("agent_id") or "").strip():
@@ -596,9 +596,12 @@ def is_subagent_payload(payload):
 
 def clear_compaction_keys(session_id):
     """Re-arm every compaction-scoped advisory key, skill markers included, and stamp the clear's time. Called
-    from the PreCompact hook. A skill the client re-attaches whole and still current with its `SKILL.md` on disk
-    regains its marker from the attachment, which the client writes after this clear (`skill_in_context`); the
-    stamp keeps an older attachment from counting. True when a key was cleared."""
+    from `subagent_compaction_rail.py` at SessionStart(compact), when the new context begins: the old context
+    keeps working between PreCompact and then, so PreCompact must not clear. The client writes the
+    `compact_boundary` row after the SessionStart hooks finish, and with it the attachment of the skills it
+    re-attaches. A skill re-attached whole and still current with its `SKILL.md` on disk regains its marker from
+    that attachment (`skill_in_context`); the stamp keeps an attachment of an earlier compaction from counting.
+    True when a key was cleared."""
     path = state_path(session_id)
 
     def update(state):

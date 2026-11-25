@@ -17,6 +17,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
 import _background_tasks  # noqa: E402
+from _command_text import runs_script  # noqa: E402
 sys.path.insert(0, HERE)
 import dispatch_result  # noqa: E402
 
@@ -37,7 +38,11 @@ UNRATED_SHOWN = 12
 # end row lost its notification, so it is no live work.
 SHELL_LIVE_SECONDS = 4 * 3600
 SHELL_CHUNK_BYTES = 8 << 20
-SHELL_ROW_KEYS = (b"backgroundTaskId", b"watch_records", b"<task-notification>", b"Successfully stopped")
+# A foreground call returns within the Bash tool's 600000 ms cap or moves to the background with a result row; an
+# older call with no result was interrupted.
+PENDING_CALL_SECONDS = 660
+SHELL_ROW_KEYS = (b"backgroundTaskId", b"watch_records", b"<task-notification>", b"Successfully stopped",
+                  b'"tool_use"', b'"tool_result"')
 FAILURE_MARKER = re.compile(r"Traceback|\bfail(?:ed|ure|s)?\b|\berror\b|exception|\bfatal\b|\bpanic\b", re.IGNORECASE)
 # A background shell that ran `watch_records.py` ends with one of its own terminal lines, then the client's
 # `[exited with code N]` trailer. It reports itself.
@@ -194,7 +199,8 @@ def transcript_path(session_id):
 
 
 def new_shell_scan():
-    return {"offset": 0, "launched": {}, "ended": set(), "delivered": set(), "watchers": set(), "notices": []}
+    return {"offset": 0, "launched": {}, "ended": set(), "delivered": set(), "watchers": set(), "calls": {},
+            "notices": []}
 
 
 def _epoch(stamp):
@@ -202,6 +208,12 @@ def _epoch(stamp):
         return calendar.timegm(time.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return None
+
+
+def _runs_watcher(command):
+    """True when `command` runs `watch_records.py` (any mode); a command that only names it, such as a proof run
+    over that path, is work."""
+    return "watch_records" in command and runs_script(command, "watch_records.py")
 
 
 def _scan_row(raw, pos, scan):
@@ -235,9 +247,13 @@ def _scan_row(raw, pos, scan):
     for item in content if isinstance(content, list) else ():
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "tool_use" and "watch_records" in str((item.get("input") or {}).get("command", "")):
-            scan["watchers"].add(item.get("id"))
+        if item.get("type") == "tool_use":
+            if _runs_watcher(str((item.get("input") or {}).get("command", ""))):
+                scan["watchers"].add(item.get("id"))
+            else:
+                scan["calls"][item.get("id")] = _epoch(row.get("timestamp"))
         elif item.get("type") == "tool_result":
+            scan["calls"].pop(item.get("tool_use_id"), None)
             task = result.get("backgroundTaskId") if isinstance(result, dict) else None
             if task:
                 scan["launched"][task] = (item.get("tool_use_id"), _epoch(row.get("timestamp")))
@@ -307,6 +323,16 @@ def running_shells(path, scan, now=None):
     return {task for task, (use, when) in scan["launched"].items()
             if task not in scan["ended"] and use not in scan["watchers"]
             and (when is None or now - when <= SHELL_LIVE_SECONDS)}
+
+
+def pending_calls(path, scan, now=None):
+    """The ids of this session's main-session tool calls with no result yet, issued within `PENDING_CALL_SECONDS`: a
+    launch still running in the arm's own message is work in flight before any record of it exists. A watcher's own
+    call is not work."""
+    if advance_shell_scan(path, scan) is None:
+        return set()
+    now = time.time() if now is None else now
+    return {use for use, when in scan["calls"].items() if when is None or now - when <= PENDING_CALL_SECONDS}
 
 
 def _tail_text(path):

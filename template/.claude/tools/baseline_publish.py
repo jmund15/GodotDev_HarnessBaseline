@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import fnmatch
+import contextlib
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -38,8 +37,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import baseline_sync as sync  # noqa: E402
 import baseline_identity  # noqa: E402
 import autolearn_outcomes  # noqa: E402
-import harness_tests as runner  # noqa: E402
-import baseline_linux_preview as linux_preview  # noqa: E402
+from _proof_runner import catalog  # noqa: E402
 import machine_slots  # noqa: E402
 
 STEP_NAMES = (
@@ -405,6 +403,7 @@ def _classify(source: dict, lock: dict) -> str:
 # ---------------------------------------------------------------------------
 
 MANIFEST_LAYERS = ("pure", "coding", "godot")
+LAYER_ENTRIES = ("tools", "layer_entries.json")  # baseline-root path parts
 
 
 def _pinned_manifest_layers(cache: Path, baseline_sha: str) -> dict[str, str]:
@@ -414,16 +413,28 @@ def _pinned_manifest_layers(cache: Path, baseline_sha: str) -> dict[str, str]:
     return {entry["path"]: entry.get("layer") for entry in json.loads(shown.stdout).get("files", [])}
 
 
-def _new_row_layers(records: list[dict], lock: dict, cache: Path, baseline_sha: str) -> dict[str, str]:
+def _source_layers(source: dict) -> dict[str, str]:
+    """A worktree source's own `tools/layer_entries.json` at its commit: the layer of a file only the
+    baseline has, which no consumer lock row can carry. A commit source has none."""
+    if source.get("kind") != "worktree":
+        return {}
+    text = _git_show(Path(source["repo"]), source["commit"], "/".join(LAYER_ENTRIES))
+    return dict(json.loads(text).get("entries") or {}) if text else {}
+
+
+def _new_row_layers(records: list[dict], lock: dict, cache: Path, baseline_sha: str,
+                    source_layers: dict[str, str] | None = None) -> dict[str, str]:
     """Template relpath -> layer for each lock row the pinned baseline does not have yet, and for
     each existing row whose lock layer differs from the pinned manifest's (a layer move). A new
-    row with no layer refuses: validate's `gen_manifest.py --check` fails on any unclassified file."""
+    row takes the lock's layer, else the source's own layer entry; one with neither refuses:
+    validate's `gen_manifest.py --check` fails on any unclassified file."""
     layers, missing = {}, []
     pinned = _pinned_manifest_layers(cache, baseline_sha)
     for record in records:
         if record.get("kind") != "lock" or record["op"] == "D":
             continue
-        layer = (lock.get("files", {}).get(record["relpath"]) or {}).get("layer")
+        layer = (lock.get("files", {}).get(record["relpath"]) or {}).get("layer") \
+            or (source_layers or {}).get(record["relpath"])
         exists = _git(cache, ["cat-file", "-e", f"{baseline_sha}:{record['dest_path']}"], check=False)
         if exists.returncode == 0:
             template_rel = record["dest_path"][len("template/"):]
@@ -446,7 +457,7 @@ def _record_layers_and_regenerate_manifest(worktree: Path, layers: dict[str, str
     """Merge new rows' layers into `tools/layer_entries.json`, then regenerate the manifest, so
     validate's `gen_manifest.py --check` sees every published file classified and the manifest current."""
     if layers:
-        entries_path = worktree / "tools" / "layer_entries.json"
+        entries_path = worktree.joinpath(*LAYER_ENTRIES)
         data = json.loads(entries_path.read_text(encoding="utf-8")) if entries_path.exists() else {"version": 1}
         merged = dict(data.get("entries") or {})
         merged.update(layers)
@@ -458,7 +469,7 @@ def _record_layers_and_regenerate_manifest(worktree: Path, layers: dict[str, str
 
 def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
                   cache: Path, baseline_sha: str, worktree: Path, branch: str) -> str:
-    layers = _new_row_layers(records, lock, cache, baseline_sha)
+    layers = _new_row_layers(records, lock, cache, baseline_sha, _source_layers(source))
     if worktree.exists():
         raise PublishError(f"publication worktree already exists: {worktree}")
     # A `--resume` that redoes this step (worktree lost between runs) reuses the same
@@ -548,29 +559,17 @@ def _scrub(worktree: Path, records: list[dict], lock: dict,
 # ---------------------------------------------------------------------------
 
 def _battery_counts_match(worktree: Path) -> None:
-    """§5 battery count check: discovery inside the worktree must find exactly as many
-    proofs as `git ls-files template/.claude/tests` lists matching the runner's
-    `_PATTERNS` -- guards against discovery silently voiding under a nested worktree."""
-    script = worktree / "template" / ".claude" / "scripts" / "harness_tests.py"
-    tests_dir = worktree / "template" / ".claude" / "tests"
-    if not script.is_file():
+    """Require the installed worktree and the index to expose the same proof inventory."""
+    template = worktree / "template"
+    if not (template / ".claude/scripts/harness_tests.py").is_file():
         return
-    spec = importlib.util.spec_from_file_location("harness_tests_under_publish", script)
-    if spec is None or spec.loader is None:
-        raise PublishError(f"could not load {script} for the battery count check")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    discovered = len(module.discover(str(tests_dir)))
-    listed = _git_text(worktree, ["ls-files", "template/.claude/tests"]).splitlines()
-    patterns = getattr(module, "_PATTERNS", ())
-    expected = sum(
-        1 for name in listed
-        if name and any(fnmatch.fnmatch(Path(name).name, pattern) for pattern in patterns)
-    )
+    root = str(template)
+    discovered = catalog.View.worktree(root).discover()
+    expected = catalog.View.index(root).discover()
     if discovered != expected:
         raise PublishError(
-            f"battery discovery mismatch: discover() found {discovered}, "
-            f"git ls-files template/.claude/tests lists {expected} matching proof(s)"
+            f"battery discovery mismatch: worktree-only {sorted(set(discovered) - set(expected))}; "
+            f"index-only {sorted(set(expected) - set(discovered))}"
         )
 
 
@@ -643,16 +642,16 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
     def run_task(index: int) -> None:
         start = time.monotonic()
         try:
-            with runner.nullcontext() if tasks[index][2] else runner._slot_guard():
+            with contextlib.nullcontext() if tasks[index][2] else machine_slots.guard(notice=True):
                 results[index] = (tasks[index][1](), "")
-        except runner.SlotStoreError as exc:
+        except machine_slots.SlotStoreError as exc:
             results[index] = ("", "machine slots unavailable: %s" % exc)
         except Exception as exc:
             results[index] = ("", str(exc))
         spans[index] = (start, time.monotonic())
 
     windows_start = time.monotonic()
-    workers = 1 if machine_slots.inherited() else max(1, runner._machine_slots() + 1)
+    workers = 1 if machine_slots.inherited() else max(1, machine_slots.capacity(machine_slots.slot_dir()) + 1)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         for future in [pool.submit(run_task, i) for i in submit_order]:
             future.result()
@@ -958,29 +957,15 @@ def _consumer_label_for(root: Path) -> str:
     return baseline_identity._consumer_label(lock.get("baseline_repo") or "", root.name)
 
 
-def _lane_line(lane: dict) -> str:
-    counts = lane.get("counts")
-    tally = ("%d pass, %d fail, %d not run" % (counts["pass"], counts["fail"], counts["cannot_run"])
-             if counts else "no battery summary")
-    return "%s: %s, %ds" % (lane["lane"], tally, lane["seconds"])
-
-
-def _linux_lanes(worktree: Path) -> str:
-    """Run the baseline's Linux lanes in WSL on the publish commit, limited to the proofs bound to the paths it
-    changes: the red a Linux-only defect gives, in minutes; CI runs every lane's whole battery after the push.
-    Returns the evidence; raises PublishError on a red lane or a preview that gave no verdict, so the push never
-    happens."""
-    rc, result = linux_preview.preview(worktree, paths=linux_preview.changed_paths(worktree))
-    if rc == 4:
-        return "linux lanes: skipped (%s)" % result["reason"]
-    if rc == 0:
-        return "linux lanes: green; " + "; ".join(_lane_line(lane) for lane in result["lanes"])
-    if rc == 1:
-        reds = [lane for lane in result["lanes"] if lane["status"] == "red"]
-        named = "; ".join("%s: steps %s, proofs %s" % (lane["lane"], ", ".join(lane["failed_steps"]) or "none",
-                                                      ", ".join(lane["failed_proofs"]) or "none") for lane in reds)
-        raise PublishError("linux lanes red: %s; log %s" % (named, result["log"]))
-    raise PublishError("linux lanes gave no verdict (exit %d); log %s" % (rc, (result or {}).get("log", "none")))
+def _commit_publication(worktree: Path, title: str, message: str) -> None:
+    """Commit the staged publication as the publisher identity, passed on the command, never written to
+    the config a linked worktree shares with the cache clone. The message goes through a file: its row
+    list outgrows the OS command-line limit."""
+    with tempfile.TemporaryDirectory(prefix="publish_msg_") as tmp:
+        message_file = Path(tmp) / "message.txt"
+        _write_lf(message_file, title + "\n\n" + message + "\n")
+        _git(worktree, ["-c", "user.name=baseline-publisher", "-c", "user.email=baseline@invalid",
+                         "commit", "-q", "-F", str(message_file)])
 
 
 def _open_pr(worktree: Path, journal: dict, journal_path: Path, root: Path,
@@ -995,8 +980,7 @@ def _open_pr(worktree: Path, journal: dict, journal_path: Path, root: Path,
         # author worktree off it -- `git config user.*` here would alter their identity.
         # Pass the identity on the commit command instead of writing shared config.
         title, message = _publish_message(root, journal, profile, _consumer_label_for(root))
-        _git(worktree, ["-c", "user.name=baseline-publisher", "-c", "user.email=baseline@invalid",
-                         "commit", "-q", "-m", title, "-m", message])
+        _commit_publication(worktree, title, message)
         journal["worktree"]["committed"] = True
     head = _git_text(worktree, ["rev-parse", "HEAD"])
     journal["worktree"]["head"] = head
@@ -1004,8 +988,6 @@ def _open_pr(worktree: Path, journal: dict, journal_path: Path, root: Path,
 
     pr_url = journal.get("pr_url")
     if not pr_url:
-        journal["linux_lanes"] = _linux_lanes(worktree)
-        _write_json_atomic(journal_path, journal)
         _git(worktree, ["push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}"])
         body_path = _journal_dir(root) / f"{journal_id}.pr.md"
         lock = sync.load_lock(root)

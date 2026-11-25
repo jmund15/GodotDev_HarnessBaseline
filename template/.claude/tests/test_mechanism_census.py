@@ -246,14 +246,14 @@ def case_census_older_than_32_days_gives_the_stale_form():
         path = os.path.join(tmp, "census_%s.json" % generated[:10])
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"generatedAt": generated, "changedSinceRuling": [{"item": "x"}]}, fh)
-        res = subprocess.run([sys.executable, TOOL, "--line", path, "--main-check", state, "--now", _iso(NOW)],
-                             capture_output=True, text=True, encoding="utf-8")
+        res = subprocess.run([sys.executable, TOOL, "--line", path, "--main-check", state, "--now", _iso(NOW),
+                              "--repo", tmp], capture_output=True, text=True, encoding="utf-8")
         assert res.returncode == 0, res.stderr
         return res.stdout.strip()
     old_day = (NOW - datetime.timedelta(days=33)).date().isoformat()
     fresh_day = (NOW - datetime.timedelta(days=2)).date().isoformat()
     stale = line_for(old_day + "T00:00:00+00:00")
-    assert stale == "census stale (%s)" % old_day, "stale line: %r" % stale
+    assert stale.startswith("census stale (%s)" % old_day), "stale line: %r" % stale
     fresh = line_for(fresh_day + "T00:00:00+00:00")
     assert "stale" not in fresh and "1 item" in fresh, "fresh line: %r" % fresh
 
@@ -269,17 +269,17 @@ def case_census_line_names_the_last_finished_main_check_wall():
                                           "wall": {"close": 600, "gate": 210, "finalize": 0}}}
     with open(state, "w", encoding="utf-8") as fh:
         json.dump(finished, fh)
-    res = subprocess.run([sys.executable, TOOL, "--line", census, "--main-check", state, "--now", _iso(NOW)],
-                         capture_output=True, text=True, encoding="utf-8")
+    res = subprocess.run([sys.executable, TOOL, "--line", census, "--main-check", state, "--now", _iso(NOW),
+                          "--repo", tmp], capture_output=True, text=True, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     line = res.stdout.strip()
     assert "1 item" in line and "main check wall 13.5 min" in line, "wall line: %r" % line
     with open(state, "w", encoding="utf-8") as fh:
         json.dump({"checkedTo": "a", "run": {"id": "r", "end": None, "wall": {"close": 600, "gate": None,
                                                                               "finalize": None}}}, fh)
-    res = subprocess.run([sys.executable, TOOL, "--line", census, "--main-check", state, "--now", _iso(NOW)],
-                         capture_output=True, text=True, encoding="utf-8")
-    assert res.stdout.strip() == "census: 1 item changed since their last ruling", "unfinished wall: %r" % res.stdout
+    res = subprocess.run([sys.executable, TOOL, "--line", census, "--main-check", state, "--now", _iso(NOW),
+                          "--repo", tmp], capture_output=True, text=True, encoding="utf-8")
+    assert "main check: no record" in res.stdout and "13.5" not in res.stdout, "unfinished wall: %r" % res.stdout
     repo = _repo()
     sha = _commit(repo, {"mechanism_census.json": json.dumps({"generatedAt": _iso(NOW - datetime.timedelta(days=1)),
                                                                "changedSinceRuling": [{"item": "x"}]}),
@@ -288,6 +288,91 @@ def case_census_line_names_the_last_finished_main_check_wall():
     res = _tool(repo, "--line", "--now", _iso(NOW))
     assert res.returncode == 0, res.stderr
     assert "1 item" in res.stdout and "main check wall 13.5 min" in res.stdout, "ref line: %r" % (res.stdout, res.stderr)
+
+
+WALL_SUITES = ("main check", "harness proofs", "publish", "C# gate")
+WALL_SIZE = {"totals": {"code": 1234, "tests": 567, "codeFiles": 3, "testsFiles": 2},
+             "areas": {"Alpha": {"code": 1000, "tests": 500, "change": {"code": 5, "tests": 0}}},
+             "unassigned": {"code": 234, "tests": 67, "change": {"code": 0, "tests": 0}}}
+
+
+def _write_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(obj, fh)
+
+
+def _wall_row(when, mode, wall_s):
+    """A `harness_runs.json` row with the keys the real log holds (`ts`, `mode`, `wall_s`, `proofs`)."""
+    return {"ts": when.timestamp(), "session": "s1", "mode": mode, "head": "h", "wall_s": wall_s, "selected": 1,
+            "reused": 0, "queue_s": 0, "proofs": [{"proof": "test_a.py", "status": "pass", "run_s": 1.0,
+                                                   "wait_s": 0.0, "reused": False}]}
+
+
+def _walls_repo(drop=()):
+    """A planted repo with one record per wall suite, each shaped like the real record; a suite in `drop` has none."""
+    repo = _repo()
+    _commit(repo, {"README.md": "x\n"}, "init")
+    state = os.path.join(repo, "main_check.json")
+    if "main check" not in drop:
+        _write_json(state, {"checkedTo": "a", "run": {"id": "r", "end": _iso(NOW),
+                                                      "wall": {"close": 600, "gate": 210, "finalize": 0}}})
+    if "harness proofs" not in drop:
+        rows = [_wall_row(NOW - datetime.timedelta(hours=2), "close", 90.0),
+                _wall_row(NOW - datetime.timedelta(hours=1), "close", 200.0),
+                _wall_row(NOW - datetime.timedelta(minutes=1), "for", 999.0)]
+        _write_json(os.path.join(repo, ".claude", "logs", "harness_runs.json"), {"runs": rows})
+    if "publish" not in drop:
+        base = os.path.join(repo, ".claude", ".cache", "baseline-publish")
+        _write_json(os.path.join(base, "20261120T021057Z-6e0fe2ed.json"),
+                    {"id": "20261120T021057Z-6e0fe2ed", "dry_run": False, "ci_wait_s": 341.726,
+                     "started_at": "2026-11-20T02:10:57.418440Z", "finished_at": "2026-11-20T02:31:42.845090Z",
+                     "steps": []})
+        _write_json(os.path.join(base, "20261121T090000Z-dryrun00.json"),
+                    {"id": "20261121T090000Z-dryrun00", "dry_run": True, "ci_wait_s": 0,
+                     "started_at": "2026-11-21T09:00:00.000000Z", "finished_at": "2026-11-21T09:01:00.000000Z",
+                     "steps": []})
+    if "C# gate" not in drop:
+        ledger = os.path.join(repo, ".git", "harness", "gate_ledger")
+        _write_json(os.path.join(ledger, "20261119-123015-29992.result.json"),
+                    {"id": "20261119-123015-29992", "mode": "full", "status": "PASS", "exitCode": 0,
+                     "startedAt": "2026-11-19T18:30:15Z", "finishedAt": "2026-11-19T18:34:37.1864288Z",
+                     "reusedFrom": None})
+        _write_json(os.path.join(ledger, "20261121-090000-1.result.json"),
+                    {"id": "20261121-090000-1", "mode": "full", "status": "PASS", "exitCode": 0,
+                     "startedAt": "2026-11-21T09:00:00Z", "finishedAt": "2026-11-21T09:01:00.0000000Z",
+                     "reusedFrom": "8a24e26a14ecee6d1de9aa0d2decde66e2e85392"})
+    return repo, state
+
+
+def case_census_line_prints_totals_and_each_suite_wall():
+    mod = _module()
+    repo, state = _walls_repo()
+    census = {"generatedAt": _iso(NOW - datetime.timedelta(days=1)), "changedSinceRuling": [], "size": WALL_SIZE}
+    line = mod.census_line(census, NOW, mod.last_walls(repo, state))
+    for part in ("code 1,234 lines (+5)", "tests 567 lines (+0)", "main check wall 13.5 min",
+                 "harness proofs wall 3.3 min (close)", "publish wall 20.8 min", "C# gate wall 4.4 min (full)"):
+        assert part in line, "%r missing from %r" % (part, line)
+
+
+def case_a_suite_with_no_record_says_so():
+    mod = _module()
+    census = {"generatedAt": _iso(NOW - datetime.timedelta(days=1)), "changedSinceRuling": [], "size": WALL_SIZE}
+    for suite in WALL_SUITES:
+        repo, state = _walls_repo(drop=(suite,))
+        line = mod.census_line(census, NOW, mod.last_walls(repo, state))
+        assert "%s: no record" % suite in line, "%s: %r" % (suite, line)
+        assert line.count("no record") == 1 and line.count(" wall ") == 3, "%s: %r" % (suite, line)
+
+
+def case_dry_run_and_reused_records_are_skipped():
+    mod = _module()
+    repo, state = _walls_repo()
+    walls = {suite: (sec, label) for suite, sec, label in mod.last_walls(repo, state)}
+    assert walls["harness proofs"] == (200.0, "close"), walls
+    assert walls["main check"][0] == 810.0, walls
+    assert walls["publish"][1] is None and abs(walls["publish"][0] - 1245.4) < 0.5, "dry run read: %r" % (walls,)
+    assert walls["C# gate"][1] == "full" and abs(walls["C# gate"][0] - 262.2) < 0.5, "reused read: %r" % (walls,)
 
 
 def case_a_helper_or_sibling_edit_is_not_the_proofs_own():
@@ -334,6 +419,236 @@ def case_fix_commit_sampling_rule():
     assert not any(s.startswith(("c_", "t_")) for s in shas), "under 6 fixes or a test file is sampled"
 
 
+def _module():
+    spec = importlib.util.spec_from_file_location("mechanism_census", TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _census_inproc(repo, *args):
+    """The census built in process by the module's `main`; decision cases call functions, not the CLI."""
+    out = os.path.join(repo, "census.json")
+    empty = os.path.join(repo, "no-transcripts")
+    os.makedirs(empty, exist_ok=True)
+    rc = _module().main(["--repo", repo, "--ref", "HEAD", "--days", "30", "--transcripts", empty, "--out", out]
+                        + list(args))
+    if rc != 0:
+        raise AssertionError("census main exit %d" % rc)
+    with open(out, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+AREA_ROWS = [["Alpha", ".claude/tools/alpha"], ["Beta", ".claude/tests/test_beta"]]
+ADAPTATION = ".claude/skills/project_subsystems/adaptation.json"
+
+
+def case_area_totals_reconcile_with_an_unassigned_row():
+    repo = _repo()
+    _commit(repo, {ADAPTATION: json.dumps({"areas": AREA_ROWS}), ".claude/tools/alpha_a.py": "1\n2\n3\n",
+                   ".claude/tools/stray.py": "1\n2\n", ".claude/tests/test_beta.py": "1\n2\n3\n4\n",
+                   ".claude/tests/test_none.py": "1\n"}, "base")
+    size = _census_inproc(repo)["size"]
+    areas, un, totals = size["areas"], size["unassigned"], size["totals"]
+    assert areas["Alpha"]["code"] == 3 and areas["Alpha"]["tests"] == 0, areas
+    assert areas["Beta"]["tests"] == 4 and areas["Beta"]["code"] == 0, areas
+    assert un["code"] == 2 and un["tests"] == 1, un
+    assert sorted(un["files"]) == [".claude/tests/test_none.py", ".claude/tools/stray.py"], un["files"]
+    assert totals["code"] == areas["Alpha"]["code"] + areas["Beta"]["code"] + un["code"], totals
+    assert totals["tests"] == areas["Alpha"]["tests"] + areas["Beta"]["tests"] + un["tests"], totals
+
+
+def case_absent_areas_key_puts_every_file_in_unassigned():
+    repo = _repo()
+    _commit(repo, {".claude/tools/a.py": "1\n2\n", ".claude/tests/test_a.py": "1\n"}, "base")
+    size = _census_inproc(repo)["size"]
+    assert size["areas"] == {}, size["areas"]
+    assert size["unassigned"]["code"] == 2 and size["unassigned"]["tests"] == 1, size["unassigned"]
+
+
+def case_longest_prefix_wins():
+    repo = _repo()
+    rows = [["Outer", ".claude/tools/"], ["Inner", ".claude/tools/alpha"]]
+    _commit(repo, {ADAPTATION: json.dumps({"areas": rows}), ".claude/tools/alpha_x.py": "1\n",
+                   ".claude/tools/beta.py": "1\n2\n"}, "base")
+    size = _census_inproc(repo)["size"]
+    assert size["areas"]["Inner"]["code"] == 1, size["areas"]
+    assert size["areas"]["Outer"]["code"] == 2, size["areas"]
+    assert size["unassigned"]["code"] == 0, size["unassigned"]
+
+
+def case_change_since_last_reading():
+    repo = _repo()
+    _commit(repo, {ADAPTATION: json.dumps({"areas": AREA_ROWS}), ".claude/tools/alpha_a.py": "1\n2\n3\n",
+                   ".claude/tools/stray.py": "1\n2\n", ".claude/tests/test_beta.py": "1\n2\n3\n4\n"}, "base")
+    readings = os.path.join(repo, "census_readings.jsonl")
+    prior = {"date": "2026-11-01", "ref": "HEAD", "head": "0" * 40, "windowDays": 30,
+             "totals": {"code": 3, "tests": 4},
+             "areas": {"Alpha": {"code": 1, "tests": 0}, "Beta": {"code": 0, "tests": 4},
+                       "unassigned": {"code": 2, "tests": 0}}, "mostFixed": []}
+    with open(readings, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(prior) + "\n")
+    size = _census_inproc(repo, "--readings", readings)["size"]
+    assert size["areas"]["Alpha"]["change"] == {"code": 2, "tests": 0}, size["areas"]["Alpha"]
+    assert size["areas"]["Beta"]["change"] == {"code": 0, "tests": 0}, size["areas"]["Beta"]
+    assert size["unassigned"]["change"] == {"code": 0, "tests": 0}, size["unassigned"]
+    size = _census_inproc(repo, "--readings", os.path.join(repo, "absent.jsonl"))["size"]
+    assert size["areas"]["Alpha"]["change"] is None and size["unassigned"]["change"] is None, size
+
+
+def case_record_appends_once():
+    import contextlib
+    import io
+    repo = _repo()
+    _commit(repo, {ADAPTATION: json.dumps({"areas": AREA_ROWS}), ".claude/tools/alpha_a.py": "1\n"}, "base")
+    census = _census_inproc(repo)
+    census_path = os.path.join(repo, "census.json")
+    readings = os.path.join(repo, "census_readings.jsonl")
+    mod = _module()
+    assert mod.main(["--record", census_path, "--repo", repo, "--readings", readings]) == 0
+    with open(readings, encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh if line.strip()]
+    assert len(rows) == 1 and rows[0]["head"] == census["reading"]["head"], rows
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert mod.main(["--record", census_path, "--repo", repo, "--readings", readings]) == 0
+    with open(readings, encoding="utf-8") as fh:
+        again = [line for line in fh if line.strip()]
+    assert len(again) == 1, "second record wrote a row: %d rows" % len(again)
+    assert "already recorded" in buf.getvalue(), buf.getvalue()
+
+
+def case_record_cli_names_already_recorded_on_a_second_run():
+    repo = _repo()
+    _commit(repo, {ADAPTATION: json.dumps({"areas": AREA_ROWS}), ".claude/tools/alpha_a.py": "1\n"}, "base")
+    _census_inproc(repo)
+    census_path = os.path.join(repo, "census.json")
+    readings = os.path.join(repo, "census_readings.jsonl")
+    cmd = [sys.executable, TOOL, "--record", census_path, "--repo", repo, "--readings", readings]
+    first = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    second = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    assert first.returncode == 0 and second.returncode == 0, (first.stderr, second.stderr)
+    assert "already recorded" in second.stdout, second.stdout
+
+
+def _fixed_history(repo, targets):
+    """Each path gets as many fix commits as its target: one base commit, then round i touches every path whose target
+    is at least i."""
+    _commit(repo, {p: "base\n" for p in targets}, "chore: base")
+    for i in range(1, max(targets.values()) + 1):
+        _commit(repo, {p: "round %d\n" % i for p, t in targets.items() if t >= i}, "fix(hooks): round %d" % i)
+
+
+def _most_fixed(repo):
+    return {r["path"]: r["fixes"] for r in _census_inproc(repo)["reading"]["mostFixed"]}
+
+
+def _fix_hist(repo, paths, reading=None, days=30):
+    return _module().fix_history(repo, paths, "HEAD", days, reading)
+
+
+def case_top_five_percent_of_fixed_code_files():
+    targets = {".claude/hooks/f%02d.py" % i: 3 for i in range(40)}
+    targets[".claude/hooks/f00.py"] = 10
+    targets[".claude/hooks/f01.py"] = 9
+    repo = _repo()
+    _fixed_history(repo, targets)
+    got = _most_fixed(repo)
+    assert got == {".claude/hooks/f00.py": 10, ".claude/hooks/f01.py": 9}, got
+    tied = dict(targets)
+    tied[".claude/hooks/f02.py"] = 9
+    repo = _repo()
+    _fixed_history(repo, tied)
+    got = _most_fixed(repo)
+    assert set(got) == {".claude/hooks/f00.py", ".claude/hooks/f01.py", ".claude/hooks/f02.py"}, got
+
+
+def case_single_fix_files_are_never_listed():
+    repo = _repo()
+    _fixed_history(repo, {".claude/hooks/f%02d.py" % i: 1 for i in range(40)})
+    assert _most_fixed(repo) == {}, _most_fixed(repo)
+
+
+def _redesign_repo(body):
+    """One file with three fixes, then a commit with commit-message `body` that carries the redesign."""
+    x = ".claude/hooks/x.py"
+    repo = _repo()
+    _commit(repo, {x: "base\n"}, "chore: base")
+    for i in range(3):
+        _commit(repo, {x: "fix %d\n" % i}, "fix(hooks): round %d" % i)
+    _commit(repo, {x: "redesigned\n", ".claude/plans/x-plan.md": "plan\n"}, "refactor(hooks): x\n\n" + body)
+    return repo, x
+
+
+def case_redesign_commit_restarts_the_count():
+    repo, x = _redesign_repo("Redesigns: .claude/hooks/x.py\nPlan: .claude/plans/x-plan.md")
+    assert _fix_hist(repo, [x])[x]["count"] == 0, _fix_hist(repo, [x])[x]
+    assert x not in _most_fixed(repo), _most_fixed(repo)
+
+
+def case_redesigns_without_plan_trailer_restarts_nothing():
+    repo, x = _redesign_repo("Redesigns: .claude/hooks/x.py")
+    assert _fix_hist(repo, [x])[x]["count"] == 3, _fix_hist(repo, [x])[x]
+
+
+def case_plan_trailer_naming_a_missing_file_restarts_nothing():
+    repo, x = _redesign_repo("Redesigns: .claude/hooks/x.py\nPlan: .claude/plans/absent.md")
+    assert _fix_hist(repo, [x])[x]["count"] == 3, _fix_hist(repo, [x])[x]
+
+
+def case_plan_cited_share_since_listing():
+    x = ".claude/hooks/x.py"
+    repo = _repo()
+    _commit(repo, {x: "base\n"}, "chore: base")
+    listed_day = (NOW - datetime.timedelta(days=3)).date().isoformat()
+    _commit(repo, {x: "1\n"}, "fix(hooks): one")
+    _commit(repo, {x: "2\n"}, "fix(hooks): [abc S1] two")
+    _commit(repo, {x: "3\n"}, "fix(hooks): three")
+    reading = {"date": listed_day, "head": "0" * 40,
+               "mostFixed": [{"path": x, "fixes": 3, "listedSince": listed_day, "sinceListing": {"fixes": 0, "cited": 0}}]}
+    hist = _fix_hist(repo, [x], reading)[x]
+    assert hist["listed"] is True and hist["sinceListing"] == {"fixes": 3, "cited": 1}, hist
+
+
+def case_share_since_listing_reaches_past_the_window():
+    x = ".claude/hooks/x.py"
+    repo = _repo()
+    _commit(repo, {x: "base\n"}, "chore: base", when=NOW - datetime.timedelta(days=50))
+    _commit(repo, {x: "a\n"}, "fix(hooks): old", when=NOW - datetime.timedelta(days=40))
+    _commit(repo, {x: "b\n"}, "fix(hooks): newer", when=NOW - datetime.timedelta(days=10))
+    listed_day = (NOW - datetime.timedelta(days=45)).date().isoformat()
+    reading = {"date": listed_day, "head": "0" * 40,
+               "mostFixed": [{"path": x, "fixes": 2, "listedSince": listed_day, "sinceListing": {"fixes": 0, "cited": 0}}]}
+    hist = _fix_hist(repo, [x], reading)[x]
+    assert hist["count"] == 1 and hist["sinceListing"]["fixes"] == 2, hist
+
+
+def case_review_audit_fold_fixes_stay_excluded():
+    x = ".claude/hooks/x.py"
+    repo = _repo()
+    _commit(repo, {x: "1\n"}, "base")
+    _commit(repo, {x: "2\n"}, "fix(hooks): real")
+    for i, subj in enumerate(("fix(review): a", "fix(audit): b", "fix(fold): c", "fix(review-fold): d")):
+        _commit(repo, {x: "%d\n" % (i + 3)}, subj)
+    assert _fix_hist(repo, [x])[x]["count"] == 1, _fix_hist(repo, [x])[x]
+
+
+def case_unresolved_path_returns_unresolved_flag():
+    repo = _repo()
+    _commit(repo, {".claude/hooks/x.py": "1\n"}, "base")
+    hist = _fix_hist(repo, [".claude/hooks/missing.py"])
+    assert hist[".claude/hooks/missing.py"] == {"unresolved": True}, hist
+
+
+def case_no_reading_leaves_listing_unknown():
+    repo = _repo()
+    _commit(repo, {".claude/hooks/x.py": "1\n"}, "base")
+    hist = _fix_hist(repo, [".claude/hooks/x.py"], reading=None)
+    assert hist[".claude/hooks/x.py"]["listed"] is None, hist
+    hist = _fix_hist(repo, [".claude/hooks/x.py"], reading={"date": "2026-11-21", "mostFixed": []})
+    assert hist[".claude/hooks/x.py"]["listed"] is False, hist
+
+
 CASES = [v for k, v in sorted(globals().items()) if k.startswith("case_") and callable(v)]
 
 
@@ -343,7 +658,7 @@ def main():
         try:
             fn()
             print("PASS %s" % fn.__name__)
-        except Exception as exc:  # the proof reports every red, not the first
+        except (Exception, SystemExit) as exc:  # the proof reports every red, not the first; a CLI usage exit is one
             failed += 1
             last = (str(exc).strip().splitlines() or ["?"])[-1][:300]
             print("FAIL %s: %s" % (fn.__name__, last))

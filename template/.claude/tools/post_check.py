@@ -34,7 +34,8 @@ Both check modes write `status`, `counts`, the per-id `verdicts` map and `errors
 verify_claims.check_claims, plus `mode` and `source`, the resolved read flags the Stop audit replays. Claims without evidence are UNCHECKED, never skipped. `--root` resolves
 relative evidence through verify_claims.resolve_path; folded reviews retain each subject's root and snapshot.
 Caller artifact flags become absolute at intake against the invoking cwd; subject-relative `--files` and
-`--new-paths`, git revisions and identifiers stay unchanged. Ledger subprocesses keep the subject cwd.
+`--new-paths`, git revisions and identifiers stay unchanged. Ledger calls run in process against the subject's
+checkout as their repo, so a relative store path resolves there, not in the invoking cwd.
 `--spill-dir` supplies `<label>.md` when a job's inline result has no block. `--expect-total` supplies
 the consolidated review count before the host record exists; `--expect-sources` is the raw source count. An unfolded
 branch that reads consolidated findings checks `--expect-total`, one that reads raw seat rows checks `--expect-sources`,
@@ -54,16 +55,19 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
-import tempfile
 
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parents[1]
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(TOOLS.parent / "hooks"))
 import fold_check  # noqa: E402
 import finding_bar  # noqa: E402
+import review_ledger  # noqa: E402
+import review_result  # noqa: E402
+import review_snapshot  # noqa: E402
 from cli_usage import usage  # noqa: E402
+from _git_run import run as _run_git  # noqa: E402
 
 Unusable = fold_check.Unusable
 COVERING = ("findings", "clean")
@@ -83,37 +87,17 @@ def _digest_value(path):
 
 
 def ledger(cwd, *args):
-    """Run review_ledger.py in `cwd` (the ledger repo) -> (code, stdout, stderr).
-
-    Arguments past the Windows command-line limit (32,767 characters) go through an `@file`."""
-    with tempfile.TemporaryDirectory() as tmp:
-        argv = [str(a) for a in args]
-        if sum(len(a) + 3 for a in argv) > 24000 and not any("\n" in a for a in argv):
-            listing = Path(tmp) / "args.txt"
-            listing.write_text("\n".join(argv) + "\n", encoding="utf-8", newline="\n")
-            argv = [f"@{listing}"]
-        done = subprocess.run([sys.executable, str(TOOLS / "review_ledger.py"), *argv], cwd=str(cwd),
-                              capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return done.returncode, done.stdout, done.stderr
-
-
-def ledger_rows(cwd, subject):
-    code, out, err = ledger(cwd, "rows", "--subject", subject, "--json")
-    if code != 0:
-        raise Unusable(f"review_ledger rows failed: {err.strip()}")
-    try:
-        return json.loads(out or "[]")
-    except ValueError as exc:
-        raise Unusable(f"review_ledger rows output is not JSON: {exc}") from None
+    """Run one review_ledger command in process, in `cwd` (the ledger repo) -> (code, stdout, stderr)."""
+    return review_ledger.run([str(a) for a in args], Path(cwd))
 
 
 def load_roster(roster_path):
-    value = fold_check._read_json(roster_path, "roster")
-    if isinstance(value, dict):
-        value = value.get("roster")
-    if not isinstance(value, list):
+    seats, problem = review_result.roster_document(roster_path)
+    if problem == ("shape", None):
         raise Unusable(f"roster {roster_path} is not a list of seats")
-    return value
+    if problem is not None:
+        raise Unusable(f"roster {roster_path} is unreadable: {problem[1]}")
+    return seats
 
 
 # ---- sources --------------------------------------------------------------------------------------
@@ -327,16 +311,17 @@ def applied_job(args, src):
     roster = review_ledger._load_roster(args.roster, review_ledger.load_catalog())
     mandates = sorted({m for seat in roster for m in seat["mandates"]})
     seats = {m: review_ledger._depth_seats(roster, m) for m in mandates}
-    cover = review_ledger.cover_at(root, {})
-    cover.subject_kind = review_ledger._subject_kind(args.subject)
+    cover = review_ledger.cover_at(root, {}, subject=args.subject)
     files = review_ledger.normalize_files(root, args.files)
     blobs = {}
     for rel in files:
         by_mandate = {m: sorted({b for row in cover.rows if (b := (row.get("files") or {}).get(rel))
-                                 and all(cover.resolve(m, rel, b, seat) is not None for seat in seats[m])})
-                      for m in mandates}
+                                 and review_ledger.query(cover, files=[rel], mandates=[m], roster=roster,
+                                     mode=review_ledger.Mode(overrides={rel: b}), applicable=False
+                                 ).pairs[m, rel].state is None}) for m in mandates}
         covering = [m for m in mandates if by_mandate[m]]
-        blob = review_ledger.reviewed_blob(cover, rel, covering, seats) if covering else None
+        blob = (review_ledger.reviewed_blob(cover, rel, covering, seats, skip_derived=True)
+                if covering else None)
         if blob is None:
             raise Unusable(f"no common covered blob for {rel}; per-mandate blobs: {json.dumps(by_mandate)}")
         blobs[rel] = blob
@@ -409,7 +394,6 @@ def _covering_mandates(rows, rel, wanted):
 def record_inline(cwd, args, wanted, changed, failures, subjects, roster):
     """Record each mandate whose predecessor is covered over the exact checked post-fold bytes: a fold only
     transcribes, so it adds no unit a reviewer has not seen. `changed` maps a subject (by id) to its changed files without parent design."""
-    import review_ledger
     voided = set()
     for failure in failures:
         scope = fold_check.FAILURE_SCOPE.get(failure["kind"], "subject")
@@ -423,34 +407,31 @@ def record_inline(cwd, args, wanted, changed, failures, subjects, roster):
         if set(subject.allowed) <= voided:
             continue
         pre = reviewed_blobs(subject)
-        cover = review_ledger.cover_at(cwd, pre)
-        cover.subject_kind = review_ledger._subject_kind(args.subject)
+        cover = review_ledger.cover_at(cwd, pre, subject=args.subject)
         for rel in changed.get(id(subject), []):
             if rel in voided or subject.post_bytes(rel) is None:
                 continue
             previous = pre.get(rel)
             root = previous is None and fold_check.is_test_path(rel)
-            mandates = [m for m in sorted(wanted) if root or (
-                previous and cover.pair_state(m, rel, review_ledger._depth_seats(roster, m)) is None)]
-            post = subprocess.run(["git", "-C", str(cwd), "hash-object", "-w", "--path", rel, "--stdin"],
-                                  input=subject.post_bytes(rel), capture_output=True)
-            if post.returncode:
-                raise Unusable(f"cannot write checked blob for {rel}: {post.stderr.decode().strip()}")
+            mandates = sorted(wanted) if root else [m for (m, _), pair in review_ledger.query(
+                cover, files=[rel], mandates=sorted(wanted), roster=roster, applicable=False
+            ).pairs.items() if previous and pair.state is None]
+            try:
+                post = review_snapshot.hash_object(cwd, subject.post_bytes(rel), rel, write=True, filters=True)
+            except OSError as exc:
+                raise Unusable(f"cannot write checked blob for {rel}: {exc}") from None
             for mandate in mandates:
                 stem = str(args.out) + ".inline"
-                _write(stem + ".blobs.json", {rel: post.stdout.decode().strip()})
+                _write(stem + ".blobs.json", {rel: post})
                 _write(stem + ".from.json", {rel: previous})
-                cmd = ["record", "--stage", args.stage, "--subject", args.subject, "--inline", "fold",
-                       "--outcome", "clean", "--mandate", mandate, "--files", rel,
-                       "--blobs", stem + ".blobs.json", "--from", stem + ".from.json"]
-                if args.no_new_decision:
-                    cmd.append("--no-new-decision")
-                if args.task:
-                    cmd += ["--task", args.task]
-                code, _out, err = ledger(cwd, *cmd)
+                request = review_ledger.RecordRequest(
+                    stage=args.stage, subject=args.subject, inline="fold", outcome="clean", mandate=mandate,
+                    files=[rel], blobs=stem + ".blobs.json", from_map=stem + ".from.json",
+                    no_new_decision=bool(args.no_new_decision), task=args.task)
+                code, rows, _out, err = review_ledger.attempt(review_ledger.record, request, Path(cwd))
                 if code:
                     raise Unusable(f"review_ledger record --inline failed for {mandate}: {err.strip()}")
-                written += 1
+                written += len(rows or [])
             if set(mandates) == wanted:
                 recorded.add(rel)
     return written, recorded
@@ -465,19 +446,18 @@ def reviewed_blobs(subject):
         if pre is None:
             continue
         objects = subject.snapshot.get("objects")
-        where = ["-C", objects, "hash-object", "-w", "--stdin"] if objects else ["-C", str(subject.root), "hash-object", "-w",
-                                                                         "--path", rel, "--stdin"]
-        done = subprocess.run(["git", *where], input=pre, capture_output=True)
-        if done.returncode != 0:
-            raise Unusable(f"git hash-object failed for the snapshot bytes of {rel}: {done.stderr.decode().strip()}")
-        out[rel] = done.stdout.decode().strip()
+        try:
+            out[rel] = (review_snapshot.hash_object(Path(objects), pre, write=True) if objects
+                        else review_snapshot.hash_object(subject.root, pre, rel, write=True, filters=True))
+        except OSError as exc:
+            raise Unusable(f"git hash-object failed for the snapshot bytes of {rel}: {exc}") from None
     return out
 
 
 def _common_dir(root):
-    done = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
-    return Path(done.stdout.strip()).resolve() if done.returncode == 0 and done.stdout.strip() else None
+    done = _run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(root), input=b"")
+    text = done.stdout.decode("utf-8", errors="replace").strip() if done.returncode == 0 else ""
+    return Path(text).resolve() if text else None
 
 
 def ledger_home(subjects, root):
@@ -501,7 +481,6 @@ def record_panel(cwd, args, src, subjects):
     frozen = {}
     if args.blobs:
         # A frozen blob map names the reviewed subject; without it a fold-less review records no file.
-        import review_ledger
         try:
             frozen = review_ledger.blob_map(args.blobs)
             files |= set(frozen)
@@ -513,30 +492,24 @@ def record_panel(cwd, args, src, subjects):
         return (1, "", "the review names no reviewed file (no fold subject, --blobs or --scope-json), so its "
                        "ledger row would cover nothing: record it with the reviewed blob map (fan-out "
                        "--ledger-blobs) or the scope file (--ledger-scope-json)")
-    cmd = ["record", "--stage", args.stage, "--subject", args.subject, flag, value, "--roster", args.roster]
-    if files:
-        cmd += ["--files", *files]
+    blobs_path = None
     blobs = {rel: sha for s in subjects for rel, sha in reviewed_blobs(s).items()}
     if args.blobs and not (frozen and set(blobs) - set(frozen)):
-        cmd += ["--blobs", args.blobs]
+        blobs_path = args.blobs
     elif blobs:
         # The frozen map is what its seat read; the fold snapshot adds the files it lacks.
         blobs.update(frozen)
         path = Path(args.out).with_name(Path(args.out).name + ".reviewed_blobs.json")
         _write(path, blobs)
-        cmd += ["--blobs", str(path)]
-    if flag == "--workflow-dir":
-        cmd += ["--seats-file", args.seats_file]
-    for field in ("premise_commits", "head"):
-        if getattr(args, field):
-            cmd += ["--" + field.replace("_", "-"), getattr(args, field)]
-    if args.scope_json:
-        cmd += ["--scope-json", args.scope_json]
-    if args.task:
-        cmd += ["--task", args.task]
-    if args.no_new_decision:
-        cmd.append("--no-new-decision")
-    return ledger(cwd, *cmd)
+        blobs_path = str(path)
+    request = review_ledger.RecordRequest(
+        stage=args.stage, subject=args.subject,
+        **{flag.lstrip("-").replace("-", "_"): value}, roster=args.roster, files=files or None,
+        blobs=blobs_path, premise_commits=args.premise_commits, head=args.head,
+        scope_json=args.scope_json, task=args.task, no_new_decision=bool(args.no_new_decision),
+        seats_file=args.seats_file if flag == "--workflow-dir" else None)
+    code, rows, _out, err = review_ledger.attempt(review_ledger.record, request, Path(cwd))
+    return code, rows or "", err
 
 
 def review(args, *, independent=None):
@@ -603,13 +576,11 @@ def review(args, *, independent=None):
             ledger_report["notRecorded"] = sorted(str(s.root) for s in foreign)
         roster = load_roster(args.roster)
         wanted = {m for seat in roster for m in seat.get("mandates") or []}
-        before = len(ledger_rows(cwd, args.subject))
         unreadable = any(f.get("kind") == "fold-snapshot-missing" for f in failures)
         done = None if unreadable else record_panel(cwd, args, src, subjects)
         if done is not None and done[0] != 0:
             failures.append({"kind": "ledger-record-failed", "detail": done[2].strip()})
-        rows_now = ledger_rows(cwd, args.subject)
-        ledger_report["panelRows"] = len(rows_now) - before
+        ledger_report["panelRows"] = len(done[1]) if done is not None and done[0] == 0 else 0
         written, _ = record_inline(cwd, args, wanted, changed, failures, subjects, roster)
         ledger_report["inlineRows"] = written
     held = held_rows(src.rows, src.jobs, rigor=rigor, views=fold_check.load_rows(src.findings_path, allow_empty=True)
@@ -761,8 +732,10 @@ _BLOCK = re.compile(r"```(?:claims|findings)[ \t]*\r?\n(.*?)```", re.S)
 CLAIM_MEMBERS = ('claims', 'findings', 'overlaps')  # the arrays a structured result carries its checked rows in
 
 
-def result_claims(label, value, *, preserve=False, source_indices=False, required=False, root=None):
+def result_claims(label, value, *, preserve=False, source_indices=False, required=False, root=None,
+                  keep_root=False):
     """Complete canonical rows from a structured result or JSON Lines deliverable; a file label resolves in `root`.
+    `keep_root` carries a row's own `root` through: only a caller reading rows the harness wrote passes it.
 
     Prose without a block, or no value, is no claims. `required=True` makes either an error: only a
     caller whose job contract demands a claims deliverable (`claims_rows`) passes it."""
@@ -813,6 +786,8 @@ def result_claims(label, value, *, preserve=False, source_indices=False, require
         source_key = f'{label}#{index}' if label.startswith(('reach:', 'worklog:')) else obj.get('id') or f'{label}#{index}'
         row.update(id=str(source_key),
                    evidence=verify_claims.items_of(obj, root=root or REPO), polarity=obj.get('polarity'))
+        if keep_root and obj.get('root'):
+            row['root'] = obj['root']
         if source_indices:
             row['__sourceIndex'] = index
         rows.append(row)
@@ -869,7 +844,8 @@ def claims_rows(args):
         if value is None:
             errors.append(f'{label}: producing job has no result')
             continue
-        found, bad = result_claims(label, value, required=True, root=args.root)
+        found, bad = result_claims(label, value, required=True, root=args.root,
+                                   keep_root=bool(args.result) and not directory and not args.sidecar_dir)
         rows.extend(found)
         errors.extend(bad)
     if not results:

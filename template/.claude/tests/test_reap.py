@@ -11,7 +11,7 @@ its own (a dead-tagged launcher and its seat), runs the real `leftovers` listing
 those rows, and checks that both still run. Nothing here stops a process it did not start.
 Run: python3 .claude/tests/test_reap.py
 """
-import atexit, io, json, os, re, shutil, subprocess, sys, tempfile, time
+import atexit, io, json, os, re, shutil, subprocess, sys, tempfile, time, types
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -108,7 +108,7 @@ def run(argv, tbl, env=None, ledger=None, environ=None, transcript="default", se
     reap.session_registry_dirs = lambda: [registry]
     reap.process_table = lambda: dict(tbl)
     ok = kill_ok if callable(kill_ok) else (lambda pid: kill_ok)
-    reap.taskkill = lambda pid, tree=True: (killed.append(pid) or True) if ok(pid) else False
+    reap.taskkill = lambda pid: (killed.append(pid) or True) if ok(pid) else False
     # Nothing here may touch the OS: the environ read is planted, defaulting to "no environment
     # readable" so every case exercises the fallback proofs unless it says otherwise.
     reap.environ_of = environ or (lambda pid: b"PATH=planted\0")
@@ -235,14 +235,37 @@ def main():
         ledger = os.path.join(td, "reap_ledger.jsonl")
         rc, killed, out = run(["101", "--reason", "duplicate", "--twin", "200", "--key", "worker.py opus-gaps",
                                "--why", "launched twice; 200 continues"], table(), ledger=ledger)
-        # taskkill /T takes the tree from the root; the planted kill records the root it was handed.
-        ck("own duplicate daemon with a live twin is killed at its root, tree 101/102/103 reported",
-           rc == 0 and killed == [101] and "[101, 102, 103]" in out, f"rc={rc} killed={killed}\n{out}")
+        # The verified tree goes member by member, deepest first, never by `taskkill /T` (reused parent pids).
+        ck("own duplicate daemon with a live twin is killed with its verified tree, deepest first, 101/102/103 reported",
+           rc == 0 and killed == [103, 102, 101] and "[101, 102, 103]" in out, f"rc={rc} killed={killed}\n{out}")
         lines = open(ledger, encoding="utf-8").read().splitlines() if os.path.exists(ledger) else []
         rec = json.loads(lines[-1]) if lines else {}
         ck("ledger row carries pid, reason, why, proof and the tree",
            rec.get("pid") == 101 and rec.get("reason") == "duplicate" and "200" in json.dumps(rec.get("evidence"))
            and rec.get("tree") == [101, 102, 103] and rec.get("session") == SID, json.dumps(rec)[:300])
+
+    # 1b. a reused parent pid (v2 9091bba): the orphan's recorded parent is a newer process holding the old number,
+    #     so it is no descendant, no ancestor and no MSYS child, and a stop of the newer process leaves it alone.
+    fresh = row(7001, SESSION_PID, "bash.exe", "bash fresh.sh", start="2026-09-15 15:00:00")
+    stranger = row(7002, 7001, "bash.exe", "bash old-orphan.sh", start="2026-09-15 13:00:00")
+    reused = table([fresh, stranger])
+    ck("a child that started before its recorded parent is not its descendant",
+       7002 not in reap.descendants(reused, 7001) and 7001 not in reap.ancestors(reused, 7002)
+       and 7002 not in reap.descendants(reused, SESSION_PID), str(reap.descendants(reused, 7001)))
+    msys_reused = table([fresh, dict(stranger, msys_ppid=7001)])
+    ck("a reused parent pid is no MSYS parent either", reap.parents(msys_reused, msys_reused[7002]) == [],
+       str(reap.parents(msys_reused, msys_reused[7002])))
+    rc, killed, out = run(["7001", "--why", "a fresh run of mine"], table([fresh, stranger]))
+    ck("a reused parent pid does not stop the stranger with the target", 7002 not in killed and 7001 in killed,
+       f"rc={rc} killed={killed}\n{out[-300:]}")
+    seen_cmds = []
+    real_run = reap.subprocess.run
+    reap.subprocess.run = lambda cmd, **kw: seen_cmds.append(cmd) or types.SimpleNamespace(returncode=0, stdout="")
+    try:
+        ck("taskkill never walks the OS tree", REAL_TASKKILL(5) and seen_cmds == [["taskkill", "/PID", "5", "/F"]],
+           str(seen_cmds))
+    finally:
+        reap.subprocess.run = real_run
 
     # 2. a peer's process: identical command line, other session -> denied, nothing killed
     rc, killed, out = run(["901", "--reason", "duplicate", "--twin", "200", "--key", "worker.py", "--why", "x"], table())
@@ -335,7 +358,7 @@ def main():
         log = os.path.join(td, "job.log"); open(log, "w").write("x")
         old = time.time() - 40 * 60; os.utime(log, (old, old))
         rc, killed, out = run(["101", "--reason", "stalled", "--log", log, "--idle-min", "30", "--why", "x"], table())
-        ck("stalled: log idle beyond the threshold -> killed", rc == 0 and killed == [101], out[-300:])
+        ck("stalled: log idle beyond the threshold -> killed", rc == 0 and killed == [103, 102, 101], out[-300:])
         os.utime(log, None)
         rc, killed, out = run(["101", "--reason", "stalled", "--log", log, "--idle-min", "30", "--why", "x"], table())
         ck("stalled: a log written just now -> denied", rc == 2 and killed == [], out[-300:])
@@ -354,7 +377,7 @@ def main():
                       ("stalled", time.time() - 1200, {"idle": 900}))
         rc, killed, out = run(["101", "--reason", "stalled", "--log", journal, "--idle-min", "30", "--why", "x"], table())
         ck("stalled: a 20-min-old stalled row at idle=900 s passes --idle-min 30 (idle plus the row's age)",
-           rc == 0 and killed == [101], out[-300:])
+           rc == 0 and killed == [103, 102, 101], out[-300:])
         write_journal(("started", time.time() - 2400, {"pid": 101}),
                       ("stalled", time.time() - 1200, {"idle": 900}),
                       ("resumed", time.time() - 60, {"idle": 5}))
@@ -476,7 +499,8 @@ def main():
     job = lambda pids: (lambda pid: b"REAP_JOB_ID=roster:cov-x.sh\0" if pid in pids else b"")  # noqa: E731
     rc, killed, out = run(["130", "--reason", "queued", "--why", "rung corrected"], table([roster, waiter]),
                           environ=job({130}))
-    ck("queued: an owned roster with a job id and nothing in flight is killed", rc == 0 and killed == [130], out[-300:])
+    ck("queued: an owned roster with a job id and nothing in flight is killed", rc == 0 and killed == [131, 130],
+       out[-300:])
     rc, killed, out = run(["130", "--reason", "queued", "--why", "x"], table([roster, waiter]))
     ck("queued: a target carrying no job id refuses (its detached work cannot be seen)",
        rc == 2 and killed == [] and "no job id" in out, out[-300:])
@@ -523,7 +547,8 @@ def main():
         ck("an unwritable ledger refuses the kill (fail closed)", rc == 2 and killed == [] and "LEDGER" in out, out[-300:])
     # 7e. a target inside another target's tree is covered once, and duplicates collapse
     rc, killed, out = run(["101", "103", "101", "--reason", "duplicate", "--twin", "200", "--key", "worker.py", "--why", "x"], table())
-    ck("a descendant of another target and a repeated pid are covered by one tree kill (exit 0)", rc == 0 and killed == [101], f"rc={rc} killed={killed}\n{out[-300:]}")
+    ck("a descendant of another target and a repeated pid are covered by one tree kill (exit 0)",
+       rc == 0 and killed == [103, 102, 101], f"rc={rc} killed={killed}\n{out[-300:]}")
 
     # 8. dry run kills nothing and prints the plan
     rc, killed, out = run(["101", "--reason", "duplicate", "--twin", "200", "--key", "worker.py", "--why", "x", "--dry-run"], table())
@@ -544,10 +569,12 @@ def main():
     rc, killed, out = run(["101", "--reason", "duplicate", "--twin", "200", "--key", "worker.py", "--why", "x"],
                           table(grid()), ps=ps)
     ck("an MSYS child outside the Windows tree is killed with its MSYS parent",
-       rc == 0 and killed == [101, 150] and "150" in out, f"rc={rc} killed={killed}\n{out[-400:]}")
+       rc == 0 and sorted(killed) == [101, 102, 103, 150] and killed[-1] == 101 and "150" in out,
+       f"rc={rc} killed={killed}\n{out[-400:]}")
     rc, killed, out = run(["101", "--reason", "duplicate", "--twin", "200", "--key", "worker.py", "--why", "x"],
                           table(grid()), ps=None)
-    ck("... and an unreadable ps leaves the Windows tree alone", rc == 0 and killed == [101], f"killed={killed}")
+    ck("... and an unreadable ps leaves the Windows tree alone", rc == 0 and killed == [103, 102, 101],
+       f"killed={killed}")
 
     # 10. the shell used for the environ read is Git's, never WSL's: a bare `bash` from Windows
     #     Python is System32\bash.exe, whose /proc cannot see MSYS pids at all.
@@ -762,7 +789,7 @@ def main():
     rc, killed, out = run(["520", "--reason", "orphan", "--why", "launcher hung"], table(everything),
                           environ=planted_env)
     ck("reaping a launcher also kills its own dispatch servers and prints each",
-       rc == 0 and killed[0] == 520 and sorted(killed[1:]) == [499, 500, 509, 510]
+       rc == 0 and killed[:2] == [521, 520] and sorted(killed[2:]) == [499, 500, 509, 510]
        and all("KILLED %d" % p in out for p in (499, 500, 509, 510))
        and out.count("(dispatch server of launch %s)" % X) == 4, f"rc={rc} killed={killed}\n{out[-600:]}")
     ck("... never another session's server or another launch's", 530 not in killed and 531 not in killed,
@@ -954,7 +981,7 @@ def main():
     rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, runner_child]),
                           environ=planted18)
     ck("a dead session's orphaned plain child (no launch id, parent gone) is reapable as orphan",
-       rc == 0 and killed == [680] and "dead" in out.lower(), f"rc={rc} killed={killed}\n{out[-500:]}")
+       rc == 0 and killed == [681, 680] and "dead" in out.lower(), f"rc={rc} killed={killed}\n{out[-500:]}")
     sibling_console = row(682, 7290, "conhost.exe", r"\??\C:\WINDOWS\system32\conhost.exe 0x4")
     envs18[682] = env18(session=DEAD)
     rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, sibling_console]),
@@ -1327,7 +1354,7 @@ def main():
         reap.launch_environ = reap.environ_of
         reap.msys_environ = lambda pid: b""
         reap.process_exited = lambda pid, start: False
-        reap.taskkill = lambda pid, tree=True: (wipe.append(pid) or True)
+        reap.taskkill = lambda pid: (wipe.append(pid) or True)
         reap.LEDGER = Path(td) / "ledger.jsonl"
         with reap.invocation(SID, "C--x-{{PROJECT_NAME}}"):
             findings = reap.leftover_findings(dead_table | table([peer_wrapper, other_wrapper]),

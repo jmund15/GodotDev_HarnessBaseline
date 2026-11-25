@@ -1,5 +1,5 @@
-"""Re-runnable proof for the merge-commit scope rule (`hooks/_commit_scope.py`) as
-`hooks/git_guardrails.py` and `hooks/baseline_classification_guard.py` read it.
+"""Re-runnable proof for the merge-commit scope rule (`hooks/_commit_scope.py`) as the Bash entry
+(`hooks/pre_bash.py`: the floor's git check and `hooks/baseline_classification_guard.py`) reads it.
 
 A merge commit re-commits its parents' content; only staged content differing from BOTH parents
 is this commit's own. Before that rule the guard denied a `git commit` closing a merge of
@@ -8,7 +8,7 @@ and `MERGE_HEAD:<path>` both absent, which read as "authored here". `git merge -
 not judged at all (so PRs 101/108 closed the same merges with no check).
 
 Every case feeds the hook a real PreToolUse payload against a planted temp repo and asserts on
-the emitted channel (deny via stderr + exit 2, or allow via exit 0). An exit outside {0, 2}, or
+the emitted channel (deny via JSON or stderr + exit 2, else allow). An exit outside {0, 2}, or
 a traceback, is a CRASH and fails its case -- a hook that cannot import must not read as allow.
 
     python3 .claude/tests/test_merge_commit_scope.py
@@ -21,7 +21,7 @@ import tempfile
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_TESTS_DIR)
-HOOK = os.path.join(_CLAUDE_DIR, "hooks", "git_guardrails.py")
+HOOK = os.path.join(_CLAUDE_DIR, "hooks", "pre_bash.py")
 RUNNER = os.path.join(_CLAUDE_DIR, "scripts", "harness_tests.py")
 sys.path.insert(0, _TESTS_DIR)
 import _hook_call  # noqa: E402
@@ -71,7 +71,13 @@ def run_hook(command, repo):
     code, out, err, _ = _hook_call.call(HOOK, payload, env=env, cwd=repo)
     if code not in (0, 2) or "Traceback" in err:
         return CRASH, (err or out)[:400]
-    return (DENY, err) if code == 2 else (ALLOW, out)
+    try:
+        decision = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
+    except ValueError:
+        decision = {}
+    if code == 2 or decision.get("permissionDecision") == "deny":
+        return DENY, err + decision.get("permissionDecisionReason", "")
+    return ALLOW, out
 
 
 def scoped_run(repo):

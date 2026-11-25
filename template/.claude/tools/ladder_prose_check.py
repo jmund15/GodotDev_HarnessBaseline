@@ -48,6 +48,12 @@ BANNED = [
      "registry `price` owns prices; the `cost` column carries the pick-relevant half"),
     ("source narration", r"\bvendor|\b(?:public|independent) boards?\b|\bunconfirmed\b|\bpreliminary\b|\bpredates?\b",
      "the `evidence` column tags the source; the cell states the tendency"),
+    ("run narration", r"\bbatter(?:y|ies)\b|\bunproven until\b",
+     "a narrated run is one run's outcome with the figure taken out; state the tendency and its scope "
+     "('light derived reads can go to it; heavier derived work is unmeasured')"),
+    ("plan routing", r"\bquota\b|\bbuckets?\b|\bruns? low\b|\bhas room\b|\bevery band\b|\bwhen [\w-]+ is out\b",
+     "the `billing` column names each plan and the fan-out picks the one that pays (Selection line rule 2); "
+     "state what the row is good or weak at"),
 ]
 
 # Effort levels belong to the `effort` column alone; a `±` cell that names one is a second home that drifts

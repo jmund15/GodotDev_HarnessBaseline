@@ -261,7 +261,7 @@ def exclusion_checks():
         ".claude/other_generated.jsonl": '{"key": "inbound-key"}\n',
         **{p: '{"key": "inbound-key"}\n' * 12 for p in (
             ".claude/orchestration_metrics.jsonl", ".claude/autolearn_outcomes.jsonl",
-            ".claude/self_evaluate_archive.jsonl", ".claude/scripts/benchmark_campaign/run.stream.jsonl")},
+            ".claude/self_evaluate_archive.jsonl")},
     }, {".claude/tests/fixture.jsonl": '{"key": "inbound-key"}\n'})
     proc, data = run(repo, "--plan", str(repo / subject))
     paths = {c["path"] for c in (data or {}).get("citers", [])}
@@ -270,17 +270,17 @@ def exclusion_checks():
     check("consumed JSONL and other generated records remain inbound citers",
           {".claude/escape_log.jsonl", ".claude/instruction_rows/rulings.jsonl", ".claude/other_generated.jsonl"} <= paths, paths)
     check("enumerated logs are excluded before caps",
-          not any(p.endswith(".stream.jsonl") or p in {".claude/orchestration_metrics.jsonl",
+          not any(p in {".claude/orchestration_metrics.jsonl",
                   ".claude/autolearn_outcomes.jsonl", ".claude/self_evaluate_archive.jsonl"} for p in paths)
           and not coverage.get("truncated"), coverage)
     check("JSONL inventory records method and class counts",
-          coverage.get("jsonlInventory", {}).get("classes") == {"appendOnlyLog": 3, "benchmarkProgressStream": 1, "eligible": 3}
+          coverage.get("jsonlInventory", {}).get("classes") == {"appendOnlyLog": 3, "eligible": 3}
           and "git ls-files" in coverage.get("jsonlInventory", {}).get("method", ""), coverage)
     check("subject records worktree hash and sweep HEAD",
           (data or {}).get("subjects") == [{"path": str((repo / subject).resolve()),
               "hash": git(repo, "hash-object", subject).strip(), "head": git(repo, "rev-parse", "HEAD").strip()}], data)
     check("coverage counts excluded subject-plan rows", coverage.get("excludedRows", {}).get("subjectPlan") == 2, coverage)
-    check("coverage counts excluded generated-JSONL rows", coverage.get("excludedRows", {}).get("generatedJsonl") == 48, coverage)
+    check("coverage counts excluded generated-JSONL rows", coverage.get("excludedRows", {}).get("generatedJsonl") == 36, coverage)
     check("other live plans and JSONL test fixtures remain inbound citers",
           {".claude/plans/other.md", ".claude/tests/fixture.jsonl"} <= paths, paths)
     proc, data = run(repo, key)

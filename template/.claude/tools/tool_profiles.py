@@ -12,6 +12,9 @@ because that is what `--mcp-config` and a launcher's strict config must name. An
 server is an error, not a warning: a strict config that quietly drops a server runs the job on an
 inventory nobody chose.
 
+A kind row's optional `plugin` names the plugin (`tools/adaptation.py` `plugins`) whose hook rows the kind's launch
+needs: `sidecar_common.sh` refuses that launch while the plugin is unreadable.
+
 `--tier` is the job's written tier: it replaces the shape or kind row's `tier` in the profile, which a sidecar
 record archives as the run's role tier. An unknown tier refuses with the known list.
 
@@ -94,6 +97,9 @@ def _validate_kinds(kinds):
             raise ValueError("kind %r: builtins must be a non-empty list or null" % name)
         if not isinstance(row.get("mcpServers"), list):
             raise ValueError("kind %r: mcpServers must be a list" % name)
+        plugin = row.get("plugin")
+        if plugin is not None and not (isinstance(plugin, str) and plugin):
+            raise ValueError("kind %r: plugin must be a non-empty plugin name or absent" % name)
         deny = row.get("denyTools", [])
         if not (isinstance(deny, list) and all(isinstance(t, str) and re.fullmatch(r"mcp__[\w-]+__[\w-]+", t) for t in deny)):
             raise ValueError("kind %r: denyTools must be a list of mcp__<server>__<tool> names" % name)

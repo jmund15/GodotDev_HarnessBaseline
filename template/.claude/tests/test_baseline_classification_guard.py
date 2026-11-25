@@ -5,7 +5,7 @@ proof also covers the guard's registration and its import-failure stub.
 
 Channel contract: a deny is `hookSpecificOutput.permissionDecision == "deny"` on stdout
 (exit 0) OR a bare stderr message with exit 2 -- both are the harness's own established deny
-shapes (`git_guardrails.py` uses the exit-2 shape). An exit code outside {0, 2}, or ANY
+shapes (the floor's git check uses the JSON shape). An exit code outside {0, 2}, or ANY
 stderr traceback, is a CRASH and fails its case outright: a hook that cannot import must not
 be misread as "allowed".
 
@@ -213,9 +213,8 @@ def main(only: int | None = None) -> int:
     def _s0():
         # --- 1: a new unclassified .claude/ file, pathspec commit -> DENY -------------------
         repo = _make_consumer_repo()
-        # A path outside .claude/{hooks,tools,scripts,workflows,tests} so `git_guardrails.py`'s
-        # unrelated harness-stamp check (same HARNESS_DIRS, a different guard, a different
-        # denial reason) never fires first and masks this guard's own verdict.
+        # A path outside .claude/{hooks,tools,scripts,workflows,tests}, so no other guard's check of those
+        # dirs fires first and masks this guard's own verdict.
         rel = ".claude/commands/new_thing.md"
         _write(repo / rel, "# new command\n")
         _git(repo, "add", "-A")
@@ -462,7 +461,7 @@ def main(only: int | None = None) -> int:
 
     @section
     def _s14():
-        # 20-21 call the guard directly: git_guardrails' revert check judges a fixture private index first.
+        # 20-21 call the guard directly: the floor's revert check judges a fixture private index first.
         import importlib.util
         spec20 = importlib.util.spec_from_file_location("bcg_under_test_20", GUARD_PATH)
         guard20 = importlib.util.module_from_spec(spec20)
@@ -482,7 +481,7 @@ def main(only: int | None = None) -> int:
     # --- 22-25: a merge commit re-commits its parents, so only content differing from BOTH
     # parents is authored here. The PR-sync job merges the upstream ref in a fresh worktree, where
     # main's own `.claude/` additions arrive through MERGE_HEAD and are not this commit's rows to
-    # classify. `.claude/commands/` keeps `git_guardrails.py`'s unrelated stamp check out of the way.
+    # classify. `.claude/commands/` keeps other guards' checks of the harness dirs out of the way.
     def merge_repo():
         """`upstream` adds an unclassified `.claude/` file; HEAD adds none. A clean
         `--no-commit` merge stages it with MERGE_HEAD set."""
@@ -542,8 +541,8 @@ def main(only: int | None = None) -> int:
 
     @section
     def _s21():
-        # --- 17b-18: `_dropped_lock_rows` alone, since git_guardrails' stamp check runs its own
-        # `git diff HEAD` first and would decide both commits before this guard is reached.
+        # --- 17b-18: `_dropped_lock_rows` alone, so no earlier member of the chain decides either commit
+        # before this guard is reached.
         import importlib.util
         spec = importlib.util.spec_from_file_location("bcg_under_test", GUARD_PATH)
         guard = importlib.util.module_from_spec(spec)
@@ -608,9 +607,10 @@ def main(only: int | None = None) -> int:
         # The list file sits outside the repo (rows F28532, F36935), so git rejects the unexpanded pathspec.
         proc = _run_dispatch(str(repo), 'git commit -q -m m -- $(cat ../outside_paths.txt)', env)
         check("26a: `$(cat list)` pathspec cannot be verified -> deny", _classify(proc), "DENY", proc)
+        # The floor's git check denies on the JSON channel; the reason is the same either way.
+        said = proc.stderr + _hso(proc).get("permissionDecisionReason", "")
         cases.append(("26a: the deny names the unexpanded `$` and `--pathspec-from-file`",
-                      "$" in proc.stderr and "--pathspec-from-file" in proc.stderr,
-                      proc.stderr[:500]))
+                      "$" in said and "--pathspec-from-file" in said, said[:500]))
         # The route the hint names works: the file lists an ordinary path -> allow.
         proc = _run_dispatch(str(repo), 'git commit -q -m m --pathspec-from-file=paths.txt', env)
         check("26b: `--pathspec-from-file` naming an ordinary path -> allow", _classify(proc), "ALLOW", proc)

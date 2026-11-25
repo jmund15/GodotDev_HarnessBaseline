@@ -72,6 +72,18 @@ class CheckoutRootTests(unittest.TestCase):
             os.chdir(here)
         self.assertEqual(answers, [False, True, False])
 
+    def test_worktree_chain_yields_the_nearest_root_first(self):
+        import _checkout_root
+
+        def rev_parse(flag, cwd):
+            out = subprocess.run(["git", "-C", str(cwd), "rev-parse", flag], capture_output=True, text=True)
+            return out.stdout if out.returncode == 0 else None
+
+        self.assertEqual([Path(p) for p in _checkout_root.worktree_chain(self.linked / "sub", rev_parse)],
+                         [self.linked])
+        self.assertEqual([Path(p) for p in _checkout_root.worktree_chain(self.main, rev_parse)], [self.main])
+        self.assertEqual(list(_checkout_root.worktree_chain(self.plain, rev_parse)), [])
+
     def test_repo_arg_pops_the_flag_and_returns_the_resolved_checkout(self):
         import _checkout_root
         argv = ["guard.py", "--repo", str(self.linked / "sub" / ".."), "--quiet"]

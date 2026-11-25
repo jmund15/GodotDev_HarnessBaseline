@@ -58,7 +58,8 @@ class Postprocess(unittest.TestCase):
             if path==later and not launched.wait(2):
                 blocked.append(path)
             return 'key'
-        cache=SimpleNamespace(root=str(self.root),key=key,lazy_key=lambda path:lambda:key(path),snapshot_git=lambda:None,hit=lambda *a:False)
+        cache=SimpleNamespace(root=str(self.root),key=key,lazy_key=lambda path:lambda:key(path),snapshot_git=lambda:None,
+                              matched=lambda *a:None,miss_reasons=lambda *a:())
         def launch(path,*a,**kwargs):
             if path==str(self.proof): launched.set()
             return 'fail',0.01,'FAIL planted'

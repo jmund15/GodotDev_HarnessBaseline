@@ -309,7 +309,7 @@ def main():
         rows = {"anthropic": None, "go": plan_reading("go", 20, 3)}
         fact = spare_fact("executor", "anthropic", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))
         case("a claimant of the tier on another plan with expiring quota is named with its plan and share",
-             fact == "g-exec on go: ~65% unused at reset in 3d", repr(fact))
+             fact == "g-exec on go: 7d window, ~65% on course to go unused at its reset in 3.0d", repr(fact))
         rows = {"anthropic": None, "go": plan_reading("go", 99, 1)}
         case("a plan whose quota will not expire unused names nothing",
              spare_fact("executor", "anthropic", data=DATA, now=now,
@@ -319,13 +319,13 @@ def main():
         rows = {"anthropic": plan_reading("anthropic", 20, 3), "go": plan_reading("go", 20, 3)}
         case("the job's own plan is never the fact",
              spare_fact("executor", "go", data=DATA, now=now,
-                        read=lambda name, _data=None: rows.get(name)) == "a-exec on anthropic: ~65% unused at reset in 3d",
+                        read=lambda name, _data=None: rows.get(name)) == "a-exec on anthropic: 7d window, ~65% on course to go unused at its reset in 3.0d",
              repr(spare_fact("executor", "go", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))))
         rows = {"anthropic": None, "go": plan_reading("go", 20, 3), "codex": plan_reading("codex", 40, 2)}
         two = spare_fact("executor", "anthropic", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))
         case("every plan with expiring quota is named, not only the first in registry order",
-             set((two or "").split("; ")) == {"g-exec on go: ~65% unused at reset in 3d",
-                                              "c-exec on codex: ~44% unused at reset in 2d"},
+             set((two or "").split("; ")) == {"g-exec on go: 7d window, ~65% on course to go unused at its reset in 3.0d",
+                                              "c-exec on codex: 7d window, ~44% on course to go unused at its reset in 2.0d"},
              repr(two))
     else:
         case("spare_plan_fact cases ran", False, "no spare_plan_fact")

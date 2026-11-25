@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Proof for hooks/model_name_guard.py, run through pre_edit_dispatch.py: mechanism-layer files
-name roles, never models (instruction_quality §12).
+"""Proof for hooks/model_name_guard.py, run through its own entry point (the M1 cut unwired it from
+pre_edit_dispatch.py, so no dispatcher reaches it): mechanism-layer files name roles, never models
+(instruction_quality §12).
 
-Real PreToolUse payloads go to the live dispatcher on stdin against a planted registry with a
+Real PreToolUse payloads go to the hook on stdin against a planted registry with a
 synthetic roster (HARNESS_MODEL_REGISTRY) and a planted exemption file
 (HARNESS_MODEL_NAME_EXEMPTIONS). Each case asserts on the guard's own channel: a deny whose reason
 carries MARK, an additionalContext carrying MARK, or silence. An exit outside {0, 2} or a traceback
-is CRASH, never allow. A deny from another sub-hook hides this guard, so it fails the case.
+is CRASH, never allow.
 
     python3 .claude/tests/test_model_name_guard.py
 """
@@ -19,7 +20,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
 ROOT = os.path.abspath(os.path.join(CLAUDE, ".."))
-DISPATCH = os.path.join(CLAUDE, "hooks", "pre_edit_dispatch.py")
+HOOK = os.path.join(CLAUDE, "hooks", "model_name_guard.py")
 EXEMPTIONS = os.path.join(CLAUDE, "hooks", "model_name_exemptions.json")
 MARK = "[model-name-guard]"
 FAILURES = []
@@ -46,7 +47,7 @@ def check(label, ok, detail=""):
 
 
 def run(payload, env):
-    r = subprocess.run([sys.executable, DISPATCH], input=json.dumps(payload), capture_output=True,
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
                        text=True, timeout=120, env=env, encoding="utf-8", errors="replace")
     return r.returncode, (r.stdout or "").strip(), r.stderr or ""
 
@@ -145,16 +146,12 @@ def main():
 
     real = dict(env)
     real.pop("HARNESS_MODEL_NAME_EXEMPTIONS")
-    expect("the shipped exemptions cover a benchmark campaign file",
-           edit(os.path.join(CLAUDE, "scripts", "benchmark_campaign", "campaigns", "probe.env"),
-                'BENCH_MODEL="alpha"'), "silent", real)
-    reference = '{"referencePin": {"alias": "alpha", "effort": "high"}}'
-    expect("the measured reference pin's exact catalog path is exempt",
-           edit(os.path.join(CLAUDE, "scripts", "benchmark_campaign", "core", "instruments.json"), reference),
-           "silent", real)
-    expect("a sibling core catalog still cannot name a model",
-           edit(os.path.join(CLAUDE, "scripts", "benchmark_campaign", "core", "sibling.json"), reference),
-           "deny", real)
+    expect("the shipped exemptions cover a rail-battery report",
+           edit(os.path.join(CLAUDE, "scripts", "rail_battery", "reports", "probe.md"),
+                "The arm ran on `alpha`."), "silent", real)
+    expect("a sibling of the exempt reports folder still cannot name a model",
+           edit(os.path.join(CLAUDE, "scripts", "rail_battery", "runs", "probe.md"),
+                "The arm ran on `alpha`."), "deny", real)
     try:
         with open(EXEMPTIONS, encoding="utf-8") as fh:
             entries = json.load(fh)["exemptions"]

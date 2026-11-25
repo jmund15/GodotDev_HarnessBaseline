@@ -3,8 +3,10 @@ import shutil
 from pathlib import Path
 
 CLAUDE = Path(__file__).resolve().parents[1]
-RUNNER_DEPS = ("hooks/_hook_state.py", "hooks/_file_lock.py", "hooks/_bounded_run.py", "tools/adaptation.py",
-               "tools/machine_slots.py")
+RUNNER_DEPS = ("hooks/_hook_state.py", "hooks/_file_lock.py", "hooks/_bounded_run.py", "hooks/_git_run.py",
+               "hooks/_push_range.py", "tools/adaptation.py", "tools/machine_slots.py",
+               "scripts/_proof_runner/attempt.py", "scripts/_proof_runner/authority.py",
+               "scripts/_proof_runner/catalog.py", "scripts/_proof_runner/evidence.py")
 
 
 def copy_runner_deps(claude_dir):

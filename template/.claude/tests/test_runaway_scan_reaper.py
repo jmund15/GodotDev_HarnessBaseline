@@ -327,9 +327,9 @@ def main():
                       % (event, h.get("timeout")), p.returncode == 0 and "Traceback" not in p.stderr
                       and "No such file" not in p.stderr, p.stderr)
 
-        pre = [h for e in hooks.get("PreToolUse", []) if e.get("matcher") == "Bash|PowerShell|Monitor"
-               for h in e.get("hooks", []) if "pre_bash_dispatch.py" in h.get("command", "")]
-        check("PreToolUse Bash|PowerShell|Monitor registers pre_bash_dispatch.py", len(pre) == 1, pre)
+        pre = [h for e in hooks.get("PreToolUse", []) if e.get("matcher") == "Bash|PowerShell|Monitor|TaskStop"
+               for h in e.get("hooks", []) if "hooks/pre_bash.py" in h.get("command", "")]
+        check("PreToolUse Bash|PowerShell|Monitor|TaskStop registers pre_bash.py", len(pre) == 1, pre)
         for h in pre:
             pl = json.dumps({"hook_event_name": "PreToolUse", "session_id": "rsr00003", "tool_name": "Bash",
                              "cwd": REPO, "tool_input": {"command": "find . -type f | xargs grep -l ProjectSuite"}})
@@ -340,7 +340,7 @@ def main():
                 decision = (json.loads(p.stdout).get("hookSpecificOutput") or {}).get("permissionDecision", "")
             except ValueError:
                 pass
-            check("registered pre_bash_dispatch command denies a recursive grep through Git Bash",
+            check("registered pre_bash.py command denies a recursive grep through Git Bash",
                   p.returncode == 0 and decision == "deny", p.stdout[:200] + p.stderr[:200])
     except Exception as exc:  # a planting or harness failure is a FAIL, never a pass
         check("proof ran to completion", False, repr(exc))

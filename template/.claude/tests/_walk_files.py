@@ -7,7 +7,7 @@ names while the working tree matches the index, and no git process.
 Not named `test_*.py` / `*_test.py` on purpose: the runner discovers proofs by those patterns.
 
     from _walk_files import walk_files
-    walk_files(REPO, ".claude/scripts/benchmark_campaign", (".py", ".js"))   # repository-relative posix paths
+    walk_files(REPO, ".claude/workflows", (".js",))   # repository-relative posix paths
 """
 import os
 

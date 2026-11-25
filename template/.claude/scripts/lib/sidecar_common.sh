@@ -48,6 +48,11 @@
 # 8 is NOT 7. "This provider's capacity cannot be read" and "this transport is not in the
 # roster" have different fixes and different overrides; one code for both would send a
 # reader to the wrong one.
+#
+# Every code is the LAUNCHER's verdict, never a child CLI's own status passed through: a provider
+# may use any number for anything (agy exits 3 on a quota refusal). `sc_child_rc` folds a child status
+# into 0/1, keeping the launcher's own timeout verdict (124); a recognized refusal
+# sets its own code (sc_finish_usage_limit -> 10, an auth marker -> 3).
 
 # `pwd -W` gives the C:/ spelling Windows Python can open even when MSYS_NO_PATHCONV=1 stops argument conversion.
 SC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && { pwd -W 2>/dev/null || pwd; })"
@@ -104,10 +109,15 @@ sc_reexec_snapshot() {
   # SC_SNAPSHOT_OF, so only this launcher's own snapshot honors it.
   SC_INVOKED_LAUNCHER="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
-  # -X: foreground->background detach (Design §1, sidecar-detach.md). Never for --check (must
-  # answer synchronously with no spawn) and never re-entered once SIDECAR_DETACHED is set — the
-  # detached job re-invokes the launcher WITHOUT -X, so it takes the ordinary branch below.
-  if [ "${1:-}" != "--check" ] && [ -z "${SIDECAR_DETACHED:-}" ]; then
+  # A check answers in seconds. The snapshot copy and the re-exec cost more than the check itself
+  # and would push it past the preflight's timeout, so every launcher skips both for --check; the
+  # lib decides it once rather than each launcher guarding its call.
+  [ "${1:-}" = "--check" ] && return 0
+
+  # -X: foreground->background detach (Design §1, sidecar-detach.md). Never re-entered once
+  # SIDECAR_DETACHED is set — the detached job re-invokes the launcher WITHOUT -X, so it takes the
+  # ordinary branch below.
+  if [ -z "${SIDECAR_DETACHED:-}" ]; then
     sc_x_scan "$@"
     if [ "$SC_X_PRESENT" = 1 ]; then
       sc_detach_launch "$launcher" "$@"
@@ -962,7 +972,7 @@ sc_gate_repay() {
 
 # The harness revision a launch runs under: the code HEAD sc_write_record records as harnessSession, plus the
 # doctrineSha a benchmark overlay stamped when one is present.
-# bench_overlay_doctrine (benchmark_campaign/lib.sh) drops the .bench-doctrine-sha marker when it refreshes
+# bench_overlay_doctrine (the bench plugin's benchmark_campaign/lib.sh) drops the .bench-doctrine-sha marker when it refreshes
 # $SC_WORKDIR/.claude from BENCH_DOCTRINE_REF; absent on a root whose .claude/ is still the task tag's own
 # frozen copy (BENCH_DOCTRINE_REF=none, or a non-benchmark dispatch entirely).
 sc_harness_head() { git -C "$SC_WORKDIR" rev-parse HEAD 2>/dev/null || echo unknown; }
@@ -995,9 +1005,11 @@ sc_gate_availability() {
 # ------------------------------------------------- benchmark-arm escape guard (settings merge)
 # Every launcher passes its child settings through this, and it is the ONE --settings value the
 # child gets: the CLI keeps only the last flag, so every fragment is merged here.
-# Project rows come from adaptation.json sidecar_hook_rows: matcher, command and optional when.
-# when maps environment names to exact values (null means nonempty); commands remain self-gated.
-# {root}, {shape}, {prompt}, {ruler_scope}, {workdir}, {main_root} and {spill_dir} expand to shell-quoted launcher values.
+# Project rows come from each ready plugin's registration `sidecar_hooks` (tools/adaptation.py `plugins`): matcher,
+# command and optional when. when maps environment names to exact values (null means nonempty); commands remain self-gated.
+# {root}, {plugin_root}, {shape}, {prompt}, {ruler_scope}, {workdir}, {main_root} and {spill_dir} expand to shell-quoted values.
+# An unreadable plugin stops (exit 2) a launch whose guards/tool_profiles.json kind row names it in `plugin`, because that
+# launch would run without the plugin's guard; any other launch prints one stderr line and proceeds. Each launcher stops on the exit.
 #
 # The former T1 fragment — enabledPlugins.semantic-search@dreb=false for a non-arm child whose -t
 # named no search tool — is gone. Every launcher now passes --strict-mcp-config with the resolved
@@ -1062,11 +1074,20 @@ if sys.argv[4]:
         for event, matcher in (("PreToolUse", "*"), ("Stop", None)):
             row = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
             base.setdefault("hooks", {}).setdefault(event, []).append({"matcher": matcher, **row} if matcher else row)
-try:
-    project = json.loads((root / "skills/project_subsystems/adaptation.json").read_text(encoding="utf-8"))
-except (OSError, ValueError):
-    project = {}
-rows = project.get("sidecar_hook_rows", []) if isinstance(project, dict) else []
+sys.path.insert(0, (root / "tools").as_posix())
+import adaptation, tool_profiles
+shape = sys.argv[3]
+kind_plugin = (tool_profiles.load_table()["kinds"].get(shape) or {}).get("plugin", "")
+rows = []
+for name, plugin in adaptation.plugins(root):
+    if plugin.state == "ready":
+        rows += [dict(row, _root=plugin.root) for row in plugin.manifest["sidecar_hooks"] if isinstance(row, dict)]
+    elif kind_plugin == name:
+        print("plugin %s unreadable (%s): a %s launch needs it. Fix %s/.claude/plugin.%s.json, then relaunch."
+              % (name, plugin.error, shape, plugin.root or "its root", name), file=sys.stderr)
+        sys.exit(2)
+    else:
+        print("plugin %s unreadable (%s): its hook rows are not merged." % (name, plugin.error), file=sys.stderr)
 # The launcher's own row: a child in a linked worktree may write only its workdir, spill dir and brief's writeSet.
 builtin = {"matcher": "Write|Edit|NotebookEdit|Bash", "when": {"SC_MAIN_ROOT": None},
            "command": "python3 {root}/hooks/sidecar_workdir_guard.py {workdir} {main_root} {spill_dir} {prompt}"}
@@ -1093,7 +1114,7 @@ for row in rows if isinstance(rows, list) else []:
                                            for k, v in when.items()):
         continue
     command = row["command"]
-    for key, value in values.items():
+    for key, value in dict(values, plugin_root=Path(row["_root"]).as_posix() if row.get("_root") else "").items():
         command = command.replace("{" + key + "}", shlex.quote(value))
     base.setdefault("hooks", {}).setdefault("PreToolUse", []).append({
         "matcher": row["matcher"],
@@ -1114,11 +1135,19 @@ PY
 # child reads the seat first into SC_SEAT_PLAN. The read is `provider_capacity.py`'s: cache first, so
 # the gates of one launch share a single usage-endpoint read per cache life.
 sc_gate_band() {
-  local runner="$SC_ROOT/tools/provider_capacity.py" seat raw rc parsed status sat_rc
+  local runner="$SC_ROOT/tools/provider_capacity.py" seat raw rc parsed status sat_rc runner_rc resolve_rc=0
   seat="${SC_SEAT_PLAN:-}"
-  [ -n "$seat" ] || seat="$(python3 "$SC_ROOT/hooks/_session_transport.py" --plan 2>/dev/null)"
+  if [ -z "$seat" ]; then
+    seat="$(python3 "$SC_ROOT/hooks/_session_transport.py" --plan 2>/dev/null)"
+    resolve_rc=$?
+  fi
   seat="${seat:-unknown}"
-  raw="$(python3 "$runner" "$seat" 2>/dev/null)"; rc=$?
+  if [ "$seat" = "unknown" ]; then
+    # No seat to read is an unreadable band, not a broken reader: the reader refuses a name it does not know.
+    raw=""; rc=2; runner_rc=0
+  else
+    raw="$(python3 "$runner" "$seat" 2>/dev/null)"; rc=$?; runner_rc=$rc
+  fi
   if [ "$rc" -eq 0 ]; then
     parsed="$(CAP_V="$raw" python3 -c '
 import json,os,sys
@@ -1144,13 +1173,21 @@ except Exception: sys.exit(1)
     echo "[sidecar] -A: host-band floor bypassed for $SC_ALIAS ($SC_MODEL); seat=$seat band=${SC_BAND:-unknown} floor=$SC_MIN_BAND" >&2
     return 0
   fi
+  if [ "$resolve_rc" -ne 0 ]; then
+    # The seat resolver itself failed: an empty answer from a working resolver is a session with no
+    # plan (warn below), but a crash is a failed check that must not disable the band floor.
+    sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): the seat resolver failed (hooks/_session_transport.py --plan exited $resolve_rc); the host band cannot be read."
+  fi
+  if [ "$runner_rc" -ne 0 ]; then
+    # The reader itself is broken: that is a failed check, not an unreadable reading.
+    sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): the host capacity runner failed for $seat (exit $runner_rc)."
+  fi
   if [ "$rc" -ne 0 ]; then
-    if python3 "$SC_REGISTRY_CLI" band-satisfies Surplus "$SC_MIN_BAND" >/dev/null 2>&1; then
-      echo "[sidecar] host capacity unavailable for $seat; floor $SC_MIN_BAND is the lowest band, so no reading could fail it." >&2
-      SC_BAND="unknown"; SC_BAND_P="?"
-      return 0
-    fi
-    sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): live host capacity for $seat is unavailable; cannot certify floor $SC_MIN_BAND. Use -A only for deliberate off-quota spend."
+    # An unreadable host band is unknown, never below the floor: this route launches with a warning,
+    # as every route does, and a reading that states exhaustion (above) is the only band refusal.
+    echo "[sidecar] host capacity for $seat is unavailable; floor $SC_MIN_BAND is uncertified, launching with an unknown band." >&2
+    SC_BAND="unknown"; SC_BAND_P="?"
+    return 0
   fi
   python3 "$SC_REGISTRY_CLI" band-satisfies "$SC_BAND" "$SC_MIN_BAND"; sat_rc=$?
   [ "$sat_rc" -eq 0 ] && return 0
@@ -1167,7 +1204,7 @@ except Exception: sys.exit(1)
 # Every transport delegates amount evidence to tools/provider_capacity.py. Expected provider
 # outcomes are normalized JSON; a nonzero exit is a runner/schema fault and refuses before launch.
 sc_gate_capacity() {
-  local runner="$SC_ROOT/tools/provider_capacity.py" raw rc parsed status band amount source detail
+  local runner="$SC_ROOT/tools/provider_capacity.py" raw rc parsed status band amount source detail unreadable
   if [ ! -f "$runner" ]; then
     sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity runner is missing."
   fi
@@ -1182,18 +1219,21 @@ try:
  d=json.loads(os.environ["CAP_V"])
  status=d["status"]; source=d["sourceKind"]
  quota=d.get("quota") or {}; balance=d.get("balance") or {}
+ sys.path.insert(0, os.environ["CAP_TOOLS_V"])
+ from provider_capacity import UNREADABLE, floor_refusal
+ unreadable=1 if status in UNREADABLE else 0
  detail=""
  if status == "dispatch-floor":
-  sys.path.insert(0, os.environ["CAP_TOOLS_V"])
-  from provider_capacity import floor_refusal
   detail=floor_refusal(d)
- print("%s|%s|%s|%s|%s" % (status, quota.get("dispatchBand") or "", balance.get("amount") if balance.get("amount") is not None else "", source, detail))
+ elif unreadable:
+  detail=((d.get("error") or {}).get("message") or "")
+ print("%s|%s|%s|%s|%s|%s" % (status, quota.get("dispatchBand") or "", balance.get("amount") if balance.get("amount") is not None else "", source, unreadable, detail))
 except Exception:
  sys.exit(1)
 ' 2>/dev/null)" || {
     sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity output is malformed."
   }
-  IFS='|' read -r status band amount source detail <<< "$parsed"
+  IFS='|' read -r status band amount source unreadable detail <<< "$parsed"
   SC_PROVIDER_BAND="$band"
   case "$status" in
     dispatch-floor)
@@ -1204,16 +1244,27 @@ except Exception:
       sc_die 6 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT balance is insufficient." ;;
     auth-error)
       sc_die 3 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT authentication failed." ;;
-    network-error|malformed)
-      sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT capacity is $status." ;;
     unsupported)
-      if [ "$SC_COST_MODEL" = "plan-quota" ] || awk -v f="${SC_MIN_BALANCE:-0}" 'BEGIN{exit !(f+0 > 0)}'; then
+      # A transport answers `unsupported` only when the registry declares capacityUnsupported. On a
+      # plan-quota transport that is an unmetered plan: an allowance no reader can measure.
+      if awk -v f="${SC_MIN_BALANCE:-0}" 'BEGIN{exit !(f+0 > 0)}'; then
         sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): required provider amount is unsupported."
       fi
-      echo "[sidecar] $SC_ALIAS capacity: amount unsupported, no amount floor; launcher eligibility remains authoritative." >&2
+      if [ "$SC_COST_MODEL" = "plan-quota" ]; then
+        echo "[sidecar] $SC_ALIAS capacity: unmetered plan (no quota reader); launcher eligibility remains authoritative." >&2
+      else
+        echo "[sidecar] $SC_ALIAS capacity: amount unsupported, no amount floor; launcher eligibility remains authoritative." >&2
+      fi
       return 0 ;;
     available) ;;
     *)
+      if [ "$unreadable" = "1" ]; then
+        # An unreadable meter (provider_capacity.UNREADABLE) is unknown, never an exhausted plan: the
+        # last good reading placed the job where it could, and with none the launch goes ahead with a
+        # warning. Every route behaves this way.
+        echo "[sidecar] $SC_ALIAS capacity: ${detail:-$SC_TRANSPORT capacity is $status}; launching with a warning (an unreadable meter is not an exhausted plan)." >&2
+        return 0
+      fi
       sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): unknown provider capacity status '$status'." ;;
   esac
 
@@ -1224,7 +1275,8 @@ except Exception:
     # route kept taking work at the same pressure. Which plan-quota window takes a job is the
     # `orchestration` section 5b comparison between the windows, not a registry constant.
     [ -n "$band" ] || {
-      sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider quota has no dispatch band."
+      echo "[sidecar] $SC_ALIAS capacity: $SC_TRANSPORT quota names no routing band; launching with a warning." >&2
+      return 0
     }
     return 0
   fi
@@ -1740,6 +1792,14 @@ sc_check_duplicate_launch() { # <prompt-file> <resume-sid> [label] [record]
   esac
 }
 
+# sc_child_rc <status> -> 0, 1 or 124. A child CLI's status is not this contract's namespace; the
+# launcher names a failure with its own code and its own reason line. 124 is the launcher's own
+# verdict, not the child's: `timeout` returns it for the -T / SIDECAR_TIMEOUT kill, and every
+# launcher answers it with its timed-out line, so it passes through.
+sc_child_rc() {
+  case "$1" in 0|1|124) printf '%s' "$1" ;; *) printf '1' ;; esac
+}
+
 sc_run_watched() {
   sc_admit_launch
   sc_prepare_record || { OUTPUT=""; rc=2; return 2; }
@@ -1756,7 +1816,7 @@ sc_run_watched() {
     [ "${SC_STALL_SEC:-0}" -gt 0 ] && [ -z "$progress" ] && \
       echo "[sidecar] no -P progress stream: the stall watchdog is OFF for this run (nothing to watch)" >&2
     if [ -n "$progress" ]; then OUTPUT="$("$run_fn" | tee -a "$progress")"; else OUTPUT="$("$run_fn")"; fi
-    rc=$?
+    rc="$(sc_child_rc "$?")"
     SC_RUN_FINISHED=1
     sc_watch_step - <<< "$OUTPUT"
     sc_finish_usage_limit "$progress"
@@ -1807,7 +1867,7 @@ sc_run_watched() {
       fi
     fi
   done
-  wait "$w" 2>/dev/null; rc=$?
+  wait "$w" 2>/dev/null; rc="$(sc_child_rc "$?")"
   [ "$_sc_ended" = 1 ] && rc="$_sc_result_err"
   [ "$_sc_stalled" = 1 ] && rc=124
   SC_RUN_FINISHED=1
@@ -1990,7 +2050,20 @@ SC_AUTONOMY
   sc_on_exit "rm -f \"$auto_tmp\" 2>/dev/null || :"
   # The CLI keeps only the last --append-system-prompt-file, so every part below goes into this one file, passed once.
   _sc_append_part() { printf '\n' >> "$auto_tmp"; cat "$1" >> "$auto_tmp"; }
-  case "$SC_DISCLOSURE" in
+  # A hookless seat (a vendor CLI: SC_HOOKLESS=1) gets the guards at full too, since no SessionStart hook injects them.
+  local guard_tier="$SC_DISCLOSURE"
+  [ "${SC_HOOKLESS:-}" != 1 ] || [ "$guard_tier" != full ] || guard_tier=hookless-full
+  case "$guard_tier" in
+    hookless-full)
+      local hookless_guards
+      hookless_guards="$(mktemp)"
+      python3 "$SC_ROOT/tools/guard_text.py" "${SC_SHAPE:-}" detailed "$SC_MODEL" > "$hookless_guards" || {
+        rm -f "$hookless_guards" 2>/dev/null || :
+        sc_die 2 "could not assemble guards for kind '${SC_SHAPE:-}' — refusing to dispatch unguarded"
+      }
+      _sc_append_part "$hookless_guards"
+      rm -f "$hookless_guards" 2>/dev/null || :
+      ;;
     bare|pointer)
       SC_RUN_CWD="$(mktemp -d)"
       # The child (a Windows process) may still hold SC_RUN_CWD when EXIT fires;

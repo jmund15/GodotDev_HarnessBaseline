@@ -4,13 +4,9 @@
 A plan's ROOM is the share of its routing window's allowance left over the share of that window's
 time left: `(100 - usedPercent) / (100 x fraction of the window left)`. 1.0 is even pace, the rate
 the plan can spend at until its reset. `pick` ranks a plan by its routing window's room: that
-window's unused share is what expires at its reset. Every other window is a capacity gate, not a rank.
-A job that starts now spends from every window, so a non-routing window GATES the plan when its
-remaining share cannot carry even-pace work to its own reset: its shortfall, the share of its time
-left minus the share of its allowance left, exceeds `USED_RESOLUTION`, the one whole percent that
-providers report `usedPercent` in. A gated plan ranks by that window's room (`rank_room`; the row's
-`binding`/`bindingRoom`), which demotes it. A shortfall within `USED_RESOLUTION` sits inside the
-reading's error, so it never gates.
+window's unused share is what expires at its reset. Every other window is a capacity gate, never a
+rank: a job goes only where every window holds it (`fits`), and using a short window up early does
+not lower a plan's weekly rank.
 A spent window of any length drops the plan as exhausted. Unlike pace or run-out, room does not
 punish an early burst:
 20% used in the first 5% of a week leaves room 0.84. Bands (`quota_bands.py`) stay the pacing
@@ -18,7 +14,8 @@ signal; room is weighed with fit and cost in the model ladder's selection line, 
 
 `pick(tier, session_plan)` ranks by room every live plan that can pay for a row claiming the tier:
 the row's transport and each plan whose `planOf` names it (`model_registry.plans_of`). An exhausted
-or unreadable plan drops out, named with why: unreadable is never ranked as roomy. The session's own
+or dispatch-floor plan drops out, named with why; a plan whose meter cannot be read is unknown and
+decides nothing, so the launcher's own gate decides. The session's own
 plan is a candidate like any other and wins a tie, since it saves a hop and a cold start. With no
 plan left, the fit `marginal-usd` rows come back as `payOptions`. Its top row is a computed choice,
 so only a tool choosing which plan pays for one fixed row reads it (the bench's launcher choice);
@@ -321,15 +318,6 @@ def unused_at_reset(transport, window, now=None, samples=None, windows=None):
     return projection
 
 
-def _basis_text(projection):
-    """The readout's name for a projection's basis."""
-    if projection.get("basis") == "recent":
-        return "recent use"
-    if projection.get("basis") == "average":
-        return "this window's average"
-    return "this week's use" if projection.get("from") == "7d" else "this %s window's use" % projection.get("from")
-
-
 def spare_pct(row_or_projection):
     """The whole-percent share of a plan's allowance projected unused at its reset, or None below
     `USED_RESOLUTION`. Takes a `unused_at_reset` projection or a row carrying one as `unusedAtReset`."""
@@ -342,17 +330,27 @@ def spare_pct(row_or_projection):
     return int(round(pct))
 
 
+def unused_text(projection):
+    """The one clause for quota forecast to expire: `~N% on course to go unused at its reset in Dd`, or
+    "" below `USED_RESOLUTION`. Every surface that says this fact calls it, so one reading reads the
+    same way everywhere and the reset rides with the share."""
+    pct = spare_pct(projection)
+    if pct is None:
+        return ""
+    days = projection.get("daysLeft") if isinstance(projection, dict) else None
+    when = " in %.1fd" % days if isinstance(days, (int, float)) and not isinstance(days, bool) else ""
+    return "~%d%% on course to go unused at its reset%s" % (pct, when)
+
+
 def _unused_clause(plan, capacity, window, now):
-    """`, ~N% goes unused at reset (<basis>)` for the routing window, else ""."""
+    """The routing window's `unused_text` clause, else ""."""
     quota = (capacity or {}).get("quota") or {}
     name = quota.get("routingWindow")
     if not name or window.get("name") != name:
         return ""
     projection = unused_at_reset(plan, window, now, windows=quota.get("windows") or [])
-    pct = spare_pct(projection)
-    if pct is None:
-        return ""
-    return ", ~%d%% goes unused at reset (%s)" % (pct, _basis_text(projection))
+    text = unused_text(projection)
+    return ", " + text if text else ""
 
 
 def read_capacity(transport, data=None, live=True):
@@ -432,10 +430,17 @@ def reopen(row, now=None):
 def plan_room(transport, data, read, now):
     """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, windows, longRoom, longWindow, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
     {transport, room: None, why, windows, longRoom, longWindow} for a readable plan a window drops (exhausted or
-    at its dispatch floor); `stale: True` when the reader had no fresh reading at all. `headroom` is the window with
+    at its dispatch floor); {transport, room: None, unmetered: True, why} for a plan-quota transport that declares
+    `capacityUnsupported`; `stale: True` when the reader had no fresh reading at all. `headroom` is the window with
     the fewest points left; `windows` lists every window's own {name, headroom, resetsAt, minutes}, because points
     of two windows are different units and a job's draw is priced per window; `longRoom` is the room of the longest
     window, which survives a short window's reset."""
+    cfg = ((data or {}).get("transports") or {}).get(transport) or {}
+    if cfg.get("costModel") == "plan-quota" and isinstance(cfg.get("capacityUnsupported"), dict):
+        # An unmetered plan: the registry says no reader can measure its allowance, so no reading is taken.
+        # It never ranks as roomy, and its launcher's own gate decides.
+        return {"transport": transport, "room": None, "unmetered": True,
+                "why": "unmetered: " + (cfg["capacityUnsupported"].get("reason") or "no quota reader")}
     try:
         got = read(transport, data)
     except Exception as exc:
@@ -455,11 +460,11 @@ def plan_room(transport, data, read, now):
     if status == "exhausted":
         return {"transport": transport, "room": None, "why": "exhausted",
                 "windows": facts, "longRoom": long_value, "longWindow": long_name}
-    if status == "unknown":
+    if status in provider_capacity.UNREADABLE:
         # The reader states why it cannot read: that reason is the whole answer, in the words every
         # other surface prints. A warm cannot change it, so it is never called `warming`.
         return {"transport": transport, "room": None,
-                "why": "unreadable: " + (provider_capacity.reason_text(got) or "unknown")}
+                "why": "unreadable: " + (provider_capacity.reason_text(got) or "status %s" % status)}
     if status != "available":
         cause = str((got.get("error") or {}).get("message") or "") if isinstance(got.get("error"), dict) else ""
         return {"transport": transport, "room": None,
@@ -497,10 +502,6 @@ def plan_room(transport, data, read, now):
         observed = provider_capacity._epoch(got.get("observedAt"))
         if observed is not None:
             row["age"] = int(max(0.0, now - observed))
-    gates = [(room(w, now), w.get("name")) for w in windows if w is not window and ahead_of_pace(w, now)]
-    tightest = min((g for g in gates if g[0] < value), default=None)
-    if tightest:
-        row["bindingRoom"], row["binding"] = tightest
     return row
 
 
@@ -516,8 +517,8 @@ def spent_reset(capacity):
 
 def ahead_of_pace(window, now):
     """True when a window's allowance left falls short of its time left by more than `USED_RESOLUTION`: it has
-    spent faster than time. A non-routing window that is ahead gates its plan (`plan_room`); the routing window
-    that is ahead leaves nothing unused at its reset (`unused_at_reset`)."""
+    spent faster than time. The routing window that is ahead leaves nothing unused at its reset
+    (`unused_at_reset`); any other window is a capacity gate (`fits`), never a rank."""
     value = room(window, now)
     if value is None or value >= 1.0:
         return False
@@ -526,8 +527,9 @@ def ahead_of_pace(window, now):
 
 
 def rank_room(row):
-    """The room a plan ranks by: a gating non-routing window's (below the routing room), else the routing window's."""
-    return row["bindingRoom"] if row.get("bindingRoom") is not None else row["room"]
+    """The room a plan ranks by: its routing window's. A short window gates the job (`fits`); using it up
+    early never lowers the plan's weekly rank."""
+    return row["room"]
 
 
 def row_windows(row):
@@ -856,9 +858,9 @@ def facts(tier, session_plan=None, data=None, read=None, now=None):
 def pick(tier, session_plan=None, data=None, read=None, now=None):
     """{transport, room, ranked, payOptions, reason}: which plan pays for a `tier` job, the computed choice over `facts`.
 
-    `ranked` holds every fit plan, readable ones by `rank_room` descending (the returned `room` is the pick's
-    `rank_room`; each ranked row's `room` stays its routing window's), then the dropped ones with `why`. The returned
-    `transport` is the PAYING PLAN, which can differ from the row's transport; it is None when no fit plan has room.
+    `ranked` holds every fit plan, readable ones by their routing window's room descending, then the
+    dropped ones with `why`. The returned `transport` is the PAYING PLAN, which can differ from the
+    row's transport; it is None when no fit plan has room.
     """
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
@@ -878,7 +880,7 @@ def pick(tier, session_plan=None, data=None, read=None, now=None):
         reason = "no fit plan has quota for %s" % "/".join(got["tiers"])
         if got["payOptions"]:
             reason += "; pay per token: " + ", ".join(o["alias"] or o["id"] for o in got["payOptions"])
-    return {"transport": top["transport"] if top else None, "room": rank_room(top) if top else None,
+    return {"transport": top["transport"] if top else None, "room": top["room"] if top else None,
             "ranked": ready + dropped, "payOptions": got["payOptions"], "reason": reason + dropped_text}
 
 
@@ -894,7 +896,7 @@ def room_facts(got, read=None, now=None):
     has allowance."""
     read = read or (lambda name: read_capacity(name, live=False))
     rows = got.get("plans") or []
-    plans = [{k: r.get(k) for k in ("transport", "room", "bindingRoom", "left", "daysLeft", "why",
+    plans = [{k: r.get(k) for k in ("transport", "room", "left", "daysLeft", "why",
                                     "unusedAtReset") if k in r} for r in rows]
     entries = [plan_entry(r["transport"], read(r["transport"]), now, r.get("planType")) if r.get("room") is not None
                else "%s %s" % (r["transport"], r.get("why")) for r in rows]
@@ -924,12 +926,16 @@ def _owner_mark(row, tier):
     return None
 
 
-def _plan_facts(row, launchers=None):
-    """One plan's pick facts: quota left, time to reset, quota unused at reset, launchers running jobs."""
+def _plan_facts(row, launchers=None, entry=None):
+    """One plan's pick facts: its `plan_entry` line (every window, quota left, time to reset and the
+    forecast) plus the launchers running jobs. The JSON keeps the raw fields beside it."""
     days = row.get("daysLeft")
+    if row.get("unmetered"):
+        return {"plan": row["transport"], "unmetered": row.get("why"), "left": None, "timeLeft": None,
+                "unusedAtReset": None, "launchers": launchers, "entry": entry}
     return {"plan": row["transport"], "left": round(float(row.get("left") or 0.0), 1),
             "timeLeft": round(float(days), 2) if days is not None else None,
-            "unusedAtReset": row.get("unusedAtReset"), "launchers": launchers}
+            "unusedAtReset": row.get("unusedAtReset"), "launchers": launchers, "entry": entry}
 
 
 def _read_plans(names, data, read, now, live):
@@ -1024,7 +1030,12 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
         for name in route_plans[info["row"]["transport"]]:
             if name not in names:
                 names.append(name)
-    rooms = _read_plans(names, data, read, now, live)
+    captured = {}
+
+    def capture(name, _data=None):
+        captured[name] = read(name, data)
+        return captured[name]
+    rooms = _read_plans(names, data, capture, now, live)
     launchers = {}
     if live:
         try:
@@ -1038,7 +1049,8 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
              "effort": _ladder_cells("effort", data, ladder), "ladder": _ladder_cells("model", data, ladder)}
     groups = []
     for route in sorted(route_plans, key=lambda name: order.get(name, len(order))):
-        surviving = [rooms[name] for name in route_plans[route] if rooms[name].get("room") is not None]
+        surviving = [rooms[name] for name in route_plans[route]
+                     if rooms[name].get("room") is not None or rooms[name].get("unmetered")]
         for name in route_plans[route]:
             if rooms[name].get("stale") and name not in out["warming"]:
                 out["warming"].append(name)
@@ -1046,7 +1058,9 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
                 out["ages"][name] = rooms[name]["age"]
         if not surviving:
             continue
-        plans = [_plan_facts(room, None if not live else len(launchers.get(room["transport"]) or []))
+        plans = [_plan_facts(room, None if not live else len(launchers.get(room["transport"]) or []),
+                             plan_entry(room["transport"], captured.get(room["transport"]), now,
+                                        "this session" if room["transport"] == session_plan else None))
                  for room in surviving]
         group_rows = []
         for rid, info in rows.items():
@@ -1071,19 +1085,6 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
         out["payOptions"] = [{"alias": row.get("alias"), "id": row["id"], "transport": row.get("transport"),
                               "standing": _standing_of(row, tiers)} for row in marginal]
     return out
-
-
-def _reset_cell(days):
-    if days is None:
-        return "reset unknown"
-    whole = int(days)
-    return "resets in %dd %dh" % (whole, round((days - whole) * 24))
-
-
-def _unused_cell(projection):
-    if not isinstance(projection, dict) or projection.get("pct") is None:
-        return "unused at reset unknown"
-    return "~%d%% unused at reset" % int(round(projection["pct"]))
 
 
 def _input_text(row):
@@ -1119,18 +1120,19 @@ def render_tier_table(got):
     if got.get("refused"):
         return got["refused"]
     session_plan = got.get("sessionPlan")
-    lines = ["for-role: tiers %s; session plan %s (marked *)" % (
+    lines = ["for-role: tiers %s; session plan %s" % (
         ", ".join(got.get("tiers") or []), session_plan)]
     for group in got.get("groups") or []:
         lines.append("route %s%s" % (group["route"], " (session route)" if group.get("seat") else ""))
         for plan in group["plans"]:
-            marker = " *" if plan["plan"] == session_plan else ""
             age = got.get("ages", {}).get(plan["plan"])
-            lines.append("  plan %s%s: left %.1f%%, %s, %s, %s%s" % (
-                plan["plan"], marker, plan["left"], _reset_cell(plan["timeLeft"]),
-                _unused_cell(plan["unusedAtReset"]),
-                "launchers unknown" if plan["launchers"] is None else
-                "%d launcher%s" % (plan["launchers"], "" if plan["launchers"] == 1 else "s"),
+            count = ("launchers unknown" if plan["launchers"] is None else
+                     "%d launcher%s" % (plan["launchers"], "" if plan["launchers"] == 1 else "s"))
+            if plan.get("unmetered"):
+                lines.append("  plan %s: unmetered, no quota reading; %s" % (plan["plan"], count))
+                continue
+            lines.append("  plan %s, %s%s" % (
+                plan.get("entry") or plan["plan"], count,
                 ", reading %d s old" % age if age is not None else ""))
         for row in group["rows"]:
             draw = ", ".join("%s %s" % (plan, ", ".join(

@@ -50,7 +50,7 @@ reports one NOT-ADOPTED row for them, runs every other phase, and counts the gap
    unprompted.
 4. `git -C <repo> config core.hooksPath .claude/githooks`; `git -C <repo> config --get core.hooksPath`
    prints `.claude/githooks`. Its commit-msg hook re-checks at commit time that the commit reverts no
-   peer's commit.
+   peer's commit, and runs every commit judge on the index git writes.
 
 ## Phase 1 — Prerequisites (verify, report versions)
 

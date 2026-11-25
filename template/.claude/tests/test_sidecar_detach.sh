@@ -32,6 +32,8 @@
 #  14  detached launch releases the caller's pipe RED  (D1 first build: a 12 s child held
 #                                                       $(...) for the whole run, because the
 #                                                       job subshell kept fd 1 and 2)
+#  18  --check takes no snapshot copy                      RED before the lib's --check skip
+#  19  a dispatch still takes one                          CONTROL (unchanged path)
 #
 # Proof contract: exit 0 pass, 1 fail, 2 only when the proof cannot bind its target (lib/launcher
 # missing, scratch dir uncreatable). Fixtures and the fake launcher are written under the system
@@ -79,6 +81,7 @@ SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
 # shellcheck disable=SC1090
 . "${SC_LIB_UNDER_TEST:?SC_LIB_UNDER_TEST must point at the lib to test}"
 sc_reexec_snapshot "$@"
+if [ "${1:-}" = "--check" ]; then echo "CHECK_OK"; exit 0; fi
 sc_check_launch_memory() { :; }; sc_check_quota_fit() { :; }
 
 sc_parse_flags "$@"
@@ -414,7 +417,7 @@ for s in "$SCRIPTS_DIR"/*.sh; do
   esac
 done
 if [ "$CASE13_OK" = 1 ]; then
-  pass "13 every *_sidecar.sh sourcing the lib calls sc_reexec_snapshot \"\$@\" immediately after"
+  pass "13 every scripts/*.sh that sources the lib calls sc_reexec_snapshot \"\$@\" immediately after"
 else
   fail "13 sc_reexec_snapshot placement" "${CASE13_DETAIL[@]}"
 fi
@@ -468,6 +471,28 @@ if [ "$rc17" = "0" ] && [ "$c17_n" = "1" ]; then
   pass "17 a detached run is checked exactly once"
 else
   fail "17 detached run checked once" "rc=$rc17" "sidecar check lines=$c17_n (want 1)"
+fi
+
+# --- 18. --check takes no snapshot copy -------------------------------------------------------
+# A check answers in seconds; the lib returns before the copy for --check. The temp base is this
+# proof's own so the global sidecar-snapshots pile cannot answer the count.
+CK18="$WORK/case18temp"; mkdir -p "$CK18"
+out18="$(SC_LIB_UNDER_TEST="$LIB" TEMP="$CK18" bash "$LAUNCHER" --check 2>&1)"; rc18=$?
+n18="$(find "$CK18/sidecar-snapshots" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$rc18" = "0" ] && [[ "$out18" == *CHECK_OK* ]] && [ "$n18" = "0" ]; then
+  pass "18 --check made no snapshot copy"
+else
+  fail "18 --check made no snapshot copy" "rc=$rc18 (want 0)" "out=$out18" "snapshots=$n18 (want 0)"
+fi
+
+# --- 19. a dispatch still takes one ------------------------------------------------------------
+CK19="$WORK/case19temp"; mkdir -p "$CK19"
+out19="$(SC_LIB_UNDER_TEST="$LIB" TEMP="$CK19" FAKE_EXIT=0 bash "$LAUNCHER" -l case19 2>&1)"; rc19=$?
+n19="$(find "$CK19/sidecar-snapshots" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$rc19" = "0" ] && [ "$n19" -ge 1 ]; then
+  pass "19 a dispatch still takes a snapshot copy"
+else
+  fail "19 a dispatch still takes a snapshot copy" "rc=$rc19 (want 0)" "out=$out19" "snapshots=$n19 (want >=1)"
 fi
 
 echo "test_sidecar_detach: $PASS passed, $FAIL failed"

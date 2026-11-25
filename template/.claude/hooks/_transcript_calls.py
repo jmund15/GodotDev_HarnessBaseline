@@ -1,7 +1,11 @@
 """One reader of a session transcript's main-thread Bash calls, for the guards that prove what this session did.
 
-`session_events(transcript_path)` returns one event list per transcript file: the hook's own and, when
-`CLAUDE_CODE_SESSION_ID` names another file beside it, that one. Events keep file order: a `Call` (a Bash
+`session_events(transcript_path)` yields one event list per transcript file of the session's lineage
+(`_session_lineage.lineage`: the hook's own file, then each file a `/clear` or compaction of the same process came
+from, newest first). An ancestor's list holds only events stamped before its child began, so rows a later process
+appended to it never count. A call and its result or task notification pair only inside one file's list, so a
+backgrounded call launched before a `/clear` whose notification lands after it is not paired (fails closed).
+Events keep file order: a `Call` (a Bash
 tool_use), the `Result` of a Bash call seen earlier, and a `Notice` for each `<task-notification>` a harness row
 carries. A sidechain row (a subagent's) yields nothing. A caller pairs ids and tests creation times against the
 stamps; a missing stamp stays None and the caller fails closed.
@@ -15,8 +19,10 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
 from typing import NamedTuple
+
+import _session_lineage
+from _session_lineage import row_stamp as timestamp
 
 MAX_BYTES = 256 * 1024 * 1024  # a full parse of a 239 MB transcript measured 1.5 s; the dispatcher's budget is 75 s
 _TASK_NOTIFICATION = re.compile(r'<task-notification>\s*<task-id>(\w+)</task-id>.*?<output-file>(.+?)</output-file>'
@@ -46,13 +52,6 @@ class Notice(NamedTuple):
     output: str
     status: str
     summary: str
-
-
-def timestamp(row: dict) -> float | None:
-    try:
-        return datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
-    except (KeyError, TypeError, ValueError, AttributeError):
-        return None
 
 
 def _result_text(block: dict) -> str:
@@ -129,10 +128,9 @@ def _events_of(path: str) -> list:
     return events
 
 
-def session_events(transcript_path: str | None) -> list[list]:
-    """One event list per distinct transcript of this session; an unreadable file is an empty list."""
-    if not transcript_path:
-        return []
-    sid = os.environ.get('CLAUDE_CODE_SESSION_ID', '')
-    paths = [transcript_path] + ([os.path.join(os.path.dirname(transcript_path), sid + '.jsonl')] if sid else [])
-    return [_events_of(path) for path in dict.fromkeys(paths)]
+def session_events(transcript_path: str | None):
+    """One event list per transcript of this session's lineage, newest first; an unreadable file is an empty list.
+    A generator: an ancestor is read only when the caller asks for it."""
+    for path, until in _session_lineage.lineage(transcript_path):
+        events = _events_of(path)
+        yield events if until is None else [e for e in events if _session_lineage.counts(e.stamp, until)]

@@ -180,7 +180,8 @@ def position(transcript_path):
 
 def reattached_whole(transcript_path, after_epoch=None):
     """`{skill: body digest}` for each copy the client re-attached whole after the latest written boundary, or
-    None when no attachment for a boundary stamped after `after_epoch` (the PreCompact clear) is on disk yet.
+    None when no attachment for a boundary stamped after `after_epoch` (the SessionStart(compact) clear, which
+    runs before the client stamps its boundary) is on disk yet.
     The digest is of `skill_body`, so a caller credits only a copy whose body still matches the file on disk."""
     state = record(transcript_path)
     if not state["count"] or not state["attached"]:

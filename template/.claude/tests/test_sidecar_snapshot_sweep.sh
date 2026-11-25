@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof for lib/sidecar_common.sh's sc_snapshot_sweep (the sidecar-snapshots cleanup called from
-# sc_reexec_snapshot before every dispatch/--check):
+# sc_reexec_snapshot before every dispatch):
 #   1. a fresh (<24h) snapshot survives regardless of pid liveness (too new to judge);
 #   2. an old (24h-7d) snapshot with a DEAD pid is swept;
 #   3. an old (24h-7d) snapshot with a LIVE pid survives -- the core safety property, never delete

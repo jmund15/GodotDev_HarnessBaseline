@@ -258,7 +258,6 @@ CODING_PATTERNS = [
     ".claude/auto-memory/gotcha_session_start_submodule_autofix_detaches_head.md",
     ".claude/tests/build_plan_brief_test.py",
     ".claude/tests/test_build_plan_auto_variant.py",
-    ".claude/tests/test_git_guardrails_harness_commit.py",
     ".claude/tests/test_routing_classifier.py",
     ".claude/tests/test_routing_audit_subagent_exempt.py",
     # Accepted candidates requiring an exact layer entry:
@@ -530,7 +529,6 @@ PURE_PATTERNS = [
     ".claude/tests/test_git_commit_seam.py",
     ".claude/tests/test_harness_edit_skill_reminder.py",
     ".claude/tests/test_hook_state.py",
-    ".claude/tests/test_kill_guard.py",
     ".claude/tests/test_ladder_ingest.py",
     ".claude/tests/test_ladder_ingest_sources.py",
     ".claude/tests/test_ladder_prose_check.py",

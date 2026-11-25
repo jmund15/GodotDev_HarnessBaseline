@@ -36,13 +36,14 @@ paths a merge authors.
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _git_commit import commit_invocations, bypass_declared, git_environ, run_git  # noqa: E402
-from _commit_scope import authored_paths, incoming_heads, publishes_index  # noqa: E402
+import _git_run  # noqa: E402
+from _git_commit import commit_invocations, bypass_declared, run_git  # noqa: E402
+from _git_run import git_environ  # noqa: E402
+from _commit_scope import incoming_heads, publication, publishes_index  # noqa: E402
 from _checkout_root import repo_arg  # noqa: E402
 from _hook_parts import bounded_decision, bounded_report  # noqa: E402
 
@@ -178,8 +179,7 @@ def diff_lines(range_arg, worktree=False):
     else:
         cmd += ["--cached"]
     cmd += ["--", "*.tres", "*.tscn"]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          env=_GIT_ENV).stdout.splitlines()
+    return _git_run.run(cmd[1:], env=_GIT_ENV).text.splitlines()
 
 
 def scan_diff(range_arg, worktree=False):
@@ -242,10 +242,7 @@ def export_index():
     idx = {}
     # --recurse-submodules: the Jmodot framework .cs live in a submodule, which a
     # plain `ls-files` reports as one gitlink -- missing 695 files of Export decls.
-    files = subprocess.run(
-        ["git", "ls-files", "--recurse-submodules", "*.cs"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", env=_GIT_ENV,
-    ).stdout.splitlines()
+    files = _git_run.run(["ls-files", "--recurse-submodules", "*.cs"], env=_GIT_ENV).text.splitlines()
     for path in files:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as fh:
@@ -320,7 +317,8 @@ def _authored(findings, repo, git_env, blobs=None):
     parent's own .tres edit reads as this commit's; it was judged on that parent's ref. Outside a
     merge `authored_paths` returns every path, so an ordinary commit is judged as before."""
     blobs = blobs or _BlobLines(repo, git_env)
-    keep = set(authored_paths(sorted({row[0] for row in findings}), repo, git_env))
+    published = publication("commit", (), repo, git_env)
+    keep = set(published.authored(sorted({row[0] for row in findings})))
     return [row for row in findings if row[0] in keep and not _arrived(row, blobs)]
 
 

@@ -637,5 +637,29 @@ class ScratchPruneTests(unittest.TestCase):
         self.assertFalse((root / 'a.dmp').exists())
 
 
+class GitCallTimeoutTests(unittest.TestCase):
+    """Removing a registered worktree scales with the tree it deletes, so that call carries no fixed cap: 30 s cut
+    real work on this repo (8.7 s worktree add, 7.8 s submodule update on a quiet machine, slower under load)."""
+
+    def test_a_worktree_remove_carries_no_fixed_timeout(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / 'repo'
+            entry = Path(td) / 'scratch' / 'lane'
+            entry.mkdir(parents=True)
+            repo.mkdir()
+            seen = []
+
+            def fake_run(argv, **kwargs):
+                seen.append((list(argv), kwargs))
+                return subprocess.CompletedProcess(argv, 0, b'', b'')
+
+            with mock.patch.object(prune.git_run.__globals__['subprocess'], 'run', fake_run), \
+                    mock.patch.object(prune, 'registered_worktrees', lambda _repo: [entry]):
+                prune.remove_entry_with_worktrees(entry, repo)
+            removes = [kwargs for args, kwargs in seen if list(args[1:3]) == ['worktree', 'remove']]
+            self.assertTrue(removes, seen)
+            self.assertIsNone(removes[0].get('timeout'))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -355,6 +355,16 @@ def cold_warm():
 
 WARM = cold_warm()
 
+
+def registry_cold_plans():
+    """Every plan the registry routes work to, less the two the warm cache plants as fresh."""
+    import model_registry
+    import provider_bands
+    return sorted(set(provider_bands.plan_quota_transports(model_registry.load())) - {"anthropic", "anthropic-secondary"})
+
+
+COLD_PLANS = registry_cold_plans()
+
 # The real reader's words for anthropic-console-secondary, from `console_credit_probe.py` on this
 # machine 2026-11-10 (trimmed).
 UNKNOWN_REASON = "credit cycle ended 2026-10-31; the owner's next re-anchor sets the new cycle"
@@ -470,10 +480,9 @@ CASES = [
      and "ahead of pace" not in SPARE),
     # Every cold plan is named, so no plan hides behind a cap while the WARM covers each cold one.
     ("a cold cache names `warming` for every cold plan and starts one warm for all of them",
-     lambda: len(WARM) == 2
-     and all("%s unknown, warming" % n in WARM[0][0]
-             for n in ("anthropic-console", "anthropic-console-secondary", "codex"))
-     and WARM[0][1] == [["anthropic-console", "anthropic-console-secondary", "codex", "go"]]),
+     lambda: len(WARM) == 2 and bool(COLD_PLANS)
+     and all("%s unknown, warming" % n in WARM[0][0] for n in COLD_PLANS)
+     and WARM[0][1] == [COLD_PLANS]),
     ("...and a second prompt inside the cache TTL starts no second warm",
      lambda: len(WARM) == 2 and WARM[1][1] == []),
     ("HARNESS_CAPACITY_WARM=0 starts nothing", spawns_nothing_when_disabled),
@@ -594,8 +603,8 @@ CASES = [
      lambda: "tier: " not in CODEX and "(from the codex band)" not in CODEX),
 
     ("the 5h window is Anthropic's too, so it is labelled cross-hop rather than left bare",
-     lambda: "anthropic (hop) On pace: 7d 55% left, 50% to go, ~10% goes unused at reset "
-             "(this window's average); 5h 70% left, 50% to go" in CODEX),
+     lambda: "anthropic (hop) On pace: 7d 55% left, 50% to go, "
+             "~10% on course to go unused at its reset in 3.5d; 5h 70% left, 50% to go" in CODEX),
 
     # `pressure` is optional in a probe reading; an unguarded format raised into main()'s blanket
     # except and deleted the ENTIRE line -- band, floor and rating-debt clause included.

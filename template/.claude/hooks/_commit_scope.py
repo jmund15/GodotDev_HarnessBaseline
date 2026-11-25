@@ -12,26 +12,97 @@ Every invocation that commits the index (`--continue` included) is judged, not o
     writes_index(args)                      -> bool    whether a git invocation changes the index or HEAD
     incoming_heads(cwd, git_env=None)       -> list    the ref holding the incoming side, or []
     merge_authored(rest, cwd, git_env=None) -> set|None  same, for a guard that scans the whole tree
-    merge_dropped_lines(ours, theirs, result, cwd, git_env=None) -> (drops, unchecked)
-                                            lines a parent added under `.claude/` since the merge
-                                            base that the merge result lacks
+    stage_record_path(index) -> Path, stage_record_base(record) -> str|None
+                                            the record `tools/index_commit.py stage` writes beside a private
+                                            index, and the HEAD it was staged over (None when unreadable)
 
-`hooks/git_guardrails.py` and `hooks/baseline_classification_guard.py` both read this, so the two
-guards cannot disagree about what a merge authored.
+`hooks/dangerous_shell_guard.py` reads this for what a merge authored.
 """
+import json
 import os
 import subprocess
 import sys
-from collections import Counter
+from pathlib import Path
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
 
-from _git_commit import git_environ, run_git, staged_paths  # noqa: E402
+from functools import cached_property
+
+from _git_commit import (commit_source, incoming_paths, index_sourced_paths,
+                         resolve_index, run_git, staged_paths)  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 
 __all__ = ["authored_paths", "publishes_index", "writes_index", "merge_authored", "incoming_heads",
-           "merge_dropped_lines"]
+           "publication"]
+
+
+class Publication:
+    def __init__(self, sub, rest, cwd, git_env):
+        self.publishes = publishes_index(sub, rest)
+        self.sub, self.rest, self.cwd, self.git_env = sub, rest, cwd, git_env
+
+    @cached_property
+    def target(self):
+        if self.cwd is None:
+            return None, "unresolved repository"
+        return resolve_index(self.git_env, self.cwd)
+
+    @cached_property
+    def selection(self):
+        env, failed = self.target
+        if failed:
+            return None, failed
+        if self.publishes:
+            return staged_paths(self.rest, self.cwd, env)
+        return incoming_paths(self.sub, self.rest, self.cwd, env)
+
+    @cached_property
+    def mode(self):
+        env, failed = self.target
+        if not self.publishes or failed:
+            return "unknown"
+        return commit_source(self.rest, self.cwd, env) or "unknown"
+
+    @cached_property
+    def sources(self):
+        paths, _ = self.selection
+        if paths is None:
+            return {}
+        env, _ = self.target
+        indexed = index_sourced_paths(self.rest, self.cwd, env, paths) if self.publishes else None
+        return {p: "unknown" if indexed is None else "index" if p.replace("\\", "/") in indexed else "worktree"
+                for p in paths}
+
+    def authored(self, paths):
+        return authored_paths(paths, self.cwd, self.git_env)
+
+    @cached_property
+    def foreign_repo_env(self):
+        local = run_git(["rev-parse", "--local-env-vars"], self.cwd, self.git_env)
+        if local is None:
+            return None
+        return dict(self.git_env or {}, **dict.fromkeys([*local.split(), "GIT_WORK_TREE"]))
+
+
+STAGE_RECORD_SUFFIX = ".paths.json"
+
+
+def stage_record_path(index):
+    return Path(str(index) + STAGE_RECORD_SUFFIX)
+
+
+def stage_record_base(record):
+    try:
+        base = json.loads(Path(record).read_text(encoding="utf-8")).get("base_head")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return base if isinstance(base, str) else None
+
+
+def publication(sub, rest, cwd, git_env=None):
+    return Publication(sub, rest, cwd, git_env)
 
 # The `--continue` that finishes a stopped merge / cherry-pick / revert / rebase runs `git commit` itself;
 # am's `--continue` and `--resolved` (or `-r`) commit the resolved patch the same way.
@@ -71,28 +142,17 @@ def writes_index(args):
 def _blobs(refs, paths, cwd, git_env):
     """One `git cat-file --batch-check` read of every (ref, path) pair: {(ref, path): blob id, or
     None when the ref or the path is absent}. None instead of a dict when the read fails."""
-    info = _blob_info(refs, paths, cwd, git_env)
-    return None if info is None else {pair: entry and entry[0] for pair, entry in info.items()}
-
-
-def _blob_info(refs, paths, cwd, git_env):
-    """`_blobs` with each blob's size: {(ref, path): (blob id, size) or None}, or None."""
     pairs = [(ref, path) for path in paths for ref in refs]
     stdin = "".join("%s:%s\n" % pair for pair in pairs).encode("utf-8")
     try:
-        result = subprocess.run(["git", "cat-file", "--batch-check"], cwd=cwd, input=stdin,
-                                capture_output=True, timeout=60, env=git_environ(git_env))
+        result = git_run(["cat-file", "--batch-check"], cwd=cwd, input=stdin, timeout=60, env=git_env)
     except (OSError, subprocess.TimeoutExpired):
         return None
     lines = result.stdout.decode("utf-8", errors="replace").split("\n")
     if result.returncode != 0 or len(lines) < len(pairs):
         return None
-    info = {}
-    for pair, line in zip(pairs, lines):
-        fields = line.split(" ")
-        missing = line.endswith((" missing", " ambiguous")) or len(fields) < 3
-        info[pair] = None if missing else (fields[0], int(fields[2]) if fields[2].isdigit() else 0)
-    return info
+    return {pair: None if line.endswith((" missing", " ambiguous")) else line.split(" ", 1)[0]
+            for pair, line in zip(pairs, lines)}
 
 
 def incoming_heads(cwd, git_env=None):
@@ -139,109 +199,3 @@ def merge_authored(rest, cwd, git_env=None):
     if paths is None:
         return None
     return set(authored_paths(paths, cwd, git_env))
-
-
-MERGE_DROP_BYTE_CAP = 8 << 20  # blob bytes one check reads; a file past it is named unchecked
-
-
-def _dropped(base, side, result):
-    """The lines `side` added since `base` that `result` lacks, in `side`'s order. Counted per line,
-    so a moved line counts none and a line added twice and kept once counts one. A blank line never
-    counts."""
-    have_base, have_side, have_result = Counter(base), Counter(side), Counter(result)
-    owed = {}
-    for line, n in have_side.items():
-        added = n - have_base[line]
-        if line.strip() and added > 0 and have_result[line] < n:
-            owed[line] = min(added, n - have_result[line])
-    out = []
-    for line in side:
-        if owed.get(line, 0) > 0:
-            out.append(line)
-            owed[line] -= 1
-    return out
-
-
-def _read_blobs(oids, cwd, git_env):
-    """{blob id: text} from one `git cat-file --batch` read; a binary blob (a NUL byte) reads None.
-    None instead of a dict when the read fails."""
-    if not oids:
-        return {}
-    stdin = "".join(oid + "\n" for oid in oids).encode("ascii")
-    try:
-        result = subprocess.run(["git", "cat-file", "--batch"], cwd=cwd, input=stdin,
-                                capture_output=True, timeout=60, env=git_environ(git_env))
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    out, pos, texts = result.stdout, 0, {}
-    for oid in oids:
-        end = out.find(b"\n", pos)
-        header = out[pos:end].decode("ascii", "replace").split(" ") if end >= 0 else []
-        if len(header) < 3 or not header[2].isdigit():
-            return None
-        size = int(header[2])
-        body = out[end + 1:end + 1 + size]
-        pos = end + 2 + size
-        texts[oid] = None if b"\0" in body else body.decode("utf-8", errors="replace")
-    return texts
-
-
-def merge_dropped_lines(ours, theirs, result, cwd, git_env=None, prefix=".claude/"):
-    """Lines each parent added under `prefix` since the merge base that the merge `result` lacks.
-
-    `ours` and `theirs` are the parents' revisions; `result` is a tree-ish, or "" for the index.
-    Returns ({"ours"|"theirs": {path: {"dropped": [line, ...], "added": n}}}, unchecked paths), where
-    `added` counts the non-blank lines that parent added to the file. A path whose blobs would pass
-    MERGE_DROP_BYTE_CAP is listed unchecked. A parent's own deletion of a file drops nothing. A
-    failed git read returns what it could not check as unchecked, or ({}, []) when the merge base
-    or the changed paths cannot be read. Five git reads, whatever the merge's size."""
-    base = run_git(["merge-base", ours, theirs], cwd, git_env)
-    if not base or not base.strip():
-        return {}, []
-    base = base.strip()
-    sides = {"ours": ours, "theirs": theirs}
-    changed = {}
-    for label, rev in sides.items():
-        out = run_git(["diff", "--name-only", "-z", "--no-renames", base, rev, "--", ":(top)" + prefix],
-                      cwd, git_env)
-        if out is None:
-            return {}, []
-        changed[label] = [p for p in out.split("\0") if p]
-    paths = sorted(set(changed["ours"]) | set(changed["theirs"]))
-    if not paths:
-        return {}, []
-    info = _blob_info([base, ours, theirs, result], paths, cwd, git_env)
-    if info is None:
-        return {}, paths
-    jobs, unchecked, budget = [], [], MERGE_DROP_BYTE_CAP
-    for label, rev in sides.items():
-        for path in changed[label]:
-            side, kept = info[(rev, path)], info[(result, path)]
-            if side is None or (kept and kept[0] == side[0]):
-                continue
-            was = info[(base, path)]
-            cost = sum(entry[1] for entry in (was, side, kept) if entry)
-            if cost > budget:
-                unchecked.append(path)
-                continue
-            budget -= cost
-            jobs.append((label, path, was, side, kept))
-    oids = sorted({entry[0] for job in jobs for entry in job[2:] if entry})
-    texts = _read_blobs(oids, cwd, git_env)
-    if texts is None:
-        return {}, sorted(set(unchecked) | {job[1] for job in jobs})
-    drops = {}
-    for label, path, was, side, kept in jobs:
-        side_text = texts.get(side[0])
-        if side_text is None:
-            continue
-        base_lines = (texts.get(was[0]) or "").splitlines() if was else []
-        kept_lines = (texts.get(kept[0]) or "").splitlines() if kept else []
-        side_lines = side_text.splitlines()
-        dropped = _dropped(base_lines, side_lines, kept_lines)
-        if dropped:
-            added = sum(n for line, n in (Counter(side_lines) - Counter(base_lines)).items() if line.strip())
-            drops.setdefault(label, {})[path] = {"dropped": dropped, "added": added}
-    return drops, sorted(set(unchecked))

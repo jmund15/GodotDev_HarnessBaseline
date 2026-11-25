@@ -8,10 +8,11 @@ Purpose:
 - Preserves potentially valuable context that would otherwise be lost
 - Writes a structured transcript index beside the raw backup, not the client's compaction summary
 - Backups stored in logs/transcript_backups/ with timestamps
-- Re-arms the cadence hooks' per-compaction gates (`_hook_state.clear_compaction_keys`)
 
 Success is silent; the paths remain in the compaction log and session manifest. Only a failed
 backup or index emits context. `session_context_loader.py` owns the post-compaction memory reminder.
+The old context keeps working until the new one begins, so this hook leaves the compaction-scoped state alone;
+`subagent_compaction_rail.py` clears it at SessionStart(compact).
 
 A subagent's PreCompact payload carries the parent's session_id and transcript_path; that compaction
 is not the parent's, so the hook exits without any of the above (`_hook_state.is_subagent_payload`).
@@ -26,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import clear_compaction_keys, is_subagent_payload, log_path
+from _hook_state import is_subagent_payload, log_path
 
 # Import summary builder (local module with underscore prefix)
 try:
@@ -214,9 +215,6 @@ def main():
 
     log_compaction_event(input_data, backup_path, summary_path)
     update_session_manifest(session_id, summary_path)
-    # Compaction drops the advisories the cadence hooks already delivered; re-arm every
-    # fire_once_since_compaction key so they land again in the resumed context.
-    clear_compaction_keys(session_id)
 
     if not backup_path:
         print("[compaction-backup] Backup unavailable; the original transcript remains the recovery source.")

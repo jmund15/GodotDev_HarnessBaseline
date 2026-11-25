@@ -44,8 +44,9 @@ a caller should use depends on whether a backgrounded job wakes it:
    the proofs named. An unknown or in-budget time stays silent, and so do `--help`, `--tiers` and a
    command that only names the runner. It never denies; a poll deny replaces it.
 6. Raised foreground timeout (rewrite, interactive orchestrator only). A foreground call that is not a wait loop,
-   whose timeout exceeds BASH_DEFAULT_MS, becomes `run_in_background: true` with a note: the raise says the job may
-   run long, and a raised call holds every other wake. The one exception is a proof batch whose every proof has a
+   whose timeout exceeds BASH_DEFAULT_MS, stays in the foreground with its timeout set to BASH_DEFAULT_MS and a
+   note: a job that ends in time returns this turn with no wake, and one that runs over moves to the background by
+   itself and wakes once, while a longer block holds every other wake. The one exception is a proof batch whose every proof has a
    recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A subagent's
    or print-mode child's timeout above SUBAGENT_WAIT_MS is clamped to it instead (rewrite): a longer call returns to
    an expired 5-minute prompt cache and rewrites the whole context. The client moves a command still running at the
@@ -66,7 +67,7 @@ a caller should use depends on whether a backgrounded job wakes it:
    job's end (the launch's printed WAIT-CMD, or the session watcher) and the Monitor's own bound. It reads the
    requested number only, never the command: a Monitor at or under the cap, or naming none, passes.
 8. Session-watcher arm outside run_in_background (denies, interactive orchestrator only). A Bash call without
-   `run_in_background` whose segment runs `watch_records.py` with `--session` is denied (`foreground_watch_arm`):
+   `run_in_background` whose segment runs `watch_records.py` with `--session` is denied (`runs_watch_records`):
    in the foreground, or detached with `&`/`nohup`/`disown`, its wake reaches no task notification, and while it lives
    every correct arm waits to take over. Rule home: reference/sidecar_dispatch.md step 6.
 9. Trailing background `&` (advises, never denies). A Bash call without `run_in_background` whose command ends a line
@@ -104,6 +105,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _background_tasks  # noqa: E402
 import _hook_state  # noqa: E402
+from _command_text import runs_script  # noqa: E402
 from _win_path import drive_path  # noqa: E402
 
 # Shell syntax, not prose: a bash `until|while <cond>; do ... sleep ... done` whose `; do` follows the
@@ -211,8 +213,8 @@ BATCH_ADVICE = (
     "which costs no wake (CLAUDE.core.md §Shell Discipline)."
 )
 RAISED_NOTE = (
-    "[wait] Backgrounded this call: its %d ms timeout says it may run long. Act on its one wake "
-    "(CLAUDE.core.md §Shell Discipline)."
+    "[wait] Clamped this call's %d ms timeout to the default: a job that ends in time returns this turn with no "
+    "wake, and one that runs over moves to the background by itself (CLAUDE.core.md §Shell Discipline)."
 )
 EXIT_LINE = 'echo "EXIT $?"'
 CLAMP_NOTE = (
@@ -439,18 +441,9 @@ def _words(segment):
 _QUOTED_SPAN = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 
 
-def foreground_watch_arm(command):
-    """True when a segment of `command` runs `watch_records.py --session` (a python or direct run, not a mention).
-    A quoted span that holds a command separator is data (a payload, an echoed command), so it is blanked first."""
-    code = _QUOTED_SPAN.sub(lambda m: "''" if re.search(r"[;&|\n]", m.group(0)) else m.group(0), shell_code(command))
-    for segment in _segments(code):
-        words = [w for w in _words(segment) if w not in ("nohup", "setsid", "exec")]
-        if not words or "--session" not in words:
-            continue
-        script = words[1] if _PYTHON.match(words[0]) and len(words) > 1 else words[0]
-        if script.strip("'\"").replace("\\", "/").endswith("watch_records.py"):
-            return True
-    return False
+def runs_watch_records(command):
+    """True when a segment of `command` runs `watch_records.py --session` (`_command_text.runs_script`)."""
+    return runs_script(command, "watch_records.py", flag="--session")
 
 
 def _recorded(runner):
@@ -507,7 +500,7 @@ def _parse_runner_args(args):
     included, makes a line the runner rejects."""
     try:
         with contextlib.redirect_stderr(io.StringIO()):
-            parsed, extra = _runner().build_parser().parse_known_args(args)
+            parsed, extra = _catalog().build_parser(_PROJECT_ROOT).parse_known_args(args)
     except SystemExit:
         return None
     return None if any(word.startswith("-") for word in extra) else parsed
@@ -515,12 +508,26 @@ def _parse_runner_args(args):
 
 def _selected_proofs(parsed):
     """Basenames of the proofs a parsed `--for`/`--proofs-for` runner invocation selects."""
-    harness_tests = _runner()
     paths = parsed.for_paths or parsed.proofs_for_paths or []
     root = os.path.abspath(parsed.repo or _PROJECT_ROOT)
     touched = [os.path.relpath(p, root).replace(os.sep, "/") if os.path.isabs(p) else p.replace("\\", "/")
                for p in paths]
-    return [os.path.basename(p) for p in harness_tests.select_for(root, touched)] if touched else []
+    if not touched:
+        return []
+    catalog = _catalog()
+    return [os.path.basename(p) for p in catalog.Catalog.open(catalog.View.worktree(root)).select(touched).proofs]
+
+
+def _catalog():
+    claude = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths = [os.path.join(claude, name) for name in ("scripts", "tools")]
+    sys.path[:0] = paths
+    try:
+        from _proof_runner import catalog
+        return catalog
+    finally:
+        for path in paths:
+            sys.path.remove(path)
 
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -706,36 +713,13 @@ BENCH_NOTE = (
 )
 
 
-def _bench_roots():
-    """bench's own root accessors (core/roots.py), or None when the bench suite cannot be loaded."""
-    bench = os.path.join(_PROJECT_ROOT, ".claude", "scripts", "benchmark_campaign")
-    sys.path.insert(0, bench)
-    try:
-        from core import roots
-        return roots
-    except Exception:
-        return None
-    finally:
-        sys.path.remove(bench)
-
-
-def _bench_log(path, roots):
-    """`path` in posix spelling when it is a roster log (`<logs>/<name>.log`) or a run log directly under a run
-    directory of the logs or results root, else None."""
-    key = roots.path_key(path)
-    if not key.endswith(".log"):
-        return None
-    parent = os.path.dirname(key)
-    logs = roots.path_key(roots.logs_dir())
-    results = roots.path_key(roots.path(roots.VAULT_RESULTS))
-    if parent == logs or os.path.dirname(parent) in (logs, results):
-        return roots.posix_path(roots.native_path(path.replace("\\", "/")))
-    return None
+CLAUDE_DIR = os.path.join(_PROJECT_ROOT, ".claude")
 
 
 def _bench_wait(command):
     """(rewritten command, log) when `command` holds one until-loop whose only test is `grep -q[E] '<END pattern>' <log>`
-    on a bench roster or run log, with the loop replaced by the bench suite's `wait <log>` subcommand; else None. Fails open to None."""
+    on a log the bench plugin's entry owns (`wait_call`), with the loop replaced by the call it returns; else None.
+    An absent or unreadable plugin and any error fail open to None."""
     try:
         code = shell_code(command)
         loops = _BENCH_LOOP.findall(code)
@@ -760,12 +744,15 @@ def _bench_wait(command):
             target = assigned[0].strip("\"'")
         elif "$" in target or "`" in target:
             return None
-        roots = _bench_roots()
-        log = _bench_log(target, roots) if roots and os.path.isabs(roots.native_path(target.replace("\\", "/"))) else None
-        if not log:
+        tools = os.path.join(CLAUDE_DIR, "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import adaptation
+        bench = adaptation.plugin_entry(CLAUDE_DIR, "bench")
+        found = bench.wait_call(target) if bench else None
+        if not found:
             return None
-        bench = roots.posix_path(roots.BENCH_PY)
-        call = "python3 %s wait %s" % (shlex.quote(bench), shlex.quote(log))
+        call, log = found
         return command[:match.start()] + call + command[match.end():], log
     except Exception:  # a guard never costs the call
         return None
@@ -1002,7 +989,7 @@ def main():
             tool_input = dict(tool_input, command=command)
             dropped = True
             note = BLIND_NOTE % blind[1] if _first_in_window(payload, "blind") else None
-        if not (unwoken or _caller(payload)) and foreground_watch_arm(command) and _watcher_live(payload):
+        if not (unwoken or _caller(payload)) and runs_watch_records(command) and _watcher_live(payload):
             return _deny(COVERED_REASON)
         if unwoken:
             wake = NO_WAKE_ADVICE if _first_in_window(payload, "nowake:" + str(payload.get("agent_id") or "")) else NO_WAKE_SHORT
@@ -1017,7 +1004,7 @@ def main():
         elif dropped:
             _advise(note, tool_input)
         return 0
-    if not (unwoken or _caller(payload)) and foreground_watch_arm(command):
+    if not (unwoken or _caller(payload)) and runs_watch_records(command):
         return _deny(WATCH_REASON % (_watch_records().ARM_COMMAND, _watch_records().ARM_CALL))
     advice = None if unwoken else _batch_advice(command, tool_input.get("timeout"))
     if _LOOP_SLEEP.search(shell_code(command)):
@@ -1057,7 +1044,7 @@ def main():
             budget = BASH_DEFAULT_MS
         if budget > BASH_DEFAULT_MS and not _timed_fit(command, budget):
             _advise(RAISED_NOTE % budget if _first_in_window(payload, "raised") else None,
-                    dict(tool_input, run_in_background=True))
+                    dict(tool_input, timeout=BASH_DEFAULT_MS))
             return 0
     else:
         try:

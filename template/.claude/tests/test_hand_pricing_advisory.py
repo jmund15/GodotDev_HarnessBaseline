@@ -81,9 +81,6 @@ def main():
         said = advisory(r.stdout)
         check(r.returncode == 0 and said != "DENY", f"never denies or blocks (exit 2): {label}")
         check(("run_cost.py" in said) == fires, f"{'fires' if fires else 'silent'}: {label}")
-    r = run("pre_bash_dispatch.py", "Bash", INLINE_PARSE)
-    check(r.returncode == 0 and "Traceback" not in r.stderr and "run_cost.py --a" in advisory(r.stdout),
-          "the Bash dispatcher carries the advisory and does not block (%s)" % r.stderr[-200:])
     print("\ntest_hand_pricing_advisory: %d failed" % len(FAILS))
     return 1 if FAILS else 0
 

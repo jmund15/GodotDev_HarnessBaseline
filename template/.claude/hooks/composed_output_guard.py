@@ -94,6 +94,21 @@ def _in_user_claude(path):
     return norm(path).startswith(norm(os.path.expanduser("~/.claude")))
 
 
+def _composes(path, tail):
+    """True when the checkout holding `path` (nearest ancestor with a `.claude/`) has a composer that lists `tail`."""
+    d = os.path.dirname(os.path.abspath(native_path(path)))
+    while not os.path.isdir(os.path.join(d, ".claude")):
+        up = os.path.dirname(d)
+        if up == d:
+            return False
+        d = up
+    try:
+        with open(os.path.join(d, ".claude", "tools", "baseline_sync.py"), encoding="utf-8", errors="replace") as fh:
+            return '".claude/%s"' % tail in fh.read()
+    except OSError:
+        return False
+
+
 def process(payload):
     if payload.get("tool_name") not in ("Write", "Edit"):
         return None
@@ -105,6 +120,8 @@ def process(payload):
         return None
     tail = harness_tail(path.replace("\\", "/"))
     if not tail or os.path.basename(tail) not in COMPOSED_NAMES:
+        return None
+    if not _composes(path, tail):
         return None
     inputs = _composed_inputs().get(tail)
     if not inputs:

@@ -25,12 +25,13 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 import _adaptation_fixture as fx  # noqa: E402
 
 HOOK_NAME = "prompt_memory_loader.py"
 EXTRA = ("_hook_state.py", "_prompt_provenance.py", "plan_memory_reminder.py",
          "_claude_scope.py", "_model_tier.py", "_file_lock.py", "_owner_text.py")
-PRECOMPACT = os.path.join(fx.REAL_HOOKS, "transcript_backup.py")
+COMPACT_START = os.path.join(fx.REAL_HOOKS, "subagent_compaction_rail.py")
 SEED = {"memory_domains": [
     {"name": "Widgets", "triggers": ["widget", "gizmo"], "memory_keywords": ["widget"]},
     {"name": "Pipelines", "triggers": ["pipeline", "conveyor"], "memory_keywords": ["pipeline"]},
@@ -161,10 +162,9 @@ def main():
                   "MEMORY CHECK" in out and "Widgets" in state.get("reminded_domains", [])
                   and "searched_domains" not in state))
 
-    # PreCompact through the real hook, not a hand-written state edit: the wiring is
+    # SessionStart(compact) through the real hook, not a hand-written state edit: the wiring is
     # what this case is for.
-    run(PRECOMPACT, {"session_id": SID, "trigger": "auto"},
-        dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+    _hook_call.compact_start(COMPACT_START, env, SID)
     out = prompt(WIDGET)
     cases.append(("the full text lands again after a compaction",
                   "MEMORY CHECK" in out))

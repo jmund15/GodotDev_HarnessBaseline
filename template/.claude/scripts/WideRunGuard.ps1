@@ -22,14 +22,17 @@ function Assert-WideRunAllowed {
         Write-Host "WIDE_RUN_GUARD=SKIPPED reason=no python or hooks/wide_test_guard.py; the wide-run check did not run"
         return
     }
-    $guardArgs = @($guard, '--entry', $Entry, '--flags', ($Flags -join ','))
-    if ($Filter) { $guardArgs += @('--filter', $Filter) }
-    if ($Repo) { $guardArgs += @('--repo', $Repo) }
-    if ($Scope.Count -gt 0) { $guardArgs += @('--scope', (($Scope | ForEach-Object { $_ -split ',' }) -join ',')) }
-    $said = & $python @guardArgs 2>&1
+    $command = $Entry
+    foreach ($flag in $Flags) { $command += " -$flag" }
+    if ($Filter) { $command += " -Filter `"$Filter`"" }
+    if ($Scope.Count -gt 0) { $command += " -Scope `"$(($Scope -join ','))`"" }
+    $said = & $python $guard '--command' $command 2>&1
     if ($LASTEXITCODE -eq 2) {
         Write-Host ($said -join "`n")
         exit 2
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WIDE_RUN_GUARD=SKIPPED reason=guard exited $LASTEXITCODE; the wide-run check did not run"
     }
     $env:HARNESS_WIDE_RUN_ADMITTED = '1'
 }

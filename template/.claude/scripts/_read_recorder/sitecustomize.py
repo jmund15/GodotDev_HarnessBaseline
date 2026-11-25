@@ -19,6 +19,17 @@ _LOG = os.environ.get("HARNESS_READ_LOG")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 if _LOG:
+    # A pass with no events has two causes a reader cannot tell apart without this file: the recorder never
+    # loaded, or it loaded and recorded nothing. The beacon names the one that happened.
+    try:
+        os.makedirs(_LOG, exist_ok=True)
+        with open(os.path.join(_LOG, "%d.beacon" % os.getpid()), "w", encoding="utf-8") as _beacon:
+            _beacon.write(json.dumps({"recorder": "python", "log": _LOG, "pid": os.getpid(),
+                                      "cwd": os.getcwd(), "pythonpath": sys.path[:3],
+                                      "read_log": os.environ.get("HARNESS_READ_LOG")}) + "\n")
+    except Exception:
+        pass
+
     import threading
 
     _probing = threading.local()

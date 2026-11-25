@@ -19,8 +19,11 @@ import sidecar_launch  # noqa: E402
 BASH = sidecar_launch.git_bash()
 LIB = ".claude/scripts/lib/sidecar_common.sh"
 
-# Shapes a launch converts, then the ones that must still reach cygpath for its normalizing.
-PATHS = ["/tmp/tmp.abc", "/tmp/", "/tmp/a/b.c.ratelimit", "C:/Users/dev/x y/z", "c:/x/y", "/c/Users/dev/a", "/C/x",
+# Shapes a launch converts, then the ones that must still reach cygpath for its normalizing. `cygpath -w` is the oracle
+# and it reads the real /tmp, so a nested probe folder takes a name no file there can hold (a stray `/tmp/a` file
+# makes cygpath refuse `/tmp/a/x` while the textual conversion still answers).
+PROBE = "scprobe" + uuid.uuid4().hex[:8]
+PATHS = ["/tmp/tmp.abc", "/tmp/", "/tmp/%s/b.c.ratelimit" % PROBE, "C:/Users/dev/x y/z", "c:/x/y", "/c/Users/dev/a", "/C/x",
          "/c/", "C:/", "C:/trail/", "'C:\\already\\native'", "C:/a/../b", "/tmp/a/./b", "/tmp/..", "//server/share/x",
          "/usr/bin/x", "relative/p", "/d/x.y", "C:\\mix/ed"]
 

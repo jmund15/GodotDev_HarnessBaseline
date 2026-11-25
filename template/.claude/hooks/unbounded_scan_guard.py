@@ -47,142 +47,51 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _claude_scope import in_nested_checkout
 from _command_text import executable_text
+from _shell_lex import OPAQUE_WRAPPERS, XARGS_VALUES, base, command_index, options, walk  # noqa: E402
 from _hook_state import fire_once_since_compaction
 
 # ---------------------------------------------------------------------------------------------
-# Recursive grep: shell parse
+# Recursive grep: shell parse (words and bodies from `_shell_lex`)
 # ---------------------------------------------------------------------------------------------
 
 GREP_IMAGES = {"grep", "egrep", "fgrep"}
-SHELL_IMAGES = {"bash", "sh", "dash", "zsh"}
-PWSH_IMAGES = {"powershell", "pwsh"}
-
-# Short grep flags that take a value: the rest of the cluster, or the next token.
-_GREP_VALUE_SHORT = set("efmABCdD")
-# Long grep flags that take a separate value token when written without `=`.
-_GREP_VALUE_LONG = ("regexp", "file", "max-count", "after-context", "before-context", "context",
-                    "directories", "devices", "include", "exclude", "exclude-dir", "exclude-from",
-                    "label", "binary-files")
-_XARGS_VALUE_SHORT = {"-I", "-n", "-P", "-L", "-d", "-s", "-a", "-E"}
-
-# Prefixes that precede the real command word in a segment.
-_PREFIX_WORDS = {"!", "{", "}", "then", "do", "else", "elif", "if", "while", "until", "time",
-                 "exec", "command", "builtin", "nohup", "sudo", "stdbuf"}
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_PUNCT = "();<>|&\n"
-_MAX_DEPTH = 4
+_THROUGH = tuple(OPAQUE_WRAPPERS)
+# grep's options as GNU grep reads them (`_shell_lex.options`), so `-rn`, `-d recurse`, `--dir=recurse`, `--recur`
+# and a flag after the operands all read as written.
+_GREP = dict(
+    short_values="efmABCdD",
+    long=("recursive", "dereference-recursive", "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp",
+          "ignore-case", "no-ignore-case", "word-regexp", "line-regexp", "no-messages", "invert-match", "version",
+          "help", "byte-offset", "line-number", "with-filename", "no-filename", "only-matching", "quiet", "silent",
+          "text", "count", "files-with-matches", "files-without-match", "initial-tab", "null", "null-data", "color",
+          "colour", "line-buffered", "binary", "unix-byte-offsets"),
+    long_values=("regexp", "file", "max-count", "after-context", "before-context", "context", "directories",
+                 "devices", "include", "exclude", "exclude-dir", "exclude-from", "label", "binary-files"),
+    aliases={"regexp": "e", "file": "f", "directories": "d", "recursive": "r", "dereference-recursive": "R",
+             "max-count": "m", "after-context": "A", "before-context": "B", "context": "C", "devices": "D"})
 
 
 def _image(token):
-    name = token.lstrip("`").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name[:-4] if name.endswith(".exe") else name
-
-
-def _tokens(text):
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=_PUNCT)
-    lexer.whitespace = " \t\r"
-    lexer.commenters = ""
-    lexer.whitespace_split = True
-    try:
-        return list(lexer)
-    except ValueError:
-        return text.replace("\n", " \n ").split(" ")
-
-
-def _long_name_matches(name, full):
-    return len(name) >= 3 and full.startswith(name)
+    return base(token.lstrip("`"))
 
 
 def grep_is_recursive(args):
     """True when grep's own arguments select directory recursion."""
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        if tok == "--":
-            return False
-        if tok.startswith("--"):
-            name, eq, value = tok[2:].partition("=")
-            if _long_name_matches(name, "recursive") or _long_name_matches(name, "dereference-recursive"):
-                return True
-            if _long_name_matches(name, "directories"):
-                if not eq:
-                    value = args[i + 1] if i + 1 < len(args) else ""
-                    i += 1
-                if value == "recurse":
-                    return True
-            elif not eq and any(_long_name_matches(name, full) for full in _GREP_VALUE_LONG):
-                i += 1
-        elif tok.startswith("-") and len(tok) > 1:
-            for j in range(1, len(tok)):
-                ch = tok[j]
-                if ch in "rR":
-                    return True
-                if ch in _GREP_VALUE_SHORT:
-                    value = tok[j + 1:]
-                    if not value:
-                        value = args[i + 1] if i + 1 < len(args) else ""
-                        i += 1
-                    if ch == "d" and value == "recurse":
-                        return True
-                    break
-        i += 1
-    return False
+    parsed = options(list(args), **_GREP)
+    return bool(parsed.flags & {"r", "R"}) or "recurse" in parsed.values.get("d", [])
 
 
 def _grep_paths(args):
-    """grep's path operands: every non-flag token, minus the leading pattern unless `-e`/`-f`
-    (`--regexp`/`--file`) supplied it."""
-    pattern_given, operands, i = False, [], 0
-    while i < len(args):
-        tok = args[i]
-        if tok == "--":
-            operands += args[i + 1:]
-            break
-        if tok.startswith("--"):
-            name, eq, _value = tok[2:].partition("=")
-            if _long_name_matches(name, "regexp") or _long_name_matches(name, "file"):
-                pattern_given = True
-            if not eq and any(_long_name_matches(name, full) for full in _GREP_VALUE_LONG):
-                i += 1
-        elif tok.startswith("-") and len(tok) > 1:
-            for j in range(1, len(tok)):
-                if tok[j] in _GREP_VALUE_SHORT:
-                    pattern_given = pattern_given or tok[j] in "ef"
-                    if not tok[j + 1:]:
-                        i += 1
-                    break
-        else:
-            operands.append(tok)
-        i += 1
-    return operands if pattern_given else operands[1:]
-
-
-def _strip_prefixes(tokens):
-    """Drop assignments, keywords and transparent wrappers before the command word."""
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        image = _image(tok)
-        if _ASSIGNMENT.match(tok) or image in _PREFIX_WORDS:
-            i += 1
-        elif image in ("env", "nice"):
-            i += 1
-            while i < len(tokens) and (tokens[i].startswith("-") or _ASSIGNMENT.match(tokens[i])):
-                i += 2 if tokens[i] == "-n" else 1
-        elif image == "timeout":
-            i += 1
-            while i < len(tokens) and tokens[i].startswith("-"):
-                i += 2 if tokens[i] in ("-s", "-k") else 1
-            i += 1  # the duration
-        else:
-            break
-    return tokens[i:]
+    """grep's path operands: every operand, minus the leading pattern unless `-e`/`-f` (`--regexp`/`--file`)
+    supplied it."""
+    parsed = options(list(args), **_GREP)
+    return parsed.operands if ("e" in parsed.values or "f" in parsed.values) else parsed.operands[1:]
 
 
 def _xargs_command(tokens):
     i = 0
     while i < len(tokens) and tokens[i].startswith("-"):
-        i += 2 if tokens[i] in _XARGS_VALUE_SHORT else 1
+        i += 2 if tokens[i] in XARGS_VALUES else 1
     return tokens[i:]
 
 
@@ -200,9 +109,11 @@ def _find_exec_commands(tokens):
     return out
 
 
-def command_runs_recursive_grep(tokens, depth=0, via=None, upstream_find=False):
-    tokens = _strip_prefixes(tokens)
-    if not tokens or depth > _MAX_DEPTH:
+def command_runs_recursive_grep(tokens, via=None, upstream_find=False):
+    """True when one command's words run a recursive grep: directly, under `xargs`, or under `find -exec`. A shell or
+    PowerShell body is a body of its own (`_shell_lex.walk`)."""
+    tokens = tokens[command_index(tokens, through=_THROUGH):]
+    if not tokens:
         return False
     image, rest = _image(tokens[0]), tokens[1:]
     if image in GREP_IMAGES:
@@ -215,60 +126,32 @@ def command_runs_recursive_grep(tokens, depth=0, via=None, upstream_find=False):
         paths = _grep_paths(rest)
         return via == "xargs" or not paths or not all(_is_file_operand(path) for path in paths)
     if image == "xargs":
-        return command_runs_recursive_grep(_xargs_command(rest), depth + 1, "xargs", upstream_find)
+        return command_runs_recursive_grep(_xargs_command(rest), "xargs", upstream_find)
     if image == "find":
-        return any(command_runs_recursive_grep(cmd, depth + 1, "find")
-                   for cmd in _find_exec_commands(rest))
-    if image in SHELL_IMAGES:
-        for k, tok in enumerate(rest):
-            if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", tok) and k + 1 < len(rest):
-                return shell_runs_recursive_grep(rest[k + 1], depth + 1)
-        return False
-    if image in PWSH_IMAGES:
-        for k, tok in enumerate(rest):
-            if tok.lower() in ("-command", "-c") and k + 1 < len(rest):
-                return powershell_runs_recursive_grep(" ".join(rest[k + 1:]), depth + 1)
-        return False
+        return any(command_runs_recursive_grep(cmd, "find") for cmd in _find_exec_commands(rest))
     return False
 
 
-def shell_runs_recursive_grep(text, depth=0):
-    """True when POSIX-shell text executes a recursive grep in any segment."""
-    tokens = _tokens(executable_text(text))
-    segment, pipeline_find, skip_next = [], False, False
-
-    def flush(seg, upstream):
-        return bool(seg) and command_runs_recursive_grep(seg, depth, None, upstream)
-
-    for tok in tokens + [";"]:
-        if skip_next:
-            skip_next = False
-            continue
-        if tok and set(tok) <= set(_PUNCT):
-            if ("<" in tok or ">" in tok) and set(tok) <= set("<>&"):
-                if segment and segment[-1].isdigit():
-                    segment.pop()  # `2>`: the fd number is the redirect's, not an argument
-                skip_next = True
-                continue
-            if segment and segment[0].startswith("#"):
-                segment = []
-            if flush(segment, pipeline_find):
+def shell_runs_recursive_grep(text):
+    """True when shell text, or a body it runs, executes a recursive grep in any segment; a PowerShell body is read as
+    PowerShell too."""
+    for kind, body, segments, _depth in walk(text):
+        if kind == "pwsh" and _ps_statement_greps(body):
+            return True
+        upstream = False
+        for seg in segments:
+            words = [w.value for w in seg.words]
+            if words and command_runs_recursive_grep(words, None, upstream):
                 return True
-            is_find = bool(segment) and _image((_strip_prefixes(segment) or [""])[0]) == "find"
-            pipeline_find = (pipeline_find or is_find) if tok in ("|", "|&") else False
-            segment = []
-            continue
-        if tok.startswith("#") and not segment:
-            segment = [tok]
-            continue
-        if segment and segment[0].startswith("#"):
-            continue
-        segment.append(tok)
+            head = words[command_index(words, through=_THROUGH):]
+            is_find = bool(head) and _image(head[0]) == "find"
+            upstream = (upstream or is_find) if seg.op in ("|", "|&") else False
     return False
 
 
 # ---------------------------------------------------------------------------------------------
-# Recursive grep: PowerShell parse
+# Recursive grep: PowerShell parse. Its own scrub, because PowerShell's grammar is not the shell's: `''` inside single
+# quotes, backtick escapes, `@'...'@` here-strings and `<# #>` comments.
 # ---------------------------------------------------------------------------------------------
 
 _PS_HERESTRING = re.compile(r"@(['\"])\r?\n.*?\r?\n\1@", re.DOTALL)
@@ -309,12 +192,14 @@ def _ps_statements(text):
     return out
 
 
-def powershell_runs_recursive_grep(text, depth=0):
-    scrubbed = _ps_scrub(text)
-    for statement in _ps_statements(scrubbed):
-        if _PS_GCI_RECURSE.search(statement) and _PS_SELECT_STRING.search(statement):
-            return True
-    return depth <= _MAX_DEPTH and shell_runs_recursive_grep(scrubbed, depth + 1)
+def _ps_statement_greps(text):
+    """True when one PowerShell statement of `text` runs `Get-ChildItem -Recurse` and `Select-String`."""
+    return any(_PS_GCI_RECURSE.search(statement) and _PS_SELECT_STRING.search(statement)
+               for statement in _ps_statements(_ps_scrub(text)))
+
+
+def powershell_runs_recursive_grep(text):
+    return _ps_statement_greps(text) or shell_runs_recursive_grep(_ps_scrub(text))
 
 
 def runs_recursive_grep(tool, command):
@@ -323,7 +208,6 @@ def runs_recursive_grep(tool, command):
     if tool == "PowerShell":
         return powershell_runs_recursive_grep(command)
     return shell_runs_recursive_grep(command)
-
 
 
 DENY_REASON = (

@@ -59,6 +59,15 @@ def contract(temp_root):
     bad_flag = run_bash(LAUNCHER, ROOT, env, ["--bogus"])
     assert bad_flag.returncode == 2, bad_flag.returncode
 
+    # -T / SIDECAR_TIMEOUT arms the launcher's own kill: the run keeps the timeout's exit 124 and the
+    # launcher says which bound ended it. A child status is folded, a launcher verdict is not.
+    slept = write_stub(temp_root / "bin" / "claude-sleep", "sleep 30\n")
+    killed = run_bash(LAUNCHER, temp_root, dict(env, CLAUDE_BIN=str(slept), SIDECAR_TIMEOUT="2"),
+                      ["-d", str(temp_root), "-G", "bench-review", "-t",
+                       "-Glob,-Grep,-mcp:semantic-search,-mcp:ai-worker", "--", "Reply with the single word OK."])
+    assert killed.returncode == 124, (killed.returncode, killed.stdout[-300:], killed.stderr[-300:])
+    assert "timed out after 2s" in killed.stderr, killed.stderr[-500:]
+
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="deepseek_sidecar_proof_") as tmp:

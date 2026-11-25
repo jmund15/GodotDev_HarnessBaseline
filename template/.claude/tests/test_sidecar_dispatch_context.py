@@ -38,12 +38,13 @@ from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 import _settings_probe  # noqa: E402
 import _transport_fixture  # noqa: E402
 HOOKS = os.path.join(HERE, "..", "hooks")
 REPO = os.path.abspath(os.path.join(HERE, ".."))
 HOOK = os.environ.get("SIDECAR_DISPATCH_HOOK") or os.path.join(HOOKS, "sidecar_dispatch_context.py")
-PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
+COMPACT_START = os.path.join(HOOKS, "subagent_compaction_rail.py")
 spec = importlib.util.spec_from_file_location("sidecar_dispatch_context_probe", HOOK)
 sidecar = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sidecar)
@@ -181,11 +182,8 @@ def context(command, env, session=SID):
     return run(command, env, session).get("additionalContext", "")
 
 
-def precompact(env, session=SID):
-    checked_run([sys.executable, PRECOMPACT],
-                input=json.dumps({"session_id": session, "trigger": "auto"}),
-                capture_output=True, text=True, timeout=60,
-                env=dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+def compact_start(env, session=SID):
+    _hook_call.compact_start(COMPACT_START, env, session)
 
 
 def rooms_cache(folder, shares):
@@ -1348,7 +1346,7 @@ def group_worktree_budget(fx):
     cases.append(("an unbounded caller keeps the full preflight timeout", asked[-1] == sidecar.PREFLIGHT_TIMEOUT))
     registered = _settings_probe.settings(os.path.join(os.path.dirname(HOOK), ".."))
     dispatch_timeouts = [h.get("timeout") for entries in registered["hooks"].values() for e in entries
-                         for h in e.get("hooks", []) if "pre_bash_dispatch" in str(h.get("command", ""))]
+                         for h in e.get("hooks", []) if "hooks/pre_bash" in str(h.get("command", ""))]
     cases.append(("the hook budget plus the emit margin fits the dispatcher's settings timeout",
                   len(dispatch_timeouts) == 1 and sidecar.HOOK_BUDGET_SECONDS < dispatch_timeouts[0]))
     outside_result = run("bash %s -m fake -f brief.md" % outside, env, session="sdc00027")
@@ -1884,7 +1882,7 @@ def group_context(fx):
     # --- context: an admitted launch carries no reference injection, first, later or after a compaction
     cases.append(("the first launch injects no reference, card or pointer", context(launch, env) == ""))
     cases.append(("the second launch gets no pointer either", context(launch, env) == ""))
-    precompact(env)
+    compact_start(env)
     cases.append(("a compaction re-arms nothing", context(launch, env) == ""))
 
     # Negatives — the guard matches the invocation, never the noun.

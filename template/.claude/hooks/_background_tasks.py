@@ -1,5 +1,5 @@
-"""How the hooks read a session's background tasks from a transcript: one definition for kill_guard,
-foreground_wait_guard and compact_directive_ledger.
+"""How the hooks read a session's background tasks from a transcript: one definition for kill_guard (which reads
+every transcript of the session's lineage, `_session_lineage`, with these shapes) and session_digest.
 
 A launch is a tool_result row whose `toolUseResult` carries `backgroundTaskId` (Bash, PowerShell), `taskId`
 (Monitor, Workflow) or `agentId` with `isAsync` true (a background Agent; a foreground one also carries an

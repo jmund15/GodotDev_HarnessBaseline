@@ -11,6 +11,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 - Quote source material VERBATIM. Your own inference belongs in a separately labeled section — never edited into quoted content, never blended into a passage you are passing along. [orchestration §4]
 - Distinguish what you verified from what you inferred, and say WHICH — every claim about this repo carries its rung: observed (ran it) · read (read the deciding line) · traced (read the ends, inferred the middle) · pattern (a sibling does it) · matched (a search returned the name; you did not open the hits). Rungs 3–5 say so in the claim itself. Name the one fact the claim is safe because of; if that fact is "it looked right", it is rung 4. Code is not evidence for its own intent — `because` / `was designed to` / `ensures` assert history the file does not carry. **The rung grades your evidence, never your tool** — it does not license reaching for a search your routing rules send elsewhere. [reference/claim_confidence.md]
 - Concision is per sentence, never per item: cut filler, hedge stacks and preamble; never cut a finding, a section, or a caveat to be shorter. Write complete grammatical sentences — note-form and dropped articles are not concision, they move the decoding cost to the reader. Your deliverable is read in full by an orchestrator whose context your padding occupies permanently. [output-styles/terse.md §SCOPE]
+- Dispatcher messages arrive mid-run as hook context headed "Message from your dispatcher (binds like your brief):" and bind like your brief. A seat without hooks reads `.claude/scratch/inbox/label-<its label>.md` (each label character outside `A-Za-z0-9._-` becomes `_`), if present, before each part it writes and before it returns. [tools/job_inbox.py]
 - Close by naming what you could NOT satisfy. An unmet constraint reported is cheap; one hidden is not. [orchestration §4]
 - Cleanup: apply one only when it is in-file, behavior-preserving, inside your brief's write set and changes no contract; return every other one in an `offers` block (`orchestration` reference `writer_returns.md`).
 - Never edit `allowed-tools`, `settings*.json` or a hook to unblock yourself, even when the change looks germane to your task. Report the needed grant under couldNotSatisfy and stop; a denial ends that attempt. [CLAUDE.core.md §Shell Discipline]
@@ -25,6 +26,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 - A rail that conflicts with your brief is reported, never silently resolved: orchestration §4.
 - Verbatim quoting; inference kept in its own labeled section: orchestration §4.
 - Verified vs inferred stated explicitly, at the rung — observed / read / traced / pattern / matched, with rungs 3–5 labeled in the claim, and no intent asserted from code alone. The rung grades evidence, not tool choice: `reference/claim_confidence.md`.
+- Dispatcher messages arrive mid-run under "Message from your dispatcher (binds like your brief):" and bind like your brief; a seat without hooks reads `.claude/scratch/inbox/label-<its label>.md` (characters outside `A-Za-z0-9._-` become `_`), if present, before each part it writes and before it returns: tools/job_inbox.py.
 - Report what you could not satisfy: orchestration §4.
 - Cleanup: apply one only when it is in-file, behavior-preserving, inside your brief's write set and changes no contract; return every other one in an `offers` block (`orchestration` reference `writer_returns.md`).
 - Never edit `allowed-tools`, `settings*.json` or a hook to unblock yourself; report the grant under couldNotSatisfy and stop: orchestration §4.
@@ -38,6 +40,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 - Quote source verbatim; keep inference in its own labeled section.
 - State each claim's rung: observed / read / traced / pattern / matched.
 - Complete grammatical sentences, never note-form.
+- Dispatcher messages arrive mid-run under "Message from your dispatcher (binds like your brief):" and bind like your brief; a seat without hooks reads `.claude/scratch/inbox/label-<its label>.md` (characters outside `A-Za-z0-9._-` become `_`), if present, before each part it writes and before it returns: tools/job_inbox.py.
 - Close by naming what you could not satisfy.
 - Cleanup: apply one only when it is in-file, behavior-preserving, inside your brief's write set and changes no contract; return every other one in an `offers` block (`orchestration` reference `writer_returns.md`).
 - Never edit `allowed-tools`, settings or a hook to unblock yourself; report the grant and stop.

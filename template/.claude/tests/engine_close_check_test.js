@@ -6,9 +6,8 @@ const { spawnSync } = require('child_process')
 const gitBash = require('./_git_bash')
 const { load } = require('./_engine_run')
 const root = path.resolve(__dirname, '../..')
-// A lane installs only the engines its adopted layers ship: explore_fanout is coding, key_reachability
-// project-only. A case over an engine this tree does not hold is skipped, as its sibling proof does.
-const ENGINES = ['dispatch', 'dispatch_chains', 'explore_fanout', 'review_fanout', 'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
+// A lane installs only the engines its adopted layers ship: explore_fanout is coding. A case over an engine this tree does not hold is skipped, as its sibling proof does.
+const ENGINES = ['dispatch', 'dispatch_chains', 'explore_fanout', 'review_fanout', 'doc_architecture_audit', 'worklog_relevance']
   .filter(name => fs.existsSync(path.join(root, '.claude/workflows/' + name + '.js')))
 const script = path.join(root, '.claude/workflows/dispatch.js')
 const run = load(script, source => process.env.CLOSE_CHECK_DELETE_APPLY

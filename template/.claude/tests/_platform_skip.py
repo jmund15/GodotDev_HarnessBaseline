@@ -1,9 +1,10 @@
-"""One idiom for a proof's platform skip, read by `scripts/harness_tests.py`.
+"""One idiom for a proof's platform skip, for both runners: pytest and `scripts/harness_tests.py`.
 
-skip(name, reason)       one case cannot run on this platform; the proof keeps running its other cases,
-                         so its verdict stays theirs.
-skip_proof(name, reason) the whole proof cannot run here: it exits 0 and the runner reports it
-                         SKIPPED-PLATFORM, never as passed and never as missing coverage.
+skip(name, reason)       one case cannot run on this platform; the proof keeps running its other cases, so its
+                         verdict stays theirs.
+skip_proof(name, reason) the whole proof cannot run here. Run as a script by `harness_tests.py`, it exits 0 with the
+                         marker the runner reports as SKIPPED-PLATFORM; imported by pytest, it skips the module through
+                         pytest, since a module-level `sys.exit` would end every xdist worker that collects it.
 """
 import sys
 
@@ -16,5 +17,8 @@ def skip(name, reason):
 
 
 def skip_proof(name, reason):
-    print(PROOF_SKIP + name + ": " + reason, flush=True)
-    sys.exit(0)
+    if sys._getframe(1).f_globals.get("__name__") == "__main__":
+        print(PROOF_SKIP + name + ": " + reason, flush=True)
+        sys.exit(0)
+    import pytest
+    pytest.skip(name + ": " + reason, allow_module_level=True)

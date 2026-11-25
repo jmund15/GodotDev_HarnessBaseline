@@ -43,9 +43,14 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, ".claude", "tools"))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
 import adaptation  # noqa: E402
 from sidecar_argv import executable_index, shell_segments_with_comments  # noqa: E402
+from _git_commit import resolve_cd  # noqa: E402
+
+CHDIRS = {"cd", "pushd", "set-location", "sl"}
 
 SCAN_DEPTH, MAX_SCRIPT_BYTES = 2, 300_000
 POWERSHELLS = ("pwsh", "powershell")
@@ -363,8 +368,8 @@ def _command_runs(command, cwd, root, rows, depth=0):
         if not words:
             continue
         exe, args = _base(words[0]), words[1:]
-        if exe == "cd" and args:
-            cwd = os.path.join(cwd or os.getcwd(), args[0].strip("'\""))
+        if exe.lower() in CHDIRS and args:
+            cwd = resolve_cd(cwd or os.getcwd(), args[0].strip("'\""))
             continue
         hit = _match(rows, " ".join(words), args, root, written=" ".join(tokens), cwd=cwd)
         if hit is NARROW:

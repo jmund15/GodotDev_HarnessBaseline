@@ -39,9 +39,29 @@ def _claude_dir_with(tmp, content):
     return claude_dir
 
 
+def case_areas_key_reads_and_wrong_type_falls_back():
+    tmp = tempfile.mkdtemp(prefix="adaptation_areas_")
+    try:
+        rows = [["Alpha", ".claude/tools/alpha"]]
+        claude_dir = _claude_dir_with(tmp, json.dumps({"areas": rows}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        assert adaptation.DEFAULTS["areas"] == [], adaptation.DEFAULTS.get("areas")
+        assert result["areas"] == rows and err == "", (result.get("areas"), err)
+        claude_dir = _claude_dir_with(tmp, json.dumps({"areas": "not-a-list"}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        assert result["areas"] == [] and "areas" in err, (result.get("areas"), err)
+    finally:
+        _rm(tmp)
+
+
 def main():
     cases = []
     failures = []
+    try:
+        case_areas_key_reads_and_wrong_type_falls_back()
+        cases.append(("areas key reads and wrong type falls back", True))
+    except (AssertionError, KeyError) as exc:
+        cases.append(("areas key reads and wrong type falls back: %s" % (exc,), False))
     doc = open(os.path.join(TOOLS, "adaptation.py"), encoding="utf-8").read().split('"""')[1]
     tmp = tempfile.mkdtemp(prefix="adaptation_proof_")
     try:
@@ -166,13 +186,6 @@ def main():
         cases.append(("a wrong-typed paired_repo_rules falls back to {} and names itself",
                       result.get("paired_repo_rules") == {} and "paired_repo_rules" in err
                       and len(err.strip().splitlines()) == 1))
-        for content, expected in (({}, {}), ({"bench_liveness": {"root": "planted"}}, {"root": "planted"}),
-                                  ({"bench_liveness": []}, {})):
-            claude_dir = _claude_dir_with(tmp, json.dumps(content))
-            result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
-            cases.append(("bench_liveness reader: " + repr(content),
-                          result.get("bench_liveness") == expected
-                          and ("bench_liveness" in err if isinstance(content.get("bench_liveness"), list) else err == "")))
         # --- lens_prefixes: the key prefix a project's lens registry headings share ----
         prefixes = {"review": "xx-"}
         claude_dir = _claude_dir_with(tmp, None)
@@ -405,6 +418,7 @@ def main():
             ran = fh.read()
         cases.append(("run executes every entry once, reports the failing one and exits 0",
                       code == 0 and ran == "x" and "3" in (out + err)))
+        plugin_cases(cases, tmp)
     finally:
         _rm(tmp)
 
@@ -417,6 +431,152 @@ def main():
     for f in failures:
         print("  FAIL " + f)
     return 1 if failures else 0
+
+
+REGISTRATION = {"schema": 1, "core_root": ".", "entry": ".claude/scripts/plugin_entry.py",
+                "sidecar_hooks": [{"matcher": "*", "command": "python3 {plugin_root}/.claude/hooks/g.py"}]}
+
+
+def _plugin_root(tmp, label, registration=REGISTRATION, entry_text="def live_runs(table):\n    return []\n"):
+    """A bench plugin checkout under tmp/plugin_<label> holding `.claude/plugin.bench.json` and, when entry_text is not None, its entry."""
+    root = os.path.join(tmp, "plugin_" + label)
+    os.makedirs(os.path.join(root, ".claude"), exist_ok=True)
+    if registration is not None:
+        with open(os.path.join(root, ".claude", "plugin.bench.json"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(registration if isinstance(registration, str) else json.dumps(registration))
+    if entry_text is not None and isinstance(registration, dict) and isinstance(registration.get("entry"), str):
+        entry = os.path.join(root, registration["entry"])
+        os.makedirs(os.path.dirname(entry), exist_ok=True)
+        with open(entry, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(entry_text)
+    return root
+
+
+def plugin_cases(cases, tmp):
+    from pathlib import Path
+    claude_dir = _claude_dir_with(tmp, None)
+    cases.append(("plugins defaults to {}", adaptation.DEFAULTS.get("plugins") == {}
+                  and adaptation.get(claude_dir, "plugins") == {}))
+    cases.append(("bench_liveness is no longer a known key", "bench_liveness" not in adaptation.DEFAULTS))
+
+    def state_of(plugins, name="bench"):
+        claude = _claude_dir_with(tmp, json.dumps({"plugins": plugins}))
+        return adaptation.plugin(claude, name)
+
+    absent = state_of({})
+    cases.append(("a plugin the key does not name is absent", absent.state == "absent"))
+    claude = _claude_dir_with(tmp, json.dumps({"plugins": {}}))
+    cases.append(("plugin_entry of an absent plugin is None", adaptation.plugin_entry(claude, "bench") is None))
+
+    ready_root = _plugin_root(tmp, "ready")
+    ready = state_of({"bench": ready_root})
+    cases.append(("a complete registration with its entry is ready",
+                  ready.state == "ready" and Path(ready.root) == Path(ready_root)
+                  and ready.manifest["entry"] == REGISTRATION["entry"] and not ready.error))
+    cases.append(("plugin_at reads the same state from a plugin root",
+                  adaptation.plugin_at(ready_root, "bench").state == "ready"))
+    rel = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": "plugin_ready"}}))
+    cases.append(("a relative root resolves against the checkout holding the adaptation file",
+                  adaptation.plugin(rel, "bench").state == "ready"))
+
+    broken = [
+        ("root is not a directory", {"bench": os.path.join(tmp, "no_such_root")}, None),
+        ("registration file missing", {"bench": _plugin_root(tmp, "nofile", registration=None)}, None),
+        ("registration does not parse", {"bench": _plugin_root(tmp, "badjson", registration="{not json")}, None),
+        ("schema is not 1", {"bench": _plugin_root(tmp, "schema2", registration=dict(REGISTRATION, schema=2))}, None),
+        ("a required key is missing",
+         {"bench": _plugin_root(tmp, "nokey", registration={k: v for k, v in REGISTRATION.items() if k != "entry"})}, "entry"),
+        ("a key has the wrong type",
+         {"bench": _plugin_root(tmp, "wrongtype", registration=dict(REGISTRATION, sidecar_hooks="x"))}, "sidecar_hooks"),
+        ("a bench key has the wrong type",
+         {"bench": _plugin_root(tmp, "wrongmw", registration=dict(REGISTRATION, measurement_workflows="x"))},
+         "measurement_workflows"),
+        ("the entry file is missing", {"bench": _plugin_root(tmp, "noentry", entry_text=None)}, "entry"),
+    ]
+    for label, plugins, needle in broken:
+        got = state_of(plugins)
+        cases.append(("unreadable: " + label,
+                      got.state == "unreadable" and bool(got.error) and (needle is None or needle in got.error)))
+        claude = _claude_dir_with(tmp, json.dumps({"plugins": plugins}))
+        try:
+            adaptation.plugin_entry(claude, "bench")
+            raised = None
+        except adaptation.PluginUnreadable as exc:
+            raised = exc
+        cases.append(("plugin_entry raises PluginUnreadable: " + label,
+                      raised is not None and raised.name == "bench" and raised.error == got.error))
+
+    edit_root = _plugin_root(tmp, "edit")
+    claude = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": edit_root}}))
+    first = adaptation.plugin(claude, "bench").state
+    _plugin_root(tmp, "edit", registration=dict(REGISTRATION, schema=2))
+    second = adaptation.plugin(claude, "bench").state
+    _plugin_root(tmp, "edit")
+    cases.append(("an edit to the registration between two calls in one process is seen",
+                  (first, second, adaptation.plugin(claude, "bench").state) == ("ready", "unreadable", "ready")))
+
+    entry_root = _plugin_root(tmp, "entry", entry_text="def live_runs(table):\n    return ['ran']\n")
+    claude = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": entry_root}}))
+    entry = adaptation.plugin_entry(claude, "bench")
+    cases.append(("plugin_entry loads the entry by path", entry.live_runs({}) == ["ran"]))
+    crash_root = _plugin_root(tmp, "crash", entry_text="raise RuntimeError('boom')\n")
+    claude = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": crash_root}}))
+    try:
+        adaptation.plugin_entry(claude, "bench")
+        err = None
+    except adaptation.PluginUnreadable as exc:
+        err = exc
+    cases.append(("an entry that fails to import is unreadable", err is not None and "boom" in err.error))
+
+    claude = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": ready_root, "other": entry_root}}))
+    listed = adaptation.plugins(claude)
+    cases.append(("plugins lists each configured plugin in key order with its state",
+                  [name for name, _ in listed] == ["bench", "other"] and listed[0][1].state == "ready"
+                  and listed[1][1].state == "unreadable"))
+
+    import shutil
+    import subprocess
+    planted = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": ready_root}}))
+    os.makedirs(os.path.join(planted, "tools"), exist_ok=True)
+    shutil.copy(os.path.join(TOOLS, "adaptation.py"), os.path.join(planted, "tools", "adaptation.py"))
+    here = os.path.join(planted, "tools", "adaptation.py")
+    done = subprocess.run([sys.executable, here, "plugin", "bench"], capture_output=True, text=True, encoding="utf-8")
+    cases.append(("CLI: plugin bench prints a ready state and the root, exit 0",
+                  done.returncode == 0 and "state: ready" in done.stdout and "root: " in done.stdout))
+    done = subprocess.run([sys.executable, here, "plugin", "nosuchplugin"], capture_output=True, text=True, encoding="utf-8")
+    cases.append(("CLI: an unconfigured plugin prints absent, exit 0",
+                  done.returncode == 0 and "state: absent" in done.stdout))
+
+    calls = getattr(adaptation, "ENTRY_CALLS", {}).get("bench", {})
+    cases.append(("ENTRY_CALLS names the bench's ten calls with their parameter names",
+                  calls == {"roster_summary": [], "ladder_banner": [], "has_rosters": [], "rosters": ["pid_alive"],
+                            "running_cells": ["name"], "detached_units": ["session_id", "pid_alive"],
+                            "campaign_of": ["label"], "grid_running": ["campaign"], "wait_call": ["target"],
+                            "live_runs": ["process_table"]}))
+
+    seen_root = _plugin_root(tmp, "corevar", entry_text="import os\nSEEN = os.environ.get('HARNESS_CORE_ROOT')\n"
+                                                         "def live_runs(table):\n    return []\n")
+    claude = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": seen_root}}))
+    inherited = os.environ.get("HARNESS_CORE_ROOT")
+    os.environ["HARNESS_CORE_ROOT"] = os.path.join(tmp, "some_other_core")
+    try:
+        loaded = adaptation.plugin_entry(claude, "bench")
+    finally:
+        if inherited is None:
+            os.environ.pop("HARNESS_CORE_ROOT", None)
+        else:
+            os.environ["HARNESS_CORE_ROOT"] = inherited
+    checkout = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(adaptation.__file__))))
+    cases.append(("plugin_entry names the running checkout in HARNESS_CORE_ROOT at import, over an inherited value",
+                  bool(loaded.SEEN) and os.path.normcase(os.path.abspath(loaded.SEEN)) == os.path.normcase(checkout)))
+
+    first = _plugin_root(tmp, "twoA", entry_text="WHO = 'A'\ndef live_runs(table):\n    return []\n")
+    second = _plugin_root(tmp, "twoB", entry_text="WHO = 'B'\ndef live_runs(table):\n    return []\n")
+    got = []
+    for root in (first, second, first):
+        got.append(adaptation.plugin_entry(_claude_dir_with(tmp, json.dumps({"plugins": {"bench": root}})), "bench"))
+    cases.append(("two plugin roots in one process load two distinct entry modules, and a root reloads from the cache",
+                  [m.WHO for m in got] == ["A", "B", "A"] and got[0] is got[2] and got[0] is not got[1]))
 
 
 def _capture_stderr(fn):

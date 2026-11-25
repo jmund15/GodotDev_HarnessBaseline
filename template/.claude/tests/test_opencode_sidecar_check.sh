@@ -120,6 +120,19 @@ out="$(env "${host_vars[@]}" -u OC_LITELLM_BIN HOME="$TMPD/home" USERPROFILE="$T
   && ok "the shipped registry's messages-mode Go row passes --check against a 200 probe" \
   || bad "the shipped registry's messages-mode Go row passes --check against a 200 probe" "$rc" "$out"
 
+# The shipped transport-local row (local_llama_sidecar.sh holds the server; a launch preflight checks this launcher):
+# Zen's catalog lists no local model, so --check skips the catalog and the live probe on the local server decides.
+local_row="$(python3 -c 'import json,sys; print(next(m["alias"] for m in json.load(open(sys.argv[1], encoding="utf-8"))["models"] if m.get("transport") == "local"))' "$R/reference/external_models.json")"
+rm -f "$TMPD/curl.calls"
+out="$(env "${host_vars[@]}" HOME="$TMPD/home" USERPROFILE="$TMPD/home" PATH="$CLEAN_PATH" \
+    TEMP="$TMPD/tmp" TMPDIR="$TMPD/tmp" SIDECAR_EXHAUSTED_DIR="$TMPD/markers" SC_UPSTREAM_KEY=local \
+    HARNESS_MODEL_REGISTRY="$R/reference/external_models.json" OC_LITELLM_BIN="$TMPD/stubs/litellm-new" \
+    CLAUDE_BIN="$TMPD/stubs/claude" STUB_CURL_CALLS="$TMPD/curl.calls" BASH_ENV="$TMPD/stub_curl.sh" \
+    bash "$LAUNCHER" --check -m "$local_row" 2>/dev/null)"; rc=$?
+[ "$rc" = 0 ] && grep -q "127.0.0.1:8091/v1/chat/completions" "$TMPD/curl.calls" && ! grep -q "/models" "$TMPD/curl.calls" \
+  && ok "a transport-local row skips Zen's catalog and passes --check on its local live probe" \
+  || bad "a transport-local row skips Zen's catalog and passes --check on its local live probe" "$rc" "$out"
+
 out="$(run_check no-such-model-xyz)"; rc=$?
 [ "$rc" = 2 ] && [ ! -f "$TMPD/curl.calls" ] \
   && ok "an unknown -m exits 2 (resolution failure)" \

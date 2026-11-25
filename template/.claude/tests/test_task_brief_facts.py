@@ -310,9 +310,17 @@ def _main(tmp):
         with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             named_out = (module.process(written(named_brief, named_brief_text, session="named-sess"))
                          or {}).get("context") or ""
+    def windowless(alias):
+        limits = registry_oracle.row_for_model(alias, registry_data).get("limits") or {}
+        return limits.get("contextTokens") is None
+
+    sized = {alias for alias in expected if not windowless(alias)}
     case("the window fit reads the brief plus the file it names, not the brief alone",
-         bool(named_out) and all(any("(%s of " % "{:,}".format(reading_named) in line
-                                     for line in alias_lines(named_out, alias)) for alias in expected))
+         bool(named_out) and bool(sized) and all(any("(%s of " % "{:,}".format(reading_named) in line
+                                                     for line in alias_lines(named_out, alias)) for alias in sized))
+    case("a row whose registry declares no context window prints `window unjudged`, never a fit",
+         all(any("window unjudged" in line and "if read whole" not in line for line in alias_lines(named_out, alias))
+             for alias in expected - sized))
     cited_brief_text = BRIEF + "Search `%s:10-20` for the rows.\n" % named_file.replace("\\", "/")
     cited_brief = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "cited_brief.md"), cited_brief_text)
     lower_cited = math.ceil(len(cited_brief_text) / 2.5)
@@ -323,9 +331,9 @@ def _main(tmp):
             cited_out = (module.process(written(cited_brief, cited_brief_text, session="cited-sess"))
                          or {}).get("context") or ""
     case("a line-cited file is a span: the cell prints the lower number, then the upper if read whole",
-         bool(cited_out) and all(any("(%s of " % "{:,}".format(lower_cited) in line
-                                     and "; %s if read whole)" % "{:,}".format(upper_cited) in line
-                                     for line in alias_lines(cited_out, alias)) for alias in expected))
+         bool(cited_out) and bool(sized) and all(any("(%s of " % "{:,}".format(lower_cited) in line
+                                                     and "; %s if read whole)" % "{:,}".format(upper_cited) in line
+                                                     for line in alias_lines(cited_out, alias)) for alias in sized))
     if module is not None and callable(getattr(module, "_fit", None)):
         import model_registry as real_registry
         login = os.path.join(tmp, "login")
@@ -378,24 +386,6 @@ def _main(tmp):
     else:
         case("a write without a task block yields None", False)
         case("a malformed task block yields a context naming the defect", False)
-
-    case("the sub-hook is registered in post_edit_dispatch.py's chain",
-         "task_brief_facts" in load_chain())
-
-    rc, out, err = run_dispatch(written(brief_path, BRIEF, session="taskfacts"), env)
-    ctx = context(out)
-    case("post_edit_dispatch.py fires the planted brief through its chain", rc == 0 and TAG in ctx)
-    case("post_edit_dispatch.py names every for-role executor alias",
-         expected and all(alias_lines(ctx, alias) for alias in expected))
-
-    rc, out, err = run_dispatch(written(bad, EMPTY_CHECK_BRIEF, session="taskfactsbad"), env)
-    ctx = context(out)
-    case("a malformed brief through the dispatcher is advisory: exit 0, names the defect, never denies",
-         rc == 0 and TAG in ctx and "empty check" in ctx and "permissionDecision" not in out)
-
-    rc, out, err = run_dispatch(written(plain_path, "# no fence\n", session="taskfactsplain"), env)
-    case("a write without a task block adds no task-brief-facts line through the dispatcher",
-         rc == 0 and TAG not in context(out))
 
     if module is not None and callable(getattr(module, "_facts", None)):
         plant_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "plant_brief.md"), BRIEF)

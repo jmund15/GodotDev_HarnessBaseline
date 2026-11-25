@@ -10,7 +10,10 @@ jobs:
   root:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the totals step reads the previous run's commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -21,13 +24,13 @@ jobs:
           node-version: "20"
 
       # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
-      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      # battery holds `.ps1` proofs, which the tests conftest's proof bridge runs under pwsh.
       - name: verify pwsh is on PATH
         run: pwsh -NoProfile -Command 'exit 0'
 
-      # The runner executes pytest-style proofs with `python -m pytest`.
+      # pytest runs every proof: the tests conftest runs each script, node, bash and PowerShell proof as one case.
       - name: install pytest
-        run: python3 -m pip install pytest
+        run: python3 -m pip install pytest pytest-xdist
 
       - name: gen_manifest --check
         run: python3 tools/gen_manifest.py --check
@@ -35,14 +38,17 @@ jobs:
       - name: audit_baseline --strict
         run: python3 tools/audit_baseline.py --strict
 
+      # Readouts, never a budget failure: the previous run's commit is the push's `before` (the branch tip the last run
+      # built) or the PR's base. The byte readout carries no budget flag and exits 0, so only a crash fails its step.
+      - name: totals (code, test, prose) and their change
+        run: python3 template/.claude/tools/ci_totals.py "${{ github.event.before || github.event.pull_request.base.sha }}" template/.claude/
+
+      - name: session load readouts (bytes)
+        run: python3 template/.claude/tools/load_census.py
+
+      # `--durations=20` prints the slowest tests, so a slow test shows in its own log.
       - name: baseline-repo-root proofs
-        run: |
-          set -e
-          shopt -s nullglob
-          for f in tests/test_*.py; do
-            echo "== $f =="
-            python3 "$f"
-          done
+        run: python3 -m pytest -n auto -q --durations=20 tests
 
   template:
     runs-on: ubuntu-latest
@@ -58,16 +64,21 @@ jobs:
           node-version: "20"
 
       # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
-      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      # battery holds `.ps1` proofs, which the tests conftest's proof bridge runs under pwsh.
       - name: verify pwsh is on PATH
         run: pwsh -NoProfile -Command 'exit 0'
 
-      # The runner executes pytest-style proofs with `python -m pytest`.
+      # pytest runs every proof: the tests conftest runs each script, node, bash and PowerShell proof as one case.
       - name: install pytest
-        run: python3 -m pip install pytest
+        run: python3 -m pip install pytest pytest-xdist
 
       - name: template harness battery
-        run: python3 template/.claude/scripts/harness_tests.py
+        run: python3 -m pytest -n auto -q --durations=20 template/.claude/tests
+
+      # `-n auto` skips every `proof_serial` proof (it fails when another proof shares the machine); this pass runs
+      # them alone. A folder with none passes.
+      - name: template serial proofs
+        run: python3 -m pytest -p no:xdist -q --harness-serial template/.claude/tests
 
   # The template battery runs the full godot layer, so it cannot prove a non-godot consumer.
   # Each profile lane bootstraps a scratch project at one layer list and runs that project's own
@@ -86,20 +97,21 @@ jobs:
           node-version: "20"
 
       # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
-      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      # battery holds `.ps1` proofs, which the tests conftest's proof bridge runs under pwsh.
       - name: verify pwsh is on PATH
         run: pwsh -NoProfile -Command 'exit 0'
 
-      # The runner executes pytest-style proofs with `python -m pytest`.
+      # pytest runs every proof: the tests conftest runs each script, node, bash and PowerShell proof as one case.
       - name: install pytest
-        run: python3 -m pip install pytest
+        run: python3 -m pip install pytest pytest-xdist
 
       - name: pure profile battery
         run: |
           set -euo pipefail
           target="$(mktemp -d)/ProfileProbe-pure"
           bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure
-          cd "$target" && python3 .claude/scripts/harness_tests.py
+          cd "$target" && python3 -m pytest -n auto -q --durations=20 .claude/tests
+          python3 -m pytest -p no:xdist -q --harness-serial .claude/tests
 
   pure-coding:
     runs-on: ubuntu-latest
@@ -115,20 +127,21 @@ jobs:
           node-version: "20"
 
       # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
-      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      # battery holds `.ps1` proofs, which the tests conftest's proof bridge runs under pwsh.
       - name: verify pwsh is on PATH
         run: pwsh -NoProfile -Command 'exit 0'
 
-      # The runner executes pytest-style proofs with `python -m pytest`.
+      # pytest runs every proof: the tests conftest runs each script, node, bash and PowerShell proof as one case.
       - name: install pytest
-        run: python3 -m pip install pytest
+        run: python3 -m pip install pytest pytest-xdist
 
       - name: pure,coding profile battery
         run: |
           set -euo pipefail
           target="$(mktemp -d)/ProfileProbe-pure-coding"
           bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure,coding
-          cd "$target" && python3 .claude/scripts/harness_tests.py
+          cd "$target" && python3 -m pytest -n auto -q --durations=20 .claude/tests
+          python3 -m pytest -p no:xdist -q --harness-serial .claude/tests
 
   pure-coding-godot:
     runs-on: ubuntu-latest
@@ -144,20 +157,21 @@ jobs:
           node-version: "20"
 
       # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
-      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      # battery holds `.ps1` proofs, which the tests conftest's proof bridge runs under pwsh.
       - name: verify pwsh is on PATH
         run: pwsh -NoProfile -Command 'exit 0'
 
-      # The runner executes pytest-style proofs with `python -m pytest`.
+      # pytest runs every proof: the tests conftest runs each script, node, bash and PowerShell proof as one case.
       - name: install pytest
-        run: python3 -m pip install pytest
+        run: python3 -m pip install pytest pytest-xdist
 
       - name: pure,coding,godot profile battery
         run: |
           set -euo pipefail
           target="$(mktemp -d)/ProfileProbe-pure-coding-godot"
           bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure,coding,godot
-          cd "$target" && python3 .claude/scripts/harness_tests.py
+          cd "$target" && python3 -m pytest -n auto -q --durations=20 .claude/tests
+          python3 -m pytest -p no:xdist -q --harness-serial .claude/tests
 
   # The ruleset requires the status context `baseline`: this job keeps that name and goes red when any lane does.
   baseline:

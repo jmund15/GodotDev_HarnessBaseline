@@ -51,7 +51,8 @@ def run():
                         }.items():
                             stack.enter_context(patch.object(guard, name, return_value=value))
                         stack.enter_context(patch.object(guard._session_transport, "resolve", return_value=("anthropic", "fixture")))
-                        stack.enter_context(patch.object(guard.provider_capacity_guard, "refusal", return_value=None))
+                        stack.enter_context(patch.object(guard.provider_capacity_guard.provider_capacity, "reading",
+                                                         return_value={"status": "available", "sourceKind": "live"}))
                         stack.enter_context(patch.object(guard.citer_coverage, "BLOCKING", blocking))
                         guard.main()
                     try:

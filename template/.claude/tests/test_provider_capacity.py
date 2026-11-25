@@ -302,29 +302,123 @@ def main():
                   and "another" in (waited.get("liveFailure") or {}).get("message", "")
                   and time.monotonic() - started < 2.0))
 
-    stale = pc.reading("anthropic", data=data, now=now + pc.STALE_FALLBACK_SECONDS + 1,
-                       cache_path=str(cache), runner=network_failure)
-    cases.append(("a reading older than TTL + cooldown cannot authorize capacity",
-                  stale.get("status") == "network-error" and stale.get("sourceKind") == "live"))
-
     # A rate-limited usage endpoint (HTTP 429) answers 429 for minutes, so a second probe during
-    # that window only extends it: the transport is put in cooldown and the reading falls back to a
-    # cache entry older than the fresh-cache TTL, up to CACHE_TTL_SECONDS + RATE_LIMIT_COOLDOWN_SECONDS.
+    # that window only extends it: the transport is put in cooldown and the reading falls back to
+    # the last good reading while its windows have not reset.
     def rate_limited(_spec, _transport):
         return {
             "schemaVersion": 1, "transport": "anthropic", "costModel": "plan-quota",
-            "sourceKind": "live", "observedAt": iso(now), "status": "network-error",
+            "sourceKind": "live", "observedAt": iso(now), "status": "rate-limited",
             "error": {"kind": "rate-limit",
                       "message": "Anthropic usage endpoint returned HTTP 429 (rate limited)"},
             "liveFailure": None, "quota": None, "balance": None,
         }
 
+    # A fallback serves the last good reading while each of its windows has not reset: a share
+    # describes the allowance whose reset is still ahead. A window that has reset is dropped, and a
+    # reading whose routing window has reset cannot place a job.
+    reset_five = {"name": "five_hour", "usedPercent": 60.0, "resetsAt": now - 10,
+                  "windowDurationMins": 300, "pressure": 0.5, "band": "On pace"}
+    mixed = quota()
+    mixed["quota"]["windows"].append(dict(reset_five))
+    mixed["observedAt"] = iso(now - 3600)
+    mixed_cache = root / "mixed_reset.json"
+    mixed_cache.write_text(json.dumps({"anthropic": mixed}), encoding="utf-8")
+    got_mixed = pc.reading("anthropic", data=data, now=now, cache_path=str(mixed_cache),
+                           runner=network_failure)
+    kept = [w["name"] for w in ((got_mixed.get("quota") or {}).get("windows") or [])]
+    cases.append(("a fallback drops the window that has reset and keeps the week",
+                  got_mixed.get("sourceKind") == "cache" and kept == ["seven_day"]))
+    five_only = quota()
+    five_only["quota"]["windows"] = [dict(reset_five)]
+    five_only["quota"]["routingWindow"] = five_only["quota"]["bindingWindow"] = "five_hour"
+    five_only["observedAt"] = iso(now - 3600)
+    five_cache = root / "five_reset.json"
+    five_cache.write_text(json.dumps({"anthropic": five_only}), encoding="utf-8")
+    got_five = pc.reading("anthropic", data=data, now=now, cache_path=str(five_cache),
+                          runner=network_failure)
+    cases.append(("a reading whose routing window has reset is served not at all",
+                  got_five.get("status") == "network-error" and got_five.get("sourceKind") == "live"))
+
+    # Every checkout on this machine shares one account's limit, so the reading and its cooldown live
+    # in the user's home, resolved at call time, and two checkouts never probe past each other's cooldown.
+    home = root / "home"
+    (home / ".claude").mkdir(parents=True)
+    saved_home = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE", "PROVIDER_CAPACITY_CACHE")}
+    os.environ["HOME"] = os.environ["USERPROFILE"] = str(home)
+    os.environ.pop("PROVIDER_CAPACITY_CACHE", None)
+    try:
+        shared = Path(pc._cache_path())
+        cases.append(("the reading store is the user's, not the checkout's",
+                      shared == home / ".claude" / "provider_capacity.json"))
+        shared_calls, shared_runner = call_counting(live)
+        pc.reading("anthropic", data=data, now=now, runner=shared_runner)
+        cases.append(("a live reading is stored where every checkout reads it",
+                      json.loads(shared.read_text(encoding="utf-8")).get("anthropic", {}).get("status")
+                      == "available"))
+        reused_calls, reused_runner = call_counting(live)
+        reused = pc.reading("anthropic", data=data, now=now + 60, runner=reused_runner)
+        cases.append(("a second checkout reuses that reading and probes nothing",
+                      reused_calls == [] and reused.get("status") == "available"))
+        shared.write_text(json.dumps({"anthropic": dict(
+            five_only, observedAt=iso(now - pc.CACHE_TTL_SECONDS - 300))}), encoding="utf-8")
+        probe_at = now
+        first_calls, first_runner = call_counting(rate_limited)
+        first = pc.reading("anthropic", data=data, now=probe_at, runner=first_runner)
+        cooldown = (json.loads(shared.read_text(encoding="utf-8")).get(pc.RATE_LIMIT_KEY) or {})
+        second_calls, second_runner = call_counting(rate_limited)
+        second = pc.reading("anthropic", data=data, now=probe_at + 30, runner=second_runner)
+        cases.append(("one cooldown serves every checkout: the second does not probe",
+                      len(first_calls) == 1 and second_calls == []
+                      and cooldown.get("anthropic") == probe_at + pc.RATE_LIMIT_COOLDOWN_SECONDS))
+        message = (first.get("error") or {}).get("message") or ""
+        cases.append(("a 429 is a rate limit with its end and the last reading's age, not a network error",
+                      first.get("status") == "rate-limited"
+                      and (first.get("error") or {}).get("kind") == "rate-limit"
+                      and pc._utc(probe_at + pc.RATE_LIMIT_COOLDOWN_SECONDS) in message
+                      and "15 min" in message))
+        cases.append(("a later non-responding probe still answers with the shared cooldown",
+                      second.get("status") == "rate-limited" and second_calls == []))
+    finally:
+        for key, value in saved_home.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    # A failed read writes no usage sample, so the read's own outcome is recorded beside them: time,
+    # status, HTTP code, Retry-After and the checkout that asked. That is the fact a limiting episode
+    # leaves, and today's cannot be traced to its cause without it.
+    reads = root / "reads_only.jsonl"
+    saved_reads = os.environ.get("HARNESS_CAPACITY_READS")
+    os.environ["HARNESS_CAPACITY_READS"] = str(reads)
+
+    def http_429(_spec, _transport):
+        value = rate_limited(None, None)
+        value["error"].update(httpStatus=429, retryAfter="0")
+        return value
+    try:
+        pc.reading("anthropic", data=data, now=now, cache_path=str(root / "reads.json"), runner=http_429)
+        rows = [json.loads(line) for line in reads.read_text(encoding="utf-8").splitlines() if line.strip()]
+    finally:
+        if saved_reads is None:
+            os.environ.pop("HARNESS_CAPACITY_READS", None)
+        else:
+            os.environ["HARNESS_CAPACITY_READS"] = saved_reads
+    cases.append(("a failed read's outcome is recorded beside the samples",
+                  len(rows) == 1 and rows[0].get("status") == "rate-limited"
+                  and rows[0].get("httpStatus") == 429 and rows[0].get("retryAfter") == "0"
+                  and rows[0].get("checkout")))
+
+    # A rate-limited usage endpoint (HTTP 429) answers 429 for minutes, so a second probe during
+    # that window only extends it: the transport is put in cooldown and the reading falls back to
+    # a cache entry older than the fresh-cache TTL.
     cases.append(("a cache fallback may carry a rate-limit liveFailure",
                   pc.validate_reading(dict(aged(700), sourceKind="cache", liveFailure={
                       "kind": "rate-limit", "message": "rate limited"}),
                       "anthropic", "plan-quota") == []))
-    cases.append(("the stale fallback window is the cache TTL plus the cooldown",
-                  pc.STALE_FALLBACK_SECONDS == pc.CACHE_TTL_SECONDS + pc.RATE_LIMIT_COOLDOWN_SECONDS))
+    cases.append(("a rate-limit reading validates as its own typed status",
+                  pc.validate_reading(dict(rate_limited(None, None)), "anthropic", "plan-quota") == []))
 
     retry_calls, retrying_runner = call_counting(network_failure)
     rate_calls, rate_runner = call_counting(rate_limited)
@@ -354,7 +448,7 @@ def main():
                   and (rl_blob.get("_rateLimitedUntil") or {}).get("anthropic")
                   == now + pc.RATE_LIMIT_COOLDOWN_SECONDS))
     cases.append(("a rate-limited read's fallback names the reading's age",
-                  "700" in ((limited_reading.get("liveFailure") or {}).get("message") or "")))
+                  "11 min" in ((limited_reading.get("liveFailure") or {}).get("message") or "")))
 
     cooldown_calls, cooldown_runner = call_counting(rate_limited)
     during = pc.reading("anthropic", data=data, now=now + 60, cache_path=str(rl_cache),
@@ -402,7 +496,7 @@ def main():
     uncached = pc.reading("anthropic", data=data, now=now, cache_path=str(no_cached),
                           runner=uncached_runner)
     cases.append(("a cooldown with no usable reading stays a typed refusal naming its end",
-                  uncached_calls == [] and uncached.get("status") == "network-error"
+                  uncached_calls == [] and uncached.get("status") == "rate-limited"
                   and uncached.get("sourceKind") == "live"
                   and (uncached.get("error") or {}).get("kind") == "rate-limit"
                   and iso(now + 300) in ((uncached.get("error") or {}).get("message") or "")))

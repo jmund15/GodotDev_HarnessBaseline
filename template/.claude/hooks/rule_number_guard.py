@@ -32,8 +32,8 @@ for _p in (_HOOKS_DIR, _TOOLS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from _git_commit import commit_invocations, commit_source, run_git, staged_paths  # noqa: E402
-from _commit_scope import authored_paths, publishes_index  # noqa: E402
+from _git_commit import commit_invocations, run_git  # noqa: E402
+from _commit_scope import publication, publishes_index  # noqa: E402
 from _hook_state import fire_once  # noqa: E402
 
 FIX_HINT = (
@@ -47,14 +47,15 @@ def _judge_commit(rest: list, cwd: str, env: dict | None = None, session_id: str
     if not root:
         return None
     root = root.strip()
-    committed, failed_cmd = staged_paths(rest, cwd, env)
+    published = publication("commit", rest, cwd, env)
+    committed, failed_cmd = published.selection
     if committed is None:
         return "[numbers] could not list the commit's paths (git %s); its numbers are unchecked." % failed_cmd
-    paths = sorted(authored_paths(committed, cwd, env))
+    paths = sorted(published.authored(committed))
     if not paths:
         return None
-    source = commit_source(rest, cwd, env)
-    if source is None:
+    source = published.mode
+    if source == "unknown":
         return ("[numbers] cannot read this `-i` commit: it stages paths outside its pathspec that differ from "
                 "their working copies, so its numbers are unchecked.")
     from_tree = source == "worktree"

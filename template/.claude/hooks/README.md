@@ -10,7 +10,8 @@ command CLIs; each of those files documents itself in its docstring.
    `harness_edit_skill_reminder.py`, `readonly_lens_write_guard.py`, `running_script_edit_guard.py`;
    after it `design_surface_reminder.py`, `plan_memory_reminder.py`,
    `self_eval_archive_guard.py`, `retire_trigger_advisory.py`, the reaper's `check()`) and
-   `pre_bash_dispatch.py` (Bash/PowerShell/Monitor family: `git_guardrails.py`,
+   `pre_bash_dispatch.py` (Bash/PowerShell/Monitor/TaskStop family behind the fail-closed entry `pre_bash.py`:
+   `dangerous_shell_guard.py` (every delete and git loss check), `kill_guard.py` (stops; a TaskStop runs it alone),
    `baseline_classification_guard.py`, `unbounded_scan_guard.py`, `compound_cd_approver.py`,
    `sidecar_dispatch_context.py`, the four `--hook` commit guards, and last
    `bash_backslash_fidelity.py`, which repairs the Bash tool's `\\` collapse on a recorded client) and

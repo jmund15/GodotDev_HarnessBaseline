@@ -22,6 +22,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hooks'))
+from _git_run import run as git_run  # noqa: E402
+
 MAX_ATTEMPTS = 3
 WORKFLOW = 'land.yml'
 LAND_STEP = 'Land'
@@ -105,9 +108,8 @@ def no_run_line(sha, seen):
 
 
 def git(path, *args):
-    out = subprocess.run(['git', '-C', str(path), *args], capture_output=True, text=True, encoding='utf-8',
-                         errors='replace', timeout=120, env=dict(os.environ, GIT_TERMINAL_PROMPT='0'))
-    return out.returncode, out.stdout.strip(), ' '.join(out.stderr.split())
+    out = git_run(args, cwd=str(path), timeout=120, env={'GIT_TERMINAL_PROMPT': '0'})
+    return (out.returncode, out.text.strip(), ' '.join(out.err_text.split()))
 
 
 def stay_reason(path, default):

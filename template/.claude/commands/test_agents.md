@@ -93,7 +93,7 @@ FAILURES:
 
 ## Notes
 
-- **Cost:** Smoke tier (~10 fixtures) ≈ $0.33–0.50 per run; validator adds a small reduced-effort dispatch per fixture.
+- **Cost:** Smoke tier (~10 fixtures) ≈ USD 0.33–0.50 per run; validator adds a small reduced-effort dispatch per fixture.
 - **Parallel execution:** fixtures fan out concurrently in the workflow (no shared writes, no single-flight resource — agents never run tests or touch the LSP).
 - **No file modifications:** read-only — never edits project files.
 - **Fixture exclusion:** the `pattern_enforcer` hook excludes `.claude/tests/agent_fixtures/` so fixtures can contain intentional violations.

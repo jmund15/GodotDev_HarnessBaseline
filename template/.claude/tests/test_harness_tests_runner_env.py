@@ -26,7 +26,7 @@ import json, os, subprocess, sys
 temp = os.environ["TMP"]
 out = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
                                       "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "CLAUDE_PROJECT_DIR",
-                                      "CLAUDE_PLANTED_AMBIENT", "HARNESS_CALLER_HOME", "TMP")}
+                                      "CLAUDE_PLANTED_AMBIENT", "HARNESS_CALLER_HOME", "HARNESS_CORE_ROOT", "TMP")}
 out["temp"] = temp
 out["expanduser"] = os.path.expanduser("~")
 out["claude_names"] = sorted(k for k in os.environ if k.startswith("CLAUDE_"))
@@ -39,7 +39,7 @@ print("PROBE" + json.dumps(out))
 '''
 
 
-def probe_env(planted):
+def probe_env(planted, root=None):
     """The environment the probe saw, read from the file it prints through (stdout of a pass is dropped)."""
     tmp = tempfile.mkdtemp(prefix="ht_renv_")
     report = os.path.join(tmp, "report.json")
@@ -50,7 +50,7 @@ def probe_env(planted):
     saved = {k: os.environ.get(k) for k in planted}
     os.environ.update(planted)
     try:
-        status, _seconds, detail = ht.run_proof(proof)
+        status, _seconds, detail = ht.run_proof(proof, root=root)
     finally:
         for key, value in saved.items():
             if value is None:
@@ -78,7 +78,27 @@ def check(label, ok, detail=""):
             print("     " + str(detail))
 
 
+def same_path(a, b):
+    return a is not None and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def core_root_checks():
+    # The caller carries an inherited HARNESS_CORE_ROOT naming some other core; the runner overwrites it per proof.
+    core = tempfile.mkdtemp(prefix="ht_core_")
+    os.makedirs(os.path.join(core, ".claude", "tools"))
+    open(os.path.join(core, ".claude", "tools", "adaptation.py"), "w").close()
+    bare = tempfile.mkdtemp(prefix="ht_bare_")
+    inherited = {"HARNESS_CORE_ROOT": os.path.join(tempfile.gettempdir(), "ht_other_core")}
+    on, why = probe_env(inherited, root=core)
+    check("a proof run in a checkout with a core sees that checkout in HARNESS_CORE_ROOT",
+          on is not None and same_path(on["HARNESS_CORE_ROOT"], core), why or (on or {}).get("HARNESS_CORE_ROOT"))
+    on, why = probe_env(inherited, root=bare)
+    check("a root holding no core falls back to the runner's checkout in HARNESS_CORE_ROOT",
+          on is not None and same_path(on["HARNESS_CORE_ROOT"], ht.REPO_ROOT), why or (on or {}).get("HARNESS_CORE_ROOT"))
+
+
 def main():
+    core_root_checks()
     # The caller is a session: it carries an ambient CLAUDE_* name and no runner flag. The run is clean anyway.
     planted = {"CLAUDE_PLANTED_AMBIENT": "1", "CLAUDE_PROJECT_DIR": HERE}
     saved_flag = os.environ.pop("HARNESS_RUNNER_ENV", None)

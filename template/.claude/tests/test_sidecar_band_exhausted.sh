@@ -34,6 +34,9 @@ SC_TRANSPORT=go
 . "$LIB"
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
+# The seat resolver a real SC_ROOT carries; a band case with no plan to read would refuse.
+mkdir -p "$TMPD/hooks"
+printf 'print("go")\n' > "$TMPD/hooks/_session_transport.py"
 export SIDECAR_EXHAUSTED_DIR="$TMPD/markers"
 # A marker is confirmed against a live reading first (`exhausted_marker.py lift`). The planted cache holds a
 # rate-limit cooldown for each transport named here, so the confirmation fails closed without probing.

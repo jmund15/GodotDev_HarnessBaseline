@@ -335,6 +335,25 @@ def companion_checks():
             lens.AGENTS, lens.REGISTRIES = saved
 
 
+def fixes_checks():
+    text = ("# Plan check agents\n\n## Agent Templates\n\n### plc-whole-plan (whole plan)\n\nfixes: plan\n\n"
+            "```\nprompt\n```\n")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "plan_check_agents.md"
+        path.write_text(text, encoding="utf-8")
+        saved = lens.AGENTS, lens.REGISTRIES
+        lens.AGENTS, lens.REGISTRIES = Path(tmp), {"plan_check": (path.name, "plc-")}
+        try:
+            found = lens.parse("plan_check")[1][0]
+            check("fixes: plan header parses", found.fixes == "plan", found.fixes)
+            check("the fixes header is not part of the lens body", "fixes:" not in found.body(), found.body())
+            path.write_text(text.replace("fixes: plan\n", ""), encoding="utf-8")
+            found = lens.parse("plan_check")[1][0]
+            check("absent fixes header is empty", found.fixes == "", found.fixes)
+        finally:
+            lens.AGENTS, lens.REGISTRIES = saved
+
+
 def main():
     registry = "review"
     filename, prefix = "review_agents.md", ""
@@ -365,6 +384,7 @@ def main():
     tier_checks()
     prefix_checks()
     companion_checks()
+    fixes_checks()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         return 1

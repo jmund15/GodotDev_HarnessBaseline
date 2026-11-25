@@ -1,16 +1,20 @@
-"""subagent_compaction_rail: a Workflow subagent's compaction gets the Task-section rail; the parent and sidecar children get nothing from it.
+"""A Workflow subagent gets the compaction rail; only a parent start clears parent state.
 
-Payload shapes are cut from .claude/scratch/a2_probe/hook_log.jsonl (real PreCompact / SessionStart(compact) firings of a Workflow subagent:
-no agent_id, parent session_id and transcript_path). A subagent is told apart by an `auto` trigger beside a subagent transcript
-written after the parent's (`_hook_state.is_subagent_payload` owns the full test).
+For the SessionStart(compact) shapes, see logs/compaction_hooks.jsonl rows 746 and 753,
+matched to the parent and agent-ad1ad58c74f9002b7 transcripts of session b9a508a5.
+The PreCompact trigger heuristic still handles older payloads without an agent ID.
 """
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+
+from _hook_call import call
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 HOOK = HOOKS / "subagent_compaction_rail.py"
@@ -22,9 +26,8 @@ def _call(tokens, sidechain=False):
         "input_tokens": tokens, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}) + "\n"
 
 
-def run(payload, env_extra=None, raw=None, live_subagent=True, state=None, parent_tokens=1000):
-    """One hook run in `state` (a shared dir, so a PreCompact marker reaches the SessionStart after it) or a fresh one.
-    `live_subagent` plants a Workflow agent's transcript at 469k tokens, written just now, beside the parent's."""
+def run(payload, env_extra=None, raw=None, live_subagent=True, state=None, parent_tokens=1000, spawn=False):
+    """Plant a parent transcript and, when live_subagent is true, a newer Workflow agent at 469k tokens."""
     with tempfile.TemporaryDirectory() as fresh:
         tmp = state or fresh
         transcript = Path(tmp) / "t.jsonl"
@@ -37,17 +40,23 @@ def run(payload, env_extra=None, raw=None, live_subagent=True, state=None, paren
             os.utime(transcript, (earlier, earlier))
         elif agent.exists():
             agent.unlink()
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR_PROMPT_FILE"}
-        env["CC_CACHESTAT_DIR"] = tmp
+        env = {"HARNESS_HOOK_STATE_DIR": str(Path(tmp) / "hook_state")}
         env.update(env_extra or {})
         if isinstance(payload, dict):
             payload = dict(payload, transcript_path=str(transcript))
         data = raw if raw is not None else json.dumps(payload)
-        return subprocess.run([sys.executable, str(HOOK)], input=data, capture_output=True, text=True, env=env)
+        if spawn:
+            full_env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR_PROMPT_FILE"}
+            return subprocess.run([sys.executable, str(HOOK)], input=data, capture_output=True,
+                                  text=True, env=dict(full_env, **env))
+        code, out, err, _ = call(HOOK, data, env=env)
+        return subprocess.CompletedProcess([str(HOOK)], code, out, err)
 
 
 PRE = {"hook_event_name": "PreCompact", "session_id": SID, "trigger": "auto", "custom_instructions": "", "cwd": "."}
 START = {"hook_event_name": "SessionStart", "session_id": SID, "source": "compact", "model": "x", "cwd": "."}
+AGENT = {"agent_id": "ad1ad58c74f9002b7"}
+SUBAGENT_START = dict(START, **AGENT)
 
 
 class SubagentRailTest(unittest.TestCase):
@@ -78,20 +87,10 @@ class SubagentRailTest(unittest.TestCase):
             self.ok(r)
             self.assertEqual(r.stdout, "", f"live_subagent={live}")
 
-    def test_subagent_session_start_compact_prints_resume(self):
-        with tempfile.TemporaryDirectory() as state:
-            self.ok(run(PRE, state=state))
-            r = run(START, state=state)
-            self.ok(r)
-            self.assertIn("Remaining", r.stdout)
-            self.assertIn("state", r.stdout)
-            self.assertEqual(run(START, state=state).stdout, "", "one marker serves one SessionStart")
-
-    def test_parent_precompact_clears_marker(self):
-        with tempfile.TemporaryDirectory() as state:
-            self.ok(run(PRE, state=state))
-            self.ok(run(dict(PRE, trigger="manual"), state=state))
-            self.assertEqual(run(START, state=state).stdout, "")
+    def test_subagent_session_start_compact_prints_resume_without_precompact(self):
+        r = run(SUBAGENT_START, live_subagent=False, spawn=True)
+        self.ok(r)
+        self.assertIn("Remaining", r.stdout)
 
     def test_session_start_startup_silent(self):
         r = run(dict(START, source="startup"))
@@ -105,15 +104,86 @@ class SubagentRailTest(unittest.TestCase):
 
     def test_sidecar_child_silent(self):
         env = {"CLAUDE_CODE_SIDECAR_PROMPT_FILE": "/tmp/brief.md"}
-        for payload in (PRE, START):
+        for payload in (PRE, SUBAGENT_START):
             r = run(payload, env_extra=env)
             self.ok(r)
             self.assertEqual(r.stdout, "")
 
     def test_non_json_stdin_silent(self):
-        r = run(None, raw="not json")
+        r = run(None, raw="not json", spawn=True)
         self.ok(r)
         self.assertEqual(r.stdout, "")
+
+
+class ParentCompactionClearTest(unittest.TestCase):
+    """The shared session ID never authorizes a subagent to clear its parent's old context."""
+
+    MARKED = {"model_ladder_ready": True, "fired_since_compaction": {"skill_in_context:orchestration": True}}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.hooks_state = os.path.join(self.tmp, "hook_state")
+        os.makedirs(self.hooks_state)
+        self.state_file = os.path.join(self.hooks_state, SID[:8] + ".json")
+        with open(self.state_file, "w", encoding="utf-8") as fh:
+            json.dump(self.MARKED, fh)
+
+    def go(self, payload, env_extra=None, live_subagent=True):
+        env = dict(env_extra or {}, HARNESS_HOOK_STATE_DIR=self.hooks_state)
+        result = run(payload, env_extra=env, live_subagent=live_subagent, state=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def state(self):
+        with open(self.state_file, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_parent_session_start_compact_clears_the_markers_and_stamps_the_clear(self):
+        before = time.time()
+        self.go(START, live_subagent=False)
+        state = self.state()
+        self.assertNotIn("model_ladder_ready", state)
+        self.assertNotIn("fired_since_compaction", state)
+        self.assertGreaterEqual(state["compacted_at"], before)
+
+    def precompact_overlap(self, *precompacts):
+        for payload in precompacts:
+            self.go(payload)
+        self.assertEqual(self.state(), self.MARKED)
+
+    def test_overlap_parent_start_first_clears_only_at_parent_start(self):
+        self.precompact_overlap(dict(PRE, trigger="manual"), dict(PRE, **AGENT))
+        self.assertEqual(self.go(START).stdout, "", "the parent must not consume the subagent's resume")
+        cleared = self.state()
+        self.assertNotIn("model_ladder_ready", cleared)
+        self.assertIn("compacted_at", cleared)
+        self.assertIn("Remaining", self.go(SUBAGENT_START).stdout)
+        self.assertEqual(self.state(), cleared)
+
+    def test_overlap_subagent_start_first_preserves_the_working_parent(self):
+        self.precompact_overlap(dict(PRE, **AGENT), dict(PRE, trigger="manual"))
+        out = self.go(SUBAGENT_START).stdout
+        self.assertEqual(self.state(), self.MARKED, "a subagent must not clear the working parent")
+        self.assertIn("Remaining", out)
+        self.assertEqual(self.go(START).stdout, "")
+        self.assertNotIn("model_ladder_ready", self.state())
+
+    def test_a_sidecar_child_clears_its_own_state_silently(self):
+        env = {"CLAUDE_CODE_SIDECAR_PROMPT_FILE": "/tmp/brief.md"}
+        result = self.go(START, env_extra=env, live_subagent=False)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("model_ladder_ready", self.state())
+
+    def test_a_sidecar_childs_subagent_compaction_leaves_the_markers_and_prints_nothing(self):
+        env = {"CLAUDE_CODE_SIDECAR_PROMPT_FILE": "/tmp/brief.md"}
+        self.assertEqual(self.go(PRE, env_extra=env).stdout, "")
+        self.assertEqual(self.go(SUBAGENT_START, env_extra=env).stdout, "")
+        self.assertEqual(self.state(), self.MARKED)
+
+    def test_a_non_compact_session_start_clears_nothing(self):
+        self.go(dict(START, source="resume"), live_subagent=False)
+        self.assertEqual(self.state(), self.MARKED)
 
 
 class RailModuleTest(unittest.TestCase):

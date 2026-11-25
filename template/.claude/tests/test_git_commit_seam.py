@@ -42,6 +42,22 @@ def _run():
     cwd = "/work"
 
     # --- detection ---------------------------------------------------------------
+    found = gc.git_invocations('git -C "$S2_UNKNOWN_REPO" restore file.txt', cwd)
+    cases.append(('case_unresolved_target_is_conservative_and_borrows_no_evidence',
+                  len(found) == 1 and found[0].sub == 'restore' and found[0].rest == ['file.txt']
+                  and getattr(found[0], 'cwd', None) is None and not getattr(found[0], 'git_env', None)))
+
+    found = gc.git_invocations("cat <<'EOF'\ngit restore file.txt\nEOF\n"
+                               "printf '%s' 'git checkout -- file.txt'; git status", cwd)
+    cases.append(('case_heredoc_and_readonly_mentions_do_not_match',
+                  [call.sub for call in found] == ['status']))
+
+    found = gc.git_invocations("cd child; bash -c 'cd inner; git -C leaf -C .. status'; git status", cwd)
+    cases.append(('case_multiple_dash_C_and_cwd_drift',
+                  [os.path.normpath(call.cwd) for call in found] == [
+                      os.path.normpath(os.path.join(cwd, 'child', 'inner')),
+                      os.path.normpath(os.path.join(cwd, 'child'))]))
+
     found = gc.commit_invocations("cat > m <<'EOF'\ngit commit -am x\nEOF\ngit status", cwd)
     cases.append(("a `git commit` inside a heredoc body is not an invocation", found == []))
 
@@ -85,7 +101,7 @@ def _run():
     cases.append(("a quoted mention inside another git command is not a commit", found == []))
 
     # Live misfire 2026-09-14: a quoted `|` split `rg -c 'git stash|git checkout --|git restore'`
-    # into a `git checkout --` segment, and git_guardrails denied a read-only search.
+    # into a `git checkout --` segment, and the git guard denied a read-only search.
     cases.append(("a separator inside single quotes does not split a segment",
                   list(gc.segments("rg -c 'git stash|git checkout --|git restore' f.txt"))
                   == ["rg -c 'git stash|git checkout --|git restore' f.txt"]))
@@ -367,7 +383,7 @@ def _run():
 
     # --- memoized: one dispatch reads one repo state, so a repeated read-only query runs once ---------
     spawned = []
-    real_run = gc.subprocess.run
+    real_run = subprocess.run
 
     def counting_run(argv, *a, **k):
         spawned.append(list(argv))
@@ -375,11 +391,11 @@ def _run():
 
     def spawns(fn):
         spawned[:] = []
-        gc.subprocess.run = counting_run
+        subprocess.run = counting_run
         try:
             fn()
         finally:
-            gc.subprocess.run = real_run
+            subprocess.run = real_run
         return len(spawned)
 
     memoized = getattr(gc, "memoized", None)
@@ -412,6 +428,42 @@ def _run():
                 gc.run_git(["-c", "core.quotepath=off", "diff", "--name-only", "HEAD"], own)
                 gc.run_git(["-c", "core.quotepath=off", "diff", "--name-only", "HEAD"], own)
         cases.append(("memoized: a read-only subcommand after -c options is still cached", spawns(options_first) == 1))
+
+        def env_overlays():
+            with memoized():
+                a = gc.run_git(["rev-parse", "--git-dir"], own, {"GIT_DIR": os.path.join(foreign, ".git")})
+                b = gc.run_git(["rev-parse", "--git-dir"], own)
+                return a, b
+        a_top, b_top = env_overlays()
+        cases.append(("memoized: case_memo_key_separates_env_overlays -- another GIT_DIR never shares an answer",
+                      a_top is not None and b_top is not None
+                      and a_top.strip() != b_top.strip()))
+
+        linked = tempfile.mkdtemp(prefix="gcseam_linked_")
+        shutil.rmtree(linked)
+        git(own, "worktree", "add", "-q", "--detach", linked)
+        _WORKTREES.append((own, linked))
+        with memoized():
+            main_top = gc.run_git(["rev-parse", "--show-toplevel"], own)
+            linked_top = gc.run_git(["rev-parse", "--show-toplevel"], linked)
+        cases.append(("memoized: case_memo_key_separates_linked_worktrees",
+                      main_top and linked_top
+                      and os.path.normcase(os.path.realpath(main_top.strip())) != os.path.normcase(os.path.realpath(linked_top.strip()))))
+
+        cases.append(("memoized: case_memo_never_caches_a_non_read_only_subcommand",
+                      spawns(writes) == 2))
+
+        import inspect
+        import dangerous_shell_guard as _floor_git  # noqa: E402
+        cases.append(("memoized: case_commit_msg_entry_is_never_memoized",
+                      "memoized" not in inspect.getsource(_floor_git.commit_msg_check) and gc._memo is None))
+
+    soft_empty = gc.run_git(["config", "--get", "no.such.key"], own)
+    cases.append(("run_git: a nonzero exit is None", soft_empty is None))
+    cases.append(("run_git: an empty success is '' not None", gc.run_git(["tag", "-l", "no-such-tag"], own) == ""))
+    cases.append(("run_git: a missing cwd is None", gc.run_git(["rev-parse", "HEAD"], os.path.join(own, "nope")) is None))
+    cases.append(("run_git: a None value in the overlay unsets the variable",
+                  gc.run_git(["rev-parse", "--git-dir"], own, {"GIT_DIR": None}) == ".git\n"))
 
     mixed = make_repo()
     for name in ("b.txt", "c.txt"):

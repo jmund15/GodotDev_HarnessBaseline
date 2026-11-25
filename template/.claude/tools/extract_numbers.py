@@ -52,6 +52,9 @@ from triage import glob_regex  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
 from _hook_state import append_jsonl_rotating, replace_path  # noqa: E402
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+from _proof_runner import catalog as _catalog, evidence  # noqa: E402
+
 # ---- tokenizer: pass-1 digit rules and the pass-3 word-form pattern, unchanged -----------------
 DROP = [r"§\s*\d+[a-z]?(?:\.\d+)*", r"\b\d{4}-\d{2}-\d{2}(?:T[\d:]+Z?)?\b", r"\bv?\d+(?:\.\d+){1,3}\b",
         r"\b[0-9a-f]{7,40}\b", r"\b[A-Z][A-Za-z]{0,3}-?\d+[a-z]?\b", r"#\d+", r":\d+(?:-\d+)?\b",
@@ -761,6 +764,21 @@ def _case_exists(proof, text):
                for n in ast.walk(tree))
 
 
+def _reach_sources(repo, staged):
+    """The static reach a behavior proof's input key uses: the index, worktree or revision view, with the
+    declared edges and corpus of that view's policy (the runner's own tables when no revision is named)."""
+    view = _catalog.View.revision(str(repo), staged) if isinstance(staged, str) else _catalog.View.worktree(str(repo))
+    if staged:
+        view.text = lambda rel: _behavior_text(repo, rel, staged) or ""
+    if isinstance(staged, str):
+        policy = _catalog.Policy.read(view)
+    else:
+        runner = _proof_runner()
+        policy = _catalog.Policy(runner.EXCLUDED, runner.HEAVY, runner.SERIAL, runner.PROOF_BINDINGS,
+                                 runner.PROOF_CORPUS)
+    return evidence.Reach(view, policy.declared, policy.corpus)
+
+
 def _behavior_binding_state(repo, rows, staged=False, proof_paths=None):
     """Use the runner's admitted proof family and reached inputs; never execute a proof here."""
     if not any(r["class"] == "behavior" and any(proof_paths is None or p["path"] in proof_paths
@@ -773,9 +791,7 @@ def _behavior_binding_state(repo, rows, staged=False, proof_paths=None):
     inventory = [str(repo / p) for p in tracked if p] if rev else None
     admitted = {Path(p).relative_to(repo).as_posix() for p in runner.discover(
         str(repo / ".claude/tests"), paths=inventory)}
-    cache = runner._PassCache(str(repo), rev=rev)
-    if staged:
-        cache._text = lambda rel: _behavior_text(repo, rel, staged) or ""
+    reach = _reach_sources(repo, staged)
     groups, unresolved = {}, []
     for row in rows:
         if row["class"] != "behavior":
@@ -797,7 +813,7 @@ def _behavior_binding_state(repo, rows, staged=False, proof_paths=None):
     cases, dependencies = {}, {}
     for rel, bound in sorted(groups.items()):
         subset = sorted({json.dumps(row, sort_keys=True, ensure_ascii=False) for row, _ in bound})
-        reached = cache.reach(str(repo / rel))
+        reached = reach.reach(str(repo / rel))
         reached |= {impl["path"] for row, _ in bound for impl in row["implementation"]}
         # Entire config bytes and genuinely reached row files remain inputs. Merely registering a
         # dependency does not make the shared row file an input: fingerprint only this proof's subset.
@@ -904,20 +920,20 @@ def _observations(results):
 
 
 def _stored_observations():
+    """Every receipt the runner already recorded: its run log's rows and the pass store's rows, read through
+    the evidence module's read-only receipt reader (no key, no migration, no write)."""
     runner = _proof_runner()
     rows = []
-    store = Path(runner.pass_store_dir())
-    for path in [runner.runs_path()] + (sorted(store.glob("*.json")) if store.is_dir() else []):
-        try:
-            doc = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        rows += _observations(doc)
-        entries = doc.get("runs", []) if isinstance(doc, dict) and "runs" in doc else (
-            doc if isinstance(doc, list) else list(doc.values()) if isinstance(doc, dict) else [])
-        for entry in entries if isinstance(entries, list) else []:
-            rows += _observations(entry)
-    return rows
+    try:
+        doc = json.loads(Path(runner.runs_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = None
+    rows += _observations(doc)
+    entries = doc.get("runs", []) if isinstance(doc, dict) and "runs" in doc else (
+        doc if isinstance(doc, list) else list(doc.values()) if isinstance(doc, dict) else [])
+    for entry in entries if isinstance(entries, list) else []:
+        rows += _observations(entry)
+    return rows + evidence.stored_receipts(runner.pass_store_dir())
 
 
 def _outcome(statuses):

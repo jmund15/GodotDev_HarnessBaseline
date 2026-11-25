@@ -8,12 +8,15 @@ at once. Each case builds a throwaway repo carrying the real hooks, with a stub 
 
     python3 .claude/tests/test_merge_build_check.py
 """
+import atexit
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from _hook_call import _writable, copy_repo  # the tests folder is this script's folder, on sys.path first
 
 ROOT = Path(__file__).resolve().parents[2]
 FAILS = []
@@ -56,25 +59,18 @@ def commit(repo, name, text, msg):
     git(repo, "commit", "-q", "--no-verify", "-m", msg)
 
 
-def make_repo(tmp, live=False):
-    """A repo carrying the real hooks, a root csproj, a stub build and a base commit; returns (repo, env, log)."""
-    tmp = Path(tmp)
-    repo = tmp / "repo"
+def build_repo(repo):
+    """A repo carrying the real hooks, a root csproj and a base commit."""
+    repo = Path(repo)
     (repo / ".claude" / "hooks").mkdir(parents=True)
     shutil.copytree(ROOT / ".claude" / "githooks", repo / ".claude" / "githooks",
                     ignore=shutil.ignore_patterns("__pycache__", "commit-msg"))
     for hook in (repo / ".claude" / "githooks").iterdir():
         hook.chmod(0o755)  # git ignores a non-executable hook; a checkout from a Windows-authored tree is 644
-    for name in ("merge_build_check.py", "editor_live_build_guard.py"):
+    for name in ("merge_build_check.py", "editor_live_build_guard.py", "_git_run.py"):
         src = ROOT / ".claude" / "hooks" / name
         if src.is_file():
             shutil.copy2(src, repo / ".claude" / "hooks" / name)
-    stub = tmp / "stub_build.py"
-    stub.write_text(STUB, encoding="utf-8", newline="\n")
-    log = tmp / "build.log"
-    env = {"HARNESS_MERGE_BUILD_CMD": "%s %s" % (Path(sys.executable).as_posix(), stub.as_posix()),
-           "STUB_LOG": str(log), "STUB_RC": "0",
-           "HARNESS_LIVE_EDITOR_CHECKOUTS": str(repo) if live else ""}
     git(repo, "init", "-q", "-b", "main")
     for key, value in (("user.email", "t@t"), ("user.name", "t"), ("core.autocrlf", "false"),
                        ("core.hooksPath", ".claude/githooks")):
@@ -84,6 +80,28 @@ def make_repo(tmp, live=False):
     write(repo, "n.txt", "base\n")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "--no-verify", "-m", "base")
+    return repo
+
+
+_TEMPLATE = []
+
+
+def make_repo(tmp, live=False):
+    """Each case gets a copy of one built repository (`build_repo`), plus its own stub build and log; returns
+    (repo, env, log)."""
+    if not _TEMPLATE:
+        root = tempfile.mkdtemp(prefix="merge_build_template_")
+        atexit.register(shutil.rmtree, root, onerror=_writable)
+        _TEMPLATE.append(build_repo(Path(root) / "repo"))
+    tmp = Path(tmp)
+    repo = tmp / "repo"
+    copy_repo(_TEMPLATE[0], repo)
+    stub = tmp / "stub_build.py"
+    stub.write_text(STUB, encoding="utf-8", newline="\n")
+    log = tmp / "build.log"
+    env = {"HARNESS_MERGE_BUILD_CMD": "%s %s" % (Path(sys.executable).as_posix(), stub.as_posix()),
+           "STUB_LOG": str(log), "STUB_RC": "0",
+           "HARNESS_LIVE_EDITOR_CHECKOUTS": str(repo) if live else ""}
     return repo, env, log
 
 

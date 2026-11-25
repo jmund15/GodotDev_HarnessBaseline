@@ -29,9 +29,9 @@ agent that decides one is unwanted names its pid to reap.py.
 EMISSION. Printing the same content every prompt after the model has already decided what to do
 about it burns context for no new information. A key (own pids with their STALE flag, each dead
 row's pid and session) is stored per session via
-`_hook_state`; the hook is silent when the key repeats, and re-arms once after a compaction
-(`transcript_backup.py` calls `_hook_state.clear_compaction_keys`), since a compacted session lost
-the earlier delivery from its context.
+`_hook_state`; the hook is silent when the key repeats. At the parent's SessionStart(compact),
+`subagent_compaction_rail.py` calls `_hook_state.clear_compaction_keys` to re-arm the census: the
+compacted context lost the earlier delivery.
 
 Rule home: CLAUDE.core.md §Shell Discipline (**Watching jobs**); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
 lib/sidecar_common.sh `sc_run_watched` and keeps running, so a stall is a `STALLED` wake from the

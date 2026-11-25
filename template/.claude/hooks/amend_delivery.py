@@ -2,8 +2,10 @@
 
 A parent corrects a running author job by writing `<brief>.amend.md` (`orchestration` reference `integration.md`).
 Each engine ends an author job's prompt with the line `amend_path_in` parses, naming that file; the line is the
-job's key on every engine. A sidecar child is a `claude` process, so payload `transcript_path` is its own
-transcript. A Workflow or Agent-tool child (payload `agent_id`) shares its parent's session and transcript path; its
+job's key wherever a Claude transcript holds the prompt. A sidecar child is a `claude` process, so payload
+`transcript_path` is its own transcript. A seat with no Claude transcript (agy through `hooks/agy_hook_bridge.py`)
+is keyed by the brief its launcher exports as CLAUDE_CODE_SIDECAR_PROMPT_FILE, the same `<brief>.amend.md` the line
+names. A Workflow or Agent-tool child (payload `agent_id`) shares its parent's session and transcript path; its
 own transcript is `<session>/subagents/**/agent-<agent_id>.jsonl`. The key is read from the job's first prompt
 record, last match, so a brief quoting another job's line keeps its own. A Workflow agent's transcript may open with
 a relay of the session's user request (`RELAY_HEAD`); that record is skipped and the computed task after it is the
@@ -111,7 +113,11 @@ def _job_transcript(payload):
 
 
 def job_amend_path(payload):
-    """The amendment file the job's own first prompt names, absolute, else None."""
+    """The amendment file the job's own first prompt names, absolute, else None; a transcript-less seat's comes from
+    its exported brief (module docstring)."""
+    if not payload.get("transcript_path") and not payload.get("agent_id"):
+        brief = os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE")
+        return brief + ".amend.md" if brief else None
     transcript = _job_transcript(payload)
     if not transcript or not os.path.isfile(transcript):
         return None

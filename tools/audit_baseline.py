@@ -126,14 +126,15 @@ CORE_DOMAIN_ALLOWLIST = {
     ".claude/commands/autolearn.md",
     ".claude/commands/reindex_search.md",
     # Universal hooks whose Godot resource suffixes are inert where no such files exist:
-    # git_guardrails refuses a one-sided checkout of .tscn/.tres during a merge.
-    ".claude/hooks/git_guardrails.py",
+    # the floor's git check refuses a one-sided checkout of .tscn/.tres during a merge.
+    ".claude/hooks/dangerous_shell_guard.py",
     # reap.py recognizes MCP and language-server processes by executable name (dotnet, csharp-ls).
     ".claude/tools/reap.py",
-    ".claude/tests/test_git_guardrails_advice.py",
-    # Git submodule handling is universal; the `.import` regenerable-cache suffix is inert where no such files exist.
-    ".claude/hooks/_regenerable_clone.py",
-    ".claude/tests/test_regenerable_clone.py",
+    # Git submodule handling is universal; the `.import` regenerated-output suffix and the import temp pattern are
+    # inert where no such files exist.
+    ".claude/hooks/_delete_rule.py",
+    ".claude/tests/floor/test_floor_retire.py",
+    ".claude/tests/floor/test_floor_ported.md",
     # Fixtures: scene/resource paths prove change classification, and dotnet rows prove runtime-test routing.
     ".claude/tests/test_close_predicates.py",
     ".claude/tests/test_run_call_router.py",

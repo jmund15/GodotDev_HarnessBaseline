@@ -168,65 +168,16 @@ def _load_publish():
 
 STUB_GEN_MANIFEST = b"#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
 STUB_AUDIT_BASELINE = b"#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
-STUB_HARNESS_TESTS = b"""#!/usr/bin/env python3
-import fnmatch
-import os
-import sys
-
-_PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "*.sh", "*.ps1")
+STUB_HARNESS_TESTS = b"#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
 
 
-def discover(tests_dir):
-    if not os.path.isdir(tests_dir):
-        return []
-    return [
-        os.path.join(tests_dir, name)
-        for name in sorted(os.listdir(tests_dir))
-        if os.path.isfile(os.path.join(tests_dir, name))
-        and any(fnmatch.fnmatch(name, pattern) for pattern in _PATTERNS)
-    ]
-
-
-if __name__ == "__main__":
-    sys.exit(0)
-"""
-# A discovery function that mirrors the real gotcha this repo guards against: it filters
-# out any path with a `.claude` segment, so it silently returns zero proofs when run from
-# inside a nested `.claude/.cache/baseline-worktrees/<id>/` worktree.
-STUB_HARNESS_TESTS_VOIDED_DISCOVERY = b"""#!/usr/bin/env python3
-import fnmatch
-import os
-import sys
-
-_PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "*.sh", "*.ps1")
-
-
-def discover(tests_dir):
-    if ".claude" in os.path.abspath(tests_dir).replace(os.sep, "/").split("/"):
-        return []
-    if not os.path.isdir(tests_dir):
-        return []
-    return [
-        os.path.join(tests_dir, name)
-        for name in sorted(os.listdir(tests_dir))
-        if os.path.isfile(os.path.join(tests_dir, name))
-        and any(fnmatch.fnmatch(name, pattern) for pattern in _PATTERNS)
-    ]
-
-
-if __name__ == "__main__":
-    sys.exit(0)
-"""
-
-
-def _write_baseline_stubs(work: Path, *, voided_discovery: bool = False) -> None:
+def _write_baseline_stubs(work: Path) -> None:
     """Seed a baseline `work` checkout with the minimal in-tree tools step 5 shells out
     to, so a fresh worktree materialized at its pinned commit can run `validate` end to
     end without a real baseline checkout."""
     _write(work / "tools" / "gen_manifest.py", STUB_GEN_MANIFEST)
     _write(work / "tools" / "audit_baseline.py", STUB_AUDIT_BASELINE)
-    harness = STUB_HARNESS_TESTS_VOIDED_DISCOVERY if voided_discovery else STUB_HARNESS_TESTS
-    _write(work / "template" / ".claude" / "scripts" / "harness_tests.py", harness)
+    _write(work / "template" / ".claude" / "scripts" / "harness_tests.py", STUB_HARNESS_TESTS)
 
 
 @contextlib.contextmanager
@@ -535,13 +486,13 @@ def _seed_commit_fixture(path: Path, rel: str, baseline_content: bytes, local_co
     return remote, baseline_commit, root
 
 
-def _seed_bare_baseline(path: Path, *, voided_discovery: bool = False) -> tuple[Path, str]:
+def _seed_bare_baseline(path: Path) -> tuple[Path, str]:
     """A pushed baseline repo with tool stubs and an empty manifest, for `--from-worktree`
     fixtures that need no pre-existing lock rows. Returns (remote, baseline_sha)."""
     remote = _remote(path)
     work = path / "baseline-work"
     _init_repo(work)
-    _write_baseline_stubs(work, voided_discovery=voided_discovery)
+    _write_baseline_stubs(work)
     manifest = {"version": 2, "files": []}
     _write(work / "baseline.manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
     baseline_commit = _commit(work, "seed")
@@ -1948,27 +1899,37 @@ def test_publish_strips_memory_provenance_keys_from_the_published_file() -> None
 
 
 def test_battery_count_mismatch_is_detected() -> None:
+    publish = _load_publish()
     with _fixture() as path:
-        remote, baseline_commit = _seed_bare_baseline(path, voided_discovery=True)
-        root = _seed_worktree_root(path, remote, baseline_commit)
-        cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-battery")
-        _classify_rows(root, [".claude/tests/test_a.py", ".claude/tests/test_b.py"])
+        worktree = path / ".claude" / ".cache" / "baseline-publish" / "s5-battery"
+        template = worktree / "template"
+        tests = template / ".claude" / "tests"
+        _init_repo(worktree)
+        _write(template / ".claude" / "scripts" / "harness_tests.py", STUB_HARNESS_TESTS)
+        _write(tests / "test_a.py", b"import sys\nsys.exit(0)\n")
+        _commit(worktree, "seed")
 
-        _write(worktree / "template" / ".claude" / "tests" / "test_a.py", b"import sys\nsys.exit(0)\n")
-        _write(worktree / "template" / ".claude" / "tests" / "test_b.py", b"import sys\nsys.exit(0)\n")
-        _commit(worktree, "add proofs")
-        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        # Discovery must not void inside the nested `.claude/.cache/` checkout a publish builds in.
+        assert publish.catalog.View.worktree(str(template)).discover() == [".claude/tests/test_a.py"]
+        publish._battery_counts_match(worktree)
 
-        publish = _load_publish()
-        env = _install_fake_gh(path)
-        with _patched_env(env):
-            try:
-                publish.run(root, {"kind": "worktree", "repo": str(worktree), "commit": commit},
-                            None, [], True, True, None)
-            except publish.PublishError as exc:
-                assert "battery discovery mismatch" in str(exc), str(exc)
-            else:
-                raise AssertionError("expected the voided-discovery battery to be caught")
+        _write(tests / "test_stray.py", b"import sys\nsys.exit(0)\n")
+        try:
+            publish._battery_counts_match(worktree)
+        except publish.PublishError as exc:
+            assert "battery discovery mismatch" in str(exc), str(exc)
+            assert "worktree-only ['.claude/tests/test_stray.py']" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected an untracked proof on disk to be caught")
+
+        (tests / "test_stray.py").unlink()
+        (tests / "test_a.py").unlink()
+        try:
+            publish._battery_counts_match(worktree)
+        except publish.PublishError as exc:
+            assert "index-only ['.claude/tests/test_a.py']" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected a tracked proof missing on disk to be caught")
 
 
 def test_diff_records_parses_copy_as_addition_only() -> None:
@@ -2358,6 +2319,41 @@ def test_worktree_source_records_a_layered_new_row() -> None:
         assert entries == {fresh: "coding"}, entries
 
 
+def test_worktree_source_takes_a_new_row_layer_its_own_layer_entries_record() -> None:
+    # A file only the baseline worktree has can get no consumer lock row (`classify` needs a consumer
+    # path), so the worktree's own `tools/layer_entries.json` at the source commit is its layer.
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _worktree_layer_fixture(path, None)
+        _write(root / "tools" / "layer_entries.json",
+               json.dumps({"version": 1, "entries": {fresh: "godot"}}).encode("utf-8"))
+        source = {**source, "commit": _commit(root, "worktree layer entry")}
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(path / "calls.json")}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "godot"}, entries
+
+
+def test_publication_commit_carries_a_message_past_the_command_line_limit() -> None:
+    # A publication's body lists every row with its `Why:` line; a large one passed with `-m` overran
+    # the OS command-line limit (WinError 206 on Windows, one argument's 128 KiB cap on Linux).
+    with _fixture() as path:
+        repo = path / "publication"
+        _init_repo(repo)
+        _write(repo / "seed.txt", b"seed\n")
+        _commit(repo, "seed")
+        _write(repo / "template" / "row.md", b"row\n")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+        body = "\n".join("- .claude/tools/row_%05d.py: why %s" % (i, "x" * 60) for i in range(3000))
+        publish = _load_publish()
+        publish._commit_publication(repo, "feat(baseline): publish big", body)
+        logged = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%B"],
+                                check=True, capture_output=True).stdout.decode("utf-8")
+        assert logged.startswith("feat(baseline): publish big\n\n"), logged[:80]
+        assert logged.rstrip("\n").endswith(body.splitlines()[-1]), logged[-120:]
+
+
 def test_validate_leaves_the_battery_to_ci_unless_the_flag_asks() -> None:
     publish = _load_publish()
     with _fixture() as path:
@@ -2456,11 +2452,12 @@ def test_validate_shares_slots_with_battery_and_times_each_task() -> None:
         spans: list[tuple[str, float, float]] = []
         lock = threading.Lock()
         battery_up, check_up = threading.Event(), threading.Event()
-        real_guard = publish.runner._slot_guard
-        active, peak = 0, 0
+        real_guard = publish.machine_slots.guard
+        active, peak, asked = 0, 0, []
 
         @contextlib.contextmanager
         def check_guard(*args, **kwargs):
+            asked.append(kwargs.get("notice"))
             assert battery_up.wait(10), "battery coordinator did not start its proof"
             with real_guard(*args, **kwargs) as held:
                 yield held
@@ -2487,16 +2484,17 @@ def test_validate_shares_slots_with_battery_and_times_each_task() -> None:
 
         publish._run_python_args = fake_run
         publish._battery_counts_match = lambda worktree: None
-        publish.runner._slot_guard = check_guard
+        publish.machine_slots.guard = check_guard
         pool = str(path / "slots")
         try:
             with _patched_env({"HARNESS_MACHINE_SLOTS": "2", "HARNESS_SLOT_BUDGET": "",
                                "HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_ROOT": pool}):
                 evidence = publish._validate(worktree, [_hook_record()], True)
         finally:
-            publish.runner._slot_guard = real_guard
+            publish.machine_slots.guard = real_guard
         labels = [label for label, _, _ in spans]
         assert "windows=" in evidence and "checks=" in evidence and "battery=" in evidence, evidence
+        assert asked and all(asked), ("publish admits each check through the pool with its queue notice", asked)
         for label in ("harness_tests.py", "gen_manifest.py --check", "audit_baseline.py --strict", "tests/test_a.py"):
             assert label in labels, labels
             assert f"{label}=" in evidence, (label, evidence)
@@ -2859,142 +2857,36 @@ RED_PREVIEW = {"status": "red", "log": "linux.log", "lanes": [
      "failed_proofs": ["tests/test_sync_guard.py"], "counts": None},
     {"lane": "template", "status": "green", "seconds": 900, "failed_steps": [], "failed_proofs": [], "counts": None},
 ]}
-GREEN_PREVIEW = {"status": "green", "log": "linux.log", "lanes": [
-    {"lane": "pure", "status": "green", "seconds": 40, "failed_steps": [], "failed_proofs": [],
-     "counts": {"run": 12, "pass": 11, "fail": 0, "cannot_run": 1}},
-]}
 
 
-def _stub_linux_preview(publish, rc: int, result: dict):
-    """Replace the WSL preview's verdict with a recorded one; returns the restore callable."""
-    module = publish.linux_preview
-    saved = module.preview
+def test_the_push_runs_no_local_linux_preview_the_prs_ci_is_the_linux_check() -> None:
+    # The PR's CI runs every Linux lane's whole battery after the push, and a red required check blocks
+    # the merge. A local WSL run before the push was measured slower than CI each time it was tried
+    # (sync_baseline Publish; 0aad5783c, 18c0fa1a8, and a 441-row publish's 54+ min run).
+    rel = ".claude/tools/fixture.py"
+    sys.path.insert(0, str(PUBLISH.parent))
+    import baseline_linux_preview as preview_module
+    saved = preview_module.preview
+    calls = []
 
     def recorded(worktree, only=None, paths=None):
-        module.seen = {"only": only, "paths": paths}
-        return rc, result
+        calls.append(paths)
+        return 1, RED_PREVIEW
 
-    module.preview = recorded
-    return lambda: setattr(module, "preview", saved)
-
-
-def test_linux_lanes_red_refuses_and_names_each_failed_proof() -> None:
-    publish = _load_publish()
-    restore = _stub_linux_preview(publish, 1, RED_PREVIEW)
-    try:
-        with _fixture() as path:
-            try:
-                publish._linux_lanes(path)
-            except publish.PublishError as exc:
-                message = str(exc)
-            else:
-                raise AssertionError("a red Linux lane must refuse the push")
-    finally:
-        restore()
-    assert "tests/test_sync_guard.py" in message and "pure" in message, message
-
-
-def test_linux_lanes_prove_only_the_paths_the_publish_commit_changes() -> None:
-    publish = _load_publish()
-    restore = _stub_linux_preview(publish, 0, GREEN_PREVIEW)
-    try:
-        with _fixture() as path:
-            _git(path, "init", "-q", "-b", "main")
-            (path / "base.txt").write_text("1\n", encoding="utf-8")
-            _git(path, "add", "-A")
-            _git(path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
-            (path / "template").mkdir()
-            (path / "template" / "a.py").write_text("1\n", encoding="utf-8")
-            (path / "template" / "b.py").write_text("2\n", encoding="utf-8")
-            _git(path, "add", "-A")
-            _git(path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "publish")
-            publish._linux_lanes(path)
-            seen = publish.linux_preview.seen
-    finally:
-        restore()
-    assert sorted(seen["paths"]) == ["template/a.py", "template/b.py"], seen
-
-
-def test_linux_lanes_green_returns_evidence_with_each_lane_count() -> None:
-    publish = _load_publish()
-    restore = _stub_linux_preview(publish, 0, GREEN_PREVIEW)
-    try:
-        with _fixture() as path:
-            evidence = publish._linux_lanes(path)
-    finally:
-        restore()
-    assert evidence.startswith("linux lanes: green"), evidence
-    assert "pure" in evidence and "1 not run" in evidence, evidence
-
-
-def test_linux_lanes_without_wsl_skips_with_its_reason() -> None:
-    publish = _load_publish()
-    restore = _stub_linux_preview(publish, 4, {"status": "unavailable", "reason": "no WSL (wsl.exe not found)",
-                                                "lanes": []})
-    try:
-        with _fixture() as path:
-            evidence = publish._linux_lanes(path)
-    finally:
-        restore()
-    assert evidence.startswith("linux lanes: skipped") and "no WSL" in evidence, evidence
-
-
-def test_linux_lanes_a_preview_with_no_verdict_refuses_the_push() -> None:
-    publish = _load_publish()
-    restore = _stub_linux_preview(publish, 3, {"status": "incomplete", "lanes": [], "log": "linux.log"})
-    try:
-        with _fixture() as path:
-            try:
-                publish._linux_lanes(path)
-            except publish.PublishError:
-                refused = True
-            else:
-                refused = False
-    finally:
-        restore()
-    assert refused, "a preview that gave no verdict must refuse the push, not pass as skipped"
-
-
-def test_linux_red_stops_the_push_and_no_publish_branch_reaches_the_remote() -> None:
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
         source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
         publish = _load_publish()
         env = _install_fake_gh(path)
-        restore = _stub_linux_preview(publish, 1, RED_PREVIEW)
+        preview_module.preview = recorded
         try:
             with _patched_env(env):
-                try:
-                    publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
-                                [rel], [], False, True, None)
-                except publish.PublishError as exc:
-                    message = str(exc)
-                else:
-                    raise AssertionError("a red Linux lane must stop the publish")
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                            [rel], [], False, True, None)
         finally:
-            restore()
+            preview_module.preview = saved
         refs = _git(remote, "for-each-ref", "--format=%(refname)", "refs/heads/").decode().split()
-    assert "tests/test_sync_guard.py" in message, message
-    assert refs == ["refs/heads/main"], refs
-
-
-def test_linux_green_pushes_the_publish_branch_and_records_its_evidence() -> None:
-    rel = ".claude/tools/fixture.py"
-    with _fixture() as path:
-        remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
-        publish = _load_publish()
-        env = _install_fake_gh(path)
-        restore = _stub_linux_preview(publish, 0, GREEN_PREVIEW)
-        try:
-            with _patched_env(env):
-                journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
-                                      [rel], [], False, True, None)
-        finally:
-            restore()
-        refs = _git(remote, "for-each-ref", "--format=%(refname)", "refs/heads/").decode().split()
-    assert _field(journal, "linux_lanes").startswith("linux lanes: green"), journal.get("linux_lanes")
+    assert calls == [], calls
     assert any(ref.startswith("refs/heads/publish/") for ref in refs), refs
 
 
@@ -3022,13 +2914,7 @@ def main(part: int = 1) -> int:
         test_a_finished_publish_removes_its_worktree_and_a_dry_run_keeps_it,
         test_sweep_removes_terminal_and_journalless_worktrees_and_keeps_a_live_one,
         test_abandon_releases_the_worktree_and_resume_refuses_the_journal,
-        test_linux_lanes_red_refuses_and_names_each_failed_proof,
-        test_linux_lanes_prove_only_the_paths_the_publish_commit_changes,
-        test_linux_lanes_green_returns_evidence_with_each_lane_count,
-        test_linux_lanes_without_wsl_skips_with_its_reason,
-        test_linux_lanes_a_preview_with_no_verdict_refuses_the_push,
-        test_linux_red_stops_the_push_and_no_publish_branch_reaches_the_remote,
-        test_linux_green_pushes_the_publish_branch_and_records_its_evidence,
+        test_the_push_runs_no_local_linux_preview_the_prs_ci_is_the_linux_check,
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,
@@ -3044,6 +2930,8 @@ def main(part: int = 1) -> int:
         test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
         test_worktree_source_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
         test_worktree_source_records_a_layered_new_row,
+        test_worktree_source_takes_a_new_row_layer_its_own_layer_entries_record,
+        test_publication_commit_carries_a_message_past_the_command_line_limit,
         test_local_merge_refuses_remote_url,
         test_no_ci_refuses_when_workflow_exists,
         test_step_failures_1_through_5_leave_fixture_main_unchanged,

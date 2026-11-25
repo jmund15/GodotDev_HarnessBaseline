@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import fire_once_since_compaction, read_json_salvage, update_json_locked
 from _command_text import executable_text
 from _win_path import native_path
+import _git_run
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
 from sidecar_argv import executable_index, literal_launcher_body, shell_segments_with_comments
@@ -98,14 +99,13 @@ def gate_roots(repo):
     repo = native_path(repo)
     roots = [repo]
     try:
-        listing = subprocess.run(['git', '-C', repo, 'worktree', 'list', '--porcelain'],
-                                 capture_output=True, text=True, timeout=5)
+        listing = _git_run.run(['-C', repo, 'worktree', 'list', '--porcelain'], timeout=5)
     except (OSError, subprocess.SubprocessError):
         return roots
     if listing.returncode:
         return roots
     here = os.path.normcase(os.path.abspath(repo))
-    for line in listing.stdout.splitlines():
+    for line in listing.text.splitlines():
         if line.startswith('worktree ') and os.path.normcase(os.path.abspath(native_path(line[9:]))) != here:
             roots.append(line[9:])
     return roots
@@ -272,8 +272,7 @@ def gate_inputs_changed_since(repo, since, head):
     red's content is no repair. An unknown or unreadable `head` proves nothing and counts as unchanged, which keeps
     the flake deny.
     """
-    if not head or subprocess.run(['git', '-C', repo, 'cat-file', '-e', head + '^{commit}'],
-                                  capture_output=True, timeout=10).returncode:
+    if not head or _git_run.run(['-C', repo, 'cat-file', '-e', head + '^{commit}'], timeout=10).returncode:
         return False
     for path in gate_run_files(repo).values():
         try:
@@ -284,11 +283,9 @@ def gate_inputs_changed_since(repo, since, head):
         rel = os.path.relpath(path, repo).replace(os.sep, '/')
         # Blob ids, not raw bytes: git hashes the working file through the same filters `add` applies, so a line-ending
         # setting alone reads as equal content.
-        was = subprocess.run(['git', '-C', repo, 'rev-parse', '-q', '--verify', '%s:%s' % (head, rel)],
-                             capture_output=True, text=True, timeout=10)
-        now = subprocess.run(['git', '-C', repo, 'hash-object', '--', rel],
-                             capture_output=True, text=True, timeout=10)
-        if was.returncode or now.returncode or was.stdout.strip() != now.stdout.strip():
+        was = _git_run.run(['-C', repo, 'rev-parse', '-q', '--verify', '%s:%s' % (head, rel)], timeout=10)
+        now = _git_run.run(['-C', repo, 'hash-object', '--', rel], timeout=10)
+        if was.returncode or now.returncode or was.text.strip() != now.text.strip():
             return True
     return False
 

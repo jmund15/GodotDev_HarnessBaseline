@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Read a transport's capacity, cache first, and validate the shared result schema.
 
+The reading cache and its rate-limit cooldown are one store per account, machine-wide
+(`~/.claude/provider_capacity.json`, resolved from the caller's home at call time, with
+`PROVIDER_CAPACITY_CACHE` overriding it): a plan's limit is per account, so every checkout and session
+shares one reading and excludes the others from probing.
+
 `reading()` returns the cached reading when it is no older than `CACHE_TTL_SECONDS` and none of its
 quota windows has passed its `resetsAt` (its numbers no longer describe that window, so an
 `exhausted` reading never outlives its reset). Only a miss probes live, and only one process per
@@ -9,9 +14,14 @@ waited on it re-reads the cache first, so a fan-out of launchers costs one usage
 that cannot take the lock within `LIVE_BUDGET_SECONDS` falls back as a failed live read does.
 
 A usage endpoint that answers HTTP 429 is rate limiting the reader, and a second read during that
-window only extends the lockout, so a `rate-limit` failure puts its transport in a cooldown: no
-probe starts until `_rateLimitedUntil[transport]`, and until then the last reading is served as a
-cache fallback up to `STALE_FALLBACK_SECONDS` old. A read that answers clears the cooldown.
+window only extends the lockout, so `http_failure(429)` is status `rate-limited` and puts its
+transport in a cooldown: no probe starts until `_rateLimitedUntil[transport]`. A read that answers
+clears the cooldown.
+
+A rate limit or an unreadable meter is unknown, never exhaustion: the last good reading is served
+while each of its windows has not reset (`_fallback_cache`), and with none the failure is returned as
+it is so every route can launch with a warning. Every live read's outcome is appended beside the
+usage samples (`usage_samples.record_read`), since a failed read writes no sample.
 
 A cached `exhausted` or `dispatch-floor` reading (`BLOCKING`) is the one that stops work and the one an
 owner's manual quota change makes false, so `reading()` confirms it live like a miss, and never serves
@@ -45,7 +55,6 @@ CACHE_TTL_SECONDS = 600
 # Measured 2026-09-29 against the Anthropic usage endpoint: two reads a few seconds apart succeed,
 # then it answers HTTP 429 with `Retry-After: 0` and keeps answering 429 for about seven minutes.
 RATE_LIMIT_COOLDOWN_SECONDS = 420
-STALE_FALLBACK_SECONDS = CACHE_TTL_SECONDS + RATE_LIMIT_COOLDOWN_SECONDS
 # Reserved top-level cache key: {transport: epoch}, never a reading.
 RATE_LIMIT_KEY = "_rateLimitedUntil"
 LIVE_TRIES = 3
@@ -54,14 +63,20 @@ RETRY_SLEEP_SECONDS = 2.0
 LIVE_BUDGET_SECONDS = 40.0
 STATUSES = {
     "available", "exhausted", "dispatch-floor", "insufficient", "auth-error",
-    "network-error", "malformed", "unknown", "unsupported",
+    "network-error", "malformed", "rate-limited", "unknown", "unsupported",
 }
 SOURCE_KINDS = {"live", "cache", "unsupported"}
 CACHEABLE = {"available", "exhausted", "dispatch-floor", "insufficient", "unknown"}
 # A cached reading in one of these refuses work, so a reader confirms it live before acting on it: the
 # plan may have been reset or topped up since it was read, and nothing in the cache says so.
 BLOCKING = {"exhausted", "dispatch-floor"}
-FAILURE_STATUSES = {"auth-error", "network-error", "malformed"}
+# Failure-shaped statuses: a typed error and no quota or balance. `rate-limited` is its own status so no
+# consumer can read a meter refusal as an allowance fact, but it validates like a failure.
+FAILURE_STATUSES = {"auth-error", "network-error", "malformed", "rate-limited"}
+# A meter that could not be read is not an exhausted plan: every route launches on these with a warning
+# and refuses only on a reading that shows no room (`exhausted`, `dispatch-floor`, `insufficient`,
+# `auth-error`) or a reader that itself fails.
+UNREADABLE = frozenset({"rate-limited", "network-error", "malformed", "unknown"})
 # The failure kinds a cache fallback may carry: the live probe's fault, or the endpoint's own
 # rate limit.
 FALLBACK_KINDS = ("network", "server", "rate-limit")
@@ -71,18 +86,26 @@ class CapacityError(RuntimeError):
     pass
 
 
-def http_failure(code, endpoint):
+def http_failure(code, endpoint, retry_after=None):
     """The (status, error) every HTTP capacity probe returns for an HTTP error from `endpoint`.
 
-    A 429 is the endpoint rate limiting the reader, so `reading()` starts the transport's cooldown
-    instead of re-probing into it; one mapping keeps that true for every plan.
+    A 429 is the endpoint rate limiting the reader, so it is status `rate-limited` and `reading()`
+    starts the transport's cooldown instead of re-probing into it; one mapping keeps that true for
+    every plan. `httpStatus` and `retryAfter` ride the error so the read's recorded outcome names them.
     """
     if code in (401, 403):
-        return "auth-error", {"kind": "auth", "message": "%s rejected the credential (HTTP %d)" % (endpoint, code)}
-    if code == 429:
-        return "network-error", {"kind": "rate-limit", "message": "%s returned HTTP 429 (rate limited)" % endpoint}
-    return "network-error", {"kind": "server" if code >= 500 else "network",
-                             "message": "%s returned HTTP %d" % (endpoint, code)}
+        status, error = "auth-error", {"kind": "auth",
+                                       "message": "%s rejected the credential (HTTP %d)" % (endpoint, code)}
+    elif code == 429:
+        status, error = "rate-limited", {"kind": "rate-limit",
+                                         "message": "%s returned HTTP 429 (rate limited)" % endpoint}
+    else:
+        status, error = "network-error", {"kind": "server" if code >= 500 else "network",
+                                          "message": "%s returned HTTP %d" % (endpoint, code)}
+    error["httpStatus"] = code
+    if retry_after is not None:
+        error["retryAfter"] = retry_after
+    return status, error
 
 
 def _utc(epoch):
@@ -231,8 +254,10 @@ def validate_reading(value, transport, cost_model):
 
 
 def _cache_path():
+    """The one capacity store for this machine's account: `~/.claude/provider_capacity.json`, resolved
+    from the home at call time (a proof plants its own), with `PROVIDER_CAPACITY_CACHE` overriding."""
     override = os.environ.get("PROVIDER_CAPACITY_CACHE")
-    return override or str(ROOT / ".claude" / ".cache" / "provider_capacity.json")
+    return override or str(Path(os.path.expanduser("~")) / ".claude" / "provider_capacity.json")
 
 
 def _load_hook_state():
@@ -300,11 +325,31 @@ def _fresh(path, transport, cost_model, now):
 
 
 def _fallback_cache(path, transport, cost_model, now):
-    """The stale reading a failed probe or a cooldown may serve, never a blocking one."""
-    entry = _read_cache(path, transport, cost_model, now, STALE_FALLBACK_SECONDS)
-    if entry is not None and entry.get("status") in BLOCKING:
+    """The last good reading a failed probe or a cooldown may serve, never a blocking one.
+
+    A window's used share and reset describe one allowance period; once that reset has passed the
+    share belongs to a period that no longer exists, so the window is dropped rather than served
+    stale. The remaining windows still place a job (a weekly reading outlives a five-hour one across
+    its reset), and a reading whose routing window has reset cannot place a job at all."""
+    entry = _read_cache(path, transport, cost_model, now, max_age=float("inf"))
+    if entry is None or entry.get("status") in BLOCKING:
         return None
-    return entry
+    quota = entry.get("quota")
+    if not isinstance(quota, dict):
+        return entry
+    windows = [w for w in (quota.get("windows") or []) if isinstance(w, dict)]
+    if not windows:
+        return None
+    kept = [w for w in windows
+            if _epoch(w.get("resetsAt")) is None or _epoch(w.get("resetsAt")) > now]
+    routing = quota.get("routingWindow")
+    if not kept or (routing is not None and routing not in {w.get("name") for w in kept}):
+        return None
+    if len(kept) == len(windows):
+        return entry
+    served = copy.deepcopy(entry)
+    served["quota"]["windows"] = kept
+    return served
 
 
 def _live_lock_path(transport, cache_path):
@@ -539,20 +584,44 @@ def _cache_fallback(cached, kind, now, message=None):
     fallback["sourceKind"] = "cache"
     observed = _epoch(cached.get("observedAt"))
     age = int(max(0.0, now - observed)) if observed is not None else 0
+    detail = message or "live capacity probe failed"
+    if kind != "rate-limit":
+        detail = "%s; reading is %d s old" % (detail, age)
     fallback["liveFailure"] = {
         "kind": kind if kind in FALLBACK_KINDS else "network",
-        "message": "%s; reading is %d s old" % (message or "live capacity probe failed", age),
+        "message": detail,
     }
     return fallback
 
 
-def _cooldown_reading(transport, cost_model, until, now):
-    """The rate-limit refusal for a transport in cooldown with no usable reading behind it."""
+def _rate_limit_message(transport, until, minutes=None):
+    """`the anthropic usage meter is rate limited until <time>`; with the last reading's age when known."""
+    text = "the %s usage meter is rate limited until %s" % (transport, _utc(until))
+    return text + ("; last reading %d min old" % minutes if minutes is not None else "")
+
+
+def _last_age_minutes(cached, now):
+    observed = _epoch(cached.get("observedAt")) if isinstance(cached, dict) else None
+    return None if observed is None else int(max(0.0, now - observed)) // 60
+
+
+def _cooldown_reading(transport, cost_model, until, now, cache_path=None):
+    """The rate-limit refusal for a transport in cooldown with no usable reading behind it.
+
+    It is status `rate-limited`, never `network-error`: the meter answered, and what it said is that
+    it will not read for this plan until `until`. The last reading's age says how far back the last
+    fact about the allowance is."""
+    cached = None
+    if cache_path is not None:
+        try:
+            cached = _read_cache(cache_path, transport, cost_model, now, max_age=float("inf"))
+        except Exception:
+            cached = None
     return {
         "schemaVersion": 1, "transport": transport, "costModel": cost_model,
-        "sourceKind": "live", "observedAt": _utc(now), "status": "network-error",
+        "sourceKind": "live", "observedAt": _utc(now), "status": "rate-limited",
         "error": {"kind": "rate-limit",
-                  "message": "the %s usage endpoint is rate limited until %s" % (transport, _utc(until))},
+                  "message": _rate_limit_message(transport, until, _last_age_minutes(cached, now))},
         "liveFailure": None, "quota": None, "balance": None,
     }
 
@@ -668,7 +737,7 @@ def _failed_read(transport, cost_model, cache_path, now, message):
         "sourceKind": "live", "observedAt": _utc(now), "status": "network-error",
         "error": {"kind": "network", "message": message},
         "liveFailure": None, "quota": None, "balance": None,
-    }, transport, cost_model, cache_path, now)
+    }, transport, cost_model, cache_path, now, record=False)
 
 
 def _cooldown_answer(cache_path, transport, cost_model, now):
@@ -682,31 +751,71 @@ def _cooldown_answer(cache_path, transport, cost_model, now):
         return None
     cached = _fallback_cache(cache_path, transport, cost_model, now)
     if cached is not None:
-        return _cache_fallback(cached, "rate-limit", now, "rate limited until " + _utc(until))
-    return _cooldown_reading(transport, cost_model, until, now)
+        return _cache_fallback(cached, "rate-limit", now,
+                               _rate_limit_message(transport, until, _last_age_minutes(cached, now)))
+    return _cooldown_reading(transport, cost_model, until, now, cache_path)
 
 
-def _settle(live, transport, cost_model, cache_path, now):
-    """Validate a live result, store it or its cooldown, and fall back to a stale cache on failure."""
+def _record_read(transport, live, now, cache_path):
+    """Append one live read's outcome beside the usage samples: time, status, HTTP code, Retry-After and
+    the checkout that asked. A failed read writes no sample, so this is the only record it leaves."""
+    try:
+        import usage_samples
+        usage_samples.record_read({
+            "ts": now, "transport": transport, "status": live.get("status"),
+            "httpStatus": (live.get("error") or {}).get("httpStatus"),
+            "retryAfter": (live.get("error") or {}).get("retryAfter"),
+            "checkout": str(ROOT), "cache": str(cache_path),
+        }, now=now, path=_read_log_path(cache_path))
+    except Exception:
+        return
+
+
+def _read_log_path(cache_path):
+    """Where live read outcomes go: `HARNESS_CAPACITY_READS`, else beside the usage samples, else
+    beside a planted cache (never into the account-wide file from a proof)."""
+    override = os.environ.get("HARNESS_CAPACITY_READS")
+    if override:
+        return override
+    default = _cache_path()
+    if cache_path and os.path.normcase(os.path.abspath(cache_path)) != os.path.normcase(default):
+        return str(cache_path) + ".reads.jsonl"
+    import usage_samples
+    return os.path.join(os.path.dirname(usage_samples.samples_path()), "capacity_reads.jsonl")
+
+
+def _settle(live, transport, cost_model, cache_path, now, record=True):
+    """Validate a live result, store it or its cooldown, and fall back to the last good reading on failure.
+
+    `record` is False for a result a lock wait produced rather than a probe, so the read log holds
+    only reads that actually reached the meter."""
     if live.get("costModel") == "unknown":
         live["costModel"] = cost_model
     errors = validate_reading(live, transport, cost_model)
     if errors:
         raise CapacityError("invalid %s capacity result: %s" % (transport, "; ".join(errors)))
+    if record:
+        _record_read(transport, live, now, cache_path)
     if live.get("status") in CACHEABLE and live.get("sourceKind") == "live":
         _write_cache(cache_path, transport, copy.deepcopy(live))
         _sample_usage(transport, cost_model, live, now, cache_path)
         return live
-    if live.get("status") == "network-error":
+    if live.get("status") in FAILURE_STATUSES:
         kind = (live.get("error") or {}).get("kind")
-        if kind == "rate-limit":
-            _record_rate_limit(cache_path, transport, now + RATE_LIMIT_COOLDOWN_SECONDS)
-        cached = _fallback_cache(cache_path, transport, cost_model, now)
-        if cached is not None:
-            fallback = _cache_fallback(cached, kind, now, (live.get("error") or {}).get("message"))
-            if validate_reading(fallback, transport, cost_model):
-                raise CapacityError("generated cache fallback is invalid")
-            return fallback
+        if kind in FALLBACK_KINDS:
+            until = now + RATE_LIMIT_COOLDOWN_SECONDS
+            if kind == "rate-limit":
+                _record_rate_limit(cache_path, transport, until)
+            cached = _fallback_cache(cache_path, transport, cost_model, now)
+            if cached is not None:
+                message = (_rate_limit_message(transport, until, _last_age_minutes(cached, now))
+                           if kind == "rate-limit" else (live.get("error") or {}).get("message"))
+                fallback = _cache_fallback(cached, kind, now, message)
+                if validate_reading(fallback, transport, cost_model):
+                    raise CapacityError("generated cache fallback is invalid")
+                return fallback
+            if kind == "rate-limit":
+                return _cooldown_reading(transport, cost_model, until, now, cache_path)
     return live
 
 
@@ -720,7 +829,7 @@ def _sample_usage(transport, cost_model, reading, now, cache_path=None):
     if cost_model != "plan-quota":
         return
     path = None
-    default = str(ROOT / ".claude" / ".cache" / "provider_capacity.json")
+    default = _cache_path()
     if cache_path and not os.environ.get("HARNESS_USAGE_SAMPLES") \
             and os.path.normcase(os.path.abspath(cache_path)) != os.path.normcase(default):
         path = str(cache_path) + ".usage_samples.jsonl"

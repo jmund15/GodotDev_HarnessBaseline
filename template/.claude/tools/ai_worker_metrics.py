@@ -33,6 +33,7 @@ Usage:
   ai_worker_metrics.py                     report all history
   ai_worker_metrics.py --days 7            report the last 7 days only
   ai_worker_metrics.py --ledger PATH       read a different ledger (fixtures)
+  ai_worker_metrics.py --by AXIS           call counts per caller_session|tool|outcome|backend
 """
 import argparse, json, os, sys
 from datetime import datetime, timedelta, timezone
@@ -176,6 +177,38 @@ def flag_rate(rows, field):
     understates it, and reporting 0% for a field nobody wrote is a lie."""
     observed = [r for r in rows if r.get(field) is not None]
     return sum(1 for r in observed if truthy(r.get(field))), len(observed), len(rows)
+
+
+BY_AXES = ('caller_session', 'tool', 'outcome', 'backend')
+
+# Buckets that are not values of the field. They print last, never mixed into real groups.
+# `unlabelled`: the row predates the field. `unknown`: the field is present and null.
+SPECIAL_GROUPS = ('unknown', 'unlabelled')
+
+
+def group_key(row, axis):
+    if axis not in row:
+        return 'unlabelled'
+    value = row[axis]
+    return 'unknown' if value is None else str(value)
+
+
+def report_breakdown(rows, axis):
+    """Call counts per value of one row field. A skipped call is its own outcome bucket,
+    never folded into failed (see report_errors)."""
+    w('')
+    w(f'== Calls by {axis} ==')
+    counts = {}
+    for r in rows:
+        key = group_key(r, axis)
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        w('   No rows.')
+        return
+    w(f"{'group':<24} {'calls':>6}")
+    w('-' * 31)
+    for key, n in sorted(counts.items(), key=lambda kv: (kv[0] in SPECIAL_GROUPS, -kv[1], kv[0])):
+        w(f'{key[:24]:<24} {n:>6}')
 
 
 def report_latency(rows):
@@ -339,6 +372,9 @@ def main():
     ap.add_argument('--days', type=int, metavar='N',
                     help='report only rows from the last N days (default: all history). '
                          'Rows with no usable ts are dropped and counted as out-of-window.')
+    ap.add_argument('--by', choices=BY_AXES,
+                    help='print call counts per value of this row field, then the integrity '
+                         'block, instead of the full report')
     a = ap.parse_args()
 
     path = os.path.expanduser(a.ledger)
@@ -353,6 +389,11 @@ def main():
         w(f'ai-worker call ledger -- last {a.days} day(s)')
     else:
         w('ai-worker call ledger -- all history')
+
+    if a.by:
+        report_breakdown(rows, a.by)
+        report_integrity(counts, raw_lines, null_tally(rows), rows, path, a.days)
+        return 0
 
     if not rows:
         w('')
