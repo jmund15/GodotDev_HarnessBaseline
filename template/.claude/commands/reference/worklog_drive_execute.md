@@ -8,7 +8,7 @@ Read at DRIVE Step 5, when 4g proceeds. Selection and the plan body live in `wor
 
 ### Step 5 — Execute the fill-set
 
-Group the fill-set and drive each item at the depth [`execution_depth.md`](../../skills/_brainstorm_shared/execution_depth.md) §Admission table assigns.
+Group the fill-set and drive each item at the depth its sizing states ([`drive_spine.md`](../../skills/_brainstorm_shared/drive_spine.md) §Sizing).
 
 - **Dispatch and slices** follow [`drive_execution.md`](../../skills/_brainstorm_shared/drive_execution.md) §Slices; depth governs process artifacts, not who executes (`execution_depth.md` §Boundary).
 - **Gates** follow `change_control` §Gate cadence, provenance-blind across the batch.

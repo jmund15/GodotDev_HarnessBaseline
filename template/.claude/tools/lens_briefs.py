@@ -1735,6 +1735,14 @@ def build_briefs(a: BriefParams) -> list[dict]:
             prompts.append(PLACEHOLDER_RE.sub(lambda mm: subs.get(mm.group(1), mm.group(0)), prompt).rstrip())
         if len(prompts) == 1:
             lens_part = "# Your lens\n\n" + prompts[0] + "\n"
+        elif a.target == "explore":
+            lens_part = (
+                f"# Your seat: {len(prompts)} lenses\n\n"
+                "Run every lens below over the questions its mandate covers. Set each claim's `lens` to the key "
+                "of the lens that produced it, from " + ", ".join(f"`{key}`" for key in seats[k]) + ": an "
+                "untagged claim is credited to the whole seat, which hides which lens answered.\n\n"
+                + "\n\n".join(f"## Lens `{key}`\n\n{p}" for key, p in zip(seats[k], prompts)) + "\n"
+            )
         else:
             catalog = lens.seat_mandates(k) or []
             lens_part = (

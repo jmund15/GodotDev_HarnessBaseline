@@ -13,6 +13,7 @@ Follow the **Agent Spawn Rules** in [`review_agents.md`](review_agents.md). All 
 - **Memory-file resolution:** entries cited bare (`feedback_*`, `gotcha_*`, `arch_rule_*`, `status_*`) resolve under `.claude/auto-memory/` or `.claude/auto-memory/archive/`.
 - **Plan as primary subject:** CONTEXT carries the full plan text, Memory hits, a run-scoped KFM index path and LSP/Grep references for named symbols. Agents do NOT re-read an unchanged plan from disk.
 - **Pre-execution stance:** findings are about what the plan *should change* before code is written. FIX is one plan edit pair, such as a missing requirement step or contradictory wording. PLAN is a change larger than one, such as an architectural pivot, with `options[0]` the recommended design. ASK is only for an answer that needs an owner-held input: the fold defers every ASK and PLAN to the parent, who rules them (`orchestrator_action_protocol.md` Step 4).
+- **Name what the inputs held:** in each finding's `rationale`, say whether what it turns on was in the plan's inputs (the record, the grounding claims, the design's hand-off), and if not, whether a read of the request's own scope would have found it. The session names the owing stage from it (`drive_spine.md` §Leaks).
 
 ## Finding Schema & Reporting Filter
 

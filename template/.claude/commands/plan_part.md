@@ -39,7 +39,7 @@ Required preconditions (HARD-STOP if any fail):
 - **`/plan_check` already ran successfully on a drafted plan for this Part** — drift already surfaced inline at draft time.
 - **User explicitly wants to redesign** — that's an `arch-rework` transition, not a plan session.
 
-Otherwise the Part's triage decides whether grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admission table).
+Otherwise the Part's sizing (`_brainstorm_shared/drive_spine.md` §Sizing) sets how deep grounding runs.
 
 ---
 

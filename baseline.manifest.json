@@ -3142,6 +3142,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/architecture_philosophy/reference/behaviour_per_situation.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/architecture_philosophy/reference/deletion_test.md",
       "layer": "coding",
       "sync": "auto"

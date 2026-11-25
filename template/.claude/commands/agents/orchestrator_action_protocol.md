@@ -76,7 +76,8 @@ Use the caller's existing approval or explicit unattended authority; do not add 
 
 Before applying any fix, the session rules the round's findings as one set. After the fold transcribes its literal fixes, it reads every finding of the round together with the subject, and:
 - groups them by the decision they touch, and looks for the one change, often a cut, that answers several;
-- rules a finding that adds a mechanism the subject lacks as the design owner: it names the failure the mechanism would have caught and why a remedy the existing design carries cannot, and declines one whose requirement no plan or owner states;
+- when the subject came through a drive, names the earliest stage whose Complete-when line owed each finding (the drive records it as a leak) and answers it there: a set ruling or a literal text fix stays the fold's, a verified fact is reused and only missing evidence is gathered, and material new design goes back to Design under `later_rounds.md`'s rule;
+- rules a finding that adds a mechanism the subject lacks as the design owner, after checking that mechanism as the design stage would (an existing owner, its consumers, why the pieces it changes exist): it names the failure the mechanism would have caught and why a remedy the existing design carries cannot, and declines one whose requirement no plan or owner states;
 - sends a finding that widens or narrows the scope the owner set to the owner, or parks it as a blocker under `/overnight`, never absorbing it as added design or a silent cut;
 - reads each fix the fold transcribed against its citers, and gives a later seat only to one that meets [`later_rounds.md`](../../skills/orchestration/reference/later_rounds.md)'s criterion;
 - may replace a folded fix that a better change in the set answers.

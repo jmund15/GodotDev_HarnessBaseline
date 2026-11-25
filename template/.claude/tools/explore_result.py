@@ -57,6 +57,8 @@ def claims_contract():
         "are the rules the shape cannot express) ===",
         "`subject` — the thing the claim is about (symbol, path, doc heading, rule name). Use the SAME string another lens "
         "would use for the same thing: the engine groups on it to detect corroboration and contradiction.",
+        "`lens` — only when this brief carries several lens mandates: the key of the lens that produced the claim, "
+        "from the mandate headings below. A claim without one is credited to the whole seat, which hides which lens answered.",
         "`claim` — one or two sentences of fact, short enough to scan in a list. No rationale, no recommendation.",
         "`polarity` — `exists` (present, does what the claim says) · `absent` (searched for and genuinely not there) · "
         "`partial` (present but incomplete or divergent — usually the truest answer, prefer it over forcing exists/absent) · "
@@ -103,6 +105,13 @@ def _is_claim(value):
             and (value.get("evidence") is None or isinstance(value["evidence"], (str, list)))
             and (value.get("file") is None or isinstance(value["file"], str))
             and (value.get("confidence") is None or value["confidence"] in ("verified", "unverified")))
+
+
+def _claim_lens(claim, seat):
+    """The lens a claim was produced under: the one it names when its seat carries several lenses, else the seat.
+    A name outside the seat's lens set is not honoured, so a mistagged claim never credits another lens's coverage."""
+    named = claim.get("lens")
+    return named if isinstance(named, str) and named in seat.split("+") else seat
 
 
 def _norm_key(subject):
@@ -188,7 +197,7 @@ def consolidate(results, *, check=None, root=None):
                               "detail": f"claim {claim_id} (entry {index}) fails the required claim shape — skipped; "
                                         "it keeps its id and valid neighbors keep theirs"})
                 continue
-            stamped.append({**claim, "id": claim_id, "lens": key, "index": index})
+            stamped.append({**claim, "id": claim_id, "lens": _claim_lens(claim, key), "index": index})
             valid += 1
         stopped_coverage = checked["stoppedAt"] == "blocked" or (
             not checked["toolsUsed"] and checked["stoppedAt"] != "trigger-not-met")

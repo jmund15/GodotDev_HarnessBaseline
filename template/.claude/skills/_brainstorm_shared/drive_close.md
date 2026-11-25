@@ -37,4 +37,4 @@
    the journey sweep of an MVP the flip makes `🧪 Ready for playtest` (`roadmap_triggers_mvp.md` §6.11 *Status*),
    `/worklog complete` with the commit ref per item in the session it lands, or none.
 7. Write the final report to the owner per `reference/deliverable_report.md`; its screenshots reuse step 1's
-   playtest frames.
+   playtest frames, and it lists the drive's leaks by stage (`drive_spine.md` §Leaks), or says there were none.

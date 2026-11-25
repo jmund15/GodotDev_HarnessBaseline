@@ -374,6 +374,7 @@
     ".claude/skills/architecture_brainstorm/reference/part_authoring.md": "coding",
     ".claude/skills/architecture_brainstorm/reference/red_team.md": "coding",
     ".claude/skills/architecture_brainstorm/reference/socratic_and_approaches.md": "coding",
+    ".claude/skills/architecture_philosophy/reference/behaviour_per_situation.md": "coding",
     ".claude/skills/architecture_philosophy/reference/deletion_test.md": "coding",
     ".claude/skills/benchmark_design/SKILL.md": "pure",
     ".claude/skills/benchmark_design/reference/axis_design.md": "pure",

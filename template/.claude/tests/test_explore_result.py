@@ -115,6 +115,27 @@ def claim_rules():
     check("contested claims rank first", got["claims"][0].get("contested") is True, got["claims"][0])
 
 
+def merged_seat_lens_keys():
+    seat = "exp-prior-art+exp-integration-surface"
+    results = [(seat, lens_object([claim("owned", lens="exp-prior-art"),
+                                   claim("consumer", lens="exp-integration-surface"),
+                                   claim("untagged")]))]
+    got = explore_result.consolidate(results, check=nothing_checked)
+    by_subject = {c["subject"]: c["lens"] for c in got["claims"]}
+    check("a job carrying several lenses stamps each claim with the lens it names",
+          by_subject == {"owned": "exp-prior-art", "consumer": "exp-integration-surface", "untagged": seat},
+          by_subject)
+    stray = [("a+b", lens_object([claim("elsewhere", lens="c")]))]
+    got = explore_result.consolidate(stray, check=nothing_checked)
+    check("a claim naming a lens its seat does not carry is credited to the seat",
+          [c["lens"] for c in got["claims"]] == ["a+b"], [c["lens"] for c in got["claims"]])
+    agreeing = [("a+b", lens_object([claim("Thing", "exists", lens="a"), claim("thing", "exists", lens="b")]))]
+    got = explore_result.consolidate(agreeing, check=nothing_checked)
+    check("two lenses inside one job corroborate each other like two jobs would",
+          [c.get("corroboratedBy") for c in got["claims"]] == [["b"], ["a"]],
+          [c.get("corroboratedBy") for c in got["claims"]])
+
+
 def verification_is_the_evidence_checker():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -180,6 +201,7 @@ def claims_contract_channel():
     check("the contract cites _is_claim and _is_checked as the object's one home",
           "_is_claim" in text and "_is_checked" in text, text[:600])
     check("the contract no longer claims a schema validates shape", "the schema validates shape" not in text, text[:300])
+    check("the contract names the per-claim lens key a multi-lens seat sets", "`lens`" in text, text[:800])
     for name, values in (("stoppedAt", explore_result.STOPPED), ("polarity", explore_result.POLARITIES),
                          ("bearing", explore_result.BEARINGS)):
         check(f"the contract names every {name} value _is_checked/_is_claim accepts",
@@ -249,8 +271,8 @@ def command_line():
 
 
 def main():
-    for case in (golden, coverage_flags, claim_rules, verification_is_the_evidence_checker, claims_contract_channel,
-                 deliverable_parsing, transport_parity, command_line):
+    for case in (golden, coverage_flags, claim_rules, merged_seat_lens_keys, verification_is_the_evidence_checker,
+                 claims_contract_channel, deliverable_parsing, transport_parity, command_line):
         try:
             case()
         except Exception as exc:  # a crash is a failure, never a skip

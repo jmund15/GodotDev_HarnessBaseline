@@ -262,7 +262,7 @@ def mode(task_id: str | None = None, root: Path | None = None, session_id: str |
 
 def admits(check: str, fields: Fields, rigor: str, *, gate_green: bool | None = None,
            task_id: str | None = None) -> Admission:
-    """Scaled admission, owned by execution_depth's Admission table. Invalid inputs are errors."""
+    """Scaled admission, owned by `execution_depth.md` §What each element weighs. Invalid inputs are errors."""
     for name, value, allowed in (("check", check, CHECKS), ("rigor", rigor, RIGORS),
                                  ("reach", fields.reach, REACH_ORDER),
                                  ("kind", fields.kind, OPTIONAL_FIELDS["kind"]),

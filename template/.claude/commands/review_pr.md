@@ -96,6 +96,7 @@ This file contains all agent definitions, spawn rules, scoring rubric, and fix c
 **Roster selection** (do this in-context — it depends on the diff):
 - **ASPECT FILTER:** include only agents whose aspect tag matches the requested flags. `full` = all agents.
 - **CONDITIONAL AGENTS:** data-integrity only for `.tres`/`.tscn` changes; pool-lifecycle only for pool/ability-lifecycle changes; transcript-auditor only if transcript summaries were found.
+- **SIZE THE SEATS:** width follows `orchestration` reference `review_width.md`'s size rule, which owns when one seat carries several aspects; report the seats and why.
 - **Available agents:** code-reviewer, test-analyzer, error-hunter, type-reviewer, data-integrity, pool-lifecycle, transcript-auditor.
 
 For each selected agent, build its prompt from the `review_agents.md` template, substituting `{{CONTEXT}}` (the block from 2b), `{{PR_NUM}}`, `{{BRANCH}}`, `{{CHECKLIST_CDS}}`, `{{CHECKLIST_RP}}`, `{{CHECKLIST_I}}`, `{{TEST_QUALITY_CHECKLIST}}`, `{{TRANSCRIPT_CORRECTIONS}}`.

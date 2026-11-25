@@ -1077,25 +1077,13 @@ def main():
     if spine_path.is_file():  # a pure-only install ships no drive_spine.md (coding layer): skip its example cases
         check("drive_spine.md carries a fenced spec example", example is not None)
     if example:
-        depth = (repo_root / ".claude" / "skills" / "_brainstorm_shared" / "execution_depth.md").read_text(encoding="utf-8")
-        names = ("Reach", "Reversibility", "Design", "Grounding", "Oracle", "Size")
-        vocab = {name: [value.strip() for value in re.search(r"\| %s \| ([^|]+)\|" % name, depth).group(1).split("·")]
-                 for name in names}
-        meets_floor = {"Reach": "shared", "Reversibility": "clean", "Design": "settled",
-                       "Grounding": "verified", "Oracle": "new-test", "Size": "milestones"}
-        fills = {"<%s>" % name.lower(): meets_floor[name] if meets_floor[name] in vocab[name] else vocab[name][0]
-                 for name in names}
         text = example.group(1)
-        check("the example writes every triage field as a placeholder, never a literal judgment",
-              all(placeholder in text for placeholder in fills), [p for p in fills if p not in text])
-        for placeholder, value in fills.items():
-            text = text.replace(placeholder, value)
         example_path = os.path.join(root, "spec-example.json")
         with open(example_path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
         out = cli("open", "spec-from-example", "--spec", example_path, cwd=root, env=repo_env)
-        check("the drive_spine.md spec example opens a record",
-              "<reach>" not in text and out.returncode == 0 and tr.load("spec-from-example") is not None, out.stderr)
+        check("the drive_spine.md spec example opens a record without a triage spec",
+              out.returncode == 0 and tr.load("spec-from-example") is not None, out.stderr)
 
     main_repo = os.path.join(root, "linked-main")
     os.makedirs(main_repo)
