@@ -31,7 +31,7 @@ LAYER_FILES = (
 )
 SECTION = "§"
 SUFFIXES = (".md", ".py", ".js", ".sh", ".ps1")
-SKIP_PREFIXES = (".claude/scratch/", ".claude/plans/", ".claude/auto-memory/archive/", ".claude/tests/fixtures/")
+SKIP_PREFIXES = (".claude/scratch/", ".claude/plans/", ".claude/work/", ".claude/auto-memory/archive/", ".claude/tests/fixtures/")
 SKIP_FILES = {".claude/worklog-titles.md", ".claude/tests/test_claudemd_citations.py"}
 CITATION = re.compile(
     r"(CLAUDE(?:\.(?:core|coding|godot|interactive))?\.md)`?[ ,]*"

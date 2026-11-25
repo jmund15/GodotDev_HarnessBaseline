@@ -40,7 +40,7 @@ A header line `citers: plan` declares that the lens judges a plan's changed surf
 for it and `""` otherwise, and `lens_briefs.py` runs `citers.py` over each meta subject plan's `surfaces` block and
 embeds the result as `INBOUND_REFS` in that lens's brief.
 
-A header line `fixes: plan` declares that the lens reads each subject plan's touched code files' fix history.
+A header line `fixes: plan` declares that the lens reads the fix history of the runtime harness files a subject plan touches.
 `Lens.fixes` is `"plan"` for it and `""` otherwise, and `lens_briefs.py` embeds the counts as `FIX_HISTORY`.
 
 Each lens carries the tier its seat reviews at: a header line `tier: <tier>` (`Lens.tier`), else its registry's

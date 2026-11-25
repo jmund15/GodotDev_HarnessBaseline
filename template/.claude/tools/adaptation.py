@@ -21,7 +21,8 @@ as a `lens_preloads` entry, also unions, and a project cannot drop a defaults it
 the last file that sets it. The godot defaults file holds `index_prebuild` (`list[str]`, default `[]`), the
 commands `/reindex_search` Step 3 runs. Command line:
   - `python3 .claude/tools/adaptation.py get <key>` prints a list one item per line, a dict as one JSON
-    line and a scalar as is; an unknown key exits 2.
+    line and a scalar as is; an unknown key exits 2. A dotted `<key>.<entry>` reads one entry of a dict key
+    (`pr_pipeline.gate`); an entry the dict lacks exits 2.
   - `python3 .claude/tools/adaptation.py plugin <name>` prints `state:`, `root:` and `error:` lines for one
     plugin; exit 1 when it is unreadable.
   - `python3 .claude/tools/adaptation.py run <key>` runs each entry of a list key once from the repo
@@ -86,6 +87,11 @@ branch after a land (absent: the project runs none); exit 0 passes, exit 1 fails
 `FAILED_TEST=<id>` stdout line, an exit in `retry_exits` is rerun once, any other exit is no verdict, and `outputs` are
 paths the gate writes, which owe no gate when a range changes only them and harness paths.
 
+`pr_pipeline` holds the project steps of the shared batch PR loop (`commands/pr_pipeline.md`): one list per hook point
+(`discover`, `sync`, `pre_review`, `gate`, `checklist`, `post_merge`), each entry a command line or a `/command` name; the
+command reads a point with `get pr_pipeline.<point>`. A point holding a blank or non-string entry, and an unknown
+point, is dropped with one stderr line, and every point is present after `load()`, empty by default.
+
 Unknown top-level keys are ignored; the `gate_cadence` table rejects its own unknown keys (`gate_cadence_errors`).
 """
 from __future__ import annotations
@@ -140,11 +146,13 @@ DEFAULTS: dict = {
     "regenerable_ignored": [],
     "gate_cadence": {"slice": [], "merge": [], "close": [], "wide": []},
     "drift_scan": {},
+    "pr_pipeline": {"discover": [], "sync": [], "pre_review": [], "gate": [], "checklist": [], "post_merge": []},
     "rigor_defaults": {
         "harness": {"paths": [".claude/**"], "level": "normal"},
         "side-tools": {"paths": ["tools/**", "scripts/**", ".claude/tools/**", ".claude/scripts/**"], "level": "light"},
     },
 }
+PIPELINE_POINTS = tuple(DEFAULTS["pr_pipeline"])
 
 # Expected Python type for each known key. `bool` is excluded from `list`/`dict` checks
 # below because `isinstance(True, int)` and friends can otherwise slip a bool past a
@@ -189,6 +197,7 @@ _TYPES: dict = {
     "regenerable_ignored": list,
     "gate_cadence": dict,
     "drift_scan": dict,
+    "pr_pipeline": dict,
     "rigor_defaults": dict,
 }
 
@@ -390,6 +399,8 @@ def load(claude_dir) -> dict:
         for key, value in _read_file(path).items():
             seen[key] = _merge_value(seen[key], value) if key in seen else value
     result.update(seen)
+    if "pr_pipeline" in seen:
+        result["pr_pipeline"] = {point: list(seen["pr_pipeline"].get(point, [])) for point in PIPELINE_POINTS}
     _CACHE[cache_key] = dict(result)
     return result
 
@@ -432,12 +443,45 @@ def _read_file(path: Path) -> dict:
             )
             continue
         values[key] = value
+    if "pr_pipeline" in values:
+        values["pr_pipeline"] = _pipeline_rows(path, values["pr_pipeline"])
     return values
 
 
+def _pipeline_rows(path: Path, table: dict) -> dict:
+    """`table` keeping each hook point that holds a list of non-empty strings; every other point, an unknown one
+    included, is dropped with one stderr line naming it."""
+    kept = {}
+    for point, entries in table.items():
+        if point not in PIPELINE_POINTS:
+            problem = "is not a hook point"
+        elif not isinstance(entries, list) or not all(isinstance(e, str) and e.strip() for e in entries):
+            problem = "is not a list of non-empty strings"
+        else:
+            kept[point] = entries
+            continue
+        print(f"adaptation: {path} key 'pr_pipeline.{point}' {problem} -- using default", file=sys.stderr)
+    return kept
+
+
+_MISSING = object()
+
+
+def _resolve(value, path):
+    """`value` walked down the dict entries `path` names, or `_MISSING` when one is absent."""
+    for part in path:
+        if not isinstance(value, dict) or part not in value:
+            return _MISSING
+        value = value[part]
+    return value
+
+
 def get(claude_dir, key):
-    """One key, defaulted the same way `load()` defaults it."""
-    return load(claude_dir).get(key, DEFAULTS.get(key))
+    """One key, defaulted the same way `load()` defaults it. A dotted `<key>.<entry>` reads one entry of a dict
+    key; an entry the dict lacks reads as None."""
+    top, *path = key.split(".")
+    value = _resolve(load(claude_dir).get(top, DEFAULTS.get(top)), path)
+    return None if value is _MISSING else value
 
 
 class Plugin(NamedTuple):
@@ -573,10 +617,11 @@ def main(argv=None) -> int:
         if found.error:
             print("error: %s" % found.error)
         return 1 if found.state == "unreadable" else 0
-    if key not in DEFAULTS:
+    top, *path = key.split(".")
+    value = _resolve(get(claude_dir, top), path) if top in DEFAULTS else _MISSING
+    if value is _MISSING:
         print(f"adaptation: unknown key '{key}'", file=sys.stderr)
         return 2
-    value = get(claude_dir, key)
     if verb == "get" and key == "gate_cadence":
         errors = gate_cadence_errors(value)
         if errors:

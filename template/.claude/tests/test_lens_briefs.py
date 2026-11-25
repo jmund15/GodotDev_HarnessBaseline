@@ -361,7 +361,7 @@ FIX_JOB_MAP = """# Plan
 
 | Slice | Write set | Waits on | Route |
 |---|---|---|---|
-| S1 | `tools/mechanism_census.py`, `tests/test_mechanism_census.py` | — | job A |
+| S1 | `tools/mechanism_census.py`, `tests/test_mechanism_census.py`, `CLAUDE.md`, `.claude/settings.project.json` | — | job A |
 | S5 | `tools/lens.py`, `tools/missing_tool.py` | S2 | job C |
 """
 
@@ -377,6 +377,11 @@ def planted_fix_repo(root):
     git("init", "-q")
     (repo / ".claude" / "tools" / "mechanism_census.py").write_text("a = 1\n", encoding="utf-8")
     (repo / ".claude" / "tools" / "lens.py").write_text("b = 1\n", encoding="utf-8")
+    (repo / ".claude" / "CLAUDE.md").write_text("project instructions\n", encoding="utf-8")
+    (repo / ".claude" / "settings.project.json").write_text("{}\n", encoding="utf-8")
+    ci = repo / ".github/workflows/main_check.yml"
+    ci.parent.mkdir(parents=True)
+    ci.write_text("name: main check\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-q", "-m", "feat: start")
     (repo / ".claude" / "tools" / "mechanism_census.py").write_text("a = 2\n", encoding="utf-8")
@@ -434,6 +439,9 @@ def fix_history_checks():
         check("a fixes seat's brief returns without a refusal", outcome == "returned", str(outcome))
         check("a fixes seat's brief names its counted fixes per code file the subject plan touches",
               "# FIX_HISTORY" in text and rows.get(census, {}).get("fixes") == 1, repr(rows))
+        check("runtime doctrine and config get the same history rows as code",
+              all(rows.get(p, {}).get("fixes") == 0 for p in (".claude/CLAUDE.md", ".claude/settings.project.json")),
+              repr(rows))
         check("the full fix history of each subject plan goes to a fixes file beside the briefs",
               (out / "p_subject_fixes.json").is_file() and census in json.loads(
                   (out / "p_subject_fixes.json").read_text(encoding="utf-8")), str(list(out.glob("*"))))
@@ -447,22 +455,30 @@ def fix_history_checks():
         check("with no census reading recorded, a row's listing is unknown, never `false`",
               census in rows and rows[census].get("listed") is None and "no census reading" in text, repr(rows))
     with tempfile.TemporaryDirectory() as tmp:
+        ci = ".github/workflows/main_check.yml"
+        _outcome, text, _out = fix_brief(Path(tmp), FIX_JOB_MAP.replace("`tools/lens.py`", f"`{ci}`"), "plan")
+        check("the census and plan brief share the installed CI scope",
+              fix_rows(text).get(ci, {}).get("fixes") == 0, repr(fix_rows(text)))
+    with tempfile.TemporaryDirectory() as tmp:
         prose = FIX_JOB_MAP.replace("`tools/lens.py`, `tools/missing_tool.py`",
                                     "`tools/lens.py`, `test_lens_{a,b}.py`, `lens_briefs_test.py`, `tools/x*.py`")
         _outcome, text, _out = fix_brief(Path(tmp), prose, "plan")
         rows = fix_rows(text)
         check("a test file or a glob named without its folder is never a row",
-              ".claude/tools/lens.py" in rows and set(rows) == {".claude/tools/mechanism_census.py", ".claude/tools/lens.py"},
+              set(rows) == {".claude/tools/mechanism_census.py", ".claude/tools/lens.py",
+                            ".claude/CLAUDE.md", ".claude/settings.project.json"},
               repr(sorted(rows)))
     with tempfile.TemporaryDirectory() as tmp:
         _outcome, text, _out = fix_brief(Path(tmp), FIX_JOB_MAP, "")
         check("a seat without a `fixes: plan` header gets no FIX_HISTORY section", "FIX_HISTORY" not in text,
               text[:300])
     with tempfile.TemporaryDirectory() as tmp:
-        no_code = FIX_JOB_MAP.replace("`tools/lens.py`, `tools/missing_tool.py`", "`commands/agents/x.md`")
-        no_code = no_code.replace("`tools/mechanism_census.py`, `tests/test_mechanism_census.py`", "`CLAUDE.md`")
-        outcome, text, _out = fix_brief(Path(tmp), no_code, "plan")
-        check("a plan that names no code file gets an empty FIX_HISTORY section",
+        non_runtime = FIX_JOB_MAP.replace("`tools/lens.py`, `tools/missing_tool.py`", "`src/game.py`, `records/history.md`")
+        non_runtime = non_runtime.replace("`tools/mechanism_census.py`, `tests/test_mechanism_census.py`, "
+                                          "`CLAUDE.md`, `.claude/settings.project.json`",
+                                          "`plans/old.md`, `scratch/notes.md`, `autolearn_outcomes.jsonl`")
+        outcome, text, _out = fix_brief(Path(tmp), non_runtime, "plan")
+        check("a plan that names no runtime harness file gets an empty FIX_HISTORY section",
               outcome == "returned" and "# FIX_HISTORY" in text and fix_rows(text) == {}, repr(fix_rows(text)))
 
 

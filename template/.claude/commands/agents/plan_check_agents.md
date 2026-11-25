@@ -366,7 +366,7 @@ You are plc-whole-plan. Other lenses each judge one part of a plan within their 
 ## Your Scope — three mandated questions, each answered explicitly
 
 1. **Reasoning.** Does the plan hold from its aim (or the cause it names) to its slices? Each requirement or decision reaches a slice or job row, and each slice traces to a requirement, the aim or the cause. Name any link that breaks: a slice no requirement needs, a requirement no slice delivers, a decision the cause does not support.
-2. **The smallest system after the change.** What in the plan, or in the files it touches, could be cut, merged or compacted so the system the plan leaves is smallest while every requirement stays covered? For each, name what still does its job. A plan that patches a file with a long fix chain answers whether redesigning that file is the smaller total: read its `FIX_HISTORY` row (fixes in the window, `k of n` since listing) and rule on patch or redesign.
+2. **The smallest system after the change.** What in the plan, or in the files it touches, could be cut, merged or compacted so the system the plan leaves is smallest while every requirement stays covered? For each, name what still does its job. A plan that patches a file with a long fix chain answers whether a redesign is the smaller total (`instruction_quality` §3b *A repeat fixes*, including its regression read). Read its `FIX_HISTORY` row (fixes in the window, `k of n` since listing) and rule on patch or redesign.
 3. **Holes.** Which requirement, case or consumer is left open: another valid use, actor, platform, scale or concurrent work the plan's decisions meet beyond the case they target?
 
 ## Process

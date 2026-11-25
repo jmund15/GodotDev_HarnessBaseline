@@ -170,16 +170,21 @@ def _rows(path: Path, kind: str, include_sidechain: bool = False):
     """
     with open(path, encoding="utf-8") as fh:
         for line in fh:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict) and row.get("type") == kind and (include_sidechain or not row.get("isSidechain")):
-                if not isinstance(row.get('message'), dict):
-                    row = dict(row, message={'content': row.get('content', '')})
+            row = _message_row(line, kind, include_sidechain)
+            if row is not None:
                 yield row
+
+
+def _message_row(line: str, kind: str, include_sidechain: bool = False):
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(row, dict) or row.get("type") != kind or (row.get("isSidechain") and not include_sidechain):
+        return None
+    if not isinstance(row.get("message"), dict):
+        row = dict(row, message={"content": row.get("content", "")})
+    return row
 
 
 def last_prompt(path: Path) -> str:
@@ -358,12 +363,22 @@ OWNER_SCAN = _transcript_scan.Scanner(
     sources=[__file__, _transcript_summary.__file__, _owner_text.__file__])
 
 
-def owner_prompts(path: Path) -> list[dict]:
+def owner_prompts(path: Path, *, on_assistant=None) -> list[dict]:
     """Every owner message in transcript order: typed prompts, command arguments and question
     answers. The one definition this digest and hooks/compact_directive_anchor.py both read. One pass
-    folds the builder's user messages and both recover passes, resumed from the transcript scan cache
-    (hooks/_transcript_scan.py); the result equals `merge_recovered_prompts` over the three cold passes."""
-    state = _transcript_scan.scan(path, OWNER_SCAN)
+    folds the builder's user messages and both recover passes, resumed from the transcript scan cache.
+    A caller that also needs assistant rows can receive (line index, row) in the same cold pass.
+    """
+    if on_assistant is None:
+        state = _transcript_scan.scan(path, OWNER_SCAN)
+    else:
+        state = OWNER_SCAN.initial()
+        with open(path, encoding="utf-8") as fh:
+            for index, line in enumerate(fh, 1):
+                OWNER_SCAN.feed(state, index, line)
+                row = _message_row(line, "assistant")
+                if row is not None:
+                    on_assistant(index, row)
     return merge_recovered_prompts(state["messages"], state["meta"] + state["answers"])
 
 

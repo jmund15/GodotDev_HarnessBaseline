@@ -286,6 +286,17 @@ def description(fm: str | None) -> str:
     return _field(fm, DESC_RE)
 
 
+def _first_line(path: Path) -> str:
+    """The first non-empty body line, heading marks stripped: what the client lists for a command
+    with no `description`."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    m = FM.match(text)
+    for line in (text[m.end():] if m else text).splitlines():
+        if line.strip():
+            return line.strip().lstrip("#").strip()
+    return ""
+
+
 def when_to_use(fm: str | None) -> str:
     """The skill's `when_to_use` field, or '' if absent. The client lists a skill as `description`
     plus `when_to_use` when the field is present."""
@@ -363,13 +374,15 @@ def _repo_rel(root: Path, path: Path) -> str:
 
 def listing_census(root: Path) -> dict:
     rows = []
-    for p in sorted(root.glob("commands/*.md")):
+    # The client lists every command file, a subdirectory's as `<dir>:<name>`, and one with no
+    # `description` under its first body line.
+    for p in sorted(root.glob("commands/**/*.md")):
         fm = frontmatter(p)
         if not listed(fm):
             continue
         rows.append({"kind": "command", "name": str(p.relative_to(root)).replace("\\", "/"),
                      "path": _repo_rel(root, p),
-                     "desc_bytes": len(description(fm).encode("utf-8"))})
+                     "desc_bytes": len((description(fm) or _first_line(p)).encode("utf-8"))})
     for p in sorted(root.glob("skills/*/SKILL.md")):
         fm = frontmatter(p)
         if not listed(fm):

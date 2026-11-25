@@ -563,19 +563,30 @@ class SelectorRegistryTests(unittest.TestCase):
 
 
 class ListingPopulationTests(unittest.TestCase):
-    """The census counts only entries the model's listing can show: a hidden or path-scoped
-    entry, or a command in a subdirectory, is not in the listing and must not be budgeted."""
+    """The census counts exactly the entries the model's listing shows. A hidden or path-scoped entry
+    is not listed. A command in a subdirectory is listed (as `<dir>:<name>`) unless hidden, and a
+    command with no `description` is listed under its first line, so both are budgeted."""
 
-    def test_hidden_path_scoped_and_nested_entries_are_excluded(self):
+    def test_hidden_and_path_scoped_entries_are_excluded_and_nested_commands_counted(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             make_minimal_root(root)
             write(root / "commands" / "hidden.md", "---\ndisable-model-invocation: true\ndescription: x\n---\n")
             write(root / "commands" / "agents" / "lens.md", "---\ndescription: nested reference\n---\n")
+            write(root / "commands" / "agents" / "quiet.md", "---\ndisable-model-invocation: true\n---\n# Quiet\n")
             write(root / "skills" / "scoped" / "SKILL.md", "---\ndescription: scoped\npaths:\n  - \"a/**\"\n---\n")
             write(root / "skills" / "quiet" / "SKILL.md", "---\ndescription: quiet\ndisable-model-invocation: true\n---\n")
             names = {(r["kind"], r["name"]) for r in lc.listing_census(root)["rows"]}
-            self.assertEqual(names, {("command", "commands/alpha.md"), ("skill", "beta")})
+            self.assertEqual(names, {("command", "commands/alpha.md"), ("command", "commands/agents/lens.md"),
+                                     ("skill", "beta")})
+
+    def test_a_command_without_a_description_is_listed_under_its_first_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_minimal_root(root)
+            write(root / "commands" / "reference" / "phase.md", "# Phase 3 - Cross-reference\n\nbody\n")
+            rows = {r["name"]: r for r in lc.listing_census(root)["rows"]}
+            self.assertEqual(rows["commands/reference/phase.md"]["desc_bytes"], len("Phase 3 - Cross-reference"))
 
 
 class ListingFieldTests(unittest.TestCase):

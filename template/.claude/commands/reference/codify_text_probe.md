@@ -16,7 +16,7 @@ Read at `/codify` Step 7 for a text fix or rule-removal candidate. Use fresh rea
 
 Fresh readers of the failing model class run the old text and the new text.
 
-- The old-text arm must reproduce the failure first. An arm that does not fail means the probe is too clean, and its pass proves nothing.
+- The old-text arm must reproduce the failure first; an arm that does not fail means the probe is too clean and proves nothing. Each arm also runs cases the fix was not written from, at least one its reason reaches and at least one it must not, scored against an oracle written before any reader runs from the owner's quoted words (Step 0 item 1), never the session's paraphrase.
 - Stage the readers: run the old arm first, and add a second old reader before calling one clean pass too clean; spend nothing on the new arm until the old arm fails. Then run two readers per arm, the smallest count that can show a split, and a third only in an arm that splits. Report the spread.
 
 ## Rule-removal ablation

@@ -199,7 +199,7 @@ CODING_PATTERNS = [
     ".claude/commands/merge_pr.md",
     ".claude/commands/pr_ready.md",
     ".claude/commands/review_pr.md",
-    ".claude/commands/review_prs.md",
+    ".claude/commands/pr_pipeline.md",
     ".claude/commands/sync_subsystems.md",
     ".claude/commands/architecture_brainstorm_redteam.md",
     ".claude/commands/agents/plan_check_agents.md",
@@ -262,6 +262,9 @@ CODING_PATTERNS = [
     ".claude/tests/build_plan_brief_test.py",
     ".claude/tests/test_build_plan_auto_variant.py",
     ".claude/tests/test_routing_classifier.py",
+    ".claude/tests/test_merge_pr_command.py",
+    ".claude/tests/test_pr_pipeline_command.py",
+    ".claude/tests/test_pr_pipeline_entries.py",
     # Accepted candidates requiring an exact layer entry:
     ".claude/auto-memory/archive/feedback_session_end_full_scope.md",
     ".claude/reference/semantic_search.md",

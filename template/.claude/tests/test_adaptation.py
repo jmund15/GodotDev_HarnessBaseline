@@ -369,6 +369,50 @@ def main():
         cases.append(("a wrong-typed main_check keeps the default and names the file",
                       result["main_check"] == "" and "adaptation.json" in err))
 
+        # --- pr_pipeline: the project steps of the shared batch PR loop (commands/pr_pipeline.md) ---------
+        pipe = os.path.join(tmp, "pr_pipeline")  # its own dir: the shared one holds earlier cases' defaults files
+        points = ("discover", "sync", "pre_review", "gate", "checklist", "post_merge")
+        empty_points = {point: [] for point in points}
+        claude_dir = _claude_dir_with(pipe, None)
+        cases.append(("pr_pipeline defaults to six empty hook points",
+                      adaptation.DEFAULTS.get("pr_pipeline") == empty_points
+                      and adaptation.get(claude_dir, "pr_pipeline") == empty_points))
+        rows = {"gate": ["python3 tools/gate.py --full"], "post_merge": ["/update_roadmap"]}
+        claude_dir = _claude_dir_with(pipe, json.dumps({"pr_pipeline": rows}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        cases.append(("a pr_pipeline naming two points loads and leaves the other four empty",
+                      result.get("pr_pipeline") == dict(empty_points, **rows) and err == ""))
+        cases.append(("a dotted name reads one hook point; an unset point reads empty",
+                      adaptation.get(claude_dir, "pr_pipeline.gate") == rows["gate"]
+                      and adaptation.get(claude_dir, "pr_pipeline.post_merge") == rows["post_merge"]
+                      and adaptation.get(claude_dir, "pr_pipeline.sync") == []))
+        for label, bad in (("a point that is not a list", {"gate": "make gate"}),
+                           ("a point holding a non-string entry", {"gate": [5]}),
+                           ("a point holding a blank entry", {"gate": [" "]}),
+                           ("an unknown hook point", {"gates": ["make gate"]})):
+            claude_dir = _claude_dir_with(pipe, json.dumps({"pr_pipeline": bad}))
+            result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+            cases.append((label + " keeps every default and names pr_pipeline in one stderr line",
+                          result.get("pr_pipeline") == empty_points and "pr_pipeline" in err
+                          and len(err.strip().splitlines()) == 1))
+        claude_dir = _claude_dir_with(pipe, json.dumps({"pr_pipeline": {"gate": ["make gate"], "sync": [7]}}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        cases.append(("a good pr_pipeline point beside a bad one keeps only the good one",
+                      result.get("pr_pipeline") == dict(empty_points, gate=["make gate"])
+                      and "pr_pipeline.sync" in err))
+        claude_dir = _claude_dir_with(pipe, json.dumps({"pr_pipeline": ["gate"]}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        cases.append(("a pr_pipeline that is not an object keeps the default and names the key",
+                      result.get("pr_pipeline") == empty_points and "'pr_pipeline'" in err))
+        claude_dir = _claude_dir_with(pipe, json.dumps({"pr_pipeline": {"gate": ["b"], "sync": ["s"]}}))
+        defaults_file = os.path.join(claude_dir, "skills", "project_subsystems", "adaptation.coding.defaults.json")
+        with open(defaults_file, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"pr_pipeline": {"gate": ["a"]}}, fh)
+        adaptation._CACHE.clear()
+        cases.append(("a layer defaults file's hook entries come before adaptation.json's, duplicates dropped",
+                      adaptation.get(claude_dir, "pr_pipeline.gate") == ["a", "b"]
+                      and adaptation.get(claude_dir, "pr_pipeline.sync") == ["s"]))
+
         # --- CLI verbs -----------------------------------------------------------
         import subprocess
         script = os.path.join(TOOLS, "adaptation.py")
@@ -418,6 +462,22 @@ def main():
             ran = fh.read()
         cases.append(("run executes every entry once, reports the failing one and exits 0",
                       code == 0 and ran == "x" and "3" in (out + err)))
+
+        with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"pr_pipeline": {"gate": ["a b", "/c"]}, "instruction_scope": {"paths": [], "rows_dir": None}}, fh)
+        code, out, _ = cli("get", "pr_pipeline.gate")
+        cases.append(("get pr_pipeline.<point> prints one entry per line", code == 0 and out.splitlines() == ["a b", "/c"]))
+        code, out, _ = cli("get", "pr_pipeline.sync")
+        cases.append(("get of an unset hook point prints nothing and exits 0", code == 0 and out == ""))
+        code, out, _ = cli("get", "pr_pipeline")
+        cases.append(("get pr_pipeline prints the six points as one JSON line",
+                      code == 0 and len(out.splitlines()) == 1 and json.loads(out) == dict(empty_points, gate=["a b", "/c"])))
+        code, _, err = cli("get", "pr_pipeline.gates")
+        cases.append(("get of an unknown hook point exits 2 naming it", code == 2 and "pr_pipeline.gates" in err))
+        code, _, _ = cli("get", "no_such_key.gate")
+        cases.append(("get of a dotted name under an unknown key exits 2", code == 2))
+        code, out, _ = cli("get", "instruction_scope.rows_dir")
+        cases.append(("a dotted entry that holds null prints it rather than exiting 2", code == 0 and out.strip() == "None"))
         plugin_cases(cases, tmp)
     finally:
         _rm(tmp)

@@ -250,7 +250,7 @@ def check_checklist_counts() -> list[str]:
 
 # Agent template files and which orchestrator(s) reference their agents
 AGENT_SOURCES = {
-    "review_agents.md": ["review_pr.md", "review_prs.md"],
+    "review_agents.md": ["review_pr.md"],
     "session_audit_agents.md": ["session_audit.md"],
 }
 
@@ -298,7 +298,7 @@ def check_no_hardcoded_templates() -> list[str]:
     count = 0
 
     # Orchestrator files (top-level command files that spawn agents)
-    orchestrator_files = ["review_pr.md", "review_prs.md", "session_audit.md"]
+    orchestrator_files = ["review_pr.md", "pr_pipeline.md", "session_audit.md"]
 
     for orch_name in orchestrator_files:
         orch_path = COMMANDS_DIR / orch_name

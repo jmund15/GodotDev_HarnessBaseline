@@ -1227,6 +1227,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/pr_pipeline.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/pr_ready.md",
       "layer": "coding",
       "sync": "auto"
@@ -1258,6 +1263,11 @@
     },
     {
       "path": ".claude/commands/reference/codify_memory.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/reference/codify_route.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1483,11 +1493,6 @@
     },
     {
       "path": ".claude/commands/review_pr.md",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/commands/review_prs.md",
       "layer": "coding",
       "sync": "auto"
     },
@@ -2883,6 +2888,11 @@
     },
     {
       "path": ".claude/scripts/lib/cli_envelope.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/lib/litellm_compaction_hook.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5807,6 +5817,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_litellm_compaction_hook.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_load_census.py",
       "layer": "pure",
       "sync": "auto"
@@ -5869,6 +5884,11 @@
     {
       "path": ".claude/tests/test_merge_commit_scope.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_merge_pr_command.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -6194,6 +6214,16 @@
     {
       "path": ".claude/tests/test_post_read_dispatch.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_pr_pipeline_command.py",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_pr_pipeline_entries.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {

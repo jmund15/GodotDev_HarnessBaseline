@@ -237,9 +237,8 @@ JOB_MAP_SECTION_RE = re.compile(plan_job_map_guard.JOB_MAP_HEADING + r".*?(?=^#{
 BACKTICK_PATH_RE = re.compile(r"`([^`\s]+)`")
 
 
-def fix_paths(path: str, shape: str) -> list[str]:
-    """The code-file paths a subject plan touches as written: the backticked code paths in its `## Job map`, plus a meta
-    plan's `path` surfaces. Test and scratch paths are skipped, as the census's fix counts skip them."""
+def fix_paths(path: str, shape: str) -> dict[str, list[str]]:
+    """Runtime harness paths named in the plan's Job map or meta path surfaces, with candidate repo forms."""
     import citers
     import mechanism_census
     text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -250,30 +249,34 @@ def fix_paths(path: str, shape: str) -> list[str]:
             written += [s["surface"] for s in citers.plan_surfaces(path) if s["kind"] == "path"]
         except citers.Usage:
             pass
-    return [p for p in dict.fromkeys(written)
-            if p.endswith(mechanism_census.CODE_EXT) and not re.search(r"(^|/)(tests|scratch)/|[{}*?]", p)
-            and not re.match(r"test_|.*_test\.", Path(p).name)]
+    forms = {}
+    roots = mechanism_census.HARNESS_ROOTS
+    for p in dict.fromkeys(written):
+        candidates = [p, *(f"{root}/{p}" for root in roots)]
+        eligible = [candidate for candidate in candidates if mechanism_census.runtime_harness_path(candidate)]
+        if eligible:
+            forms[p] = eligible
+    return forms
 
 
 def fix_history_section(subjects: list[tuple[str, str]], repo: Path, *, out: Path, prefix: str) -> str:
     """Write each subject plan's counted fix history to `<prefix>_<stem>_fixes.json` and return a blockquoted summary:
-    one count row per touched code file, a bare or `.claude/`-prefixed path resolved to the tracked one, and an
-    unresolved row (never a count) for a path that resolves nowhere (`mechanism_census.fix_history`)."""
+    one count row per touched runtime harness file and an unresolved row (never a count) for a named path
+    that resolves nowhere (`mechanism_census.fix_history`)."""
     from collections import Counter
     import mechanism_census
     if not subjects:
-        return "# FIX_HISTORY\n\nNo subject plan was passed: no code file is named.\n"
+        return "# FIX_HISTORY\n\nNo subject plan was passed.\n"
     stems = Counter(Path(path).stem for _shape, path in subjects)
     lines = ["# FIX_HISTORY", ""]
     reading = mechanism_census.latest_reading(str(repo))
     for shape, path in dict.fromkeys(subjects):
-        written = fix_paths(path, shape)
-        forms = {w: [w] if w.startswith(".claude/") else [".claude/" + w, w] for w in written}
+        forms = fix_paths(path, shape)
         history = mechanism_census.fix_history(str(repo), sorted({f for fs in forms.values() for f in fs}),
-                                               ref="HEAD", days=FIX_WINDOW_DAYS, reading=reading) if written else {}
+                                               ref="HEAD", days=FIX_WINDOW_DAYS, reading=reading) if forms else {}
         rows, full = [], {}
-        for raw in written:
-            hit = next((f for f in forms[raw] if not history[f].get("unresolved")), None)
+        for raw, candidates in forms.items():
+            hit = next((f for f in candidates if not history[f].get("unresolved")), None)
             if hit is None:
                 rows.append({"path": raw, "unresolved": True})
                 continue
@@ -283,7 +286,7 @@ def fix_history_section(subjects: list[tuple[str, str]], repo: Path, *, out: Pat
         fixes_file = out / f"{prefix}_{subject_stem(path, stems)}_fixes.json"
         fixes_file.write_text(json.dumps(full, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
         lines += [f"> ## {path}", ">",
-                  f"> Counted fixes in the census window ({FIX_WINDOW_DAYS} days) for the code files this plan touches. "
+                  f"> Counted fixes in the census window ({FIX_WINDOW_DAYS} days) for the runtime harness files this plan touches. "
                   "Facts only: a count is a lead for judging a redesign against a patch, never the verdict.",
                   "> `sinceListing` counts fixes since a listed file's listing date, past the window: `cited` of `fixes` "
                   "carry a plan tag." if reading else
