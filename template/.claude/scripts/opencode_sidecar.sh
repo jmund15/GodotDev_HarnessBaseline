@@ -166,8 +166,11 @@ oc_claude_bin() {
   return 1
 }
 
+# SC_UPSTREAM_KEY: a wrapping launcher whose upstream is not Zen (local_llama_sidecar.sh) sets the key itself, so the
+# env file's OPENCODE_API_KEY never reaches that upstream.
 oc_credential() {
   local k
+  [ -n "${SC_UPSTREAM_KEY:-}" ] && { printf '%s' "$SC_UPSTREAM_KEY"; return 0; }
   k="$(oc_read_key)"
   case "$k" in
     ""|"<redacted>"|"your-key-here") printf '%s' "public" ;;
@@ -324,7 +327,8 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
-  if [ "$SC_TRANSPORT" != "go" ]; then
+  # Only Zen (transport opencode) publishes a catalog; go and local rows rest on the live probe below.
+  if [ "$SC_TRANSPORT" = "opencode" ]; then
     _models="$(curl -s --max-time 20 "$ZEN_BASE_URL/models" 2>/dev/null)" || {
       echo "UNAVAILABLE (zen endpoint unreachable: $ZEN_BASE_URL/models)"; exit 3; }
     case "$_models" in
@@ -396,7 +400,7 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
-SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "")"
+SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "")" || exit $?
 [ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env

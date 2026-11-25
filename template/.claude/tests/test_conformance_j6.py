@@ -1,4 +1,5 @@
-"""Executed dispatch/watch conformance cases; no provider calls."""
+"""Executed dispatch/watch conformance cases; no provider calls. The TaskStop cases are rows of
+`tests/floor/test_floor_kill.py` (`RUNNING_LAUNCHES`)."""
 import contextlib
 import io
 import json
@@ -13,7 +14,6 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / '.claude/tools'), str(ROOT / '.claude/hooks'), str(ROOT / '.claude/tests')]
 import dispatch_table
-import kill_guard
 import watch_records as watch
 
 
@@ -24,22 +24,6 @@ class DispatchInterfaceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn('usage:', result.stdout.lower())
         self.assertNotIn('JSONDecodeError', result.stderr)
-
-
-class StopInvocationTests(unittest.TestCase):
-    def test_own_launch_passes_unless_paid_and_an_unlaunched_task_is_denied(self):
-        commands = ["until test -s .claude/scratch/sidecar_fanout.py/out/a.record.json; do sleep 60; done",
-                    "printf '%s' '.claude/tools/sidecar_fanout.py'",
-                    "python3 .claude/tools/sidecar_fanout.py jobs.json",
-                    "bash -c 'python3 .claude/tools/sidecar_fanout.py jobs.json'"]
-        for command in commands:
-            with self.subTest(command=command), patch.object(kill_guard, '_launch_of',
-                    return_value=('Bash', {'command': command}, None)):
-                expected = 'ask' if 'python3 .claude/tools/sidecar_fanout.py jobs' in command else None
-                got = kill_guard.taskstop_decision(None, {'task_id': 'wait'})
-                self.assertEqual(got and got[0], expected)
-        with patch.object(kill_guard, '_launch_of', return_value=None):
-            self.assertEqual(kill_guard.taskstop_decision(None, {'task_id': 'wait'})[0], 'deny')
 
 
 class TerminalStatusTests(unittest.TestCase):

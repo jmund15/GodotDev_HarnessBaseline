@@ -3,7 +3,7 @@
 // relays the triggering user message to each agent as authoritative, and a lens whose mandate looks
 // unrelated answered that message instead of its brief. The engine list is enumerated from git, not
 // hand-listed, so a new engine without the line fails here; only the measurement workflows named in
-// tools/orchestration_metrics.py MEASUREMENT_WORKFLOWS are skipped (their agents are a benchmark
+// tools/orchestration_metrics.py MEASUREMENT_WORKFLOWS plus each plugin registration's measurement_workflows are skipped (their agents are a benchmark
 // instrument's internal stages, not delegated work).
 const fs = require('fs')
 const path = require('path')
@@ -40,13 +40,29 @@ async function run(engine, args, returned) {
   return { result, prompts }
 }
 
-// The skip list is READ from its owner, never copied: a copied list drifts and silently stops covering
-// the engine a new measurement workflow adds.
+// The skip list is READ from its owners, never copied: a copied list drifts and silently stops covering
+// the engine a new measurement workflow adds. The core names its own in tools/orchestration_metrics.py, and each
+// plugin adjusts that set through its registration's `measurement_workflows` (the plugin root is adaptation.json's
+// `plugins` value, relative to the checkout). A configured plugin that cannot be read throws: its workflows would be
+// checked as ordinary engines or skipped by name guess.
 function measurementWorkflows() {
   const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'orchestration_metrics.py'), 'utf8')
   const block = src.match(/MEASUREMENT_WORKFLOWS = frozenset\(\{([\s\S]*?)\}\)/)
   if (!block) throw new Error('MEASUREMENT_WORKFLOWS not found in tools/orchestration_metrics.py')
-  return new Set([...block[1].matchAll(/'([^']+)'/g)].map(m => m[1]))
+  const names = new Set([...block[1].matchAll(/'([^']+)'/g)].map(m => m[1]))
+  const adaptation = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'skills', 'project_subsystems', 'adaptation.json'), 'utf8'))
+  for (const [plugin, root] of Object.entries(adaptation.plugins || {})) {
+    const base = path.isAbsolute(root) ? root : path.join(__dirname, '..', '..', root)
+    const file = path.join(base, '.claude', 'plugin.' + plugin + '.json')
+    let registration
+    try {
+      registration = JSON.parse(fs.readFileSync(file, 'utf8'))
+    } catch (e) {
+      throw new Error('plugin ' + plugin + ' is configured and its registration ' + file + ' cannot be read: ' + e.message)
+    }
+    for (const name of registration.measurement_workflows || []) names.add(name)
+  }
+  return names
 }
 
 // Every tracked engines/*.js present in the working tree — a tracked file deleted from the tree has no

@@ -163,12 +163,6 @@ def registered_hook():
     )
     if not registered:
         raise AssertionError("post_edit_dispatch.py is not registered for PostToolUse Write")
-    dispatcher = os.path.join(ROOT, ".claude", "hooks", "post_edit_dispatch.py")
-    spec = importlib.util.spec_from_file_location("post_edit_dispatch_plan_probe", dispatcher)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    if not any(entry[0] == BASENAME[:-3] for entry in module.CHAIN):
-        raise AssertionError(f"{BASENAME} is not in the post_edit_dispatch chain")
     return os.path.join(ROOT, ".claude", "hooks", BASENAME)
 
 

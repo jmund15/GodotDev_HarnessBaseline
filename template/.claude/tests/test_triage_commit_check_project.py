@@ -181,10 +181,10 @@ def test_unknown_size_keeps_commit_admission_closed(tmp_path):
     from unittest.mock import patch
     import triage_commit_check as hook
     captured = []
-    invocation = SimpleNamespace(cwd=str(tmp_path), git_env={}, rest=[])
+    invocation = SimpleNamespace(cwd=str(tmp_path), git_env={}, rest=[], sub='commit')
     for recorded in (None, {'reach': 'shared', 'kind': 'mechanical'}):
-        with patch.object(hook, 'staged_paths', return_value=(['hooks/g.py'], None)), \
-                patch.object(hook, 'authored_paths', side_effect=lambda paths, *_: paths), \
+        published = SimpleNamespace(selection=(["hooks/g.py"], None), authored=lambda paths: paths)
+        with patch.object(hook, 'publication', return_value=published), \
                 patch.object(hook.triage, 'changes_from_index', return_value=[]), \
                 patch.object(hook.triage, '_toplevel', return_value=str(tmp_path)), \
                 patch.object(hook.triage, 'derive', return_value=hook.triage.Result('shared', frozenset(), [], [])), \
@@ -692,9 +692,14 @@ def main(tmp):
     absent_command = 'git commit -F not-yet.txt -- notes.txt'
     ctx, raw, parsed = h.context(root, payload(root, absent_command, session="fileonly"))
     updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
-    check("an unreadable -F commit takes the rewrite and keeps its shell bytes",
-          raw[0] == 0 and updated.replace(' --trailer "Triage-Derived: reach=local oracle=none"', '') == absent_command
-          and updated.count("Triage-Derived:") == 1, raw)
+    check("an unreadable -F commit whose trailer would be derived is left as written",
+          raw[0] == 0 and "updatedInput" not in parsed.get("hookSpecificOutput", {}) and "Triage-Derived" not in raw[1],
+          raw)
+    ctx, raw, parsed = h.context(root, payload(root, absent_command, session="derived-shapes"))
+    updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+    check("an unreadable -F commit under a session record takes the Triage rewrite and keeps its shell bytes",
+          raw[0] == 0 and record_option.sub("", updated) == absent_command
+          and len(record_option.findall(updated)) == 1, raw)
     write(root, "hooks/g.py", "x = 2\n")
     stage(root, "hooks/g.py")
     ctx, raw, parsed = h.context(root, payload(root, 'git commit -m "shared"', session="norec-shapes"))
@@ -705,48 +710,6 @@ def main(tmp):
     check("the same derived triage is not repeated later in the session", "derived reach=" not in ctx, raw)
 
     root = previous_root
-    # --- through the dispatcher -----------------------------------------------------------------------
-    import pre_bash_dispatch  # noqa: E402
-    import triage as triage_module  # noqa: E402
-    names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
-    check("triage_commit_check is registered among the advisories, before sidecar_dispatch_context",
-          "triage_commit_check.py" in names and "sidecar_dispatch_context.py" in names
-          and names.index("triage_commit_check.py") < names.index("sidecar_dispatch_context.py")
-          and names.index("triage_commit_check.py") > names.index("foreground_wait_guard.py"), names)
-    check("its import did not fall back to the stub",
-          getattr(pre_bash_dispatch, "_TRIAGE_CHECK_IMPORT_ERROR", "unset") is None)
-    stub_code, stub_out, stub_err = pre_bash_dispatch.run_hook(
-        pre_bash_dispatch._advisory_stub("triage_commit_check", "ImportError: planted",
-                                         "no commit triage advisory is printed"), (), "{}")
-    check("a failed import registers a stub that reports on stderr, exit 1, nothing on the model channel",
-          stub_code == 1 and stub_out == "" and "triage_commit_check" in stub_err and "planted" in stub_err,
-          repr((stub_code, stub_out, stub_err)))
-
-    add_node(root)
-    stage(root, "Dungeon/a.tscn")
-    chain = ((pre_bash_dispatch.triage_commit_check, ()),) if hasattr(pre_bash_dispatch, "triage_commit_check") else ()
-    saved = dict(os.environ)
-    os.environ.update(CLAUDE_PROJECT_DIR=root, HARNESS_HOOK_STATE_DIR=h.state, HARNESS_TASK_RECORD_DIR=h.records)
-    real_derive = triage_module.derive
-    try:
-        code, out, err = pre_bash_dispatch.dispatch(json.dumps(payload(root, commit)), hooks=chain)
-        check("control: the dispatcher carries the raise as additionalContext",
-              code == 0 and "oracle adds runtime" in out, (code, out, err))
-
-        def boom(*_args, **_kwargs):
-            raise RuntimeError("planted crash")
-        triage_module.derive = boom
-        code, out, err = pre_bash_dispatch.dispatch(json.dumps(payload(root, commit)), hooks=chain)
-        check("a crashed advisory stays non-blocking and names the fault on the model channel",
-              code == 0 and "permissionDecision" not in out and "additionalContext" in out
-              and "triage_commit_check exited 1" in out and "planted crash" in out,
-              (code, out, err))
-        check("the dispatcher's stderr carries the exit-1 line for the crashed check",
-              "[pre_bash_dispatch] triage_commit_check exited 1" in err and "planted crash" in err, err)
-    finally:
-        triage_module.derive = real_derive
-        os.environ.clear()
-        os.environ.update(saved)
 
     # --- E18: the owed candidate review ----------------------------------------------------------
     import review_ledger
@@ -796,27 +759,6 @@ def main(tmp):
     check("a worktree-source commit (-a) over edited content prints the split count", owed_counts(ctx) == [1, 1, 0], raw)
     git(root, "reset", "-q", "--hard")
     os.remove(h.ledger)
-
-    add_node(root)
-    stage(root, "Dungeon/a.tscn")
-    os.makedirs(h.ledger)
-    chain = ((pre_bash_dispatch.triage_commit_check, ()),) if hasattr(pre_bash_dispatch, "triage_commit_check") else ()
-    saved = dict(os.environ)
-    os.environ.update(CLAUDE_PROJECT_DIR=root, HARNESS_HOOK_STATE_DIR=h.state, HARNESS_TASK_RECORD_DIR=h.records,
-                      HARNESS_REVIEW_CANDIDATE_KEYS="cq.C", HARNESS_REVIEW_LEDGER=h.ledger)
-    try:
-        write(root, "msg.txt", "fix: x\n\n" + TRAILER % ("local", "gate") + "\n")
-        code, out, err = pre_bash_dispatch.dispatch(json.dumps(payload(root, commit)), hooks=chain)
-        context = json.loads(out).get("hookSpecificOutput", {}).get("additionalContext", "") if out.strip() else ""
-        check("an unreadable ledger exits 0 with the raise block and the did-not-run line, no owed line",
-              code == 0 and "oracle adds runtime" in context
-              and "[review] owed check did not run: ledger unreadable:" in context and h.ledger in context
-              and "run review_ledger.py uncovered" in context
-              and "candidate review owed" not in context, (code, out, err))
-    finally:
-        os.environ.clear()
-        os.environ.update(saved)
-    os.rmdir(h.ledger)
 
     # The hook counts the unconditional set only: the override is popped, not set empty.
     import lens

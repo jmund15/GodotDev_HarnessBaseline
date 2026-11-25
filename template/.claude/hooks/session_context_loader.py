@@ -35,7 +35,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+import adaptation  # noqa: E402
 import _optional_hooks
+import _git_run
 from _bounded_run import run_bounded
 from _checkout_root import linked_main_root
 from _claude_scope import is_cloud
@@ -132,12 +135,9 @@ def _step_results(name, *args):
 def get_project_root() -> Path:
     """Get the git toplevel (works in worktrees too)."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return Path(result.stdout.strip())
+        result = _git_run.run(["rev-parse", "--show-toplevel"], timeout=5)
+        if result.returncode == 0 and result.text.strip():
+            return Path(result.text.strip())
     except Exception:
         pass
     return Path.cwd()
@@ -175,11 +175,9 @@ def submodule_status(root: Path) -> list[tuple[str, str, str]] | None:
 def _submodule_is_dirty(root: Path, sub_path: str) -> bool | None:
     """Dirty state, or None when the working tree cannot be inspected."""
     try:
-        result = subprocess.run(
-            ["git", "--no-optional-locks", "-C", str(root / sub_path), "status", "--porcelain"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
-        )
-        return bool(result.stdout.strip()) if result.returncode == 0 else None
+        result = _git_run.run(["--no-optional-locks", "-C", str(root / sub_path), "status", "--porcelain"],
+                              timeout=15)
+        return bool(result.text.strip()) if result.returncode == 0 else None
     except Exception:
         return None
 
@@ -188,10 +186,9 @@ def _advance_behind_pin(root: Path, sub_path: str, sha: str) -> bool:
     """Move a clean checkout that is a strict ancestor of the recorded pin onto the pin: it holds no
     independent work (`rules/jmodot_submodule.md` 7). A branch fast-forwards; a detached HEAD detaches."""
     def git(cwd: Path, *args: str):
-        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=60)
+        return _git_run.run(["-C", str(cwd), *args], timeout=60)
     try:
-        pin = git(root, "rev-parse", "--verify", "-q", f":{sub_path}").stdout.strip()
+        pin = git(root, "rev-parse", "--verify", "-q", f":{sub_path}").text.strip()
         sub = root / sub_path
         if not pin or _submodule_is_dirty(root, sub_path) is not False:
             return False
@@ -240,12 +237,10 @@ def setup_submodule(root: Path) -> str:
 
     if actionable:
         try:
-            result = subprocess.run(
-                ["git", "submodule", "update", "--init", "--recursive", "--", *actionable],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, cwd=str(root)
-            )
+            result = _git_run.run(["submodule", "update", "--init", "--recursive", "--", *actionable],
+                                  timeout=180, cwd=str(root))
             if result.returncode != 0:
-                return f"FAILED: {result.stderr.strip()[:120]}"
+                return f"FAILED: {result.err_text.strip()[:120]}"
         except subprocess.TimeoutExpired:
             return "FAILED: timeout"
         except Exception as exc:
@@ -364,23 +359,17 @@ def handle_hoarders(rows, floor: int = HANDLE_HOARD_FLOOR) -> str:
 
 
 def roster_health(root: Path) -> str:
-    """Benchmark rosters that stopped writing before a terminal marker (bench_lib.roster_summary).
+    """The bench plugin's roster line (`entry.roster_summary`): rosters that stopped writing before a terminal marker.
 
     A roster in a wait loop and one killed by a reboot leave the same silent log; the pid file separates
     them (2026-09-11: two rosters died at a reboot and nothing said so for five days). Discovery failure
-    stays UNKNOWN -- an absent BenchmarkArms tree is not a clean one. The arms root comes from the suite's roots
-    table (core/roots.py), so its BENCH_ROOTS override reaches this banner too."""
+    stays UNKNOWN: an absent bench logs tree and an unreadable plugin are not a clean one. A project that
+    configures no bench plugin has no rosters to check, so the line is empty."""
     try:
-        bench = os.path.join(root, ".claude", "scripts", "benchmark_campaign")
-        if not os.path.isdir(bench):
-            return ""  # a project without the battery has no rosters to check
-        sys.path[:0] = [bench, os.path.join(bench, "scoring")]
-        from core import roots
-        import bench_lib
-        logs = roots.logs_dir()
-        if not os.path.isdir(logs):
-            return "UNKNOWN (no logs dir at %s)" % logs
-        return bench_lib.roster_summary(logs)
+        bench = adaptation.plugin_entry(root / ".claude", "bench")
+        return bench.roster_summary() if bench else ""
+    except adaptation.PluginUnreadable as error:
+        return f"UNKNOWN ({error})"
     except Exception as error:
         return f"UNKNOWN ({type(error).__name__}: {error})"
 
@@ -410,12 +399,10 @@ def ladder_banner(root: Path) -> str:
     if _sidecar_delegate():
         return ""
     try:
-        bench = os.path.join(root, ".claude", "scripts", "benchmark_campaign")
-        if not os.path.isfile(os.path.join(bench, "scoring", "ladder_lag.py")):
-            return ""  # a project without the battery has no board to lag
-        sys.path[:0] = [bench, os.path.join(bench, "scoring")]
-        import ladder_lag
-        return " | ".join(filter(None, (ladder_lag.banner(), ladder_lag.audit_banner())))
+        bench = adaptation.plugin_entry(root / ".claude", "bench")
+        return bench.ladder_banner() if bench else ""
+    except adaptation.PluginUnreadable as error:
+        return f"ladder: UNKNOWN ({error})"
     except Exception as error:
         return f"ladder: UNKNOWN ({type(error).__name__}: {error})"
 
@@ -619,18 +606,16 @@ def find_stray_search_indexes(root: Path) -> list[Path]:
     which would hide the `.search-index` segment entirely. The glob pathspec limits the listing to
     `.search-index` paths, so its size follows the strays rather than every ignored file."""
     try:
-        result = subprocess.run(
-            ["git", "--no-optional-locks", "status", "--ignored", "--untracked-files=all", "--porcelain", "--", _SWEEP_PATHSPEC],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_SWEEP_GIT_STATUS_TIMEOUT, cwd=str(root)
-        )
+        result = _git_run.run(["--no-optional-locks", "status", "--ignored", "--untracked-files=all",
+                               "--porcelain", "--", _SWEEP_PATHSPEC],
+                              timeout=_SWEEP_GIT_STATUS_TIMEOUT, cwd=str(root))
         if result.returncode != 0:
             return []
     except Exception:
         return []
 
     found = set()
-    for line in result.stdout.splitlines():
+    for line in result.text.splitlines():
         if not line.startswith("!! "):
             continue
         rel = line[3:].strip().strip('"')
@@ -699,24 +684,18 @@ def sweep_stray_search_indexes(root: Path) -> None:
 
 def get_git_branch() -> str:
     try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        return result.stdout.strip() or "unknown"
+        result = _git_run.run(["branch", "--show-current"], timeout=5)
+        return result.text.strip() or "unknown"
     except Exception:
         return "unknown"
 
 
 def get_uncommitted_count() -> int | None:
     try:
-        result = subprocess.run(
-            ["git", "--no-optional-locks", "status", "--porcelain"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
+        result = _git_run.run(["--no-optional-locks", "status", "--porcelain"], timeout=5)
         if result.returncode != 0:
             return None
-        lines = [l for l in result.stdout.strip().split("\n") if l]
+        lines = [l for l in result.text.strip().split("\n") if l]
         return len(lines)
     except Exception:
         return None
@@ -726,16 +705,14 @@ def get_upstream_drift() -> tuple[int, int, float] | None:
     """(ahead, behind, hours since the oldest unpushed commit) against the branch's upstream as last fetched, or None
     when there is no upstream or git fails."""
     try:
-        counts = subprocess.run(
-            ["git", "--no-optional-locks", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        counts = _git_run.run(["--no-optional-locks", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
+                              timeout=5)
         if counts.returncode != 0:
             return None
-        ahead, behind = (int(x) for x in counts.stdout.split())
+        ahead, behind = (int(x) for x in counts.text.split())
         oldest = 0.0
         if ahead:
-            times = subprocess.run(["git", "log", "--format=%ct", "@{u}..HEAD"], capture_output=True, text=True,
-                                   encoding="utf-8", errors="replace", timeout=5).stdout.split()
+            times = _git_run.run(["log", "--format=%ct", "@{u}..HEAD"], timeout=5).text.split()
             oldest = (time.time() - min(int(t) for t in times)) / 3600 if times else 0.0
         return ahead, behind, oldest
     except Exception:
@@ -744,11 +721,8 @@ def get_upstream_drift() -> tuple[int, int, float] | None:
 
 def get_recent_commits(count: int = 3, cwd: str | None = None) -> list[str]:
     try:
-        result = subprocess.run(
-            ["git", "log", f"-{count}", "--format=%h %s"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, cwd=cwd
-        )
-        return [line.strip()[:70] for line in result.stdout.strip().split("\n") if line.strip()]
+        result = _git_run.run(["log", f"-{count}", "--format=%h %s"], timeout=5, cwd=cwd)
+        return [line.strip()[:70] for line in result.text.strip().split("\n") if line.strip()]
     except Exception:
         return []
 

@@ -52,6 +52,7 @@ REPO = Path(__file__).resolve().parents[2]
 for _d in (str(REPO / ".claude" / "hooks"), str(Path(__file__).resolve().parent)):
     if _d not in sys.path:
         sys.path.insert(0, _d)
+from _git_run import run as git_run  # noqa: E402
 
 VERIFIED, UNVERIFIED, UNCHECKED = "VERIFIED", "UNVERIFIED", "UNCHECKED"
 ITEM_KINDS = ("command", "owner", "url", "file")
@@ -216,10 +217,10 @@ class _Context:
         common = _path_git(self.root, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if common is None or common.returncode:
             return None
-        listed = _path_git(self.root, "--git-dir", common.stdout.strip(), "worktree", "list", "--porcelain")
+        listed = _path_git(self.root, "--git-dir", common.text.strip(), "worktree", "list", "--porcelain")
         if listed is None or listed.returncode:
             return None
-        first = listed.stdout.splitlines()[0] if listed.stdout else ""
+        first = listed.text.splitlines()[0] if listed.text else ""
         return Path(first[len("worktree "):]).resolve() if first.startswith("worktree ") else None
 
 
@@ -251,9 +252,7 @@ def _item_error(item):
 
 def _path_git(root, *args):
     try:
-        return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              stdin=subprocess.DEVNULL, timeout=COMMAND_TIMEOUT)
+        return git_run(args, cwd=str(root), input=b"", timeout=COMMAND_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -556,11 +555,10 @@ def parse_git(command, root=None):
 
 
 def _run_git(rest, root, timeout):
-    env = {k: v for k, v in os.environ.items() if k not in ("GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_DIR")}
-    env.update(GIT_PAGER="cat", GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-    done = subprocess.run(["git", "--no-pager", *rest], cwd=str(root), capture_output=True, timeout=timeout, env=env)
-    return (done.returncode, done.stdout.decode("utf-8", errors="replace").replace("\r\n", "\n"),
-            done.stderr.decode("utf-8", errors="replace"))
+    env = {"GIT_EXTERNAL_DIFF": None, "GIT_DIR": None, "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
+           "GIT_OPTIONAL_LOCKS": "0"}
+    done = git_run(rest, cwd=str(root), timeout=timeout, env=env, prefix=("--no-pager",))
+    return (done.returncode, done.text.replace("\r\n", "\n"), done.err_text)
 
 
 def _check_command(item, ctx):
@@ -723,12 +721,14 @@ def claim_verdict(item_verdicts, polarity=None):
 
 
 def check_claims(rows, *, root=REPO, session_id=None, manifest=None, command_timeout=None):
-    """Verdicts for `rows = [{"id", "evidence": [items], "polarity"?}]` against `root`.
+    """Verdicts for `rows = [{"id", "evidence": [items], "polarity"?, "root"?}]` against `root`; a row's own
+    `root` (the checkout its job ran in) resolves that row's relative paths instead.
 
     -> {"status": "pass"|"fail", "counts": {VERIFIED, UNVERIFIED, UNCHECKED}, "verdicts": {id: {"verdict",
     "items": [{"kind", "verdict", "reason", ...}]}}, "errors": [...]}. `status` is `pass` only when no claim is
     UNVERIFIED or UNCHECKED and no row was unusable."""
     ctx = _Context(root, session_id, manifest, command_timeout)
+    contexts = {str(ctx.root): ctx}
     verdicts, errors = {}, []
     counts = {VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: 0}
     for row in rows:
@@ -740,7 +740,10 @@ def check_claims(rows, *, root=REPO, session_id=None, manifest=None, command_tim
             errors.append(f"duplicate claim id {key}")
             continue
         evidence = row.get("evidence")
-        items = [check_item(item, ctx) for item in (evidence if isinstance(evidence, list) else [])]
+        own = row.get("root")
+        row_ctx = ctx if not own else contexts.setdefault(
+            str(Path(own)), _Context(own, session_id, manifest, command_timeout))
+        items = [check_item(item, row_ctx) for item in (evidence if isinstance(evidence, list) else [])]
         verdict = claim_verdict([i["verdict"] for i in items], row.get("polarity"))
         verdicts[key] = {"verdict": verdict, "items": items}
         counts[verdict] += 1

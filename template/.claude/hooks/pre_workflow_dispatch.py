@@ -18,12 +18,8 @@ Members, in order (each keeps its own `main()` and CLI contract, so its own proo
   1. subagent_dispatch_guard   a delegate or sidecar child may not dispatch. A deny here ends the chain: the
                                orchestrator's preconditions below are not the delegate's to meet.
   2. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it.
-  3. dispatch_mechanism_guard  nested fan-out in a brief; a script typing its own `evidence`; dispatch
-                               doctrine not in context.
-  4. workflow_provider_guard   tool profile, vocabulary, provider capacity, tier, five-hour width; its
+  3. workflow_provider_guard   tool profile, vocabulary, provider capacity, tier, five-hour width; its
                                `updatedInput` injects `args.__transport` and the rails.
-  5. readonly_marker_arm       arms the read-only fan-out marker. Runs only when nothing denied, since a denied
-                               dispatch starts no lens for the marker to cover.
 
 Merge:
   deny            every member's reason, each once, in member order. One reason is emitted verbatim; several
@@ -37,9 +33,8 @@ Merge:
 
 Fail posture: a member exception, import fault or exit outside {0, 2} is reported on stderr and in
 `additionalContext`, naming the lost check and repair; the next member runs. The exceptions, on a Workflow
-call, are `_FAIL_CLOSED_ON_WORKFLOW`: `dispatch_mechanism_guard`, whose doctrine check stands in front of paid
-spend, and `workflow_provider_guard`, without whose `args.__transport` every engine refuses to run. Their fault
-denies with the error. An Agent call keeps the advisory. A fault reaches the model as the traceback's exception line
+call, are `_FAIL_CLOSED_ON_WORKFLOW`: `workflow_provider_guard`, without whose `args.__transport` every engine
+refuses to run. Its fault denies with the error. An Agent call keeps the advisory. A fault reaches the model as the traceback's exception line
 and innermost frame (`_fault`); the whole traceback goes to stderr. A member's exit 2 joins the deny with its stderr as
 the reason.
 
@@ -58,11 +53,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _inprocess_hook import hook_output, run_hook  # noqa: E402
 
 _ROLE_GATE = "subagent_dispatch_guard"
-_RUNS_WHEN_ALLOWED = "readonly_marker_arm"
-# Members whose fault denies a Workflow call (instruction_quality section 16): the doctrine check stands in front of
-# paid spend, and the provider guard injects the vocabulary every engine needs. Names, so an import stub keeps it.
+# Members whose fault denies a Workflow call (instruction_quality section 16): the provider guard injects the
+# vocabulary every engine needs. Names, so an import stub keeps it.
 _FAIL_CLOSED_ON_WORKFLOW = {
-    "dispatch_mechanism_guard": "it checks the dispatch doctrine and pins before a paid run starts",
     "workflow_provider_guard": "it could not inject `args.__transport`, the model vocabulary every engine refuses "
                                "to run without",
 }
@@ -249,18 +242,21 @@ def _load(name):
 # Import with the real stdout bound; some members reconfigure it on import.
 subagent_dispatch_guard = _load("subagent_dispatch_guard")
 workflow_script_lf_guard = _load("workflow_script_lf_guard")
-dispatch_mechanism_guard = _load("dispatch_mechanism_guard")
 workflow_provider_guard = _load("workflow_provider_guard")
-readonly_marker_arm = _load("readonly_marker_arm")
 
 HOOKS = (
     (EXPAND_ARGS_MEMBER, ()),
     (FILL_EFFORTS_MEMBER, ()),
     (subagent_dispatch_guard, ()),
     (workflow_script_lf_guard, ()),
-    (dispatch_mechanism_guard, ()),
     (workflow_provider_guard, ()),
-    (readonly_marker_arm, ()),
+)
+
+# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
+# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
+UNWIRED = (
+    "dispatch_mechanism_guard",
+    "readonly_marker_arm",
 )
 
 
@@ -299,13 +295,16 @@ def _joined(reasons):
             % (len(reasons), "\n".join("%d. %s" % (i, r) for i, r in enumerate(reasons, 1))))
 
 
-def _jobs_file(tool_input):
-    """(refusal, None) when `args.jobsFile` cannot be expanded; (None, args) with the file's jobs in place of
-    the path, in the form the call carried them (a JSON string stays a string); (None, None) without one."""
+def _jobs_file(payload):
+    """(refusal, None) when the call's `args.jobsFile` cannot be expanded; (None, args) with the file's jobs in place
+    of the path, in the form the call carried them (a JSON string stays a string); (None, None) without one. The path
+    resolves under the session's own checkout (`_session_root`), where the fan-out wrote it."""
+    tool_input = payload.get("tool_input") or {}
     try:
         import _dispatch_pins
-        reason = _dispatch_pins.jobs_file_refusal(tool_input)
-        expanded = None if reason else _dispatch_pins.expanded_args(tool_input)
+        root = str(_session_root(payload))
+        reason = _dispatch_pins.jobs_file_refusal(tool_input, root)
+        expanded = None if reason else _dispatch_pins.expanded_args(tool_input, root)
     except Exception as exc:
         return "args.jobsFile could not be checked (%s: %s). Nothing was dispatched." % (type(exc).__name__, exc), None
     if reason or expanded is None:
@@ -319,7 +318,7 @@ def dispatch(raw_payload, hooks=HOOKS):
     reasons, contexts, user_stderr = [], [], []
     decision, rewritten = None, None
     if payload.get("tool_name") == "Workflow":
-        refusal, expanded = _jobs_file(payload.get("tool_input") or {})
+        refusal, expanded = _jobs_file(payload)
         if refusal:
             return 0, json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -330,8 +329,6 @@ def dispatch(raw_payload, hooks=HOOKS):
             raw_payload = json.dumps(payload)
     for module, argv_tail in hooks:
         name = module.__name__
-        if name == _RUNS_WHEN_ALLOWED and reasons:
-            continue
         code, out, err = run_hook(module, argv_tail, raw_payload)
         before = len(reasons)
         if code == 2:

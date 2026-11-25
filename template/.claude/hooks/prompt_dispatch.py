@@ -50,6 +50,9 @@ import sys
 import threading
 import time
 import traceback
+# Loaded before any member thread: dataclasses reads sys.modules["typing"] without the import lock, so a member
+# defining a dataclass while another member's thread imports typing sees it half loaded and faults on import.
+import typing  # noqa: F401
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOOKS_DIR not in sys.path:
@@ -59,21 +62,26 @@ import _optional_hooks  # noqa: E402 - after the sys.path insert above
 
 # (module basename, budget seconds). A plain literal: other tools read it with ast.literal_eval.
 CHAIN = (
-    ("prompt_memory_loader", 30),
-    ("critical_analysis_reminder", 30),
     ("prompt_git_state_delta", 15),
-    ("tool_routing_cumulative_reset", 15),
-    ("tool_routing_prompt_synthesis", 15),
-    ("shell_census", 25),
     ("sidecar_watch_rearm", 5),
-    ("budget_posture", 15),
-    ("activity_registry", 15),
     ("overnight_ask_guard", 5),
+)
+
+# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
+# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
+UNWIRED = (
+    "activity_registry",
+    "budget_posture",
+    "critical_analysis_reminder",
+    "prompt_memory_loader",
+    "shell_census",
+    "tool_routing_cumulative_reset",
+    "tool_routing_prompt_synthesis",
 )
 
 # Members whose standalone `__main__` block swallows main()'s exceptions and exits 0, so text they
 # printed before the exception is still delivered there.
-_SWALLOWS = frozenset({"budget_posture", "activity_registry"})
+_SWALLOWS = frozenset()
 
 DEFAULT_REPORT_RECORDS = 100
 _TIMING_WRITE_BUDGET = 1.5

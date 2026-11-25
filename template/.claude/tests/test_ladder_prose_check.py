@@ -121,6 +121,12 @@ def top_level_code(text):
 
 
 CASES = [
+    # ---- which plan pays is the fan-out's pick, never a cell's ----
+    ("a quota bucket in a ± cell fails", lambda: code("+ its own bucket, so it spends no quota") == 1),
+    ("a quota fallback in a ± cell fails", lambda: code("+ fan-out on the Go plan when flash is out") == 1),
+    ("a plan-room condition fails", lambda: code("+ an added seat when the Codex plan has room") == 1),
+    ("a band-routing clause in an effort cell fails", lambda: effort_code("`low`, free, so it routes in every band") == 1),
+    ("a plan comparison by cost passes", lambda: code("+ the costliest Go row per token, so never a fallback") == 0),
     # ---- edit-only contracts belong in /ladder_ingest, never this reader ----
     ("the authoring heading fails", lambda: top_level_code("## Authoring an entry") == 1),
     ("an ingest edit rule fails", lambda: top_level_code("Every ingest rewrites an existing clause.") == 1),
@@ -215,6 +221,14 @@ CASES = [
     ("...and the same tendencies without source narration pass",
      lambda: code("+ strong on agentic coding at a low draw per task; - weak on "
                   "open-ended judgment") == 0),
+
+    # A narrated run carries no figure, so the figure patterns missed the cell that first wrote one.
+    ("a narrated battery run fails",
+     lambda: code("- light derived reads passed one live battery, but a join missed") == 1),
+    ("an until-the-next-run hedge fails",
+     lambda: code("- derived work is unproven until a wider run passes") == 1),
+    ("...and the same scope written as a tendency passes",
+     lambda: code("+ light derived reads can go to it; - heavier derived work is unmeasured") == 0),
 
     # ---- the EFFORT column, checked on the same terms ----------------------
     # Enforcing ± alone did not remove the figures, it relocated them: task ids, scores and

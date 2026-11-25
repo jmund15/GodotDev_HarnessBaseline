@@ -7,6 +7,7 @@ A registry whose file a layer-stripped consumer never received is skipped, so an
     python3 .claude/tests/test_lens_briefs.py
 """
 import json
+import subprocess
 import sys
 import tempfile
 import types
@@ -98,7 +99,7 @@ def job_tier_checks():
         must.write_text(str(context) + "\n", encoding="utf-8")
         plan = root / "plan.json"
         plan.write_text(json.dumps({"roster": [{"key": "seat-a"}, {"key": "seat-b"}]}), encoding="utf-8")
-        found = {key: types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"], kfm=False, citers=False)
+        found = {key: types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"], kfm=False, citers=False, fixes="")
                  for key in ("seat-a", "seat-b")}
         saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage)
         lens.catalog = lambda: ({"review": "preamble"}, found)
@@ -173,7 +174,7 @@ def packet_seat_checks():
         plan = root / "plan.json"
         plan.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
         found = {"seat-a": types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"],
-                                                 kfm=False, citers=False, mandates=["harness-quality"])}
+                                                 kfm=False, citers=False, fixes="", mandates=["harness-quality"])}
         saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage)
         lens.catalog = lambda: ({"review": "preamble"}, found)
         lens.doctrine = lambda lenses: ""
@@ -215,7 +216,7 @@ def packet_placeholder_defaults():
         plan = root / "plan.json"
         plan.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
         body = ["```\n", "Doctrine: {{DOCTRINE_COMMITS}}\nHunks: {{HARNESS_HUNKS}}\nHot: {{HOT_SET}}\n", "```\n"]
-        found = {"seat-a": types.SimpleNamespace(registry="review", lines=body, kfm=False, citers=False,
+        found = {"seat-a": types.SimpleNamespace(registry="review", lines=body, kfm=False, citers=False, fixes="",
                                                  mandates=["harness-quality"])}
         saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage)
         lens.catalog = lambda: ({"review": "preamble"}, found)
@@ -249,7 +250,7 @@ def bar_checks():
         root = Path(tmp)
         records = root / "tasks"
         records.mkdir()
-        (records / "T1.json").write_text(json.dumps({"id": "T1", "updated": "2026-10-26T10:00:00", "rigor": "light",
+        (records / "T1.json").write_text(json.dumps({"id": "T1", "task_id": "T1", "updated": "2026-10-26T10:00:00", "rigor": "light",
                                                      "session_id": "sess0001", "requirements": ["ships"],
                                                      "exclusions": []}), encoding="utf-8")
         os.environ["HARNESS_TASK_RECORD_DIR"] = str(records)
@@ -262,7 +263,7 @@ def bar_checks():
         plan = root / "plan.json"
         plan.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
         found = {"seat-a": types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"], kfm=False,
-                                                 citers=False)}
+                                                 citers=False, fixes="")}
         saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
                  lens_briefs.seat_overage, lens_briefs.resolve_sidecar_entry, lens_briefs.effort_rungs)
         lens.catalog = lambda: ({"review": "preamble"}, found)
@@ -273,12 +274,14 @@ def bar_checks():
         lens_briefs.resolve_sidecar_entry = lambda token, what, data: {"alias": token, "transport": "off"}
         lens_briefs.effort_rungs = lambda entry, data: ["medium"]
 
-        def briefs(target, out, task="T1"):
+        def briefs(target, out, task="T1", no_task=False):
             argv = ["--plan", str(plan), "--out", str(out), "--prefix", "p", "--target", target,
                     "--context-path", str(context), "--model", sorted(lens_briefs.NATIVE_PINS)[0],
                     "--effort", "medium", "--must-read", str(must)]
             if task:
                 argv += ["--task", task]
+            if no_task:
+                argv += ["--no-task"]
             outcome = run_main(argv)
             text = "".join(p.read_text(encoding="utf-8") for p in out.glob("*.md")) if out.exists() else ""
             return outcome, text
@@ -286,6 +289,7 @@ def bar_checks():
             sidecar_outcome, sidecar_text = briefs("sidecar", root / "out_sidecar")
             native_outcome, native_text = briefs("native", root / "out_native")
             taskless_outcome, taskless_text = briefs("sidecar", root / "out_taskless", task=None)
+            optout_outcome, optout_text = briefs("sidecar", root / "out_optout", task=None, no_task=True)
         finally:
             (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
              lens_briefs.seat_overage, lens_briefs.resolve_sidecar_entry, lens_briefs.effort_rungs) = saved
@@ -305,6 +309,12 @@ def bar_checks():
     check("a sidecar seat brief with no --task still carries the session's bar text",
           taskless_outcome == "returned" and lens_briefs_bar("light") in taskless_text,
           "no BAR paragraph in the task-less sidecar brief")
+    check("a seat brief with no --task carries the session's record as its acceptance test by default",
+          taskless_outcome == "returned" and "## Acceptance test (task T1)" in taskless_text,
+          taskless_outcome)
+    check("--no-task opts a seat brief out of the session's acceptance test",
+          optout_outcome == "returned" and optout_text and "## Acceptance test" not in optout_text,
+          optout_outcome)
 
 
 def merged_seat_checks():
@@ -319,7 +329,7 @@ def merged_seat_checks():
         plan = root / "plan.json"
         plan.write_text(json.dumps({"roster": [{"key": "seat-a+seat-b"}]}), encoding="utf-8")
         body = ["```\n", "prompt\n", "```\n"]
-        found = {k: types.SimpleNamespace(registry="review", lines=body, kfm=False, citers=False)
+        found = {k: types.SimpleNamespace(registry="review", lines=body, kfm=False, citers=False, fixes="")
                  for k in ("seat-a", "seat-b")}
         saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens.seat_mandates, lens_briefs.lens_tier_refusal,
                  lens_briefs.seat_overage)
@@ -343,6 +353,117 @@ def merged_seat_checks():
           "`checked.mandates`" in text and "`m.A`, `m.B`, `m.C`" in text, text[:400])
     check("a merged seat's brief never routes outcomes to checked.basis alone",
           "In `checked.basis`, write one" not in text, "the brief still sends outcomes to the basis")
+
+
+FIX_JOB_MAP = """# Plan
+
+## Job map
+
+| Slice | Write set | Waits on | Route |
+|---|---|---|---|
+| S1 | `tools/mechanism_census.py`, `tests/test_mechanism_census.py` | — | job A |
+| S5 | `tools/lens.py`, `tools/missing_tool.py` | S2 | job C |
+"""
+
+
+def planted_fix_repo(root):
+    """A git repo with one fix commit to `.claude/tools/mechanism_census.py`; the fix is inside the census window."""
+    repo = root / "repo"
+    (repo / ".claude" / "tools").mkdir(parents=True)
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=proof", "-c", "user.email=proof@example.invalid",
+                        *args], check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    git("init", "-q")
+    (repo / ".claude" / "tools" / "mechanism_census.py").write_text("a = 1\n", encoding="utf-8")
+    (repo / ".claude" / "tools" / "lens.py").write_text("b = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "feat: start")
+    (repo / ".claude" / "tools" / "mechanism_census.py").write_text("a = 2\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "fix(tools): census reads the wrong row")
+    return repo
+
+
+def fix_brief(root, plan_text, fixes):
+    """One seat's native brief built over a planted repo, with its subject a code plan of `plan_text`."""
+    repo = planted_fix_repo(root)
+    plan = root / "subject.md"
+    plan.write_text(plan_text, encoding="utf-8")
+    roster = root / "roster.json"
+    roster.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
+    context = root / "context.md"
+    context.write_text("context\n", encoding="utf-8")
+    must = root / "must.txt"
+    must.write_text(str(context) + "\n", encoding="utf-8")
+    found = {"seat-a": types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"], kfm=False,
+                                             citers=False, fixes=fixes)}
+    saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage,
+             lens_briefs.REPO)
+    lens.catalog = lambda: ({"review": "preamble"}, found)
+    lens.doctrine = lambda lenses: ""
+    lens.seat_tier = lambda key: None
+    lens_briefs.lens_tier_refusal = lambda **kwargs: []
+    lens_briefs.seat_overage = lambda **kwargs: None
+    lens_briefs.REPO = repo
+    out = root / "out"
+    try:
+        outcome = run_main(["--plan", str(roster), "--out", str(out), "--prefix", "p", "--context-path", str(context),
+                            "--model", sorted(lens_briefs.NATIVE_PINS)[0], "--effort", "medium", "--must-read", str(must),
+                            "--subject-plan", "code:" + str(plan), "--no-task"])
+    finally:
+        (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage,
+         lens_briefs.REPO) = saved
+    text = "".join(p.read_text(encoding="utf-8") for p in out.glob("*.md")) if out.exists() else ""
+    return outcome, text, out
+
+
+def fix_rows(text):
+    """The FIX_HISTORY rows of a brief, keyed by the path each row names."""
+    rows = (json.loads(line[2:]) for line in text.splitlines() if line.startswith('> {"path"'))
+    return {row["path"]: row for row in rows}
+
+
+def fix_history_checks():
+    """The `fixes: plan` seat gets a FIX_HISTORY section: one count row per code file its subject plan touches, a
+    bare Job-map path resolved under `.claude/`, an unresolved path named rather than counted as zero."""
+    with tempfile.TemporaryDirectory() as tmp:
+        outcome, text, out = fix_brief(Path(tmp), FIX_JOB_MAP, "plan")
+        rows = fix_rows(text)
+        census = ".claude/tools/mechanism_census.py"
+        check("a fixes seat's brief returns without a refusal", outcome == "returned", str(outcome))
+        check("a fixes seat's brief names its counted fixes per code file the subject plan touches",
+              "# FIX_HISTORY" in text and rows.get(census, {}).get("fixes") == 1, repr(rows))
+        check("the full fix history of each subject plan goes to a fixes file beside the briefs",
+              (out / "p_subject_fixes.json").is_file() and census in json.loads(
+                  (out / "p_subject_fixes.json").read_text(encoding="utf-8")), str(list(out.glob("*"))))
+        check("a Job-map path without the `.claude/` prefix resolves to its tracked file",
+              ".claude/tools/lens.py" in rows and not rows[".claude/tools/lens.py"].get("unresolved")
+              and rows[".claude/tools/lens.py"].get("fixes") == 0, repr(rows))
+        check("a path that resolves nowhere is named unresolved, never counted as zero fixes",
+              rows.get("tools/missing_tool.py", {}).get("unresolved") is True
+              and "fixes" not in rows.get("tools/missing_tool.py", {}), repr(rows))
+        check("a write-set test file is never counted", not any("tests/" in path for path in rows), repr(rows))
+        check("with no census reading recorded, a row's listing is unknown, never `false`",
+              census in rows and rows[census].get("listed") is None and "no census reading" in text, repr(rows))
+    with tempfile.TemporaryDirectory() as tmp:
+        prose = FIX_JOB_MAP.replace("`tools/lens.py`, `tools/missing_tool.py`",
+                                    "`tools/lens.py`, `test_lens_{a,b}.py`, `lens_briefs_test.py`, `tools/x*.py`")
+        _outcome, text, _out = fix_brief(Path(tmp), prose, "plan")
+        rows = fix_rows(text)
+        check("a test file or a glob named without its folder is never a row",
+              ".claude/tools/lens.py" in rows and set(rows) == {".claude/tools/mechanism_census.py", ".claude/tools/lens.py"},
+              repr(sorted(rows)))
+    with tempfile.TemporaryDirectory() as tmp:
+        _outcome, text, _out = fix_brief(Path(tmp), FIX_JOB_MAP, "")
+        check("a seat without a `fixes: plan` header gets no FIX_HISTORY section", "FIX_HISTORY" not in text,
+              text[:300])
+    with tempfile.TemporaryDirectory() as tmp:
+        no_code = FIX_JOB_MAP.replace("`tools/lens.py`, `tools/missing_tool.py`", "`commands/agents/x.md`")
+        no_code = no_code.replace("`tools/mechanism_census.py`, `tests/test_mechanism_census.py`", "`CLAUDE.md`")
+        outcome, text, _out = fix_brief(Path(tmp), no_code, "plan")
+        check("a plan that names no code file gets an empty FIX_HISTORY section",
+              outcome == "returned" and "# FIX_HISTORY" in text and fix_rows(text) == {}, repr(fix_rows(text)))
 
 
 def entry_checks():
@@ -417,6 +538,7 @@ def main():
     packet_seat_checks()
     packet_placeholder_defaults()
     merged_seat_checks()
+    fix_history_checks()
     bar_checks()
     entry_checks()
     import contextlib

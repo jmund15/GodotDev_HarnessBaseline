@@ -81,8 +81,7 @@ class Env:
         self.transcript = self.session + ".jsonl"
         open(self.transcript, "w").close()
         self.body = {}
-        self.extra = {"BENCH_ROOTS": json.dumps({"BenchmarkArms": os.path.join(self.root, "arms")}),
-                      "CLAUDE_CONFIG_DIR": os.path.join(self.root, "no-login")}  # a session whose plan is unknown
+        self.extra = {"CLAUDE_CONFIG_DIR": os.path.join(self.root, "no-login")}  # a session whose plan is unknown
 
     def on_plan(self, plan):
         """Declare the plan this session pays on."""
@@ -1842,7 +1841,8 @@ def test_running_workflow_shows_its_agents_context_and_compactions():
     _write_rows(os.path.join(run_dir, "agent-ag2.jsonl"), [_usage_row(210000, "a2")])
     msg = e.run(stop_payload([{"id": "t-wf_proof-1", "type": "workflow", "status": "running"}]), "--complete")
     line = next(l for l in msg.splitlines() if "agents" in l)
-    assert line.endswith(" · ctx up to 210k · 1 compaction"), line
+    # The Workflow panel already shows each agent's context; the line adds only what the panel lacks.
+    assert line.endswith(" · <1m · 1 compaction") and "ctx" not in line, line
 
 
 def test_fanout_inventory_is_bounded_by_its_calls_issue_time_alone():
@@ -2396,58 +2396,6 @@ def test_a_launch_inside_a_bench_owned_tree_is_not_the_sessions_dispatch():
     assert _probe_env(code, CLAUDE_CODE_SESSION_ID=SID, SIDECAR_DISPATCH_OWNER="bench") == ["None"]
 
 
-# A bench roster this session started registers no sidecar entry (SIDECAR_DISPATCH_OWNER=bench), so the
-# no-watcher block must find it the way the session watcher does: a live `<logs>/<name>.pid` whose process
-# carries this session id. A live process stands in for the worker: its environment cannot be planted.
-def _live_roster(e, owner, name="cov-proof-t7"):
-    logs = os.path.join(e.root, "arms", "logs")
-    os.makedirs(logs, exist_ok=True)
-    with open(os.path.join(logs, name + ".log"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("START %s\n[2026-10-20T19:00:00Z] WAITING for prior grid\n" % name)
-    pid_file = os.path.join(logs, name + ".pid")
-    shell = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
-    worker = subprocess.Popen([shell, "-c", 'echo $$ > "$1"; exec sleep 60', "x", pid_file.replace("\\", "/")],
-                              env=dict(os.environ, CLAUDE_CODE_SESSION_ID=owner))
-    deadline = time.time() + 20
-    while time.time() < deadline and not (os.path.exists(pid_file) and open(pid_file).read().strip()):
-        time.sleep(0.1)
-    return worker
-
-
-def test_stop_blocks_a_live_roster_of_this_session_with_no_watcher():
-    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
-        return  # the roster poll lives in the benchmark suite, a project-layer tree a consumer lacks
-    e = Env()
-    worker = _live_roster(e, SID)
-    try:
-        e.run(stop_payload(), "--complete")
-        assert e.body.get("decision") == "block", e.body
-        assert WATCH_COMMAND in e.body["reason"] and "cov-proof-t7" in e.body["reason"], e.body
-    finally:
-        worker.kill()
-
-
-def test_stop_does_not_block_a_roster_a_session_watcher_covers():
-    e = Env()
-    worker = _live_roster(e, SID)
-    try:
-        e.watch()
-        e.run(stop_payload(), "--complete")
-        assert "decision" not in e.body, e.body
-    finally:
-        worker.kill()
-
-
-def test_stop_does_not_block_a_peer_sessions_roster():
-    e = Env()
-    worker = _live_roster(e, "peer-session-0000-0000-0000-000000000000")
-    try:
-        e.run(stop_payload(), "--complete")
-        assert "decision" not in e.body, e.body
-    finally:
-        worker.kill()
-
-
 def _dispatch_table_module():
     hooks = os.path.join(CLAUDE_DIR, "hooks")
     if hooks not in sys.path:
@@ -2456,117 +2404,94 @@ def _dispatch_table_module():
     return dispatch_table
 
 
-def test_roster_gate_is_false_where_the_benchmark_suite_is_not_installed():
+def _planted_gate(returns=None, absent=False, unreadable=False):
+    """(dispatch_table, planted .claude dir) with `CLAUDE_DIR` pointing at a planted bench plugin."""
+    import _plugin_plant as plant
     dt = _dispatch_table_module()
-    real_scoring = os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")
-    saved_here, saved_path, saved_mod = dt.HERE, list(sys.path), sys.modules.pop("bench_lib", None)
-    sys.path[:] = [p for p in sys.path if os.path.normcase(os.path.abspath(p)) != os.path.normcase(real_scoring)]
-    with tempfile.TemporaryDirectory() as tmp:
-        dt.HERE = os.path.join(tmp, "hooks")
-        try:
-            assert dt._any_roster_pid_alive() is False
-        finally:
-            dt.HERE, sys.path[:] = saved_here, saved_path
-            if saved_mod is not None:
-                sys.modules["bench_lib"] = saved_mod
+    tmp = tempfile.mkdtemp(prefix="dt_plugin_")
+    claude = (plant.plant_absent(tmp) if absent else plant.plant_unreadable(tmp) if unreadable
+              else plant.plant(tmp, returns))
+    dt.CLAUDE_DIR = str(claude)
+    return dt, claude
 
 
-def _bench_lib_with_planted_logs():
-    dt = _dispatch_table_module()
-    scoring = os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")
-    if scoring not in sys.path:
-        sys.path.insert(0, scoring)
+def _restore_claude_dir(dt):
+    dt.CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(dt.__file__)))
+
+
+def test_roster_gate_is_false_where_the_plugin_is_absent():
+    dt, _ = _planted_gate(absent=True)
     try:
-        import bench_lib
-    except ImportError:  # the benchmark suite is project-local; its callers skip without it
-        return dt, None
-    return dt, bench_lib
+        assert dt._any_roster_pid_alive() is False
+    finally:
+        _restore_claude_dir(dt)
 
 
-def test_roster_gate_asks_the_public_roster_states_with_one_ps_set():
-    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
-        return
-    with tempfile.TemporaryDirectory() as logs:
-        with open(os.path.join(logs, "r1.pid"), "w") as fh:
-            fh.write("4242")
-        dt, bench_lib = _bench_lib_with_planted_logs()
-        seen = {}
-        saved = (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib._roster_pid, getattr(dt, "_ps_pids", None))
-
-        def states(logs_dir, now=None, pid_alive=None):
-            seen["alive"] = (pid_alive(4242), pid_alive(1))
-            return [{"name": "r1", "state": "LIVE"}]
-
-        def private(path):
-            raise AssertionError("the gate read a private pid helper")
-        bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib._roster_pid = (lambda: logs), states, private
+def test_roster_gate_asks_the_entry_row_with_one_ps_set():
+    import _plugin_plant as plant
+    dt, claude = _planted_gate({"has_rosters": True, "rosters": [{"name": "r1", "state": "LIVE", "pid": 4242}]})
+    saved = dt._ps_pids
+    dt._ps_pids = lambda: {4242}
+    try:
+        assert dt._any_roster_pid_alive() is True
+        assert plant.within_row(claude), plant.accessed(claude)
+        assert (dt._ps_alive()(4242), dt._ps_alive()(1)) == (True, False)
+        dt, claude = _planted_gate({"has_rosters": True, "rosters": [{"name": "r1", "state": "DEAD", "pid": 4242}]})
         dt._ps_pids = lambda: {4242}
-        try:
-            assert dt._any_roster_pid_alive() is True
-        finally:
-            bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib._roster_pid, dt._ps_pids = saved
-        assert seen["alive"] == (True, False), seen
+        assert dt._any_roster_pid_alive() is False
+        dt, claude = _planted_gate({"has_rosters": False, "rosters": []})
+        assert dt._any_roster_pid_alive() is False
+    finally:
+        dt._ps_pids = saved
+        _restore_claude_dir(dt)
+
+
+def test_an_unreadable_plugin_is_reported_to_the_owner_and_never_blocks_the_stop():
+    dt, _ = _planted_gate(unreadable=True)
+    try:
+        reason, note = dt._unwatched_rosters_reason({"session_id": SID})
+    finally:
+        _restore_claude_dir(dt)
+    assert reason is None, reason
+    assert note and "did not run" in note and "unreadable" in note, note
+
+
+def _owned_roster_gate(process_session):
+    """The gate over a planted ready plugin holding one live roster `r1` (pid 4242) and the given owner probe."""
+    dt, _ = _planted_gate({"has_rosters": True, "rosters": [{"name": "r1", "state": "LIVE", "pid": 4242}],
+                           "detached_units": {}, "running_cells": []})
+    tmp = tempfile.mkdtemp(prefix="dt_state_")
+    saved_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
+    saved = (dt._ps_pids, dt.watch_records.process_session, dt.watch_records.CLAUDE_DIR)
+    dt._ps_pids = lambda: {4242}
+    dt.watch_records.process_session = process_session
+    dt.watch_records.CLAUDE_DIR = dt.CLAUDE_DIR
+    results = []
+    try:
+        for _ in range(2):
+            results.append(dt._unwatched_rosters_reason({"session_id": SID}))
+    finally:
+        dt._ps_pids, dt.watch_records.process_session, dt.watch_records.CLAUDE_DIR = saved
+        _restore_claude_dir(dt)
+        if saved_env is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR")
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = saved_env
+    return results
 
 
 def test_roster_ownership_verdict_is_read_once_across_stops():
-    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
-        return
-    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
-        with open(os.path.join(logs, "r1.pid"), "w") as fh:
-            fh.write("4242")
-        dt, bench_lib = _bench_lib_with_planted_logs()
-        saved_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
-        os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
-        calls = []
-        saved = (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
-                 getattr(dt, "_ps_pids", None), dt.watch_records.process_session)
-        bench_lib.roots.logs_dir = lambda: logs
-        bench_lib.roster_states = lambda logs_dir, now=None, pid_alive=None: [{"name": "r1", "state": "LIVE"}]
-        bench_lib.roster_running_cells = lambda *a, **k: []
-        dt._ps_pids = lambda: {4242}
-        dt.watch_records.process_session = lambda pid: calls.append(pid) or SID
-        try:
-            for _ in range(2):
-                reason, note = dt._unwatched_rosters_reason({"session_id": SID})
-                assert reason and "r1" in reason, (reason, note)
-        finally:
-            (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
-             dt._ps_pids, dt.watch_records.process_session) = saved
-            if saved_env is None:
-                os.environ.pop("HARNESS_HOOK_STATE_DIR")
-            else:
-                os.environ["HARNESS_HOOK_STATE_DIR"] = saved_env
-        assert calls == [4242], "the ownership read ran %d times across two Stops" % len(calls)
+    calls = []
+    results = _owned_roster_gate(lambda pid: calls.append(pid) or SID)
+    assert all(reason and "r1" in reason for reason, _note in results), results
+    assert calls == [4242], "the ownership read ran %d times across two Stops" % len(calls)
 
 
 def test_an_unreadable_roster_owner_is_asked_again_not_cached():
-    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
-        return
-    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
-        with open(os.path.join(logs, "r1.pid"), "w") as fh:
-            fh.write("4242")
-        dt, bench_lib = _bench_lib_with_planted_logs()
-        saved_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
-        os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
-        answers = [None, SID]
-        saved = (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
-                 getattr(dt, "_ps_pids", None), dt.watch_records.process_session)
-        bench_lib.roots.logs_dir = lambda: logs
-        bench_lib.roster_states = lambda logs_dir, now=None, pid_alive=None: [{"name": "r1", "state": "LIVE"}]
-        bench_lib.roster_running_cells = lambda *a, **k: []
-        dt._ps_pids = lambda: {4242}
-        dt.watch_records.process_session = lambda pid: answers.pop(0)
-        try:
-            dt._unwatched_rosters_reason({"session_id": SID})
-            reason, note = dt._unwatched_rosters_reason({"session_id": SID})
-        finally:
-            (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
-             dt._ps_pids, dt.watch_records.process_session) = saved
-            if saved_env is None:
-                os.environ.pop("HARNESS_HOOK_STATE_DIR")
-            else:
-                os.environ["HARNESS_HOOK_STATE_DIR"] = saved_env
-        assert reason and "r1" in reason, "an unreadable owner was cached as not-ours: %r" % ((reason, note),)
+    answers = [None, SID]
+    results = _owned_roster_gate(lambda pid: answers.pop(0))
+    assert results[1][0] and "r1" in results[1][0], "an unreadable owner was cached as not-ours: %r" % (results,)
 
 
 def test_a_failed_roster_read_is_reported_to_the_owner_not_only_stderr():
@@ -3217,6 +3142,36 @@ def test_never_started_line_ignores_a_refusal_file_older_than_the_call():
     e.watch()
     msg = e.run(stop_payload(), "--complete")
     assert "older-refusal: never started" in msg and "output names the refusal" in msg and "launch-refused.txt" not in msg, msg
+
+
+def test_launched_sidecars_survives_complete_pruning_and_enforces_identity():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "kept-after-stop", "alias": "muse", "promptFile": "a.md"}], open(jobs, "w"))
+    e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s" % jobs.replace("\\", "/")), "--launch")
+    entry = e.pending()[0]
+    os.makedirs(entry["fanout_dir"], exist_ok=True)
+    record = os.path.join(entry["fanout_dir"], "kept-after-stop.record.json")
+    json.dump({"schemaVersion": 1, "fanoutId": "f1", "parentSessionId": SID,
+               "jobs": [{"label": "kept-after-stop", "recordPath": record}]},
+              open(os.path.join(entry["fanout_dir"], "fanout-f1.inventory.json"), "w", encoding="utf-8"))
+    json.dump({"label": "kept-after-stop", "parentSessionId": SID, "servedModel": "muse",
+               "requestedModel": "muse", "exitCode": 0}, open(record, "w", encoding="utf-8"))
+    open(record + ".exit", "w", encoding="utf-8").write("0\n")
+    e.run(stop_payload(), "--complete")
+    assert e.pending() == [], e.pending()
+    dt = _dt()
+    old_dir = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = e.state
+    try:
+        got = dt.launched_sidecars(SID)
+        assert os.path.normcase(os.path.abspath(record)) in {os.path.normcase(p) for p in got}, got
+        assert dt.launched_sidecars("other-session-id") == {}
+    finally:
+        if old_dir is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = old_dir
 
 
 PARTS = 3

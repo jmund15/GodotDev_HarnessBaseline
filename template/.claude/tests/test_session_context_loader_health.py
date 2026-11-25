@@ -18,6 +18,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import session_context_loader as scl
 import session_context_loader_godot as scg
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _plugin_plant import accessed, plant, plant_absent, plant_unreadable, within_row  # noqa: E402
+import _git_run  # noqa: E402
+
+
+def _git_result(returncode=0, out=""):
+    """A GitResult the stubbed transport seam returns; `out` is its decoded stdout."""
+    return _git_run.GitResult(returncode, out.encode(), b"")
 
 
 class HealthTests(unittest.TestCase):
@@ -31,17 +39,26 @@ class HealthTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("CLAUDE_CODE_SIDECAR", None)
 
-    def test_roster_health_never_reports_ok_without_a_logs_tree(self):
-        # No benchmark_campaign under the root: no battery, so no roster status; a battery whose
-        # discovery fails says UNKNOWN, never OK.
+    def test_roster_and_ladder_banners_render_a_ready_plugin_through_the_entry_row(self):
+        claude = plant(self.root, {"roster_summary": "SENTINEL-ROSTER", "ladder_banner": "SENTINEL-LADDER"})
+        self.assertEqual("SENTINEL-ROSTER", scl.roster_health(self.root))
+        self.assertEqual("SENTINEL-LADDER", scl.ladder_banner(self.root))
+        self.assertEqual({"roster_summary", "ladder_banner"}, accessed(claude))
+        self.assertTrue(within_row(claude))
+
+    def test_roster_and_ladder_banners_are_empty_without_the_plugin(self):
+        plant_absent(self.root)
         self.assertEqual("", scl.roster_health(self.root))
-        (self.root / ".claude" / "scripts" / "benchmark_campaign").mkdir(parents=True)
-        self.assertTrue(scl.roster_health(self.root).startswith("UNKNOWN ("))
+        self.assertEqual("", scl.ladder_banner(self.root))
+
+    def test_an_unreadable_plugin_reads_unknown_never_empty_or_ok(self):
+        plant_unreadable(self.root)
+        for banner in (scl.roster_health(self.root), scl.ladder_banner(self.root)):
+            self.assertIn("UNKNOWN (plugin bench unreadable", banner)
 
     def test_roster_health_reads_the_live_tree(self):
         # UNKNOWN covers every discovery failure roster_health's `except Exception` catches, not
-        # only a missing logs dir -- e.g. a checkout without the benchmark_campaign tooling
-        # (never published: peer-owned, project-local) raises ModuleNotFoundError instead.
+        # only a missing logs dir -- e.g. a bench plugin whose entry fails to import.
         result = scl.roster_health(Path(__file__).resolve().parents[2])
         self.assertTrue(result == "" or result.startswith(("OK (", "DEAD ", "UNVERIFIED ", "UNKNOWN (")), result)
 
@@ -179,14 +196,14 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(4, live["peak"])
 
     def test_unknown_status_never_reports_ok_or_updates(self):
-        with patch.object(scl, "submodule_status", return_value=None), patch.object(scl.subprocess, "run") as run:
+        with patch.object(scl, "submodule_status", return_value=None), patch.object(scl._git_run, "run") as run:
             self.assertTrue(scl.setup_submodule(self.root).startswith("UNKNOWN"))
             run.assert_not_called()
 
     def test_divergent_checkout_is_preserved_even_when_clean(self):
         with patch.object(scl, "submodule_status", return_value=[("+", "a" * 40, "Jmodot")]), \
                 patch.object(scl, "_advance_behind_pin", return_value=False), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+                patch.object(scl._git_run, "run", return_value=_git_result()) as run:
             self.assertTrue(scl.setup_submodule(self.root).startswith("BROKEN"))
             run.assert_not_called()
 
@@ -194,16 +211,16 @@ class HealthTests(unittest.TestCase):
         before = [("+", "a" * 40, "Jmodot"), ("-", "b" * 40, "Empty")]
         after = [("+", "a" * 40, "Jmodot"), (" ", "b" * 40, "Empty")]
         with patch.object(scl, "submodule_status", side_effect=[before, after]), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+                patch.object(scl._git_run, "run", return_value=_git_result()) as run:
             result = scl.setup_submodule(self.root)
-        self.assertEqual(["git", "submodule", "update", "--init", "--recursive", "--", "Empty"], run.call_args.args[0])
+        self.assertEqual(["submodule", "update", "--init", "--recursive", "--", "Empty"], run.call_args.args[0])
         self.assertTrue(result.startswith("BROKEN"))
         self.assertIn("initialized Empty", result)
         self.assertIn("Jmodot", result)
         self.assertIn("preserved", result)
 
     def test_dirty_probe_failure_is_unknown(self):
-        with patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")):
+        with patch.object(scl._git_run, "run", return_value=_git_result(1)):
             self.assertIsNone(scl._submodule_is_dirty(self.root, "Jmodot"))
 
     def test_uninitialized_nonempty_directory_is_preserved(self):
@@ -211,7 +228,7 @@ class HealthTests(unittest.TestCase):
         target.mkdir()
         (target / "unsaved.txt").write_text("work", encoding="utf-8")
         with patch.object(scl, "submodule_status", return_value=[("-", "a" * 40, "Jmodot")]), \
-                patch.object(scl.subprocess, "run") as run:
+                patch.object(scl._git_run, "run") as run:
             self.assertTrue(scl.setup_submodule(self.root).startswith("BROKEN"))
             run.assert_not_called()
 
@@ -219,34 +236,35 @@ class HealthTests(unittest.TestCase):
         for after in (None, [("-", "a" * 40, "Jmodot")]):
             with self.subTest(after=after), \
                     patch.object(scl, "submodule_status", side_effect=[[("-", "a" * 40, "Jmodot")], after]), \
-                    patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")):
+                    patch.object(scl._git_run, "run", return_value=_git_result()):
                 self.assertFalse(scl.setup_submodule(self.root).startswith("FIXED"))
 
     def test_dirty_tree_bypasses_same_head_cache(self):
         with patch.object(scg, "_git_head", return_value="abc"), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+                patch.object(scg, "git_run", return_value=_git_result()):
             scg.store_build_result(self.root, "OK")
             for dirty in (" M file.cs", "?? untracked.cs"):
-                with self.subTest(dirty=dirty), patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=dirty)):
+                with self.subTest(dirty=dirty), patch.object(scg, "git_run", return_value=_git_result(out=dirty)):
                     self.assertIsNone(scg.cached_build_result(self.root))
 
     def test_failed_worktree_probe_bypasses_cache(self):
         with patch.object(scg, "_git_head", return_value="abc"), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+                patch.object(scg, "git_run", return_value=_git_result()):
             scg.store_build_result(self.root, "OK")
-            with patch.object(scl.subprocess, "run", side_effect=OSError("unavailable")):
+            with patch.object(scg, "git_run", side_effect=OSError("unavailable")):
                 self.assertIsNone(scg.cached_build_result(self.root))
 
     def test_stored_success_is_visibly_previous_not_current_health(self):
         with patch.object(scg, "_git_head", return_value="abc"), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+                patch.object(scg, "git_run", return_value=_git_result()):
             scg.store_build_result(self.root, "OK")
             for source in ("startup", "resume", "compact"):
                 with self.subTest(source=source):
                     self.assertTrue(scg.build_status(self.root, source, True).startswith("PREVIOUS: OK"))
 
     def test_git_probe_failure_does_not_report_clean(self):
-        with patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")):
+        with patch.object(scl._git_run, "run", return_value=_git_result(1)), \
+                patch.object(scg, "git_run", return_value=_git_result(1)):
             self.assertIsNone(scl.get_uncommitted_count())
             self.assertEqual("", scg._git_head(self.root))
 
@@ -259,13 +277,13 @@ class HealthTests(unittest.TestCase):
         entries = [("-", "a" * 40, "Jmodot")]
         after = [(" ", "a" * 40, "Jmodot")]
         with patch.object(scl, "submodule_status", side_effect=[entries, after]), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+                patch.object(scl._git_run, "run", return_value=_git_result()) as run:
             self.assertEqual("FIXED (initialized Jmodot)", scl.setup_submodule(self.root))
-            self.assertEqual(["git", "submodule", "update", "--init", "--recursive", "--", "Jmodot"], run.call_args.args[0])
+            self.assertEqual(["submodule", "update", "--init", "--recursive", "--", "Jmodot"], run.call_args.args[0])
 
     def test_invalid_cache_time_is_not_fresh(self):
         with patch.object(scg, "_git_head", return_value="abc"), \
-                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+                patch.object(scg, "git_run", return_value=_git_result()):
             scg.store_build_result(self.root, "OK")
             cache_path = scg._build_cache_path(self.root)
             cache = json.loads(cache_path.read_text(encoding="utf-8"))

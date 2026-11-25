@@ -307,7 +307,7 @@ _reap.environ_of = lambda pid: _envs.get(pid, b"")
 _reap.launch_environ = _reap.environ_of
 _reap.msys_environ = lambda pid: b""
 _reap.process_exited = lambda pid, start: False
-_reap.taskkill = lambda pid, tree=True: (_killed.append(pid) or True)
+_reap.taskkill = lambda pid: (_killed.append(pid) or True)
 _reap.LEDGER = _Path(_census_root) / "ledger.jsonl"
 
 census_procs = [

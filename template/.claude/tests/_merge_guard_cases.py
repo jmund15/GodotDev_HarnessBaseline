@@ -39,8 +39,8 @@ HOOKS = os.path.join(_REPO, ".claude", "hooks")
 
 # The guard under test plus the parser/scope modules it imports. Copied together: a guard whose
 # sibling is missing cannot import, and every case would then read as CRASH rather than as a pass.
-SUPPORT = ("_git_commit.py", "_command_text.py", "_commit_scope.py", "_cs_files.py", "_checkout_root.py",
-           "_hook_parts.py", "amend_delivery.py")
+SUPPORT = ("_git_commit.py", "_git_run.py", "_shell_lex.py", "_command_text.py", "_commit_scope.py", "_cs_files.py", "_checkout_root.py",
+           "_hook_parts.py", "_win_path.py", "amend_delivery.py")
 
 
 def _filter_file(*names):

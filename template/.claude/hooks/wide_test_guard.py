@@ -89,9 +89,13 @@ def hook(payload):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["--command"] and len(argv) == 2:
+    if argv[:1] == ["--command"]:
         # A runner script's entry check, for runs that host no Claude hooks: the same verdict,
-        # as exit 2 with the reason on stdout.
+        # as exit 2 with the reason on stdout. The caller obeys the exit code, so a call this mode
+        # cannot read fails closed.
+        if len(argv) != 2:
+            print("wide_test_guard --command takes the whole command as one quoted argument")
+            return 2
         reason = hook({"tool_name": "Bash", "tool_input": {"command": argv[1]}, "cwd": os.getcwd()})
         if reason:
             print(reason)

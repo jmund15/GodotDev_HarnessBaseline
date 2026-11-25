@@ -87,6 +87,8 @@ import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+from _git_run import run as git_run  # noqa: E402
 
 PRINT_LIMIT = 20
 # `plans`: a plan is an execution contract, not a rule surface, so a marker it quotes is data.
@@ -620,12 +622,11 @@ def _marked_files(claude_root):
     """`.md` paths under `claude_root` holding `<!-- basis:`: the tracked set when git answers, else
     a walk, so a tree outside a repository is still judged."""
     try:
-        proc = subprocess.run(["git", "-C", claude_root, "grep", "-l", "-F", "<!-- basis:", "--", "*.md"],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        proc = git_run(["grep", "-l", "-F", "<!-- basis:", "--", "*.md"], cwd=claude_root, timeout=None)
     except OSError:
         proc = None
     if proc is not None and proc.returncode in (0, 1):
-        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        return [line.strip() for line in proc.text.splitlines() if line.strip()]
     found = []
     for dirpath, dirnames, filenames in os.walk(claude_root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)

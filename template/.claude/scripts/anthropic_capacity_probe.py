@@ -343,7 +343,8 @@ def read_live(url, token, timeout=15):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        status, error = http_failure(exc.code, "Anthropic usage endpoint")
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        status, error = http_failure(exc.code, "Anthropic usage endpoint", retry_after)
         return outcome(status, error=error)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return outcome("network-error", error={"kind": "network", "message": str(exc)[:300]})

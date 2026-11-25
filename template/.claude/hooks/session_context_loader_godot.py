@@ -27,6 +27,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from _git_run import run as git_run
+
 
 def godot_project(root: Path) -> bool:
     """True when the checkout is a Godot project (`project.godot` at its root); the engine, .NET,
@@ -220,11 +222,8 @@ BUILD_VERIFY_TTL_SECONDS = 30 * 60
 
 def _git_head(root: Path) -> str:
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, cwd=str(root)
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        result = git_run(["rev-parse", "HEAD"], cwd=str(root), timeout=5)
+        return result.text.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -232,10 +231,7 @@ def _git_head(root: Path) -> str:
 def _tree_dirty(root: Path) -> bool | None:
     """Whether the checkout has uncommitted changes, or None when it cannot be inspected."""
     try:
-        result = subprocess.run(
-            ["git", "--no-optional-locks", "-C", str(root), "status", "--porcelain"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
-        )
+        result = git_run(["status", "--porcelain"], cwd=str(root), timeout=15, optional_locks=False)
         return bool(result.stdout.strip()) if result.returncode == 0 else None
     except Exception:
         return None

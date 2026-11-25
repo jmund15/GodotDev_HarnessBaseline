@@ -28,6 +28,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import tempfile
 
 NON_DOMAIN = {"head": {}, "offend": {"notes/merged.txt": "merged from feature\n"}}
@@ -62,10 +63,19 @@ def _remove(root):
         # Git leaves read-only object files, which Windows refuses to unlink.
         os.chmod(path, stat.S_IWRITE)
         func(path)
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(root, onexc=writable)
-    else:
-        shutil.rmtree(root, onerror=writable)
+    # A hook the caller ran may still hold a handle under the tree (WinError 32), so retry the removal.
+    for attempt in range(5):
+        try:
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(root, onexc=writable)
+            else:
+                shutil.rmtree(root, onerror=writable)
+            return
+        except OSError:
+            if attempt == 4:
+                shutil.rmtree(root, ignore_errors=True)
+            else:
+                time.sleep(0.2)
 
 
 def _identity(repo):

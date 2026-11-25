@@ -12,14 +12,14 @@ The previous note, the report data (Sessions, Agents, Ladder, Review, Findings t
 
 ## Pass A: close the loop on earlier moves
 
-*Why:* a change that is never judged teaches nothing. Without this pass the harness grows rules without knowing which ones work, and the same kind of fix gets proposed again after it failed.
+*Why:* a change that is never judged teaches nothing. Without this pass the harness grows rules without knowing which ones work, and a failed fix gets proposed again without asking why it failed.
 
 Read each earlier move's effect row on the Findings tab before proposing anything new.
 
 | Effect | Reading | Next |
 |---|---|---|
 | `moved: improved` | the fix held | no move; say so in `state` |
-| `moved: flat` or `worse` | the fix did not work, or another change masked it | a different kind of fix; `/codify` Step 0 treats a second fix of the same kind as a repeat miss |
+| `moved: flat` or `worse` | the fix did not work, or another change masked it | find why it did not hold before proposing again (`instruction_quality` §3b *A repeat fixes why the last fix did not hold*) |
 | `waiting` | too few sessions since the landing date | `watch`, with the date the floor is reached |
 | `baseline thin`, `baseline partial`, `baseline unavailable` | the window before the landing date is fixed, so waiting adds no rows | name another metric or a paired check, as for `unmeasurable` |
 | `unmeasurable` | the metric cannot show this fix | name another metric, or a paired check (`/pin_ab`, `/ladder_ingest`) |

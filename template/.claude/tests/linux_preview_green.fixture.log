@@ -1,39 +1,61 @@
-::step verify pwsh is on PATH
-::pass verify pwsh is on PATH 0s
 ::step install pytest
-::pass install pytest 4s
-::step gen_manifest --check
-::pass gen_manifest --check 1s
-::step audit_baseline --strict
-::pass audit_baseline --strict 37s
+Requirement already satisfied: pytest in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (9.2.0)
+Requirement already satisfied: pytest-xdist in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (3.8.0)
+Requirement already satisfied: iniconfig>=2 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (2.3.1)
+Requirement already satisfied: packaging>=24 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (26.3)
+Requirement already satisfied: pluggy<2,>=1.6 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (1.7.0)
+Requirement already satisfied: pygments>=2.15 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (2.21.0)
+Requirement already satisfied: execnet>=2.1 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest-xdist) (2.1.2)
+::pass install pytest 1s
 ::step baseline-repo-root proofs
-::pass baseline-repo-root proofs 206s
-::lane root 248s
-::step verify pwsh is on PATH
-::pass verify pwsh is on PATH 1s
+bringing up nodes...
+bringing up nodes...
+
+..                                                                       [100%]
+============================= slowest 20 durations =============================
+
+(6 durations < 0.005s hidden.  Use -vv to show these durations.)
+2 passed in 2.93s
+::pass baseline-repo-root proofs 4s
+::lane root 5s
 ::step install pytest
-::pass install pytest 4s
+Requirement already satisfied: pytest in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (9.2.0)
+Requirement already satisfied: pytest-xdist in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (3.8.0)
+Requirement already satisfied: iniconfig>=2 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (2.3.1)
+Requirement already satisfied: packaging>=24 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (26.3)
+Requirement already satisfied: pluggy<2,>=1.6 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (1.7.0)
+Requirement already satisfied: pygments>=2.15 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (2.21.0)
+Requirement already satisfied: execnet>=2.1 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest-xdist) (2.1.2)
+::pass install pytest 1s
 ::step template harness battery
-::pass template harness battery 1292s
-::lane template 1297s
-::step verify pwsh is on PATH
-::pass verify pwsh is on PATH 0s
+bringing up nodes...
+bringing up nodes...
+
+....                                                                     [100%]
+============================= slowest 20 durations =============================
+
+(12 durations < 0.005s hidden.  Use -vv to show these durations.)
+4 passed in 2.98s
+::pass template harness battery 4s
+::lane template 5s
 ::step install pytest
-::pass install pytest 4s
+Requirement already satisfied: pytest in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (9.2.0)
+Requirement already satisfied: pytest-xdist in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (3.8.0)
+Requirement already satisfied: iniconfig>=2 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (2.3.1)
+Requirement already satisfied: packaging>=24 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (26.3)
+Requirement already satisfied: pluggy<2,>=1.6 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (1.7.0)
+Requirement already satisfied: pygments>=2.15 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest) (2.21.0)
+Requirement already satisfied: execnet>=2.1 in /home/runner/.local/ci-tools/py/lib/python3.15/site-packages (from pytest-xdist) (2.1.2)
+::pass install pytest 1s
 ::step pure profile battery
-::pass pure profile battery 1223s
-::lane pure 1227s
-::step verify pwsh is on PATH
-::pass verify pwsh is on PATH 1s
-::step install pytest
-::pass install pytest 3s
-::step pure,coding profile battery
-::pass pure,coding profile battery 1134s
-::lane pure-coding 1138s
-::step verify pwsh is on PATH
-::pass verify pwsh is on PATH 0s
-::step install pytest
-::pass install pytest 3s
-::step pure,coding,godot profile battery
-::pass pure,coding,godot profile battery 1265s
-::lane pure-coding-godot 1268s
+bringing up nodes...
+bringing up nodes...
+
+....                                                                     [100%]
+============================= slowest 20 durations =============================
+0.01s call     .claude/tests/test_ok.py::test_adds
+
+(11 durations < 0.005s hidden.  Use -vv to show these durations.)
+4 passed in 3.02s
+::pass pure profile battery 4s
+::lane pure 5s

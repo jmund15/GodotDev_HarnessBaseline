@@ -49,18 +49,6 @@ def test_resume_check_reads_through_the_shared_iterator():
     assert not hasattr(rc, "_events"), "the hand parser must be gone"
 
 
-def test_extract_deliverable_reads_through_the_shared_iterator():
-    try:  # the benchmark suite that ships this classifier is project-local
-        extract = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring",
-                               "extract_deliverable.py")
-        if not os.path.isfile(extract):
-            raise ImportError(extract)
-        ed = load("extract_deliverable_wire", extract)
-    except ImportError:
-        return
-    assert ed.iter_stream_events is se.iter_stream_events
-
-
 def run():
     cases = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

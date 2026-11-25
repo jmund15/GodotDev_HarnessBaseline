@@ -23,11 +23,10 @@ def test_frozen_and_fold_blobs_record_as_one_map_with_the_frozen_blob_winning(tm
     subject = SimpleNamespace(files=["code.py", "shared.py"], root=tmp_path)
     monkeypatch.setattr(post_check, "reviewed_blobs", lambda s: {"code.py": FOLD, "shared.py": FOLD_OLD})
     calls = []
-    monkeypatch.setattr(post_check, "ledger", lambda cwd, *cmd: calls.append(cmd) or (0, "", ""))
+    monkeypatch.setattr(post_check.review_ledger, "record", lambda request, cwd: calls.append(request) or [])
     args = SimpleNamespace(blobs=str(frozen), scope_json=None, stage="candidate", subject="session:x",
                            roster="roster.json", out=str(tmp_path / "post_check.json"), seats_file=None,
                            premise_commits=None, head=None, task=None, no_new_decision=False)
     post_check.record_panel(tmp_path, args, SimpleNamespace(record=("--result", "r.json")), [subject])
-    cmd = calls[0]
-    recorded = json.loads(Path(cmd[cmd.index("--blobs") + 1]).read_text(encoding="utf-8"))
+    recorded = json.loads(Path(calls[0].blobs).read_text(encoding="utf-8"))
     assert recorded == {"doc.md": FROZEN, "shared.py": FROZEN, "code.py": FOLD}

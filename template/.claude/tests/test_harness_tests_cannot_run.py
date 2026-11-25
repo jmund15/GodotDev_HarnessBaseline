@@ -42,12 +42,12 @@ CRASH = ht.run_proof(proof("crash", 3, "unexpected"))
 
 def _unlaunchable():
     """A proof whose interpreter is not on the shell's PATH never ran, so it asserted nothing."""
-    real = ht._runner_cmds
-    ht._runner_cmds = lambda path: [[os.path.join(TMP, "no-such-interpreter.exe"), path]]
+    real = ht._attempt._runner_cmds
+    ht._attempt._runner_cmds = lambda path: [[os.path.join(TMP, "no-such-interpreter.exe"), path]]
     try:
         return ht.run_proof(proof("unlaunchable", 0))
     finally:
-        ht._runner_cmds = real
+        ht._attempt._runner_cmds = real
 
 
 UNLAUNCHABLE = _unlaunchable()

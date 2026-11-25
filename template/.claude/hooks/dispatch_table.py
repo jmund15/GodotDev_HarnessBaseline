@@ -68,8 +68,7 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            (the session's context size, from the status line's `cc-cachestat-<sid>.json` in
            CC_CACHESTAT_DIR or the temp dir; omitted when that file is absent or unreadable), then one line
            each (`model · effort · plan · label · elapsed · ctx 376k · 2 compactions`; the plan is the one the job
-           pays on, no engine or launcher name, and a Workflow shows its agent count and pins ×count, with `ctx up
-           to` its largest live agent and the agents' summed compactions). The ctx and compactions come from the
+           pays on, no engine or launcher name, and a Workflow shows its agent count and pins ×count, and only the agents' summed compactions: the Workflow panel already shows each agent's context). The ctx and compactions come from the
            child's own transcript (`_dispatch_gauge`), and every optional clause is omitted when unread or zero.
            Nothing unfinished, no block.
            A running sidecar that no live watcher covers ALSO blocks the Stop: nothing would wake
@@ -109,10 +108,12 @@ Requested pins: _dispatch_pins.dispatch_jobs, else (a Workflow whose args declar
 pins from _dispatch_pins.script_jobs; sidecar launches:
 orchestration_metrics.sidecar_launches (argv read by tools/sidecar_argv.py). Inherited effort: the payload's `effort.level`.
 
-STATE: `dispatch_table_pending`, `dispatch_table_gone` and `dispatch_table_unknown` in
+STATE: `dispatch_table_pending`, `dispatch_table_launched`, `dispatch_table_gone` and `dispatch_table_unknown` in
 _hook_state.state_path(sid), written only via update_json_locked. Pending entries carry `writes`,
 classified by _dispatch_pins.writes for close's author/fold wait.
-Entries leave on completion; an audited entry keeps its outcome until the following Stop prunes it.
+Entries leave pending on completion while `dispatch_table_launched` keeps every non-adopted sidecar's
+resolved record path and launch timestamp so metrics attribution survives pruning; an audited entry
+keeps its outcome until the following Stop prunes it.
 Older than 24 h they print once as stale and leave. Capped at 50. A
 sidecar entry carries `issued_at`, its call's transcript time; a fan-out job's record is found by
 `resolve_sidecar_record`'s identity rule, the one resolver the Stop table, the session watcher and
@@ -134,12 +135,14 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.join(os.path.dirname(HERE), "tools")
+CLAUDE_DIR = os.path.dirname(HERE)
+TOOLS = os.path.join(CLAUDE_DIR, "tools")
 sys.path.insert(0, HERE)
 import _hook_state  # noqa: E402
 import _msys  # noqa: E402
 from _win_path import native_path  # noqa: E402
 sys.path.insert(0, TOOLS)
+import adaptation  # noqa: E402
 import model_registry  # noqa: E402
 import sidecar_argv  # noqa: E402
 import spend_ledger  # noqa: E402
@@ -152,6 +155,7 @@ from _dispatch_pins import (  # noqa: E402
     script_blobs, script_jobs, writes, author_writes, _call_args)
 
 STATE_KEY = "dispatch_table_pending"
+LAUNCHED_KEY = "dispatch_table_launched"  # {session_id: {norm_record: {path, at}}}; survives complete() pruning for metrics
 GONE_KEY = "dispatch_table_gone"  # expand_deferred's report lines (dropped or revived fan-outs) for complete
 ROSTER_OWNER_KEY = "dispatch_table_roster_owner"  # "<roster>:<pid>" -> whether this session started it; a pid's environment never changes
 UNKNOWN_KEY = "dispatch_table_unknown"  # deferred fan-outs expired with no checkable producer, revived if the file appears
@@ -165,6 +169,7 @@ NO_WATCHER_SHELL_REASON = ("%d background shell(s) this session started are runn
                            "nothing checks on them inside your prompt cache." + _ARM_STEP)
 STALE_SECONDS = 24 * 3600
 MAX_PENDING = 50
+MAX_LAUNCHED = 500
 # A child's stream opens with its SessionStart hook rows, then `init`: 21 rows deep in a measured opencode stream.
 INIT_SCAN_LINES = 200
 DONE_STATES = model_registry.WORKFLOW_TERMINAL_STATES
@@ -985,6 +990,7 @@ def _jobs(payload):
                  "record": s.get("record") if s.get("kind") != "fanout" else None,
                  "fanout_dir": os.path.dirname(s["record"]) if s.get("kind") == "fanout" and s.get("record") else None,
                  "kind": s.get("kind"), "jobs_path": s.get("jobs_path"), "out_dir": s.get("out_dir"),
+                 "repo": s.get("repo"),
                  "missing": s.get("missing")} for s in launches]
     level = _effort_level(payload) or UNKNOWN
     raw = dispatch_jobs(payload) or (script_jobs(payload) if tool == "Workflow" else [])
@@ -1099,7 +1105,8 @@ def _admit_sidecars(payload, jobs=None, now=None):
                 "call": payload.get("tool_use_id")} for j in trackable]
     entries += [{"kind": "sidecar", "id": "deferred:%s:%s" % (j["jobs_path"], call), "record": None,
                  "fanout_dir": None, "task_id": resp.get("backgroundTaskId"), "launched_at": now, "jobs": [j],
-                 "deferred": {"jobs_path": j["jobs_path"], "out_dir": j["out_dir"], "call": call}}
+                 "deferred": {"jobs_path": j["jobs_path"], "out_dir": j["out_dir"], "repo": j.get("repo"),
+                              "call": call}}
                 for j in deferred]
     for entry in entries:
         entry["writes"] = writes("Bash", payload.get("tool_input") or {})
@@ -1292,7 +1299,7 @@ def register_sidecars(payload, entries, actual=False):
                                  actual=True)
                 pending[pending.index(existing)] = entry
         return pending
-    _update_pending(payload, merge, raising=True)
+    _update_pending(payload, merge, raising=True, launched=entries, actual=actual)
     return bool(repeat) and all(repeat)
 
 
@@ -1663,7 +1670,8 @@ def _expanded(entry, labeled):
     d = entry["deferred"]
     # The launch read no spillDir from a file not yet written; sidecar_fanout refuses an --out-dir that differs from it.
     spill = _spill_dir(d["jobs_path"])
-    out_dir = sidecar_argv.fanout_out_dir(d["jobs_path"], None, spill, _om()._PROJECT_DIR) if spill else d["out_dir"]
+    out_dir = (sidecar_argv.fanout_out_dir(d["jobs_path"], None, spill, d.get("repo") or _om()._PROJECT_DIR)
+               if spill else d["out_dir"])
     native_file, native = _om().native_handoff(out_dir, {job.get("label") for job in labeled})
     handoff = [_handoff_entry(native_file, native, d["call"], entry.get("launched_at"),
                               entry.get("issued_at") or entry.get("launched_at"), entry.get("writes"))] if native else []
@@ -2145,23 +2153,13 @@ def _ps_alive():
 
 def _any_roster_pid_alive():
     """True when some roster is LIVE by its `<logs>/<name>.pid`: the cheap gate before the ownership read.
-    False where the benchmark suite is not installed, since only that suite starts rosters."""
-    scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
-    try:
-        import bench_lib
-    except ModuleNotFoundError as exc:
-        if exc.name != "bench_lib":
-            raise
-        return False
-    logs = bench_lib.roots.logs_dir()
-    if not glob.glob(os.path.join(logs, "*.pid")):
+    False where no bench plugin is configured, since only that plugin starts rosters. An unreadable plugin
+    raises `adaptation.PluginUnreadable`, which `_unwatched_rosters_reason` reports as a lost check."""
+    bench = adaptation.plugin_entry(CLAUDE_DIR, "bench")
+    if bench is None or not bench.has_rosters():
         return False
     pid_alive = _ps_alive()
-    if pid_alive is None:
-        return True
-    return any(row["state"] == "LIVE" for row in bench_lib.roster_states(logs, pid_alive=pid_alive))
+    return pid_alive is None or any(row["state"] == "LIVE" for row in bench.rosters(pid_alive))
 
 
 def _unwatched_rosters_reason(payload):
@@ -2318,7 +2316,8 @@ def complete(payload):
                     e["inventory"] = resolved["inventory"]
                     e["jobs"] = resolved["jobs"]
             return kept
-        _update_pending(payload, change)
+        _update_pending(payload, change,
+                        launched=[p for p in pending if p.get("kind") == "sidecar" and p.get("record")])
     running = [e for e in pending if (e.get("kind"), e.get("id")) not in done | audited]
     reason = "\n\n".join(reasons + ([FAILED_END_REASON % "\n".join(failed)] if failed else [])) or None
     if running:
@@ -2409,29 +2408,28 @@ def _gauge(path):
 
 
 def _dispatch_gauge(entry, session_dir):
-    """(context tokens, compactions, several) for one running dispatch, read from its child's transcript: a
-    sidecar's own transcript (`_child_transcript`), else its -P stream; an Agent's
-    `<session>/subagents/agent-<id>.jsonl`; a Workflow's live agents, the largest context and the summed
-    compactions (`several` True). (None, 0, False) when nothing is readable."""
+    """(context tokens, compactions) for one running dispatch, read from its child's transcript: a sidecar's own
+    transcript (`_child_transcript`), else its -P stream; an Agent's `<session>/subagents/agent-<id>.jsonl`; a
+    Workflow's live agents, summed compactions and no tokens (its panel shows each agent's context). (None, 0)
+    when nothing is readable."""
     kind = entry.get("kind")
     if kind == "workflow":
         run_dir = entry.get("run_dir") or (session_dir and os.path.join(session_dir, "subagents", "workflows",
                                                                          str(entry.get("id"))))
         if not run_dir:
-            return None, 0, False
+            return None, 0
         agents = watch_records.workflow_agents(dict(entry, run_dir=run_dir))
-        gauges = [_gauge(os.path.join(run_dir, "agent-%s.jsonl" % a["agentId"])) for a in agents]
-        sizes = [t for t, _c in gauges if t]
-        return (max(sizes) if sizes else None), sum(c for _t, c in gauges), len(agents) > 1
+        return None, sum(watch_records.agent_compaction(os.path.join(run_dir, "agent-%s.jsonl" % a["agentId"]))["count"]
+                         for a in agents)
     if kind == "agent":
         if not session_dir:
-            return None, 0, False
+            return None, 0
         path = os.path.join(session_dir, "subagents", "agent-%s.jsonl" % entry.get("id"))
-        return _gauge(path) + (False,) if os.path.isfile(path) else (None, 0, False)
+        return _gauge(path) if os.path.isfile(path) else (None, 0)
     if kind == "sidecar" and entry.get("record"):
         stream = watch_records.record_stream(entry["record"])
         if not stream:
-            return None, 0, False
+            return None, 0
         job = (entry.get("jobs") or [{}])[0]
         try:
             transport = model_registry.resolve(job.get("model"))["transport"]
@@ -2441,20 +2439,20 @@ def _dispatch_gauge(entry, session_dir):
         tokens, compactions = _gauge(transcript) if transcript else (None, 0)
         if tokens is None:
             tokens, compactions = _gauge(stream)
-        return tokens, compactions, False
-    return None, 0, False
+        return tokens, compactions
+    return None, 0
 
 
 def _gauge_text(entry, session_dir):
-    """[`ctx 376k`, `2 compactions`] for a running dispatch: `ctx up to` for a Workflow of several agents; a
-    clause is absent when unread or zero. An unreadable dispatch shows neither: the gauge never hides the line."""
+    """[`ctx 376k`, `2 compactions`] for a running dispatch; a clause is absent when unread or zero (a Workflow has no
+    ctx clause). An unreadable dispatch shows neither: the gauge never hides the line."""
     try:
-        tokens, compactions, several = _dispatch_gauge(entry, session_dir)
+        tokens, compactions = _dispatch_gauge(entry, session_dir)
     except Exception:
         return []
     out = []
     if tokens:
-        out.append("ctx %s%dk" % ("up to " if several else "", round(tokens / 1000)))
+        out.append("ctx %dk" % round(tokens / 1000))
     if compactions:
         out.append("%d compaction%s" % (compactions, "" if compactions == 1 else "s"))
     return out
@@ -2542,11 +2540,89 @@ def _newly_started(entry):
     return _table("update", rows), ids
 
 
-def _update_pending(payload, change, raising=False):
-    path = _hook_state.state_path(payload.get("session_id"))
+def _record_launched(state, session_id, entries, actual=False):
+    """Persist each non-adopted sidecar entry's resolved record path for `session_id` under `LAUNCHED_KEY`
+    so metrics attribution survives `complete()` pruning `dispatch_table_pending`."""
+    if not session_id or not entries:
+        return
+    raw = state.get(LAUNCHED_KEY)
+    by_session = raw if isinstance(raw, dict) else {}
+    bucket = by_session.get(session_id)
+    bucket = dict(bucket) if isinstance(bucket, dict) else {}
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") != "sidecar" or entry.get(ADOPTED_KEY):
+            continue
+        record = entry.get("record")
+        if not isinstance(record, str) or not record or _SHELL_VAR.search(record):
+            continue
+        abs_path = os.path.abspath(record)
+        key = os.path.normcase(abs_path)
+        stamp = entry.get("launched_at") if actual else entry.get("issued_at")
+        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+            stamp = None
+        prior = bucket.get(key)
+        prior_at = prior.get("at") if isinstance(prior, dict) else None
+        if prior is None:
+            bucket[key] = {"path": abs_path, "at": stamp}
+            changed = True
+        elif stamp is not None and (prior_at is None or (actual and stamp > prior_at)):
+            bucket[key] = {"path": abs_path, "at": stamp}
+            changed = True
+    if not changed:
+        return
+    if len(bucket) > MAX_LAUNCHED:
+        ordered = sorted(bucket.items(), key=lambda kv: (kv[1].get("at") or 0.0, kv[0]))
+        bucket = dict(ordered[-MAX_LAUNCHED:])
+    by_session = dict(by_session)
+    by_session[session_id] = bucket
+    state[LAUNCHED_KEY] = by_session
+
+
+def launched_sidecars(session_id):
+    """{record_path: epoch_or_None} for every sidecar record this session launched, from its hook state
+    (`LAUNCHED_KEY`, plus any live non-adopted `STATE_KEY` entry whose record is already known)."""
+    if not session_id:
+        return {}
+    state = _hook_state.read_json_salvage(_hook_state.state_path(session_id)) or {}
+    out, by_norm = {}, {}
+
+    def put(path, at, prefer_newer=False):
+        if not isinstance(path, str) or not path or _SHELL_VAR.search(path):
+            return
+        abs_path = os.path.abspath(path)
+        key = os.path.normcase(abs_path)
+        stamp = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+        if key not in by_norm:
+            by_norm[key] = abs_path
+            out[abs_path] = stamp
+        elif prefer_newer and stamp is not None and (out[by_norm[key]] is None or stamp > out[by_norm[key]]):
+            out[by_norm[key]] = stamp
+
+    recorded = state.get(LAUNCHED_KEY)
+    bucket = recorded.get(session_id) if isinstance(recorded, dict) else None
+    if isinstance(bucket, dict):
+        for item in bucket.values():
+            if isinstance(item, dict):
+                put(item.get("path"), item.get("at"), prefer_newer=True)
+    for entry in state.get(STATE_KEY) or []:
+        if not isinstance(entry, dict) or entry.get("kind") != "sidecar" or entry.get(ADOPTED_KEY):
+            continue
+        at = entry.get("issued_at")
+        if at is None and entry.get("actual"):
+            at = entry.get("launched_at")
+        put(entry.get("record"), at, prefer_newer=False)
+    return out
+
+
+def _update_pending(payload, change, raising=False, launched=None, actual=False):
+    sid = payload.get("session_id")
+    path = _hook_state.state_path(sid)
 
     def updater(state):
         state[STATE_KEY] = change(state.get(STATE_KEY) or [])[-MAX_PENDING:]
+        if launched:
+            _record_launched(state, sid, launched, actual=actual)
 
     _hook_state.update_json_locked(path, updater, raising=raising)
 

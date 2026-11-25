@@ -8,6 +8,8 @@ import os
 import re
 import sys
 
+import _git_run
+
 def _registry_modules():
     """(model_registry, _session_transport), or (None, None) when either cannot import."""
     try:
@@ -71,8 +73,9 @@ JOBS_FILE_ROOT = ".claude/scratch/"
 _OWNER_LIFTS = ("currency", "currencyReason")
 
 
-def _jobs_file_load(args):
-    """(expanded args, None) or (None, refusal reason) for a call's args that name a `jobsFile`."""
+def _jobs_file_load(args, root=None):
+    """(expanded args, None) or (None, refusal reason) for a call's args that name a `jobsFile`, read under `root`'s
+    `.claude/scratch/` (the session's checkout; the project dir when not given)."""
     path = args.get("jobsFile")
     if not isinstance(path, str) or not path.strip():
         return None, "args.jobsFile must be a non-empty path string."
@@ -80,7 +83,7 @@ def _jobs_file_load(args):
     if beside:
         return None, ("args.jobsFile sits beside args.%s: a call carries its jobs in the file or inline, never "
                       "both. Send only {jobsFile}." % "/args.".join(beside))
-    root = os.path.realpath(_project_dir())
+    root = os.path.realpath(root or _project_dir())
     full = os.path.realpath(path if os.path.isabs(path) else os.path.join(root, path))
     scratch = os.path.normcase(os.path.join(root, *JOBS_FILE_ROOT.strip("/").split("/"))) + os.sep
     if not os.path.normcase(full).startswith(scratch):
@@ -103,20 +106,20 @@ def _jobs_file_load(args):
     return dict(loaded, **expanded), None
 
 
-def jobs_file_refusal(tool_input):
+def jobs_file_refusal(tool_input, root=None):
     """The reason a call's `args.jobsFile` cannot be expanded, or None (no jobsFile, or it expands)."""
     args = _call_args(tool_input)
     if "jobsFile" not in args:
         return None
-    return _jobs_file_load(args)[1]
+    return _jobs_file_load(args, root)[1]
 
 
-def expanded_args(tool_input):
+def expanded_args(tool_input, root=None):
     """The call's `args` dict with `jobsFile` expanded, or None when there is no jobsFile or it is refused."""
     args = _call_args(tool_input)
     if "jobsFile" not in args:
         return None
-    return _jobs_file_load(args)[0]
+    return _jobs_file_load(args, root)[0]
 
 
 def _args(tool_input):
@@ -165,13 +168,10 @@ def _writes_tracked(prompt_path):
                  if (os.path.normcase(os.path.realpath(os.path.join(root, p))) + os.sep).startswith(top + os.sep)]
     if not write_set:
         return False
-    import subprocess
-    try:
-        out = subprocess.run(["git", "-C", root, "check-ignore", "--", *write_set],
-                             capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    out = _git_run.soft_text(["check-ignore", "--", *write_set], prefix=("-C", root), timeout=10)
+    if out is None:
         return True
-    ignored = {line.strip() for line in out.stdout.splitlines() if line.strip()}
+    ignored = {line.strip() for line in out.splitlines() if line.strip()}
     return not all(p in ignored for p in write_set)
 
 

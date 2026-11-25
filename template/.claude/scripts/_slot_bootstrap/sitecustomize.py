@@ -21,6 +21,18 @@ def _admit():
     sys.path.insert(0, str(claude / 'tools'))
     try:
         import machine_slots
+        if machine_slots.inherited():
+            return
+        try:
+            held = machine_slots.admit(['python'] + sys.argv)
+            if held is None:
+                os._exit(2)
+            atexit.register(machine_slots.release_all, held)
+            os.environ['HARNESS_MACHINE_ROOT'] = machine_slots.machine_root()
+            os.environ['HARNESS_SLOT_BUDGET'] = '1'
+        except OSError as exc:
+            print('CANNOT-RUN machine slots: %s' % exc, file=sys.stderr, flush=True)
+            os._exit(2)
     finally:
         # A proof in another checkout (a delegate's worktree) must import its own copies of these harness modules.
         sys.path[:] = saved_path
@@ -28,18 +40,6 @@ def _admit():
             origin = getattr(sys.modules[name], '__file__', None)
             if origin and Path(origin).resolve().is_relative_to(claude):
                 del sys.modules[name]
-    if machine_slots.inherited():
-        return
-    try:
-        held = machine_slots.admit(['python'] + sys.argv)
-        if held is None:
-            os._exit(2)
-        atexit.register(machine_slots.release_all, held)
-        os.environ['HARNESS_MACHINE_ROOT'] = machine_slots.machine_root()
-        os.environ['HARNESS_SLOT_BUDGET'] = '1'
-    except OSError as exc:
-        print('CANNOT-RUN machine slots: %s' % exc, file=sys.stderr, flush=True)
-        os._exit(2)
 
 
 _admit()

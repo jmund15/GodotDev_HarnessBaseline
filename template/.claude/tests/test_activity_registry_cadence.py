@@ -19,9 +19,11 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 HOOKS = os.path.join(HERE, "..", "hooks")
 HOOK = os.path.join(HOOKS, "activity_registry.py")
-PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
+COMPACT_START = os.path.join(HOOKS, "subagent_compaction_rail.py")
 
 SID = "arc00001"
 PEER_CHECKOUT = "C:/other/checkout"
@@ -49,11 +51,8 @@ def prompt(env, session=SID):
     return (r.stdout or "").strip()
 
 
-def precompact(env, session=SID):
-    subprocess.run([sys.executable, PRECOMPACT],
-                   input=json.dumps({"session_id": session, "trigger": "auto"}),
-                   capture_output=True, text=True, timeout=60,
-                   env=dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+def compact_start(env, session=SID):
+    _hook_call.compact_start(COMPACT_START, env, session)
 
 
 # The hook runs under a real `node` parent, which its session_root walk takes as this session's Claude Code root. The
@@ -127,7 +126,7 @@ def main():
         out = prompt(env)
         cases.append(("a changed peer set re-emits", "peer suite live" in out))
 
-        precompact(env)
+        compact_start(env)
         out = prompt(env)
         cases.append(("a compaction re-emits the unchanged set", "[activity]" in out))
         cases.append(("still deduped after that", prompt(env) == ""))

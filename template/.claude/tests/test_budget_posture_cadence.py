@@ -27,7 +27,7 @@ sys.path.insert(0, HERE)
 import _hook_call  # noqa: E402
 HOOKS = os.path.join(HERE, "..", "hooks")
 HOOK = os.path.join(HOOKS, "budget_posture.py")
-PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
+COMPACT_START = os.path.join(HOOKS, "subagent_compaction_rail.py")
 
 SID = "bpc00001"
 SEVEN_DAY = 7 * 24 * 3600
@@ -193,11 +193,8 @@ def prompt_bare(env, session):
     return (hook_run(env, {"session_id": session, "prompt": "next slice"}) or "").strip()
 
 
-def precompact(env, session=SID):
-    checked_run([sys.executable, PRECOMPACT],
-                input=json.dumps({"session_id": session, "trigger": "auto"}),
-                capture_output=True, text=True, timeout=60,
-                env=dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+def compact_start(env, session=SID):
+    _hook_call.compact_start(COMPACT_START, env, session)
 
 
 def main():
@@ -251,7 +248,7 @@ def main():
     out = prompt(env)
     cases.append(("a band change re-emits", "Ahead" in out))
 
-    precompact(env)
+    compact_start(env)
     out = prompt(env)
     cases.append(("a compaction re-emits the unchanged posture",
                   "[budget-posture]" in out))

@@ -126,8 +126,10 @@ def main():
         out, crashed, state, files, log_exists, manifest = scenario({}, base)
         cases.append(("parent: no crash", not crashed))
         cases.append(("parent: writes a raw backup", any(f.endswith(".jsonl") for f in files)))
-        cases.append(("parent: clears model_ladder_ready", "model_ladder_ready" not in state))
-        cases.append(("parent: re-arms fire_once_since_compaction", "fired_since_compaction" not in state))
+        cases.append(("parent: leaves model_ladder_ready for the context that still holds it",
+                      state.get("model_ladder_ready") is True))
+        cases.append(("parent: leaves fire_once_since_compaction keys and the compaction stamp alone",
+                      state.get("fired_since_compaction") == {"k": True} and "compacted_at" not in state))
         cases.append(("parent: keeps the once-per-session gate", state.get("fired_once") == {"o": True}))
         cases.append(("parent: logs the event", log_exists))
         cases.append(("parent: successful backup and summary add no compaction context", not out.strip()))
@@ -148,7 +150,7 @@ def main():
         cases.append(("subagent: emits no parent reminder", "POST-CONTINUATION" not in out))
 
         def parent_ran(files, state):
-            return any(f.endswith(".jsonl") for f in files) and "model_ladder_ready" not in state
+            return any(f.endswith(".jsonl") for f in files)
 
         # A Workflow agent at its window compacts while the parent sits at 150k.
         sub = dict(used=150_000, subagent=469_000)
@@ -184,16 +186,14 @@ def main():
                 ("auto, transcript with no parent API call", {}, {}),
                 ("auto, a live subagent and a parent transcript with no call", {}, dict(subagent=469_000)),
                 ("auto, unreadable transcript", {"transcript_path": "Z:/nowhere/none.jsonl"}, sub)):
-            out, crashed, state, files, _, _ = scenario(extra, base, **kwargs)
-            ran = parent_ran(files, state) if "transcript_path" not in extra else (
-                "model_ladder_ready" not in state)
+            out, crashed, state, files, log_exists, _ = scenario(extra, base, **kwargs)
+            ran = parent_ran(files, state) if "transcript_path" not in extra else log_exists
             cases.append((f"{label} counts as the parent", not crashed and ran))
 
         for label, empty in (("empty", ""), ("whitespace", "  "), ("null", None)):
             out, crashed, state, files, _, _ = scenario({"agent_id": empty}, base)
             cases.append((f"{label} agent_id counts as a parent",
-                          not crashed and any(f.endswith(".jsonl") for f in files)
-                          and "model_ladder_ready" not in state))
+                          not crashed and any(f.endswith(".jsonl") for f in files)))
 
     table_dir = tempfile.mkdtemp()
     transcript = Path(table_dir, f"{SID}.jsonl")

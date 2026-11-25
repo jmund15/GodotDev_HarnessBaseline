@@ -80,6 +80,31 @@ except ImportError:
     # The cloud mirror ships `vault_sync.py` alone, with no hooks/ beside it, and nothing there reads
     # the file concurrently, so the bare rename keeps its pre-helper behavior.
     replace_path = os.replace
+try:
+    from _git_run import run as git_run  # noqa: E402
+except ImportError:  # the same mirror has no hooks/ and no transport: one local spawn keeps it working
+    class _MirrorGitResult(subprocess.CompletedProcess):
+        """`GitResult`'s read side for the mirror, which cannot import the transport."""
+        text = property(lambda self: self.stdout.decode("utf-8", "replace"))
+        err_text = property(lambda self: self.stderr.decode("utf-8", "replace"))
+
+        def check(self, args):
+            if self.returncode:
+                raise subprocess.CalledProcessError(self.returncode, ["git", *args], self.stdout, self.stderr)
+            return self
+
+    def git_run(args, *, cwd=None, env=None, input=None, timeout=30, prefix=(), optional_locks=True,
+                creationflags=0):
+        child = dict(os.environ)
+        for key, value in (env or {}).items():
+            if value is None:
+                child.pop(key, None)
+            else:
+                child[key] = value
+        argv = ['git', *prefix, *args]
+        done = subprocess.run(argv, cwd=cwd, input=input, capture_output=True, timeout=timeout, env=child,
+                              creationflags=creationflags)
+        return _MirrorGitResult(argv, done.returncode, done.stdout, done.stderr)
 
 DEFAULT_ROOT = vault_read.DEFAULT_VAULT / 'DevProjects'
 DELETION_CAP = 10
@@ -259,14 +284,14 @@ def check_changes(changes: list[dict], exists, cap: int = DELETION_CAP) -> dict:
     return out
 
 
+CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+
 def _git_run(repo, git_dir, *args, data: bytes | None = None, env=None):
-    base = ['git']
-    if git_dir:
-        base += ['--git-dir', str(git_dir), '--work-tree', str(repo)]
-    elif repo:
-        base += ['-C', str(repo)]
-    return subprocess.run(base + list(args), input=data, capture_output=True, env=env, timeout=GIT_TIMEOUT_S,
-                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    prefix = ('--git-dir', str(git_dir), '--work-tree', str(repo)) if git_dir else ()
+    cwd = None if git_dir else (str(repo) if repo else None)
+    return git_run(args, cwd=cwd, prefix=prefix, input=data, env=env, timeout=GIT_TIMEOUT_S,
+                   creationflags=CREATE_NO_WINDOW)
 
 
 def _git(repo, git_dir, *args, data: bytes | None = None) -> bytes:
@@ -338,7 +363,8 @@ def init(worktree, git_dir, remote_url: str) -> None:
     worktree, git_dir = Path(worktree), Path(git_dir)
     if not (git_dir / 'HEAD').exists():
         git_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(['git', 'init', '-q', '--bare', str(git_dir)], check=True, capture_output=True)
+        argv = ['init', '-q', '--bare', str(git_dir)]
+        git_run(argv, timeout=None, creationflags=CREATE_NO_WINDOW).check(argv)
     for key, value in (('core.bare', 'false'), ('core.worktree', worktree.as_posix()), ('core.autocrlf', 'false'),
                        ('core.longpaths', 'true'), ('user.name', 'vault-sync'), ('user.email', 'vault-sync@localhost')):
         _git(worktree, git_dir, 'config', key, value)
@@ -370,7 +396,7 @@ def _take_lock(lock: Path) -> bool:
 
 
 def _first_line(result) -> str:
-    text = (result.stderr or b'').decode('utf-8', 'replace').strip()
+    text = result.err_text.strip()
     return text.splitlines()[-1] if text else f'git exited {result.returncode}'
 
 
@@ -410,9 +436,7 @@ def _sync(worktree, git_dir, allow_deletions, first_push, report) -> int:
             return 3
         if _git_run(worktree, git_dir, 'diff', '--cached', '--quiet').returncode == 0:
             return 1
-    env = dict(os.environ)
-    if allow_deletions is not None:
-        env['VAULT_SYNC_ALLOW_DELETIONS'] = str(allow_deletions)
+    env = {'VAULT_SYNC_ALLOW_DELETIONS': str(allow_deletions)} if allow_deletions is not None else None
     stamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     commit = _git_run(worktree, git_dir, 'commit', '-q', '-m', f'vault sync {stamp}', env=env)
     if commit.returncode:
@@ -581,9 +605,9 @@ def _install_task(args) -> int:
 
 
 def _repo_origin() -> str:
-    out = subprocess.run(['git', '-C', str(Path(__file__).resolve().parent), 'remote', 'get-url', 'origin'],
-                         capture_output=True, text=True, check=True)
-    return out.stdout.strip()
+    argv = ['remote', 'get-url', 'origin']
+    return git_run(argv, cwd=str(Path(__file__).resolve().parent), timeout=None, creationflags=CREATE_NO_WINDOW) \
+        .check(argv).text.strip()
 
 
 def _init(args) -> int:

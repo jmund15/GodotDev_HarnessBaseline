@@ -272,7 +272,7 @@ def main():
 
         gate.mark_loaded(payload())
         hook_state.clear_compaction_keys(sid)
-        cases.append(("PreCompact clears readiness", not gate.claim_loaded(sid)))
+        cases.append(("the SessionStart(compact) clear drops readiness", not gate.claim_loaded(sid)))
 
         other = dict(payload())
         other["session_id"] = "subagent02"

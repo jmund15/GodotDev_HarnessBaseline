@@ -87,7 +87,7 @@ read, fixed in the proof (a proof whose subject is the machine's live state read
 singleton) goes in `adaptation.json` `proof_serial`, and a proof whose fixture groups are independent runs each group as a pooled child (`tests/_case_pool.py`
 `run_sections`) with its decision cases in process.
 
-A close ends with a `close growth:` line naming each proof that stays above its own earlier recorded time range, load divided out (one slow run is load or chance, and names nothing), and a `close reuse:` line counting its reruns by cause.
+A close ends with a `close growth:` line naming each proof that stays above its own earlier recorded time range, load divided out (one slow run is load or chance, and names nothing), and a `close reuse:` line counting its reruns by cause. A grown proof the changed work owns is that work's defect: bring it back into its range before the line of work closes. Every other open entry (`python3 .claude/tools/gate_growth.py` lists them) is surfaced work under the worklog's do-now gate. That line sees lasting drift after the land and never what one change added: a new proof has no range, and a changed one is named only after two later passes top a range deep enough that chance cannot name it. A change's own cost is measured at the change (`reference/mechanism_litmus.md` L3).
 
 A gate phase that runs units one at a time (a retry, a rerun, a bisect step) prints a line as each starts, and a wrapper that filters a gate's output passes those lines: a silent phase reads as a hang, and its time reaches nobody.
 
@@ -96,7 +96,7 @@ first" over an unmodified test file describes a scratch suite: nothing tracked w
 every later audit reads the claim as coverage. Name the file and confirm it is tracked and changed in the
 same commit. Promote the scratch case, or drop the claim.
 
-Harness commits run quick checks plus an advisory run of the proofs bound to every authored `.claude/` path, docs included, within the runner's recorded per-proof and total commit budgets. The advisory never denies: a proof it did not pass (red, incomplete, could not run, or left to the close) leaves the commit unproven, and the advisory prints the command that runs it now.
+A harness commit in a session runs no proof, reports none and demands none: the session runs only the edited unit's own test file, and the main check proves the landed range.
 A land push (`/commit_push` step 6) needs neither a local close nor a `--for` run
 (§Land and main check). Where no main check is declared, before any push other than a land push, after the final
 local commit, run `python3 .claude/scripts/harness_tests.py --close` in the background. It selects the proofs bound to
@@ -112,15 +112,16 @@ to `harness_known_red.jsonl`, not new. An untracked, never-committed proof runs 
 against the base's inputs. Its red prints `UNCOMMITTED PROOF RED <proof> (not in this push)` and blocks neither push nor stamp: its own commit's close proves it. A red that passes in the shared checkout is rerun at committed HEAD with its dirty, untracked or ignored inputs planted. If planting makes it pass, the close names those inputs and still blocks push: commit an input that belongs to the change, and make the proof plant any input it reads from scratch or another session's work. A timeout or output without a
 failure-marked line never excuses a red. A close started while this session's author or fold dispatch writes in its checkout waits for it and names it. An author whose `writeSet` is wholly gitignored cannot change the commits close proves, so close never waits for it. Close then proves the committed HEAD of that moment once: a later commit never restarts it, and a newer `--close` supersedes it at once, waiting or running, so a commit never needs the close stopped. Before dispatching a fix for reds, run `--close --now`, which skips that wait, so each red arrives classified (pre-existing, or its FIRST RED commit and owner); map the new ones to fix jobs by cause and write set (`orchestration` §2).
 
-`--for <paths>` and `--proofs-for <paths>` run those paths' bound proofs on demand; they do not
-satisfy push. `--for` excuses a red that also fails at HEAD while a given path or its proof differs from HEAD;
+`--for <paths>` and `--proofs-for <paths>` run those paths' bound proofs in the runner's environment. Before merging
+a returned change, the dispatcher runs `--proofs-for` over its changed paths (the gate cadence's `reach` row): the
+writer's direct runs keep its own environment and cover only the proofs it edited. Neither run satisfies push. `--for` excuses a red that also fails at HEAD while a given path or its proof differs from HEAD;
 after the change is committed (a worktree branch, a delegate's slice), pass `--base <the revision
 before the change>`, or no red is excused. Use the edited unit's proof file directly for RED-first work. While fixing one case of a `run_cases` proof, run that case alone (`HARNESS_CASES_ONLY=<name part> python3 .claude/tests/<proof>`), then the whole file before the commit.
 Passes are reused while reached inputs are unchanged, whichever checkout of the repository recorded them. `--all` runs every proof on demand;
 `/sync_baseline` publish sets `HARNESS_REUSE_PASSES=1` for its full battery, so it reuses recorded passes.
 
-`git_guardrails.py` keeps quick checks (skill load, density, git/index scope and tracked-proof
-presence) and makes the advisory proof run above. An authored `hooks/` `.py` needs a git-TRACKED proof the runner binds to it (`harness_tests.py` `_named_for` over `discover`: `tests/test_<name>*`, `tests/<name>_test*` or `tests/<name>_<suffix>_test.*`), since a hook is a guard; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. This block and the must-allow set below hold under `reference/mechanism_litmus.md`; the census rules on each. A tool gets a proof when it holds logic a wrong edit breaks silently (a branch it decides on, a parser, a reducer); the author judges that, and no guard asks for a proof file per tool. An edit to a tool whose every tracked proof `adaptation.json` `proof_excluded` lists commits with an advisory naming each excluded proof and its reason, since the close never runs it. A commit touching tracked `baseline.lock.json` rows runs `layer_closure.scan` over those rows from the local cache clone and advises each finding. Staged-blob peer-revert checks stay;
+The loss floor (`dangerous_shell_guard.py`) keeps the git and index-scope checks at commit; no hook checks proof
+presence there. An authored `hooks/` `.py` needs a git-TRACKED proof the runner binds to it (`harness_tests.py` `_named_for` over `discover`: `tests/test_<name>*`, `tests/<name>_test*` or `tests/<name>_<suffix>_test.*`), since a hook is a guard; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. This block and the must-allow set below hold under `reference/mechanism_litmus.md`; the census rules on each. A tool gets a proof when it holds logic a wrong edit breaks silently (a branch it decides on, a parser, a reducer); the author judges that, and no guard asks for a proof file per tool. Staged-blob peer-revert checks stay;
 proof-byte freshness moves to committed HEAD at close. The inline prefix
 `HARNESS_ALLOW_UNSTAMPED_HARNESS=1` is only for repairing the guard or runner, never a hurry.
 
@@ -146,7 +147,9 @@ check, as above.
   runs the close alone. A red is a row on the `main-check-state` branch
   (`main_check.py --rows`), never a failed land: it blocks no push, and later checks read it as pre-existing.
   `change_control` §A red on main owns who fixes it.
-- **The guard follows.** `git_guardrails.py` requires no local close for a harness push, and `approving_gates.py`'s
+- **The guard follows.** Where the project declares no `adaptation.json` `main_check`, `dangerous_shell_guard.py`'s
+  harness push close denies a harness push whose commits no green close proved; a push to a `land_prefix` branch
+  passes. Where a main check is declared, no hook requires a local close, and `approving_gates.py`'s
   `proved-push` still approves only the commit a stored green close proved: a push with no close takes the normal
   permission path, so a skipped proof is never push authority.
 
@@ -167,7 +170,7 @@ The recorded width is shared; `HARNESS_MACHINE_SLOTS` requests a width change, w
 
 ## A spawn on Windows keeps a console its children share
 
-A child of a console-less process allocates its own console, which Windows hands to the default terminal: a visible window per child, and a persistent error window when the child dies before the handoff finishes. A worker that outlives its launcher takes `detach_options()` (`hooks/_bounded_run.py`, which `bench_lib.py` re-exports; the keywords carry the worker's `env` with its job id, so a spawn is `**detach_options(env)`, never a hand-written `env=`). Never `DETACHED_PROCESS`, `CREATE_NEW_CONSOLE`, Node `detached: true` or a `Start-Process` with neither `-WindowStyle Hidden` nor `-NoNewWindow`; a spawn-shape proof scans for each. A new spawn shape proves itself the way the shape was found: spawn a console child, then count new terminal windows.
+A child of a console-less process allocates its own console, which Windows hands to the default terminal: a visible window per child, and a persistent error window when the child dies before the handoff finishes. A worker that outlives its launcher takes `detach_options()` (`hooks/_bounded_run.py`; the keywords carry the worker's `env` with its job id, so a spawn is `**detach_options(env)`, never a hand-written `env=`). Never `DETACHED_PROCESS`, `CREATE_NEW_CONSOLE`, Node `detached: true` or a `Start-Process` with neither `-WindowStyle Hidden` nor `-NoNewWindow`; a spawn-shape proof scans for each. A new spawn shape proves itself the way the shape was found: spawn a console child, then count new terminal windows.
 
 ## Unknown values fail CLOSED, on the safe side of the comparison
 

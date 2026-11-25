@@ -248,6 +248,40 @@ for spelling, native in (("/c/x", "C:/x"), ("/C/x", "C:/x"), ("/c", "C:/"), ("/c
 check("a path whose first segment only starts with a letter is not a drive",
       amend_delivery._norm("/cat/x") == os.path.normcase(os.path.normpath("/cat/x")), amend_delivery._norm("/cat/x"))
 
+# ---- a seat with no Claude transcript (agy through its hook bridge) -------------------------------------------------
+# The launcher exports the brief it sent as CLAUDE_CODE_SIDECAR_PROMPT_FILE; the key line names `<brief>.amend.md`.
+SEAT_BRIEF = os.path.join(ROOT, "seat", "brief.md").replace("\\", "/")
+write(SEAT_BRIEF, "# Task\n")
+
+
+def seat(event, env_brief=SEAT_BRIEF):
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE)
+    env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
+    if env_brief:
+        env["CLAUDE_CODE_SIDECAR_PROMPT_FILE"] = env_brief
+    payload = {"session_id": "agy-c1", "transcript_path": "", "cwd": ROOT, "hook_event_name": event}
+    if event == "PreToolUse":
+        payload.update(tool_name="Read", tool_input={})
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True, text=True,
+                       encoding="utf-8", timeout=30, env=env)
+    return r.returncode, r.stdout, r.stderr
+
+
+rc, out, err = seat("PreToolUse")
+check("a transcript-less job whose amendment does not exist sees nothing", rc == 0 and out.strip() == "", out + err)
+write(SEAT_BRIEF + ".amend.md", "Seat amendment: use the second fixture.\n")
+rc, out, err = seat("PreToolUse")
+check("a transcript-less job receives its brief's amendment from the exported brief path",
+      rc == 0 and "Seat amendment: use the second fixture." in context(out), out + err)
+write(SEAT_BRIEF + ".amend.md", "Seat amendment two.\n")
+rc, out, err = seat("Stop")
+check("a transcript-less job cannot stop with an undelivered revision",
+      rc == 0 and '"block"' in out and "Seat amendment two." in out, out + err)
+rc, out, err = seat("Stop")
+check("the next stop of that job passes", rc == 0 and out.strip() == "", out + err)
+rc, out, err = seat("Stop", env_brief=None)
+check("a transcript-less job with no exported brief is left alone", rc == 0 and out.strip() == "", out + err)
+
 # ---- failure posture ------------------------------------------------------------------------------------------------
 r = subprocess.run([sys.executable, HOOK], input="not json", capture_output=True, text=True, encoding="utf-8",
                    timeout=30, env=dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE))

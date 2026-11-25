@@ -49,15 +49,16 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import vault_read  # noqa: E402  (the dehydration-aware vault reader)
 import vault_sync  # noqa: E402  (owns the key shapes an archive masks)
+from _git_run import run as git_run  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_VAULT = vault_read.DEFAULT_VAULT
@@ -91,12 +92,11 @@ def _mentions(text):
 
 
 def repo_references(repo, names):
-    run = subprocess.run(['git', '-C', str(repo), 'grep', '--untracked', '-z', '-o', '-I', '-E', GREP_ERE],
-                         capture_output=True)
+    run = git_run(['grep', '--untracked', '-z', '-o', '-I', '-E', GREP_ERE], cwd=str(repo))
     if run.returncode not in (0, 1):
-        raise RuntimeError('git grep failed: ' + run.stderr.decode('utf-8', 'replace').strip())
+        raise RuntimeError('git grep failed: ' + run.err_text.strip())
     refs = {}
-    for line in run.stdout.decode('utf-8', 'replace').splitlines():
+    for line in run.text.splitlines():
         path, _, match = line.partition('\0')
         for segment in _mentions(match):
             name = _entry_for(segment, names)
@@ -121,11 +121,10 @@ vault_verified = vault_read.verified
 
 
 def registered_worktrees(repo):
-    run = subprocess.run(['git', '-C', str(repo), 'worktree', 'list', '--porcelain'],
-                         capture_output=True, text=True)
+    run = git_run(['worktree', 'list', '--porcelain'], cwd=str(repo))
     if run.returncode:
-        raise RuntimeError('git worktree list failed: ' + run.stderr.strip())
-    return [Path(line[len('worktree '):]).resolve() for line in run.stdout.splitlines()
+        raise RuntimeError('git worktree list failed: ' + run.err_text.strip())
+    return [Path(line[len('worktree '):]).resolve() for line in run.text.splitlines()
             if line.startswith('worktree ')]
 
 
@@ -218,22 +217,21 @@ class MainCommits:
 
     def get(self):
         if self._set is None:
-            run = subprocess.run(['git', '-C', str(self.repo), 'rev-list', '--all'],
-                                 capture_output=True, text=True)
-            self._set = set(run.stdout.split()) if run.returncode == 0 else set()
+            run = git_run(['rev-list', '--all'], cwd=str(self.repo))
+            self._set = set(run.text.split()) if run.returncode == 0 else set()
         return self._set
 
 
-def _git_read(base, args, env=None):
-    return subprocess.run(base + args, capture_output=True, text=True, env=env)
+def _git_read(repo_dir, args, env=None):
+    return git_run(args, cwd=str(repo_dir), env=env, prefix=('-c', 'safe.directory=*'))
 
 
-def _read_only_env(base, scratch_dir):
+def _read_only_env(repo_dir, scratch_dir):
     """Environment that sends git's index refresh to a copy: a write to the real index would move the
     mtime the sweep judges the entry by."""
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS='0')
-    where = _git_read(base, ['rev-parse', '--git-path', 'index'])
-    index = Path(base[-1]) / where.stdout.strip() if where.returncode == 0 and where.stdout.strip() else None
+    env = {'GIT_OPTIONAL_LOCKS': '0'}
+    where = _git_read(repo_dir, ['rev-parse', '--git-path', 'index'])
+    index = Path(repo_dir) / where.text.strip() if where.returncode == 0 and where.text.strip() else None
     if index and index.is_file():
         copy = Path(scratch_dir) / 'index'
         shutil.copyfile(index, copy)
@@ -244,26 +242,26 @@ def _read_only_env(base, scratch_dir):
 def repo_work(repo_dir, main):
     """Describe the work a nested repository holds that git has nowhere else; [] when none.
     A repository git cannot read is reported as work, so an unreadable one is never judged."""
-    base = ['git', '-c', 'safe.directory=*', '-C', str(repo_dir)]
     work = []
-    commits = _git_read(base, ['rev-list', '--all'])
+    commits = _git_read(repo_dir, ['rev-list', '--all'])
     if commits.returncode:
-        return ['unreadable repository: ' + commits.stderr.strip()[:120]]
-    remote = _git_read(base, ['rev-list', '--remotes'])
-    held = main.get() | (set(remote.stdout.split()) if remote.returncode == 0 else set())
-    unique = [c for c in commits.stdout.split() if c not in held]
+        return ['unreadable repository: ' + commits.err_text.strip()[:120]]
+    remote = _git_read(repo_dir, ['rev-list', '--remotes'])
+    held = main.get() | (set(remote.text.split()) if remote.returncode == 0 else set())
+    unique = [c for c in commits.text.split() if c not in held]
     if unique:
         work.append('{} commit{} on no remote and no ref of the checkout'.format(
             len(unique), '' if len(unique) == 1 else 's'))
     with tempfile.TemporaryDirectory() as tmp:
-        env = _read_only_env(base, tmp)
-        if commits.stdout.strip():
-            diff = _git_read(base, ['diff', 'HEAD', '--numstat', '--ignore-cr-at-eol', '--ignore-space-at-eol'], env)
+        env = _read_only_env(repo_dir, tmp)
+        if commits.text.strip():
+            diff = _git_read(repo_dir, ['diff', 'HEAD', '--numstat', '--ignore-cr-at-eol',
+                                        '--ignore-space-at-eol'], env)
         else:
-            diff = _git_read(base, ['status', '--porcelain', '--untracked-files=no'], env)
-    changed = len(diff.stdout.splitlines())
+            diff = _git_read(repo_dir, ['status', '--porcelain', '--untracked-files=no'], env)
+    changed = len(diff.text.splitlines())
     if diff.returncode:
-        work.append('unreadable diff: ' + diff.stderr.strip()[:120])
+        work.append('unreadable diff: ' + diff.err_text.strip()[:120])
     elif changed:
         work.append('{} modified tracked file(s)'.format(changed))
     return work
@@ -387,12 +385,13 @@ def remove_entry_with_worktrees(path, repo):
     inside = sorted((wt for wt in registered_worktrees(repo) if wt != main and _within(wt, resolved)),
                     key=lambda wt: -len(wt.parts))
     for wt in inside:
-        run = subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', '--force', '--force', str(wt)],
-                             capture_output=True, text=True)
+        # No fixed cap: removing a worktree deletes every file in it, so its cost grows with the tree.
+        run = git_run(['worktree', 'remove', '--force', '--force', str(wt)], cwd=str(repo), timeout=None)
         if run.returncode and wt.exists():
-            failures.append('{}: git worktree remove failed: {}'.format(wt, run.stderr.strip()))
+            failures.append('{}: git worktree remove failed: {}'.format(
+                wt, run.err_text.strip()))
     if inside:
-        subprocess.run(['git', '-C', str(repo), 'worktree', 'prune'], capture_output=True, text=True)
+        git_run(['worktree', 'prune'], cwd=str(repo), timeout=None)
     if failures:
         return failures
     return remove_entry(path) if path.exists() else []

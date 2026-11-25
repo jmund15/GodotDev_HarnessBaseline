@@ -84,15 +84,14 @@ class DeliveredShell(unittest.TestCase):
         return {"shell:" + task: {"shell": notice, "records": [], "fanout_dir": None}
                 for task, notice in self.shells.poll().items()}
 
-    def test_delivered_end_keeps_watcher_idle_instead_of_waking(self):
+    def test_delivered_end_exits_none_without_its_digest(self):
         self.append(CAPTURED_DELIVERY)
         source = lambda: self.source()
         source.shells = self.shells
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch.object(watch_records.time, "sleep", side_effect=InterruptedError):
-            with self.assertRaises(InterruptedError):
-                watch_records.wake_loop(source)
-        self.assertEqual(output.getvalue(), "")
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(watch_records.wake_loop(source), 0)
+        self.assertEqual(output.getvalue(), "NONE\n")
 
     def test_undelivered_end_still_exits_with_shell_digest(self):
         output = io.StringIO()
@@ -120,7 +119,7 @@ class DeliveredShell(unittest.TestCase):
                 self.append({"type": "queue-operation", "operation": "enqueue", "content":
                              CAPTURED_NOTICE.replace("bqcuah9lv", "newtask")})
             grouped = self.source()
-            if polls < 3:
+            if polls < 4:
                 grouped["live"] = {"running_shell": "other", "records": [], "fanout_dir": None}
             if polls == 4:
                 record = os.path.join(self.tmp.name, "failed.record.json")
@@ -137,7 +136,7 @@ class DeliveredShell(unittest.TestCase):
         self.assertNotIn("SHELL bqcuah9lv", output.getvalue())
         self.assertIn("SHELL newtask", output.getvalue())
 
-    def test_session_watcher_stays_idle_without_a_decision_event(self):
+    def test_session_watcher_exits_none_when_nothing_is_live(self):
         cases = ({}, {"workflow": {"workflow": {"id": "finished"}, "records": [], "fanout_dir": None}})
         for grouped in cases:
             with self.subTest(grouped=grouped):
@@ -148,19 +147,31 @@ class DeliveredShell(unittest.TestCase):
                         patch.object(watch_records, "workflow_running", return_value=False), \
                         patch.object(watch_records, "workflow_end_text", return_value="DONE workflow finished"), \
                         patch.object(watch_records.time, "sleep", side_effect=InterruptedError):
-                    with self.assertRaises(InterruptedError):
-                        watch_records.wake_loop(source)
-                self.assertNotIn("NONE", output.getvalue())
+                    self.assertEqual(watch_records.wake_loop(source), 0)
+                self.assertTrue(output.getvalue().endswith("NONE\n"))
 
-    def test_session_watcher_waits_after_live_work_disappears(self):
+    def test_session_watcher_exits_once_live_work_disappears(self):
         source = lambda: {}
         source.shells = self.shells
         with patch.object(watch_records, "_wake", side_effect=[([], 1, set()), ([], 0, set())]), \
                 patch.object(watch_records.time, "sleep", side_effect=[None, InterruptedError]), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
-            with self.assertRaises(InterruptedError):
-                watch_records.wake_loop(source)
-        self.assertEqual(output.getvalue(), "")
+            self.assertEqual(watch_records.wake_loop(source), 0)
+        self.assertEqual(output.getvalue(), "NONE\n")
+
+    def test_a_pending_call_keeps_the_watcher_until_it_returns(self):
+        calls = [{"l1"}, set()]
+        self.shells.pending = lambda: calls.pop(0) if calls else set()
+        with patch.object(watch_records, "ShellEnds", return_value=self.shells), \
+                patch.object(watch_records, "session_rosters", return_value=lambda: {}), \
+                patch.object(watch_records, "_transcript_path", return_value=None), \
+                patch.object(watch_records, "pending_sidecars", return_value=[]), \
+                patch.object(watch_records, "pending_workflows", return_value={}):
+            source = watch_records._session_source("session", None)
+            first, second = source(), source()
+        self.assertEqual([k for k in first if k.startswith("pending-call:")], ["pending-call:l1"])
+        self.assertEqual(watch_records._wake(first)[1], 1)
+        self.assertEqual([k for k in second if k.startswith("pending-call:")], [])
 
     def test_racing_duplicate_arm_waits_then_takes_over(self):
         with patch.dict(os.environ, CLAUDE_CODE_SESSION_ID="session"), \

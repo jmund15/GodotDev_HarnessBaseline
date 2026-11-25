@@ -212,6 +212,11 @@ code, text, out, _ = run([job("root-and-window", workdir=str(sf.REPO), window="f
 case("a repo-root workdir job kept a sidecar by another field names only that field",
      lambda: read(out, "native.args.json") is None and len(DRIVERS) == 2 and "`window` has no Workflow equivalent" in text
      and "workdir" not in text.split("root-and-window", 1)[1].splitlines()[0])
+code, text, out, _ = run([job("scout-sh", kind="scout", tools="+Bash"), job("review-sh", kind="reviewer", tools="+Bash")])
+nat = read(out, "native.args.json")
+case("a tools delta no generated agent covers stays a sidecar; a covered one routes native",
+     lambda: nat is not None and [j["label"] for j in nat["jobs"]] == ["review-sh"]
+     and "scout-sh: stays a sidecar (" in text and "no covering agent file" in text.split("scout-sh: stays a sidecar", 1)[1].splitlines()[0])
 code, text, out, _ = run([job("no-effort", effort=None)])
 case("a job with no effort stays a sidecar: the Workflow engine fills none",
      lambda: read(out, "native.args.json") is None and "effort" in text)

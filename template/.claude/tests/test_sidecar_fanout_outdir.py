@@ -89,8 +89,11 @@ def detach_cases(cwd):
             else:
                 os.environ[key] = value
     text = out.getvalue()
-    argv, kw = spawned[0] if spawned else ([], {})
-    check(rc == 0 and len(spawned) == 1, "--detach returns 0 after spawning one detached driver (rc=%r) %s"
+    # Patching the subprocess module's Popen also captures the tool's own git calls (task-record and
+    # checkout resolution); only the argv that reruns this tool is the driver under test.
+    drivers = [(a, k) for a, k in spawned if a[:2] == [sys.executable, str(TOOL)]]
+    argv, kw = drivers[0] if drivers else ([], {})
+    check(rc == 0 and len(drivers) == 1, "--detach returns 0 after spawning one detached driver (rc=%r) %s"
           % (rc, text[-300:]))
     check(argv[:2] == [sys.executable, str(TOOL)] and "--detach" not in argv and "--max-parallel" in argv
           and "jobs.json" not in argv and any(a.endswith("jobs.json") and os.path.isabs(a) for a in argv),
@@ -99,7 +102,7 @@ def detach_cases(cwd):
           "the driver is spawned detached from the caller (%r)" % sorted(kw))
     check("pid 4242" in text and "watch_records.py --session --wake" in text and "fanout-driver.log" in text,
           "the caller prints the driver pid, its log and the watcher command (%s)" % text[-300:])
-    check(bad_rc == 2 and len(spawned) == 1, "a bad flag still fails in the caller, before any spawn (rc=%r)" % bad_rc)
+    check(bad_rc == 2 and len(drivers) == 1, "a bad flag still fails in the caller, before any spawn (rc=%r)" % bad_rc)
 
 
 def main():

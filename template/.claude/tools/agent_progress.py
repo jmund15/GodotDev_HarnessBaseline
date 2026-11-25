@@ -120,6 +120,8 @@ class Progress:
     def fold(self, row):
         kind = row.get("type")
         if not isinstance(kind, str):
+            if isinstance(row.get("event"), str):
+                self._agy(row)
             return
         self.rows += 1
         ts = _stamp(row.get("timestamp"))
@@ -152,6 +154,34 @@ class Progress:
                 total = sum(v for v in (tokens.get("input"), cache.get("read"), cache.get("write")) if isinstance(v, (int, float)))
                 if total > 0 and ts is not None:
                     self.contexts.append((ts, int(total)))
+
+    def _agy(self, row):
+        """An Antigravity CLI row: `event` init / step_update / result, stamped by `agy_seat.py run`."""
+        event = row["event"]
+        body = row.get(event) if isinstance(row.get(event), dict) else {}
+        self.rows += 1
+        ts = _stamp(row.get("timestamp"))
+        if ts is not None:
+            self.first = ts if self.first is None else self.first
+            self.last = ts if self.last is None or ts > self.last else self.last
+        if event == "init" and isinstance(body.get("tools"), list):
+            self.tools = body["tools"]
+            self.cwd = body.get("cwd") if isinstance(body.get("cwd"), str) else None
+        elif event == "step_update" and body.get("step_type") == "tool":
+            info = body.get("tool_info") if isinstance(body.get("tool_info"), dict) else {}
+            params = info.get("parameters") if isinstance(info.get("parameters"), dict) else {}
+            inp = {"path": params.get("Path") or params.get("AbsolutePath"), "command": params.get("CommandLine")}
+            name = str(body.get("tool_name") or "?")
+            if body.get("state") == "ACTIVE":
+                self._call(ts, name, inp, None)
+            elif body.get("state") in ("DONE", "TOOL_ERROR", "ERROR"):
+                self._result(ts, name, inp["command"], _text(info.get("output")))
+        elif event == "result":
+            self._say(ts, body.get("response"))
+            usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+            total = sum(v for v in (usage.get("input_tokens"), usage.get("cache_read_tokens")) if isinstance(v, (int, float)))
+            if total > 0 and ts is not None:
+                self.contexts.append((ts, int(total)))
 
     def _assistant(self, row, ts):
         message = row.get("message") if isinstance(row.get("message"), dict) else {}

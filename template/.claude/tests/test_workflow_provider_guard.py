@@ -118,6 +118,11 @@ TIERS = {"orchestrator": ["h-orch"], "architect": ["h-arch"], "executor": ["h-ex
          "fanout": ["h-fan"], "scout": ["h-scout"]}
 
 
+def available_capacity(_transport, data=None):
+    """The real guard's reader seam: a plan with room, so RULE 2 allows."""
+    return {"status": "available", "sourceKind": "live"}
+
+
 def plan_reading(used, left):
     """A normalized plan reading whose weekly routing window has `used`% spent, `left` of its time to go."""
     return {"status": "available", "quota": {"routingWindow": "seven_day", "windows": [
@@ -170,8 +175,9 @@ def run_channel(payload, band="On pace", rooms=EVEN, registry_ok=True, state_dir
         return data
 
     st, mr = wpg._session_transport, wpg.model_registry
+    capacity_reader = wpg.provider_capacity_guard.provider_capacity.reading
     saved = (st.resolve, st._registry, st.HOST_TRANSPORT, wpg.band_and_pressure,
-             wpg.provider_capacity_guard.refusal, mr.load, mr.role_tiers,
+             capacity_reader, mr.load, mr.role_tiers,
              wpg._hook_state.state_path, sys.stdin)
     saved_patches = [(owner, attr, getattr(owner, attr, _ABSENT)) for owner, attr, _v in patches]
     capture = io.StringIO()
@@ -180,7 +186,7 @@ def run_channel(payload, band="On pace", rooms=EVEN, registry_ok=True, state_dir
         st._registry = lambda: data
         st.HOST_TRANSPORT = "host"
         wpg.band_and_pressure = lambda *_a, **_k: (band, None)
-        wpg.provider_capacity_guard.refusal = lambda _t: None
+        wpg.provider_capacity_guard.provider_capacity.reading = available_capacity
         mr.load = load
         mr.role_tiers = lambda *_a, **_k: tiers
         wpg._hook_state.state_path = lambda s: os.path.join(state_dir, str(s or "default")[:8] + ".json")
@@ -196,7 +202,7 @@ def run_channel(payload, band="On pace", rooms=EVEN, registry_ok=True, state_dir
             else:
                 setattr(owner, attr, value)
         (st.resolve, st._registry, st.HOST_TRANSPORT, wpg.band_and_pressure,
-         wpg.provider_capacity_guard.refusal, mr.load, mr.role_tiers,
+         wpg.provider_capacity_guard.provider_capacity.reading, mr.load, mr.role_tiers,
          wpg._hook_state.state_path, sys.stdin) = saved
     raw = capture.getvalue().strip()
     return ((json.loads(raw).get("hookSpecificOutput") if raw else {}) or {}), raw
@@ -582,8 +588,12 @@ def channel_cases():
          run_channel(jobs([("h-fan", "fanout")]), patches=[
              (wpg, "tool_profile_refusal", lambda _p: "invalid tool profile: missing write")]), "deny",
          ("orchestration §Pre-Dispatch Checklist", "Name the job's kind"))
-    host_exhausted = (wpg.provider_capacity_guard, "refusal",
-                      lambda t: "Provider capacity exhausted for host" if t == "host" else None)
+    def host_capacity(transport, data=None):
+        if transport == "host":
+            return {"status": "exhausted", "sourceKind": "live"}
+        return available_capacity(transport)
+
+    host_exhausted = (wpg.provider_capacity_guard.provider_capacity, "reading", host_capacity)
     case("capacity refusal routes the job to the currency pick among the other plans",
          run_channel(jobs([("h-fan", "fanout")]), patches=[host_exhausted]),
          "deny", ("orchestration §5b", "off On pace: 7d 50% left, 50% to go", ".claude/scripts/off_sidecar.sh"),
@@ -591,6 +601,24 @@ def channel_cases():
     case("capacity refusal with no other plan that has room says so",
          run_channel(jobs([("h-fan", "fanout")]), rooms=dict(EVEN, off=None), patches=[host_exhausted]),
          "deny", ("orchestration §5b", "no cross-transport row"))
+    def rate_limited(transport, data=None):
+        if transport != "host":
+            return available_capacity(transport)
+        return {"status": "rate-limited", "sourceKind": "live", "quota": None, "balance": None,
+                "error": {"kind": "rate-limit", "message": "rate limited until 12:00Z"}}
+
+    unreadable_meter = (wpg.provider_capacity_guard.provider_capacity, "reading", rate_limited)
+    # The guard reads plans other than the host through these seams: each must forward its transport,
+    # never call the shared reading helper with no argument.
+    try:
+        host_capacity("off")
+    except TypeError as exc:
+        out.append(("a capacity seam answers a non-host plan instead of raising TypeError", False, repr(exc)))
+    else:
+        out.append(("a capacity seam answers a non-host plan instead of raising TypeError", True, ""))
+    case("an unreadable plan's capacity warning reaches the launch as advice",
+         run_channel(jobs([("h-fan", "fanout")]), patches=[unreadable_meter]), "advise",
+         ("12:00Z",))
     multi = json.loads(json.dumps(SYN))
     multi["models"].append({"transport": "host", "id": "host-multi-1", "alias": "h-multi",
                             "roles": ["fanout", "executor"]})
@@ -797,9 +825,9 @@ def implied_tier_cases():
     case("a kind delta with no covering agent file is refused before spend",
          run_channel(job_call([job("j0", "h-fan", kind="scout", tools={"add": ["Bash"]})])), "deny",
          ("no covering agent file",))
-    SINGLE_KIND = ("agentic_cloud", "sdf_cloud", "calibrate_cloud", "cloud_sdf", "mine_sdf_corpus", "rebuild_agentic",
-                   "rebuild_sdf", "w13_cloud_ceiling", "w_axis_and_floors", "test_agents_fixtures", "test_skill_pressure")
-    MEASUREMENT = ("agenttype_input_cost_probe", "effort_on_agenttype_probe", "harness_bloat_probe", "w13_cloud_ladder")
+    SINGLE_KIND = ("calibrate_cloud", "cloud_sdf", "mine_sdf_corpus", "rebuild_agentic", "rebuild_sdf",
+                   "w13_cloud_ceiling", "w_axis_and_floors", "test_agents_fixtures", "test_skill_pressure")
+    MEASUREMENT = ("agenttype_input_cost_probe", "harness_bloat_probe", "w13_cloud_ladder")
 
     def engine_call(name, **args):
         return {"tool_name": "Workflow", "session_id": "s0000001",
@@ -1155,9 +1183,9 @@ def failure_cases():
         for spent in (38.0, 42.8):
             clock, timeouts = [1000.0], []
 
-            def slow_capacity(_t, spent=spent):
+            def slow_capacity(_t, data=None, spent=spent):
                 clock[0] += spent
-                return None
+                return {"status": "available", "sourceKind": "live"}
 
             def band_run(cmd, *_a, **k):
                 timeouts.append(k.get("timeout"))
@@ -1166,7 +1194,7 @@ def failure_cases():
             hook, raw = _crash_safe(lambda: run_channel(call, band="Surplus", patches=[
                 (wpg, "band_and_pressure", REAL_BAND), (wpg.subprocess, "run", band_run),
                 (wpg.time, "monotonic", lambda: clock[0]),
-                (wpg.provider_capacity_guard, "refusal", slow_capacity)]))
+                (wpg.provider_capacity_guard.provider_capacity, "reading", slow_capacity)]))
             left = wpg.DEADLINE_SECONDS - spent if hasattr(wpg, "DEADLINE_SECONDS") else None
             bounded = (not timeouts and "skipped" in str((records() or [{}])[-1].get("band_error"))) \
                 if left is not None and left < 0.5 else bool(timeouts) and timeouts[-1] <= (left or 0) + 0.01
@@ -1588,10 +1616,11 @@ def main():
 
     # Planted live-capacity refusal through the real PreToolUse output channel.
     st = wpg._session_transport
-    saved = (wpg.provider_capacity_guard.refusal, st.resolve, st._registry, sys.stdin)
+    saved = (wpg.provider_capacity_guard.provider_capacity.reading, st.resolve, st._registry, sys.stdin)
     capture = io.StringIO()
     try:
-        wpg.provider_capacity_guard.refusal = lambda _t: "Provider capacity exhausted for off"
+        wpg.provider_capacity_guard.provider_capacity.reading = lambda t, data=None: (
+            {"status": "exhausted", "sourceKind": "live"} if t == "off" else available_capacity(t))
         checks = getattr(wpg, "_dispatch_checks", None)
         if checks is not None:
             saved_read = checks.read_capacity
@@ -1602,7 +1631,7 @@ def main():
         with contextlib.redirect_stdout(capture):
             wpg.main()
     finally:
-        (wpg.provider_capacity_guard.refusal, st.resolve, st._registry, sys.stdin) = saved
+        (wpg.provider_capacity_guard.provider_capacity.reading, st.resolve, st._registry, sys.stdin) = saved
         if checks is not None:
             checks.read_capacity = saved_read
     raw = capture.getvalue().strip()

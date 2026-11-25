@@ -21,20 +21,20 @@ Exit 2 = the check could not run (bad rev, git failure).
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+from _git_run import run as git_run  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 def git(*args: str, cwd: Path = REPO) -> str:
-    r = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+    r = git_run(args, cwd=str(cwd))
     if r.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
-    return r.stdout
+        raise RuntimeError(f"git {' '.join(args)} failed: {r.err_text.strip()}")
+    return r.text
 
 
 def strip_comments(src: str) -> str:

@@ -36,6 +36,10 @@ def emit(kind):
     open(os.path.join(log, kind + "__" + name + "__" + repr(time.time())), "x").close()
 
 emit("start")
+hold = int(os.environ.get("ADMISSION_HOLD", "0"))
+deadline = time.time() + 20
+while hold and time.time() < deadline and sum(n.startswith("start__") for n in os.listdir(log)) < hold:
+    time.sleep(0.02)
 time.sleep(0.4)
 emit("end")
 '''
@@ -143,6 +147,9 @@ class Admission(unittest.TestCase):
         self.assertEqual(seen, [(False, 1), (False, 1)], seen)
 
     def test_a_pool_of_case_pool_proofs_runs_its_full_width(self):
+        # The first four proofs wait until four have started, so a loaded machine that starts them late still
+        # overlaps them; a pool narrower than four leaves them waiting out the deadline and peaks below four.
+        os.environ["ADMISSION_HOLD"] = "4"
         os.environ["HARNESS_MACHINE_SLOTS"] = "4"
         os.environ["HARNESS_CASE_JOBS"] = "2"
         proofs = [write(self.root, ".claude/tests/test_pooled_%d.py" % index,
@@ -172,6 +179,57 @@ class Admission(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             runner._run_selected(proofs, False, {}, {})
         self.assertEqual(order, [names[3], names[2], names[1], names[0]], order)
+
+
+    def _attempt_ctx(self, **kwargs):
+        return runner._run_context(root=self.root, pace=runner._attempt.LivePace(), **kwargs)
+
+    def test_a_serial_proof_inside_an_inherited_lane_never_claims_exclusivity(self):
+        os.environ["HARNESS_SLOT_BUDGET"] = "1"
+        takes = []
+        real = runner._take_slots
+
+        def spy(exclusive=False, count=1, split=None):
+            takes.append(exclusive)
+            return real(exclusive, count, split=split)
+
+        patch.object(runner, "_take_slots", spy).start()
+        ctx = self._attempt_ctx()
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out), contextlib.redirect_stdout(out):
+            with runner._attempt.serial(ctx) as held:
+                claims = held
+        self.assertFalse(claims, "an inherited lane claimed a whole-machine take")
+        self.assertFalse(takes, "an inherited lane called take outright: %s" % takes)
+        self.assertIn("without an exclusive lease", out.getvalue())
+
+    def test_a_dead_slot_store_is_cannot_run(self):
+        dead = os.path.join(self.root, "not-a-dir")
+        Path(dead).write_text("x", encoding="utf-8")
+        os.environ["HARNESS_SLOT_DIR"] = dead
+        ctx = self._attempt_ctx()
+        result = runner._attempt.run(ctx, runner._attempt.AttemptJob(
+            proof=write(self.root, ".claude/tests/test_dead.py", "import sys\nsys.exit(0)\n")))
+        self.assertEqual(result.status, "cannot-run", result)
+
+    def test_a_cancelled_attempt_never_launches(self):
+        launched = []
+        ctx = self._attempt_ctx(stop=lambda: True)
+        ctx.launch = lambda job: launched.append(job.proof) or ("pass", 0.0, "")
+        result = runner._attempt.run(ctx, runner._attempt.AttemptJob(
+            proof=write(self.root, ".claude/tests/test_cancelled.py", "import sys\nsys.exit(0)\n")))
+        self.assertEqual(result.status, "skipped", result)
+        self.assertFalse(launched, "a cancelled attempt still launched %s" % launched)
+
+    def test_a_recheck_counts_a_peer_pass_after_the_wait_as_reuse(self):
+        launched = []
+        ctx = self._attempt_ctx()
+        ctx.launch = lambda job: launched.append(job.proof) or ("fail", 1.0, "FAIL planted")
+        result = runner._attempt.run(ctx, runner._attempt.AttemptJob(
+            proof=write(self.root, ".claude/tests/test_peer_pass.py", "import sys\nsys.exit(0)\n"),
+            recheck=lambda: ("pass", 0.0, "")))
+        self.assertEqual((result.status, result.run_s), ("pass", 0.0), result)
+        self.assertFalse(launched, "a recheck pass still launched %s" % launched)
 
 
 if __name__ == "__main__":

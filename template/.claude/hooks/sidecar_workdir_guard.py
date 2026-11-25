@@ -14,7 +14,7 @@ path outside the main checkout stay allowed. A brief that is absent, unreadable 
 wherever it sits (spill dir, workdir, a declared dir, outside the checkout): the guard re-reads its writeSet on
 every call, so a child that could edit it would widen its own allowance. A job whose workdir is the main checkout is unaffected.
 A payload it cannot parse is denied. A Bash target it cannot resolve statically (variable, substitution, glob) is allowed.
-Armed by lib/sidecar_common.sh from adaptation.json sidecar_hook_rows; rule home: reference/sidecar_dispatch.md.
+Armed by lib/sidecar_common.sh as its own launcher row, never from a plugin registration; rule home: reference/sidecar_dispatch.md.
 Channel: exit 2 + stderr.
 """
 import json

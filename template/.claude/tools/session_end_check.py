@@ -66,6 +66,10 @@ DEFAULT_ARCHIVE = os.path.join(_PROJECT_DIR, ".claude", "self_evaluate_archive.j
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+_HOOKS_DIR = os.path.join(os.path.dirname(_TOOLS_DIR), 'hooks')
+if _HOOKS_DIR not in sys.path:
+    sys.path.insert(0, _HOOKS_DIR)
+from _git_run import run as git_run  # noqa: E402
 from self_eval_archive_store import find_session  # noqa: E402
 import close_predicates  # noqa: E402
 import worklog  # noqa: E402
@@ -427,20 +431,20 @@ def unpushed_commits(repo):
     land = land_prefix()
 
     def git(*a):
-        return subprocess.run(['git', '-C', repo, *a], capture_output=True, text=True, timeout=60)
+        return git_run(a, cwd=repo, timeout=60)
     try:
         refs = ['@{u}']
         if land:
             r = git('for-each-ref', '--format=%(refname)', 'refs/remotes/*/' + land + '*')
             if r.returncode != 0:
                 return None
-            refs += r.stdout.split()
+            refs += r.text.split()
         unpublished = None
         for ref in refs:
             r = git('cherry', ref, 'HEAD')
             if r.returncode != 0:
                 return None
-            plus = {line[2:] for line in r.stdout.splitlines() if line.startswith('+ ')}
+            plus = {line[2:] for line in r.text.splitlines() if line.startswith('+ ')}
             unpublished = plus if unpublished is None else unpublished & plus
     except (OSError, subprocess.SubprocessError):
         return None
@@ -455,13 +459,13 @@ def unpublished_peer_sessions(repo, transcript):
     if not own:
         return None
     try:
-        r = subprocess.run(['git', '-C', repo, 'log', '--format=%(trailers:key=Claude-Session,valueonly)', '@{u}..HEAD'],
-                           capture_output=True, text=True, timeout=30)
+        r = git_run(['log', '--format=%(trailers:key=Claude-Session,valueonly)', '@{u}..HEAD'],
+                    cwd=repo, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:
         return None
-    return {line.strip() for line in r.stdout.splitlines() if line.strip()} - own
+    return {line.strip() for line in r.text.splitlines() if line.strip()} - own
 
 
 def unresolved_pull(repo):

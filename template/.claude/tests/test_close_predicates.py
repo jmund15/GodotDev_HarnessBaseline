@@ -307,6 +307,23 @@ class PredicateTests(unittest.TestCase):
         finally:
             cp._load_tool = original
 
+    def test_hot_set_review_a_census_error_is_reported_as_its_own_error(self):
+        """`over_baseline` raises no not-configured state any more; an unrelated failure must reach the
+        predicate's null basis as itself, not as an AttributeError from the removed except clause."""
+        class RaisingCensus(StubCensus):
+            def over_baseline(self, report):
+                raise ValueError("budget map is corrupt")
+
+        original = cp._load_tool
+        try:
+            cp._load_tool = lambda name: RaisingCensus()
+            row = run("hot_set_review", self.repo)
+        finally:
+            cp._load_tool = original
+        self.assertIsNone(row["value"])
+        self.assertIn("ValueError", row["basis"]["error"])
+        self.assertNotIn("NotConfigured", row["basis"]["error"])
+
     def test_hot_set_review_true_for_an_oversized_body_row_and_its_gate_text_names_it(self):
         original = cp._load_tool
         try:

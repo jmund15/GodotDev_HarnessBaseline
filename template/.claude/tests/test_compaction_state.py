@@ -20,6 +20,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -257,6 +258,49 @@ class RetentionTest(unittest.TestCase):
         deny, _ = model_ladder_gate.doctrine_check({"session_id": "ret00010", "transcript_path": path,
                                                     "cwd": str(CLAUDE.parent)})
         self.assertIn(model_ladder_gate.SKILL_STEP, deny)
+
+
+class CompactionOrderTest(unittest.TestCase):
+    """The order the client runs a compaction (session b9a508a5, 2026-11-24): PreCompact hooks, the old context
+    keeps working for minutes to hours, the SessionStart(compact) hooks run when the new context begins, and
+    the client then writes the batch with the `compact_boundary` row stamped after those hooks finished. The
+    markers must outlive PreCompact, clear at SessionStart(compact), and a skill the client re-attached whole in
+    that batch counts again."""
+
+    ROOT = str(CLAUDE.parent)
+
+    def hook(self, name, payload, project):
+        env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE, CLAUDE_PROJECT_DIR=project, CC_CACHESTAT_DIR=project)
+        env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
+        done = subprocess.run([sys.executable, str(CLAUDE / "hooks" / name)], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def counts(self, sid, path):
+        return _hook_state.skill_in_context(sid, "orchestration", transcript_path=path, root=self.ROOT)
+
+    def compaction(self, sid, attachment):
+        project = tempfile.mkdtemp(prefix="order_project_")
+        self.addCleanup(shutil.rmtree, project, True)
+        old = segment(iso(time.time() - 3600), attachment=current_attachment("orchestration"))
+        old_path = Planted(self, old).path
+        _hook_state.mark_skill_in_context(sid, "orchestration")
+        payload = {"session_id": sid, "transcript_path": old_path, "cwd": project}
+        self.hook("transcript_backup.py", dict(payload, hook_event_name="PreCompact", trigger="auto"), project)
+        self.assertTrue(self.counts(sid, old_path), "the old context still holds the skill after PreCompact")
+        self.hook("subagent_compaction_rail.py", dict(payload, hook_event_name="SessionStart", source="compact"),
+                  project)
+        self.assertFalse(self.counts(sid, old_path), "the previous compaction's attachment does not count")
+        written = old + segment(iso(time.time()), attachment=attachment, settled=False)
+        return Planted(self, written).path
+
+    def test_a_skill_reattached_whole_counts_after_the_boundary_is_written(self):
+        path = self.compaction("order001", current_attachment("orchestration"))
+        self.assertTrue(self.counts("order001", path))
+
+    def test_a_skill_the_client_dropped_does_not_count(self):
+        path = self.compaction("order002", "invoked_skills_prev")
+        self.assertFalse(self.counts("order002", path))
 
 
 class FreshnessTest(unittest.TestCase):

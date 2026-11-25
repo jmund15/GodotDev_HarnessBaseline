@@ -4,7 +4,7 @@ description: "ai-worker read_files multi-file extraction silently omits files (r
 metadata:
   node_type: memory
   retire_when:
-    - review-by: 2026-11-22
+    - review-by: 2027-05-22
   type: feedback
 ---
 

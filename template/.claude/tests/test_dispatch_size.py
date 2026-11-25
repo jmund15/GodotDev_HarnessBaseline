@@ -7,6 +7,7 @@ dispatch hooks add no size line to an admitted call.
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -162,6 +163,22 @@ class NamedFileTests(Plant):
         line = dispatch_size.format_line(dispatch_size.dispatch_size(jobs))
         self.assertIn("14", line)
         self.assertIn("30", line)
+
+    def test_a_file_past_the_read_cap_is_sized_by_stat_without_reading_it(self):
+        big = self.file("weights.gguf", 10)
+        saved_cap, saved_read = dispatch_size.MAX_SCAN_BYTES, dispatch_size.Path.read_bytes
+        dispatch_size.MAX_SCAN_BYTES = 4 * KB
+
+        def refuse(path_self):
+            if str(path_self) == big:
+                raise AssertionError("read a file past the cap")
+            return saved_read(path_self)
+
+        dispatch_size.Path.read_bytes = refuse
+        try:
+            self.assertEqual(dispatch_size._size(big, self.root), (10 * KB, 10 * KB))
+        finally:
+            dispatch_size.MAX_SCAN_BYTES, dispatch_size.Path.read_bytes = saved_cap, saved_read
 
     def test_relative_paths_and_a_line_suffix_resolve_against_the_root(self):
         self.file("rel.md", 6)
@@ -415,9 +432,10 @@ class WindowFitTests(Plant):
         path = os.path.join(self.root, "jobs.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "scout", "a.md")]}, fh)
+        env = dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root)
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
         done = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path], capture_output=True,
-                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root,
-                              env=dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root))
+                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root, env=env)
         out = done.stdout.splitlines()
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue(out[0].startswith("dispatch size:"), out)
@@ -828,6 +846,34 @@ class PreflightTests(Plant):
         self.assertTrue(any("job codify-derive: Write on kind 'lens': a job that writes is an author: "
                             "use kind author" in line for line in lines), lines)
 
+    def test_a_malformed_pin_basis_is_refused_naming_its_field_and_accepted_shape(self):
+        """A job's `pick`/`spec` is one of the strings `slice_pins.md` names; a dict once reached the size
+        reading and crashed it with a traceback instead of the preflight naming the field."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        for field, value, shape in (("spec", {"pick": "cell"}, "tight|judged"),
+                                    ("pick", ["cell"], "cell|room|owner|default"),
+                                    ("spec", "wide", "tight|judged")):
+            job = dict(self.workflow_job("Do the work."), **{field: value})
+            lines = self.lines([job])
+            unmet = [line for line in lines if line.startswith("preflight: unmet:") and field in line]
+            self.assertEqual(len(unmet), 1, (field, lines))
+            self.assertIn("job j1", unmet[0], unmet[0])
+            self.assertIn(shape, unmet[0], unmet[0])
+            self.assertFalse(any("preflight: clean" in line for line in lines), lines)
+            result = self.cli({"jobs": [job]})
+            self.assertNotIn("Traceback", result.stderr, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_a_valid_pin_basis_adds_no_preflight_line(self):
+        """A `pick` and `spec` the enums name are a record, not a refusal: the preflight stays clean."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        job = dict(self.workflow_job("Do the work."), pick="cell", spec="tight")
+        self.assertEqual(self.lines([job]), ["preflight: clean: every launch precondition is met"])
+
     def test_no_reading_of_a_brief_s_prose_adds_a_preflight_line(self):
         """Whether a brief orders or forbids a run is prose the preflight cannot judge (it once read "Do not run
         `harness_tests.py --close`" as an order); the author rail carries that rule to every delegate."""
@@ -867,11 +913,77 @@ class PreflightTests(Plant):
         gate = dict(self.workflow_job("Run `npm run verify` before you finish.\n"), kind="gate")
         self.assertFalse(any("npm run verify" in line for line in self.lines([gate])))
 
+    def cli(self, spec):
+        path = os.path.join(self.root, "jobs.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh)
+        env = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.sid)
+        return subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path],
+                              capture_output=True, text=True, encoding="utf-8", env=env, cwd=self.root,
+                              stdin=subprocess.DEVNULL)
+
+    def test_the_cli_exits_nonzero_when_the_preflight_reports_an_unmet_precondition(self):
+        """The CLI's exit 1 is the go a caller chaining `sidecar_fanout.py` behind it reads; `/delegate` runs the
+        two as separate calls and reads the printed lines, so an unmet line is visible there whatever the exit
+        code."""
+        os.makedirs(os.path.join(self.root, ".claude", "skills", "project_subsystems"))
+        self.text(".claude/skills/project_subsystems/adaptation.json", json.dumps(
+            {"gate_cadence": {"wide": [{"runner": r"npm\s+run\s+verify\b", "exempt": [], "narrow": None}]}}))
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        result = self.cli({"jobs": [self.workflow_job("Run `npm run verify` before you finish.\n")]})
+        self.assertIn("preflight: unmet:", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_the_cli_exits_zero_when_no_precondition_is_unmet(self):
+        """A `preflight: not checked` line is a check that could not run, never an unmet precondition: it does
+        not refuse the launch."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        result = self.cli({"jobs": [self.workflow_job("Do the work.")]})
+        self.assertNotIn("preflight: unmet:", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_a_credited_tier_and_skill_report_one_clean_line(self):
         import _hook_state
         _hook_state.mark_ladder_slice(self.sid, ["executor"])
         _hook_state.mark_skill_in_context(self.sid, "orchestration")
         self.assertEqual(self.lines([self.workflow_job("Do the work.")]),
+                         ["preflight: clean: every launch precondition is met"])
+
+    def test_a_launcher_read_file_that_does_not_resolve_is_unmet_never_clean(self):
+        """The launcher opens a job's brief, `contextPath`, `contextFiles` and `schemaFile` from the launching
+        checkout; one that does not resolve there fails after launch, so the preflight names it first."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        elsewhere = tempfile.mkdtemp(prefix="pf_elsewhere_")
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        with open(os.path.join(elsewhere, "reader-common.md"), "w", encoding="utf-8") as fh:
+            fh.write("context\n")
+        job = self.workflow_job("Do the work.")
+        for field, where in (("contextPath", "spec"), ("contextFiles", "job"), ("promptPath", "job")):
+            spec = {"jobs": [dict(job)]}
+            if field == "contextPath":
+                spec["contextPath"] = "ui-lock/reader-common.md"
+            elif field == "contextFiles":
+                spec["jobs"][0]["contextFiles"] = ["ui-lock/reader-common.md"]
+            else:
+                spec["jobs"][0]["promptPath"] = "ui-lock/brief.md"
+            lines = self.lines(spec)
+            self.assertFalse(any("preflight: clean" in line for line in lines), (field, lines))
+            hit = [line for line in lines if "ui-lock/" in line]
+            self.assertEqual(len(hit), 1, (field, lines))
+            for part in ("preflight: unmet:", "job j1", field, "resolved against", self.root.replace("\\", "/")):
+                self.assertIn(part, hit[0], (field, hit))
+
+    def test_a_named_path_a_brief_mentions_stays_a_note_not_unmet(self):
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        self.assertEqual(self.lines([self.workflow_job("Write the report to `reports/out.md`.")]),
                          ["preflight: clean: every launch precondition is met"])
 
     def over_window_job(self, kind):
@@ -896,6 +1008,39 @@ class PreflightTests(Plant):
         self.assertIn(str(point), hit[0])
         self.assertRegex(hit[0], r"reading \d+ tokens")
         self.assertFalse(any(line.startswith("preflight: clean") for line in lines), lines)
+
+    def named_only_reviewer(self):
+        """A reviewer whose brief only names two files that together pass its window; neither is listed or inlined."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        job = dict(self.workflow_job("Search"), kind="reviewer")
+        point = dispatch_size.dispatch_size([job], self.root)["perJob"][0]["usable"]
+        half_kb = math.ceil(point * dispatch_size.CHARS_PER_TOKEN * 0.6 / KB)
+        first, second = self.file("named-a.md", half_kb), self.file("named-b.md", half_kb)
+        job["promptPath"] = self.text("named_brief.md", "Search `%s` and `%s` for the claim." % (first, second))
+        return job, point
+
+    def test_a_reviewer_whose_brief_only_names_files_past_its_window_is_not_refused(self):
+        """2026-11-22: naming files is a pointer; the brief decides what is read. The overage stays a fact on the
+        fit line and the launch is not refused."""
+        job, _point = self.named_only_reviewer()
+        size = dispatch_size.dispatch_size([job], self.root)
+        self.assertGreater(size["perJob"][0]["over"], 0)
+        self.assertEqual(dispatch_size.over_window_lines(size), [])
+        lines = self.lines([job])
+        self.assertFalse([line for line in lines if "past its usable window" in line], lines)
+        self.assertTrue([line for line in dispatch_size.fit_lines(size) if "over its point" in line])
+
+    def test_a_review_seat_whose_body_only_names_files_past_its_window_is_not_refused(self):
+        import lens_briefs
+        import model_registry
+        data = model_registry.load()
+        point = model_registry.usable_window(model_registry.resolve("haiku", data))
+        half_kb = math.ceil(point * dispatch_size.CHARS_PER_TOKEN * 0.6 / KB)
+        body = "Search `%s` and `%s`." % (self.file("seat-a.md", half_kb), self.file("seat-b.md", half_kb))
+        self.assertIsNone(lens_briefs.seat_overage(key="k", token="haiku", body=body, context_path=self.file("sctx.md", 1),
+                                                   entries=[], data=data))
 
     def test_an_author_past_its_window_launches_and_its_fit_line_states_the_overage(self):
         """A lane of independent items compacts and carries on (`reference/model_ladder_evidence.md` §Compaction),
@@ -966,9 +1111,10 @@ class AttributionTests(Plant):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"jobs": [{"label": "j1", "promptPath": self.text("p.md", self.BARE + "\n"),
                                  "model": "opus", "effort": "high"}]}, fh)
+        env = dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root)
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
         done = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path], capture_output=True,
-                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root,
-                              env=dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root))
+                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root, env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue(any(line.startswith("advisory: ") for line in done.stdout.splitlines()), done.stdout)
 

@@ -22,6 +22,7 @@ class DriftMessageTests(unittest.TestCase):
             planned = ('fixture', ['launcher'], Path(tmp) / 'out.json')
             result = {'fixture': {'exit': 0, 'stdout': str(planned[2]), 'frozenInput': {'held': not moved}}}
             with patch.object(subject, 'load_jobs', return_value=([{}], None, None)), \
+                 patch.object(subject, 'jobs_task', return_value=None), \
                  patch.object(subject.model_registry, 'load', return_value={}), \
                  patch.object(subject, 'plan_job', return_value=planned), \
                  patch.object(subject, 'run_jobs', return_value=result), \

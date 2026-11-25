@@ -42,7 +42,8 @@ Workflow call is no observable comparison, so no `args.measurement` lifts it; th
 
 RULE 2 -- CAPACITY. `provider_capacity_guard` reads the session PLAN (`_session_transport.session_plan`:
 on the host route, the plan whose `configDir` is CLAUDE_CONFIG_DIR) and denies before the endpoint
-receives work. The deny names the other plans with room that pay for a row of the call's
+receives work when the reading shows no room; a meter it could not read allows the launch and appends
+that reading's warning to the advice it emits (orchestration §5b). The deny names the other plans with room that pay for a row of the call's
 tiers, and their launchers: native dispatch waits for the reset, the job does not (orchestration
 §5b). A session whose plan is unknown is denied, naming the observed CLAUDE_CONFIG_DIR and both ways
 to identify it.
@@ -987,7 +988,7 @@ def _driver_notes(payload, data):
 # Engines whose one call runs every child on one kind: `args.kind` names it, and the hook injects the
 # resolved row as `args.__kindProfile`. The four job engines take `kind` per job instead.
 CALL_KIND_ENGINES = ("doc_architecture_audit", "doc_npc_all", "idea_fanout", "key_reachability",
-                     "worklog_relevance", "agentic_cloud", "sdf_cloud", "calibrate_cloud", "cloud_sdf",
+                     "worklog_relevance", "calibrate_cloud", "cloud_sdf",
                      "mine_sdf_corpus", "rebuild_agentic", "rebuild_sdf", "w13_cloud_ceiling",
                      "w_axis_and_floors", "test_agents_fixtures", "test_skill_pressure")
 
@@ -1510,7 +1511,9 @@ def _cross_plan_route(payload, transport, data, plan=None):
     except Exception:
         got = {}
     transports = (data or {}).get("transports") or {}
-    rows = [r for r in got.get("plans") or [] if r.get("room") is not None and r["transport"] != plan]
+    # An unmetered plan has no room reading by design and still takes the job.
+    rows = [r for r in got.get("plans") or []
+            if (r.get("room") is not None or r.get("unmetered")) and r["transport"] != plan]
     if not rows:
         return ("Native dispatch waits for this transport's reset; no cross-transport row has quota and a "
                 "readable capacity. Run the job inline, or wait for the reset.")
@@ -1694,12 +1697,16 @@ def check(payload):
     if _session_transport is not None and plan == _session_transport.UNKNOWN:
         _deny(unknown_plan_refusal(transport, data))
         return
-    capacity_reason = (_timed("capacitySeconds", provider_capacity_guard.refusal, plan)
-                       if provider_capacity_guard else
-                       "Provider capacity guard is unavailable; native dispatch is blocked")
+    capacity_warning = None
+    if provider_capacity_guard:
+        capacity_reason, capacity_warning = _timed("capacitySeconds", provider_capacity_guard.assess, plan)
+    else:
+        capacity_reason = "Provider capacity guard is unavailable; native dispatch is blocked"
     if capacity_reason:
         _deny(f"{capacity_reason} (orchestration §5b) " + _cross_plan_route(payload, transport, data, plan))
         return
+    if capacity_warning:
+        guard_notes.append(capacity_warning)
 
     # RULE 3 — tier, every band and every transport.
     t_verdict, t_body, pins = decide_tiers(payload, transport, data)

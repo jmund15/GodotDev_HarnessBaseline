@@ -25,10 +25,14 @@ Sections (all computed on every run, printed always):
                     list. A bundle is empty when nothing matches or the named
                     rule is absent.
   - oversized   -- bodies (`skills/**/*.md` + `commands/**/*.md`) over 24,576 B,
-                    each flagged with whether a selector already exists for it
-                    (`tools/lens.py` REGISTRIES -> `commands/agents/<file>`, or
-                    `tools/kfm.py` CATALOG), loaded live from those two modules
+                    a review trigger like every other tripwire here, each flagged
+                    with whether a selector already exists for it
+                    (`tools/lens.py` REGISTRIES -> `commands/agents/<file>`, or any
+                    `tools/*.py` module-level CATALOG), loaded live from those modules
                     so this file never carries a second copy of their registry.
+  - reattach    -- invocable bodies (`commands/*.md`, `commands/checklists/*.md`,
+                    `skills/*/SKILL.md`) longer than `SKILL_REATTACH_CHARS`
+                    (`hooks/_hook_state.py`), counted in characters as the client cuts them.
   - transitive  -- for each ENTRYPOINTS file, its own bytes plus every OTHER
                     `.claude/`-relative markdown file it references
                     UNCONDITIONALLY (see heuristic below).
@@ -55,17 +59,19 @@ under that member's `CHAIN` budget and its own isolation rule; a member whose
 hook file is absent from the tree is skipped with no row, as the dispatcher
 skips it; an unreadable `CHAIN` is one `UNREADABLE` row for the dispatcher,
 which `unmeasured_prompt_hooks` reports.
-SessionStart emission is an excluded check, not measured and not budgeted:
-a SessionStart hook can start a build, so a synthetic run is not
-side-effect free. Re-entry trigger: a SessionStart hook gains a build-free
-dry-run seam. Shared-state hooks that write real machine state resolve
-every write through an env var (`ISOLATED_SHARED_STATE_HOOKS`) and run for real against
-a throwaway project/home/temp tree instead of being skipped;
-`shell_census.py` additionally reads a live process snapshot, so its bytes
-are reported in their own column and excluded from both sums
-(`LIVE_MACHINE_HOOKS`). A hook with no such seam
-(`NON_ISOLATABLE_SHARED_STATE_HOOKS`) is skipped and reported with its
-reason.
+SessionStart emission: every registered SessionStart command runs isolated (`profile_session_start_hooks`) and
+its stdout is budgeted at HOOK_TEXT_CAP, except the scripts `SESSION_START_SKIP` (extended by the
+`session_start_skip` profile key) names with their reasons. A group with no matcher fires at every source, so both
+the `startup` and `compact` paths run. Because that text is part of what a session loads,
+`session_start_injection` also counts it per reader: a reader's bytes are its own case's summed stdout plus every
+command whose text does not vary by reader at that source, and its `load_bytes` adds the standing total.
+Shared-state hooks that write real machine state resolve every write through an env var
+(`ISOLATED_SHARED_STATE_HOOKS`) and run for real against a throwaway project/home/temp tree instead of being
+skipped; `shell_census.py` additionally reads a live process snapshot, so its bytes are reported in their own
+column and excluded from both sums (`LIVE_MACHINE_HOOKS`). A hook with no such seam
+(`NON_ISOLATABLE_SHARED_STATE_HOOKS`) is skipped and reported with its reason.
+A prompt hook that caches under the project's `.claude/.cache` is redirected into the run's own state dir by
+`HARNESS_GIT_STATE_CACHE_DIR` and `HARNESS_REAPER_CACHE_DIR`, never the real repository.
 
 Transitive-load heuristic (approximate by design; the two failure directions
 are: undercounting a real unconditional load, or overcounting a conditional
@@ -87,15 +93,29 @@ entrypoints declares them itself. Keys: `rule_bundles` (name -> `{"glob": g}`
 or `{"rule": "<file>.md"}`; reported as `<name>_bundle_files/_bytes`),
 `budgets` (key -> `[cap, baseline]`; a bundle's key is
 `<name>_rule_bundle_bytes`), `entrypoints`, `known_oversized_no_selector`,
-`shared_state_hook_skip`, `isolated_shared_state_hooks`, and
-`code_edit_probe` (`{"path": <project-relative file>}`, profiled as the
-`edit-code` case). Lists union, mappings update, and an unreadable profile is
-a source error. `tools/load_census.project.json` is the project's own profile:
-its `budgets` are the tripwires `over_baseline` judges against each
-`[cap, baseline]` baseline. Shipped budgets are caps only.
+`shared_state_hook_skip`, `isolated_shared_state_hooks`, `session_start_skip`
+(name -> reason), and `code_edit_probe` (`{"path": <project-relative file>}`,
+profiled as the `edit-code` case). Lists union, mappings update, and an
+unreadable profile is a source error. `tools/load_census.project.json` is the
+project's own profile: its `budgets` hold the project's baselines. The base ships
+cap budgets only; a tripwire (cap `null`, `[null, N]`) measures the project's own
+text, so a project that records no baseline there gets no tripwire row.
 
-CLI: `python3 .claude/tools/load_census.py [--json <path>] [--profile-hooks] [--budgets]`
+A budget is `[cap, recorded baseline]`. A `cap` of `null` makes it a tripwire:
+`--budgets` prints one `tripwire` line per crossing and exits 0, and
+`over_baseline` returns the same rows for the `/session_end` hot-set review.
+A selectorless body over OVERSIZED_THRESHOLD, or a KNOWN_OVERSIZED_NO_SELECTOR body past its
+recorded bytes, is likewise an `oversized_body` row there and never fails `--budgets`; only a stale
+KNOWN_OVERSIZED_NO_SELECTOR entry fails, as bookkeeping.
+
+CLI: `python3 .claude/tools/load_census.py [--json <path>] [--profile-hooks] [--budgets] [--caps]`
+`--delta <base>` runs separately: print changed standing and conditional guidance bytes from the committed
+base to the working tree, including new Markdown under rules/commands/skills/output-styles. Standing
+imports and unscoped rules count as standing; unchanged external home files have no versioned delta.
+Hook emission is marked unmeasured: source bytes do not measure a runtime channel.
 `--budgets` fails closed when a standing file, entrypoint, or rule `paths:` frontmatter is missing or malformed.
+`--caps` (with `--budgets`) also fails on a per-kind LISTING_CAPS violation; the over-cap report
+always prints with `--budgets` regardless of `--caps`.
 `--root PATH` (hidden) points the whole census at a fixture tree for tests.
 """
 
@@ -114,39 +134,55 @@ import tempfile
 import time
 from pathlib import Path
 
+_HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+if str(_HOOKS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HOOKS_DIR))
+from _git_run import run as git_run  # noqa: E402
+from _hook_state import SKILL_REATTACH_CHARS, reattach_over_cap  # noqa: E402,F401
+from amend_delivery import HOOK_TEXT_CAP  # noqa: E402
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent  # .claude/
 
 FM = re.compile(r"^---\s*\n(.*?)\n---", re.S)
-DESC_RE = re.compile(r"^description:\s*(>-?|\|)?\s*\n?(.*?)(?=^\w[\w-]*:|\Z)", re.S | re.M)
+
+
+def _field_re(name: str) -> re.Pattern:
+    """A frontmatter field's value: inline, or a `>`/`>-`/`|` block scalar up to the next key."""
+    return re.compile(r"^" + name + r":\s*(>-?|\|)?\s*\n?(.*?)(?=^\w[\w-]*:|\Z)", re.S | re.M)
+
+
+DESC_RE = _field_re("description")
+WHEN_TO_USE_RE = _field_re("when_to_use")
 PATHS_RE = re.compile(r"^paths:\s*\n((?:\s*-\s*.+\n?)+)", re.M)
 PATH_ITEM_RE = re.compile(r'^\s*-\s*"?([^"\n]+?)"?\s*$', re.M)
 
-# Each budget: (cap, baseline measured 2026-09-14, documentation only -- the
-# live comparison value below is recomputed fresh every run).
+# Each budget is `(cap, recorded baseline)`; live values are recomputed on every run.
+# Re-basing a cap budget sets cap = baseline + 5% rounded up to 256 B (subprocess counts: baseline + 2).
+# The base ships cap budgets only. A tripwire (cap None) measures the consuming project's own text, so its
+# baseline is that project's number: it lives in `tools/load_census.project.json` `budgets` as `[null, N]`,
+# never here. This tool is shared by every project that pulls the base, so a literal written here would be
+# one project's number in every project's tool.
 BUDGETS = {
-    # cap = live + 5%, rounded up to the nearest 256 B (measured 2026-09-14 after workflow
-    # descriptions (26 rows, 5,263 B with the 4 `whenToUse` suffixes) joined the listing and the active
-    # output style joined standing).
-    "listing_bytes": (30_464, 28_870),
-    # Owner-authored standing text outranks the byte target; the cap still stops growth past live + 5%.
-    "standing_bytes": (34_304, 32_665),
-    # Steady-state emission of an unchanged later prompt; the first prompt is reported
-    # separately and never budgeted (reference/context_attribution_2026-09.md).
-    "prompt_emission_bytes": (512, 324),
-    # cap = live + 2 (measured 2026-09-14 after the reaper moved in-process and the PostToolUse `*` entry narrowed).
+    # One SessionStart command's stdout, the largest over its cases: the client's hook-text cap (a fixed client
+    # limit, never re-based). The baseline is the largest emission measured when this budget landed.
+    "session_start_emission_bytes": (HOOK_TEXT_CAP, 9_953),
+    # Keep a small allowance for the registered Write/Edit hook chain.
     "edit_hook_chain_subprocesses": (4, 2),
 }
 
 OVERSIZED_THRESHOLD = 24_576
 
-# Bodies over OVERSIZED_THRESHOLD without a selector -> bytes at listing, measured
-# 2026-09-14. A NEW oversized selectorless body not in this dict fails --budgets. So
-# does a listed body that grew more than KNOWN_OVERSIZED_GROWTH past its recorded
-# bytes, shrank below the threshold, gained a selector, or whose file is missing: a
-# stale entry would mask its own regrowth, so the dict stays exact.
+# Per-kind listed-text caps (UTF-8 bytes of the text the listing prints for one entry).
+# `instruction_quality` §7/§8 owns the caps; `check_listing_caps` reuses `listing_census()`'s
+# rows, so no second enumerator exists.
+LISTING_CAPS = {"skill": 300, "command": 60, "workflow": 60}
+
+# `over_baseline` reports a selectorless body over OVERSIZED_THRESHOLD, and a listed body that grew
+# past KNOWN_OVERSIZED_GROWTH, for the close's hot-set review. --budgets fails only on a listed body
+# that fell below the threshold, gained a selector or went missing.
 KNOWN_OVERSIZED_NO_SELECTOR: dict[str, int] = {}
 KNOWN_OVERSIZED_GROWTH = 0.05
 
@@ -172,15 +208,15 @@ SHARED_STATE_HOOK_SKIP = {
     "subagent_dispatch_guard.py",
 }
 
-# UserPromptSubmit hooks that write shared/machine-wide state but were
-# confirmed (by reading them) to resolve every write path through an env var:
-# CLAUDE_PROJECT_DIR (shell_census.py's `.claude/.cache` cache file),
-# HARNESS_HOOK_STATE_DIR (_hook_state.py's per-session state, already redirected
-# for every hook), and HOME/USERPROFILE/TEMP/TMP/TMPDIR (a registry that resolves
-# through `tempfile.gettempdir()`). Profiles add their own. Run for real against
-# a throwaway project/home/temp tree instead of being skipped -- see
-# `_isolated_hook_env`.
-ISOLATED_SHARED_STATE_HOOKS = {"shell_census.py"}
+# UserPromptSubmit hooks that write shared/machine-wide state and need the throwaway
+# project/home/temp tree `_isolated_hook_env` builds. Empty in this tree: its dispatcher chain
+# (prompt_git_state_delta, sidecar_watch_rearm, overnight_ask_guard) either resolves every write
+# through a cache or state seam the profiler already redirects into its own temp tree
+# (HARNESS_GIT_STATE_CACHE_DIR, HARNESS_REAPER_CACHE_DIR, HARNESS_HOOK_STATE_DIR) or is skipped by
+# name. A profile (a layer that registers a hook resolving a write through CLAUDE_PROJECT_DIR or
+# HOME) adds its own. A hook that joins this set has its live case beside `IsolatedHookCwdTests`
+# in `tests/test_load_census.py`, seeded there: no production list is assumed.
+ISOLATED_SHARED_STATE_HOOKS: set[str] = set()
 
 # hook name -> reason its emission measures live machine state rather than
 # harness-controlled behavior, so it is reported in its own column and
@@ -202,17 +238,18 @@ NON_ISOLATABLE_SHARED_STATE_HOOKS: dict[str, str] = {}
 
 PROFILE_GLOB = "tools/load_census.*.json"
 PROFILE_LISTS = ("entrypoints", "shared_state_hook_skip", "isolated_shared_state_hooks")
-PROFILE_MAPS = ("rule_bundles", "budgets", "known_oversized_no_selector", "code_edit_probe")
-PROJECT_PROFILE = "load_census.project.json"
+PROFILE_MAPS = ("rule_bundles", "budgets", "known_oversized_no_selector", "code_edit_probe",
+                "session_start_skip")
 
 
 def load_profile(root: Path) -> dict:
     """The merged `tools/load_census.*.json` profiles under `root`, in name order, plus a
-    `source_errors` list naming any unreadable one."""
+    `source_errors` list naming any unreadable one and `budget_sources` naming the file each
+    merged budget key came from."""
     merged: dict = {key: [] for key in PROFILE_LISTS}
     merged.update({key: {} for key in PROFILE_MAPS})
     merged["source_errors"] = []
-    merged["tripwires"] = {}
+    merged["budget_sources"] = {}
     for path in sorted(root.glob(PROFILE_GLOB)):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -221,12 +258,12 @@ def load_profile(root: Path) -> dict:
         except (OSError, ValueError) as exc:
             merged["source_errors"].append(f"unreadable census profile: {path}: {exc}")
             continue
-        if path.name == PROJECT_PROFILE:
-            merged["tripwires"] = {k: tuple(v) for k, v in data.get("budgets", {}).items()}
         for key in PROFILE_LISTS:
             merged[key].extend(x for x in data.get(key, []) if x not in merged[key])
         for key in PROFILE_MAPS:
             merged[key].update(data.get(key, {}))
+        merged["budget_sources"].update(
+            {name: _repo_rel(root, path) for name in data.get("budgets", {})})
     return merged
 
 
@@ -234,14 +271,34 @@ def load_profile(root: Path) -> dict:
 # Frontmatter parsing
 # ---------------------------------------------------------------------------
 
-def description(path: Path) -> str:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    m = FM.match(text)
-    if not m:
-        return ""
-    body = m.group(1)
-    dm = DESC_RE.search(body)
-    return (dm.group(2) if dm else "").strip()
+def frontmatter(path: Path) -> str | None:
+    """The file's frontmatter block, or None when it has none. One read per listed file."""
+    m = FM.match(path.read_text(encoding="utf-8", errors="replace"))
+    return m.group(1) if m else None
+
+
+def _field(fm: str | None, regex: re.Pattern) -> str:
+    m = regex.search(fm) if fm is not None else None
+    return (m.group(2) if m else "").strip()
+
+
+def description(fm: str | None) -> str:
+    return _field(fm, DESC_RE)
+
+
+def when_to_use(fm: str | None) -> str:
+    """The skill's `when_to_use` field, or '' if absent. The client lists a skill as `description`
+    plus `when_to_use` when the field is present."""
+    return _field(fm, WHEN_TO_USE_RE)
+
+
+def listed(fm: str | None) -> bool:
+    """False when the frontmatter keeps the entry out of the model's skill listing:
+    `disable-model-invocation: true`, or a `paths:` scope that surfaces it only on matching reads."""
+    if fm is None:
+        return True
+    return not (re.search(r"^disable-model-invocation:\s*true\b", fm, re.M)
+                or re.search(r"^paths:", fm, re.M))
 
 
 WORKFLOW_META_RE = re.compile(r"export\s+const\s+meta\s*=\s*\{(.*?)^\}", re.S | re.M)
@@ -296,20 +353,39 @@ def parse_paths_frontmatter(path: Path) -> list[str]:
 # Census sections
 # ---------------------------------------------------------------------------
 
+def _repo_rel(root: Path, path: Path) -> str:
+    """`path` relative to the repo (the census root's parent), or `external:<path>` outside it."""
+    try:
+        return path.resolve().relative_to(root.resolve().parent).as_posix()
+    except ValueError:
+        return f"external:{path}"
+
+
 def listing_census(root: Path) -> dict:
     rows = []
-    for p in sorted(root.glob("commands/**/*.md")):
+    for p in sorted(root.glob("commands/*.md")):
+        fm = frontmatter(p)
+        if not listed(fm):
+            continue
         rows.append({"kind": "command", "name": str(p.relative_to(root)).replace("\\", "/"),
-                     "desc_bytes": len(description(p).encode("utf-8"))})
+                     "path": _repo_rel(root, p),
+                     "desc_bytes": len(description(fm).encode("utf-8"))})
     for p in sorted(root.glob("skills/*/SKILL.md")):
-        rows.append({"kind": "skill", "name": p.parent.name,
-                     "desc_bytes": len(description(p).encode("utf-8"))})
+        fm = frontmatter(p)
+        if not listed(fm):
+            continue
+        listed_text = description(fm)
+        when = when_to_use(fm)
+        if when:
+            listed_text = listed_text + " " + when
+        rows.append({"kind": "skill", "name": p.parent.name, "path": _repo_rel(root, p),
+                     "desc_bytes": len(listed_text.encode("utf-8"))})
     for p in sorted(root.glob("workflows/*.js")):
         meta = workflow_meta(p)
         if meta is None:
             continue
         name, desc = meta
-        rows.append({"kind": "workflow", "name": name or p.stem,
+        rows.append({"kind": "workflow", "name": name or p.stem, "path": _repo_rel(root, p),
                      "desc_bytes": len(desc.encode("utf-8"))})
     total = sum(r["desc_bytes"] for r in rows)
     top12 = sorted(rows, key=lambda r: -r["desc_bytes"])[:12]
@@ -398,15 +474,20 @@ def _import_rows(files: list[Path], source_errors: list[str]) -> list[dict]:
     return rows
 
 
-def _output_style_row(root: Path, home: Path) -> tuple[dict | None, list[str]]:
-    """The active output style's standing row, and any source errors."""
+def _output_style_row(root: Path, home: Path, *, read=None) -> tuple[dict | None, list[str]]:
+    """The active output style's standing row; read may supply snapshot bytes (None when absent)."""
+    if read is None:
+        def read(path):
+            return path.read_bytes() if path.is_file() else None
+
     name = setting_file = None
     for settings_path in (root / "settings.local.json", root / "settings.json",
                           home / ".claude" / "settings.json"):
-        if not settings_path.is_file():
-            continue
         try:
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
+            source = read(settings_path)
+            if source is None:
+                continue
+            data = json.loads(source)
         except (OSError, ValueError) as exc:
             return None, [f"unreadable settings file while resolving outputStyle: {settings_path}: {exc}"]
         value = data.get("outputStyle") if isinstance(data, dict) else None
@@ -417,8 +498,12 @@ def _output_style_row(root: Path, home: Path) -> tuple[dict | None, list[str]]:
         return None, []
     candidates = (root / "output-styles" / f"{name}.md", home / ".claude" / "output-styles" / f"{name}.md")
     for style_path in candidates:
-        if style_path.is_file():
-            return {"path": str(style_path), "bytes": style_path.stat().st_size, "exists": True}, []
+        try:
+            source = read(style_path)
+        except OSError as exc:
+            return None, [f"unreadable output style file: {style_path}: {exc}"]
+        if source is not None:
+            return {"path": str(style_path), "bytes": len(source), "exists": True}, []
     return ({"path": str(candidates[0]), "bytes": 0, "exists": False},
             [f"missing output style file for outputStyle '{name}' (set in {setting_file}); looked in "
              + ", ".join(str(c) for c in candidates)])
@@ -470,8 +555,9 @@ def rules_census(root: Path) -> dict:
 
 def load_selector_registry(root: Path) -> set:
     """Resolved absolute Paths already covered by a selector tool, read live
-    from `tools/lens.py` (REGISTRIES -> AGENTS dir) and `tools/kfm.py`
-    (CATALOG), never duplicated here."""
+    from `tools/lens.py` (REGISTRIES -> AGENTS dir) and every `tools/*.py`
+    that assigns a module-level `CATALOG` (`kfm.py`, `subsys.py`), never
+    duplicated here."""
     covered: set = set()
     lens_path = root / "tools" / "lens.py"
     if lens_path.exists():
@@ -484,10 +570,11 @@ def load_selector_registry(root: Path) -> set:
                 covered.add((agents_dir / filename).resolve())
         except Exception:
             pass
-    kfm_path = root / "tools" / "kfm.py"
-    if kfm_path.exists():
+    for tool in sorted((root / "tools").glob("*.py")):
         try:
-            spec = importlib.util.spec_from_file_location("_load_census_kfm", kfm_path)
+            if not re.search(r"^CATALOG\s*=", tool.read_text(encoding="utf-8"), re.M):
+                continue
+            spec = importlib.util.spec_from_file_location("_load_census_" + tool.stem, tool)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             catalog = getattr(mod, "CATALOG", None)
@@ -622,9 +709,17 @@ def hook_matches(matcher: str, tool: str) -> bool:
         return False
 
 
+def _hook_script(command: str) -> str:
+    return command.split('"')[1] if '"' in command else command.split()[-1]
+
+
+def _hook_args(command: str) -> list[str]:
+    """The arguments after a registered command's script: `.../x.py" --part 1` gives `--part 1`."""
+    return command.split('"', 2)[2].split() if command.count('"') >= 2 else []
+
+
 def _hook_name(command: str) -> str:
-    script = command.split('"')[1] if '"' in command else command.split()[-1]
-    return os.path.basename(script)
+    return os.path.basename(_hook_script(command))
 
 
 def edit_hook_chain(settings: dict) -> dict:
@@ -718,10 +813,10 @@ def _isolated_hook_env(base_env: dict, iso_root: Path) -> dict:
 
 
 def _run_hook_once(script: str, payload: dict, env: dict, cwd: str | None = None,
-                   timeout: float = 60) -> dict:
+                   timeout: float = 60, args=()) -> dict:
     t0 = time.time()
     try:
-        r = subprocess.run([sys.executable, script], input=json.dumps(payload),
+        r = subprocess.run([sys.executable, script, *args], input=json.dumps(payload),
                             capture_output=True, text=True, timeout=timeout, env=env, cwd=cwd,
                             encoding="utf-8", errors="replace")
         ms = int((time.time() - t0) * 1000)
@@ -730,10 +825,6 @@ def _run_hook_once(script: str, payload: dict, env: dict, cwd: str | None = None
                 "stderr_bytes": len((r.stderr or "").encode())}
     except subprocess.TimeoutExpired:
         return {"status": "TIMEOUT", "ms": int(timeout * 1000), "stdout_bytes": 0, "stderr_bytes": 0}
-
-
-def _hook_script(command: str) -> str:
-    return command.split('"')[1] if '"' in command else command.split()[-1]
 
 
 DISPATCHER_NAME = "prompt_dispatch.py"
@@ -813,8 +904,12 @@ def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]
     try:
         _label, payload = build_payloads(root)["UserPromptSubmit"][0]
         skipped, isolated = _hook_sets(root)
-        base_env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state_dir,
-                         CLAUDE_PROJECT_DIR=str(root.parent), PYTHONIOENCODING="utf-8")
+        # A capacity warm started by pass 1 can land before pass 2 and re-emit the posture line.
+        base_env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state_dir, HARNESS_CAPACITY_WARM="0",
+                         CLAUDE_PROJECT_DIR=str(root.parent), PYTHONIOENCODING="utf-8",
+                         # Hooks that cache under the project's .claude/.cache write into the run's own state dir instead.
+                         HARNESS_GIT_STATE_CACHE_DIR=os.path.join(state_dir, "git-state-cache"),
+                         HARNESS_REAPER_CACHE_DIR=os.path.join(state_dir, "reaper-cache"))
         base_env.pop("CLAUDE_CODE_SESSION_ID", None)
         rows = []
         for group in settings.get("hooks", {}).get("UserPromptSubmit", []):
@@ -898,6 +993,195 @@ def unmeasured_prompt_hooks(rows: list[dict]) -> list[str]:
     return bad
 
 
+# SessionStart scripts the census does not run, by registered script name, with the reason. Every other registered
+# SessionStart command runs isolated once per case and its stdout is budgeted at HOOK_TEXT_CAP. A profile's
+# `session_start_skip` map extends this: its names come from that layer's own registrations.
+SESSION_START_SKIP = {
+    "session_context_loader.py": "can start a build, so a synthetic run is not side-effect free",
+    "login_parity_check.py": "spawns a detached process that outlives the run",
+    "compact_directive_anchor.py": "writes the full-transcript file and a run log; its output depends on a real compaction transcript",
+    "sidecar_recompact_reprompt.py": "its output depends on a recompact brief the census cannot plant; it keeps its own proof",
+    "subagent_compaction_rail.py": "its one print sits behind a PreCompact marker the census cannot plant; it keeps its own proof",
+}
+
+SESSION_START_SID = "census0001"
+SIDECAR_TIERS = ("detailed", "condensed", "minimal", "none")
+# Env a SessionStart case must not inherit from the census's own process: a delegate, transport or state seam set in
+# the caller's shell would change which text the case prints. HOME stays real: the rails text reads the ai-worker
+# registration under it, so an isolated HOME prints a different text.
+_CASE_ENV_PREFIXES = ("CLAUDE_CODE_", "ANTHROPIC_", "CC_", "HARNESS_")
+
+
+def _session_start_skips(root: Path) -> dict[str, str]:
+    """The tool's default skip map plus every profile's `session_start_skip` entries."""
+    return {**SESSION_START_SKIP, **load_profile(root)["session_start_skip"]}
+
+
+def _model_registry():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import model_registry
+    return model_registry
+
+
+def _session_start_payload(model, source: str) -> dict:
+    body = {"hook_event_name": "SessionStart", "session_id": SESSION_START_SID, "source": source}
+    if model:
+        body["model"] = model
+    return body
+
+
+def _session_start_env(overrides: dict, iso_root: Path) -> dict:
+    """The environment one SessionStart case runs in: the caller's env minus the harness seams, throwaway project,
+    state, cache and temp dirs, then the case's own overrides."""
+    project = iso_root / "project"
+    state = iso_root / "state"
+    tmp = iso_root / "tmp"
+    for d in (project / ".claude", state, tmp):
+        d.mkdir(parents=True, exist_ok=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_CASE_ENV_PREFIXES)}
+    env.update({"CLAUDE_PROJECT_DIR": str(project), "HARNESS_HOOK_STATE_DIR": str(state),
+                "CC_CACHESTAT_DIR": str(state), "TEMP": str(tmp), "TMP": str(tmp), "TMPDIR": str(tmp),
+                "PYTHONIOENCODING": "utf-8"})
+    env.update(overrides)
+    return env
+
+
+def _default_session_start_cases(root: Path, matcher: str) -> list[tuple[str, dict, dict]]:
+    """A group with no matcher fires at every source, so both the startup and the compact path run; a
+    matched group runs the one path its matcher names."""
+    if matcher in (None, "", "*"):
+        sources = ("startup", "compact")
+    else:
+        sources = ("compact",) if matcher == "compact" else ("startup",)
+    model = _widest_notes_model(root)
+    return [(source, {}, _session_start_payload(model, source)) for source in sources]
+
+
+def _widest_notes_model(root: Path):
+    """The registry model whose driver notes add the most text to the rails (None when no row carries notes). The
+    notes block is the only part of the rails text that depends on the model, so the widest one bounds it."""
+    registry = _model_registry()
+    noted = [row["id"] for row in registry.load(start=root)["models"] if registry.driver_notes(row["id"])]
+    return max(noted, key=lambda m: sum(len(text) + len(ref) for text, ref in registry.driver_notes(m)),
+               default=None)
+
+
+def _sidecar_kind_per_guard(root: Path) -> dict[str, str]:
+    """One sidecar kind per guard the kinds name, plus `common` as the empty kind (an unrecognized kind reads as common)."""
+    profiles = root / "guards" / "tool_profiles.json"
+    kinds = json.loads(profiles.read_text(encoding="utf-8"))["kinds"] if profiles.is_file() else {}
+    per_guard = {"common": ""}
+    for name in sorted(kinds):
+        guard = kinds[name].get("guard")
+        if guard:
+            per_guard.setdefault(guard, name)
+    return per_guard
+
+
+def _session_model_rails_cases(root: Path) -> list[tuple[str, dict, dict]]:
+    """Every shape the rails hook prints: each model tier and each model with driver notes as an orchestrator, an
+    absent model, a compaction, each registered transport, and each sidecar delegate guard at each tier."""
+    registry = _model_registry()
+    rows = registry.load(start=root)["models"]
+    tier_rep = {}
+    for row in rows:
+        tier_rep.setdefault(registry.rail_tier(row["id"]), row["id"])
+    noted = [row["id"] for row in rows if registry.driver_notes(row["id"])]
+    widest = _widest_notes_model(root)
+    cases = [("orchestrator model=%s" % m, {}, _session_start_payload(m, "startup"))
+             for m in dict.fromkeys([*tier_rep.values(), *noted])]
+    cases.append(("orchestrator model=absent", {}, _session_start_payload(None, "startup")))
+    cases.append(("orchestrator compact", {}, _session_start_payload(widest, "compact")))
+    for transport in sorted(registry.load(start=root)["transports"]):
+        cases.append(("transport=%s" % transport, {"CLAUDE_CODE_TRANSPORT": transport},
+                      _session_start_payload(widest, "startup")))
+    for guard, kind in _sidecar_kind_per_guard(root).items():
+        for tier in SIDECAR_TIERS:
+            overrides = {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": kind,
+                         "CLAUDE_CODE_SIDECAR_TIER": tier}
+            cases.append(("delegate guard=%s tier=%s" % (guard, tier), overrides,
+                          _session_start_payload(widest, "startup")))
+    return cases
+
+
+SESSION_START_CASES = {"session_model_rails.py": _session_model_rails_cases}
+
+
+def profile_session_start_hooks(root: Path, settings: dict) -> tuple[list[dict], list[dict], list[str]]:
+    """(rows, skipped, source_errors). One row per registered SessionStart command per case: the command runs
+    isolated with the case's env and payload and its stdout bytes are budgeted at HOOK_TEXT_CAP. A script named
+    in the skip map is returned in `skipped` with its reason and never run. A case builder that cannot read its
+    input becomes one named source error beside every other case's rows, never a traceback out of build_report."""
+    rows, skipped, source_errors = [], [], []
+    skips = _session_start_skips(root)
+    iso_base = Path(tempfile.mkdtemp(prefix="load_census_sessionstart_"))
+    try:
+        for group in settings.get("hooks", {}).get("SessionStart", []):
+            matcher = group.get("matcher", "*")
+            for h in group.get("hooks", []):
+                for entry in _hook_entries(h, root, expand_dispatcher=False):
+                    name = entry["name"]
+                    if name in skips:
+                        skipped.append({"hook": name, "reason": skips[name]})
+                        continue
+                    args = _hook_args(h.get("command", ""))
+                    try:
+                        cases = (SESSION_START_CASES[name](root) if name in SESSION_START_CASES
+                                 else _default_session_start_cases(root, matcher))
+                    except Exception as exc:  # noqa: BLE001 - a bad input is a row, never a traceback
+                        # The model registry raises its own RegistryError for a malformed file, so the
+                        # ruled input tuple alone would still crash the whole report.
+                        registry_error = getattr(_model_registry(), "RegistryError", ())
+                        if not isinstance(exc, (OSError, ValueError, KeyError, AttributeError, registry_error)):
+                            raise
+                        source_errors.append(
+                            f"session_start case input invalid: {name}: {type(exc).__name__}: {exc}")
+                        continue
+                    for i, (label, overrides, body) in enumerate(cases):
+                        iso = iso_base / ("%s-%d" % (name, i))
+                        run = _run_hook_once(entry["script"], body, _session_start_env(overrides, iso),
+                                             cwd=str(iso / "project"), timeout=entry["timeout"], args=args)
+                        rows.append({"hook": name, "args": " ".join(args), "case": label,
+                                     "source": body.get("source"),
+                                     "status": run["status"], "stdout_bytes": run["stdout_bytes"]})
+        return rows, skipped, source_errors
+    finally:
+        shutil.rmtree(iso_base, ignore_errors=True)
+
+
+def session_start_injection(rows: list[dict], standing_bytes: int = 0) -> dict:
+    """What one reader pays at SessionStart, per reader.
+
+    A reader is a case the census runs: the model, transport or delegate guard+tier a hook varies its
+    text by, or, for a hook whose text does not vary, the startup/compact path. A reader's `bytes` sum
+    every registered command's measured stdout in its case -- the parts of one hook included, so it is
+    the text that reader's client injects, not one command's share -- plus the commands whose text does
+    not vary by reader at that source. `load_bytes` adds the standing total: the least that session
+    loads before its task. A command that did not exit 0 is not counted; `unmeasured` names it."""
+    ran = [r for r in rows if r.get("status") in (0, "0")]
+    unmeasured = sorted({f"{r['hook']} [{r['case']}]" for r in rows if r.get("status") not in (0, "0")})
+    common: dict[str, int] = {}
+    readers: dict[tuple[str, str], int] = {}
+    for row in ran:
+        source = row.get("source") or row["case"]
+        if row["case"] == source:
+            common[source] = common.get(source, 0) + row["stdout_bytes"]
+        else:
+            key = (row["case"], source)
+            readers[key] = readers.get(key, 0) + row["stdout_bytes"]
+    covered = {source for _, source in readers}
+    out = []
+    for (label, source), own in readers.items():
+        total = own + common.get(source, 0)
+        out.append({"reader": label, "source": source, "bytes": total, "load_bytes": standing_bytes + total})
+    for source, total in common.items():
+        if source not in covered:
+            out.append({"reader": source, "source": source, "bytes": total,
+                        "load_bytes": standing_bytes + total})
+    out.sort(key=lambda row: (-row["bytes"], row["reader"]))
+    return {"rows": out, "unmeasured": unmeasured}
+
+
 def profile_hooks(root: Path, settings: dict, events: list[str] | None = None) -> list[dict]:
     """General hook profiler for PreToolUse/PostToolUse (and, unisolated,
     UserPromptSubmit for callers that only need skip/shape parity -- the
@@ -960,7 +1244,10 @@ def profile_hooks(root: Path, settings: dict, events: list[str] | None = None) -
 # ---------------------------------------------------------------------------
 
 def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks: bool = False,
-                 home: Path | None = None) -> dict:
+                 need_session_start_hooks: bool = False, home: Path | None = None) -> dict:
+    """The census report. `--profile-hooks` sets both needs; `--budgets` sets both because it judges the
+    SessionStart emission cap; the close's tripwire-only caller sets `need_budget_hooks` alone and pays
+    no SessionStart matrix (`over_baseline` reads only null-cap budgets, and no SessionStart budget is one)."""
     settings = load_settings(root)
     profile = load_profile(root)
     standing = standing_census(root, home=home)
@@ -984,11 +1271,14 @@ def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks
         "standing": standing,
         "rules": rules,
         "oversized_bodies": bodies,
+        "reattach_over_cap": reattach_over_cap(root),
         "known_oversized_stale": stale_known_oversized(root, bodies),
         "transitive_load": transitive,
         "hook_chain": edit_hook_chain(settings),
         "budgets": {**BUDGETS, **{k: tuple(v) for k, v in profile["budgets"].items()}},
-        "tripwires": profile["tripwires"],
+        "budget_sources": {**{name: _repo_rel(root, root / "tools" / "load_census.py")
+                              for name in BUDGETS},
+                           **profile["budget_sources"]},
         "source_errors": source_errors,
     }
     if profile_hooks_flag:
@@ -1005,35 +1295,125 @@ def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks
              "first_bytes": r["stdout_bytes_first"], "steady_bytes": r["stdout_bytes_steady"]}
             for r in excluded
         ]
+    # A tripwire-only caller (the close's hot-set review) needs the prompt profile but no SessionStart
+    # matrix: `over_baseline` reads only null-cap budgets, and no SessionStart budget is one.
+    if profile_hooks_flag or need_session_start_hooks:
+        rows, skipped, errors = profile_session_start_hooks(root, settings)
+        report["session_start_rows"], report["session_start_skipped"] = rows, skipped
+        report["source_errors"].extend(errors)
+        report["session_start_injection"] = session_start_injection(
+            rows, report["standing"].get("total_bytes", 0))
     return report
 
 
-class NotConfigured(Exception):
-    """The report holds no tripwire baseline and no selectorless oversized body, so the hot-set review has nothing to judge."""
+def _memory_row(report: dict) -> dict:
+    """The standing row of the memory index, or {} when the index is absent."""
+    return next((r for r in (report.get("standing") or {}).get("rows") or []
+                 if r.get("exists") and Path(r["path"]).parts[-2:] == ("auto-memory", "MEMORY.md")), {})
 
 
 def measured_budgets(report: dict) -> dict:
-    """The live value of each budget key the report measures; a tripwire names one of these keys."""
+    """The live value of each budget key the report measures. A key the report does not measure (no hook
+    profiling this run) maps to None; a tripwire then gives an `unmeasured` row, never a silent skip."""
+    memory_row = _memory_row(report)
+    standing = report.get("standing") or {}
     values = {
-        "listing_bytes": report["listing"]["total_bytes"],
-        "standing_bytes": report["standing"]["total_bytes"],
-        "edit_hook_chain_subprocesses": report["hook_chain"]["edit_subprocesses"],
+        "listing_bytes": (report.get("listing") or {}).get("total_bytes"),
+        "standing_bytes": standing.get("total_bytes"),
+        # The standing census always emits rows; with rows present and no memory row, the index is absent (0).
+        "memory_hot_bytes": (memory_row.get("bytes") if memory_row
+                             else (0 if "rows" in standing else None)),
+        "edit_hook_chain_subprocesses": (report.get("hook_chain") or {}).get("edit_subprocesses"),
         "prompt_emission_bytes": report.get("prompt_emission_steady_bytes"),
+        "session_start_emission_bytes": max((r["stdout_bytes"] for r in report.get("session_start_rows") or []),
+                                            default=0),
     }
-    for name, bundle in report["rules"].get("bundles", {}).items():
+    for name, bundle in (report.get("rules") or {}).get("bundles", {}).items():
         values[f"{name}_rule_bundle_bytes"] = bundle["bytes"]
     return values
 
 
+def _tripwire_files(report: dict, budget: str) -> list[str]:
+    """The files a tripwire's review must inspect. Each budget's resolver sits beside its own key in one
+    map, so a budget cannot fall through to a different budget's files; a bundle key resolves from the
+    report's own bundle rows. An unknown key names no files."""
+    root = Path(report["root"]) if report.get("root") else DEFAULT_ROOT
+
+    def memory_hot_files() -> list[str]:
+        row = _memory_row(report)
+        return [_repo_rel(root, Path(row["path"]))] if row else []
+
+    def standing_files() -> list[str]:
+        return [_repo_rel(root, Path(r["path"])) for r in report["standing"]["rows"] if r.get("exists")]
+
+    def listing_files() -> list[str]:
+        return [r["path"] for r in report["listing"]["rows"] if r.get("path")]
+
+    def prompt_hook_files() -> list[str]:
+        return sorted({_repo_rel(root, root / "hooks" / r["hook"])
+                       for r in report.get("prompt_hook_rows") or []
+                       if r.get("stdout_bytes_steady") and not r.get("excluded_from_budget")})
+
+    def session_start_files() -> list[str]:
+        return sorted({_repo_rel(root, root / "hooks" / r["hook"])
+                       for r in report.get("session_start_rows") or [] if r.get("status") in (0, "0")})
+
+    resolvers = {
+        "memory_hot_bytes": memory_hot_files,
+        "standing_bytes": standing_files,
+        "listing_bytes": listing_files,
+        "prompt_emission_bytes": prompt_hook_files,
+        "session_start_emission_bytes": session_start_files,
+        "edit_hook_chain_subprocesses": lambda: [_repo_rel(root, root / "settings.json")],
+    }
+    for name in (report.get("rules") or {}).get("bundles", {}):
+        resolvers[f"{name}_rule_bundle_bytes"] = (
+            lambda name=name: [_repo_rel(root, root / "rules" / f)
+                               for f in report["rules"]["bundles"][name]["files"]])
+    resolver = resolvers.get(budget)
+    return resolver() if resolver else []
+
+
+def _baseline_commit(root: Path, budget: str, baseline: int, source: str) -> str | None:
+    """The last commit that recorded this budget's baseline literal in `source`: the project profile's
+    `[null, N]` when the profile supplies the budget, else the `BUDGETS` `(None, N)` pair. A commit that
+    removed the literal does not count, so a re-base names the commit that set the value now asked about."""
+    if source.endswith(".json"):
+        number = r"_?".join(str(baseline))
+        flag = "-G"
+        pickaxe = added_re = rf'"{re.escape(budget)}"\s*:\s*\[\s*null\s*,\s*{number}\s*\]'
+    else:
+        flag = "-S"
+        pickaxe = f'"{budget}": (None, {baseline:_}),'
+        added_re = re.escape(pickaxe)
+    cwd = str(root.parent)
+    try:
+        args = ["log", "--format=%H", flag, pickaxe, "--", source]
+        commits = git_run(args, cwd=cwd, timeout=30).check(args).text.split()
+        for sha in commits:
+            show = ["show", sha, "--format=", "--", source]
+            diff = git_run(show, cwd=cwd, timeout=30).check(show).text
+            if any(line.startswith("+") and re.search(added_re, line) for line in diff.splitlines()):
+                return sha
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 def over_baseline(report: dict) -> list[dict]:
-    """One row per tripwire whose measured value exceeds its project baseline (a tripwire the report does not
-    measure gives an `error: unmeasured` row, never a silent skip), then one `oversized_body`
-    row per selectorless body past its bytes (OVERSIZED_THRESHOLD, or its KNOWN_OVERSIZED_NO_SELECTOR
-    bytes). Raises NotConfigured when the report holds no tripwire and no selectorless oversized body."""
-    tripwires = report.get("tripwires") or {}
+    """One row per budget whose cap is None (a tripwire) and whose measured value exceeds its recorded
+    baseline, plus one `oversized_body` row per selectorless body past OVERSIZED_THRESHOLD or past its
+    KNOWN_OVERSIZED_NO_SELECTOR bytes by more than KNOWN_OVERSIZED_GROWTH. A tripwire the report cannot
+    measure gives an `error: unmeasured` row."""
+    root = Path(report["root"]) if report.get("root") else DEFAULT_ROOT
+    budgets = report.get("budgets") or BUDGETS
+    sources = report.get("budget_sources") or {}
+    base_tool = _repo_rel(root, root / "tools" / "load_census.py")
     measured = measured_budgets(report)
     rows = []
-    for budget, (_cap, baseline) in tripwires.items():
+    for budget, (cap, baseline) in budgets.items():
+        if cap is not None:
+            continue
         value = measured.get(budget)
         if value is None:
             rows.append({"budget": budget, "measured": None, "baseline": baseline, "delta": None,
@@ -1041,59 +1421,63 @@ def over_baseline(report: dict) -> list[dict]:
             continue
         if value <= baseline:
             continue
-        rows.append({"budget": budget, "measured": value, "baseline": baseline, "delta": value - baseline})
-    for b in report["oversized_bodies"]:
+        rows.append({"budget": budget, "measured": value, "baseline": baseline,
+                     "delta": value - baseline, "files": _tripwire_files(report, budget),
+                     "baselineCommit": _baseline_commit(root, budget, baseline,
+                                                        sources.get(budget, base_tool))})
+    for b in report.get("oversized_bodies") or []:
         if b["has_selector"] or b["known"]:
             continue
         baseline = b["known_bytes"] if b["known_bytes"] is not None else OVERSIZED_THRESHOLD
         rows.append({"budget": "oversized_body", "measured": b["bytes"], "baseline": baseline,
                      "delta": b["bytes"] - baseline, "files": [b["path"]]})
-    if not tripwires and not any(not b["has_selector"] for b in report["oversized_bodies"]):
-        raise NotConfigured("no tripwire baseline in tools/load_census.project.json and no selectorless oversized body")
     return rows
 
 
 def check_budgets(report: dict) -> list[str]:
     fails = []
-    budgets = report.get("budgets", BUDGETS)
+    budgets = report.get("budgets") or BUDGETS
+    measured = measured_budgets(report)
     for source_error in report.get("source_errors", []):
         fails.append(f"source_invalid: {source_error}")
-    cap, _ = budgets["listing_bytes"]
-    if report["listing"]["total_bytes"] > cap:
-        fails.append(f"listing_bytes {report['listing']['total_bytes']:,} > {cap:,}")
-    cap, _ = budgets["standing_bytes"]
-    if report["standing"]["total_bytes"] > cap:
-        fails.append(f"standing_bytes {report['standing']['total_bytes']:,} > {cap:,}")
-    for name, bundle in report["rules"].get("bundles", {}).items():
-        key = f"{name}_rule_bundle_bytes"
-        if key in budgets and bundle["bytes"] > budgets[key][0]:
-            fails.append(f"{key} {bundle['bytes']:,} > {budgets[key][0]:,}")
-    cap, _ = budgets["edit_hook_chain_subprocesses"]
-    if report["hook_chain"]["edit_subprocesses"] > cap:
-        fails.append(f"edit_hook_chain_subprocesses {report['hook_chain']['edit_subprocesses']} > {cap}")
-    cap, _ = budgets["prompt_emission_bytes"]
-    emission = report.get("prompt_emission_steady_bytes")
-    if emission is not None and emission > cap:
-        fails.append(f"prompt_emission_bytes (steady) {emission:,} > {cap:,}")
+    for key, (cap, _baseline) in budgets.items():
+        if cap is None or key == "session_start_emission_bytes":
+            continue
+        value = measured.get(key)
+        if value is None:
+            fails.append(f"{key} unmeasured (a cap budget the report cannot measure is not within cap)")
+        elif value > cap:
+            fails.append(f"{key} {value:,} > {cap:,}")
+    cap = budgets.get("session_start_emission_bytes", (HOOK_TEXT_CAP, 0))[0]
+    for row in report.get("session_start_rows") or []:
+        where = f"{row['hook']} {row['args']} [{row['case']}]".replace("  ", " ")
+        if row["status"] not in (0, "0"):
+            fails.append(f"session_start_emission_bytes unmeasured: {where} exit {row['status']} "
+                         "(a SessionStart command that did not exit 0 is not silent)")
+        elif row["stdout_bytes"] > cap:
+            fails.append(f"session_start_emission_bytes {row['stdout_bytes']:,} > {cap:,}: {where} "
+                         "(the client shows a preview past HOOK_TEXT_CAP)")
     unmeasured = report.get("prompt_hooks_unmeasured") or []
     if unmeasured:
         fails.append("prompt_emission_bytes unmeasured (a hook that did not exit 0 is not silent): "
                      + ", ".join(unmeasured))
-    selectorless = [b for b in report["oversized_bodies"] if not b["has_selector"] and not b["known"]]
-    new_oversized = [b for b in selectorless if b.get("known_bytes") is None]
-    if new_oversized:
-        names = ", ".join(f'{b["path"]} ({b["bytes"]:,} B)' for b in new_oversized)
-        fails.append(f"body over {OVERSIZED_THRESHOLD:,} B with no selector and not in KNOWN_OVERSIZED_NO_SELECTOR: {names}")
-    grown = [b for b in selectorless if b.get("known_bytes") is not None]
-    if grown:
-        names = ", ".join(f'{b["path"]} ({b["bytes"]:,} B > {b["known_bytes"]:,} B recorded)' for b in grown)
-        fails.append(f"KNOWN_OVERSIZED_NO_SELECTOR body grew more than {KNOWN_OVERSIZED_GROWTH:.0%} "
-                     f"past its recorded bytes: {names}")
     stale_known = report.get("known_oversized_stale") or []
     if stale_known:
         fails.append("KNOWN_OVERSIZED_NO_SELECTOR lists bodies that are missing or no longer oversized without "
-                     "a selector; remove them so regrowth fails: " + ", ".join(stale_known))
+                     "a selector; remove them so regrowth is reported: " + ", ".join(stale_known))
     return fails
+
+
+def check_listing_caps(report: dict) -> list[dict]:
+    """Every listing row over its kind's LISTING_CAPS cap. Reuses listing_census()'s rows
+    (built from `description`/`when_to_use`/`workflow_meta`); always computed, but only
+    turned into a --budgets failure when --caps is passed (see main())."""
+    over = []
+    for r in (report.get("listing") or {}).get("rows", []):
+        cap = LISTING_CAPS.get(r["kind"])
+        if cap is not None and r["desc_bytes"] > cap:
+            over.append({"kind": r["kind"], "name": r["name"], "bytes": r["desc_bytes"], "cap": cap})
+    return over
 
 
 def print_report(report: dict, profile_hooks_flag: bool) -> None:
@@ -1121,14 +1505,22 @@ def print_report(report: dict, profile_hooks_flag: bool) -> None:
     for name, bundle in report["rules"].get("bundles", {}).items():
         print(f"{name} bundle: {bundle['bytes']:,} B  {bundle['files']}")
 
-    print(f"\n== Bodies over {OVERSIZED_THRESHOLD:,} B ==")
+    print(f"\n== Bodies over {OVERSIZED_THRESHOLD:,} B (review trigger) ==")
     for b in report["oversized_bodies"]:
         flags = []
         if b["has_selector"]:
             flags.append("selector")
         if b["known"]:
             flags.append("known")
-        print("  %8d  %-55s %s" % (b["bytes"], b["path"], ",".join(flags) or "NEW, no selector"))
+        print("  %8d  %-55s %s" % (b["bytes"], b["path"], ",".join(flags) or "no selector"))
+
+    print(f"\n== Bodies over {SKILL_REATTACH_CHARS:,} characters (client re-attach cap) ==")
+    print("  Counted in characters, not bytes: independent of the byte-based oversized review trigger above, "
+          "so a body can trip either. The client cuts a body over the cap when it re-attaches it after a compaction.")
+    for b in report.get("reattach_over_cap") or []:
+        print("  %8d  %s" % (b["chars"], b["path"]))
+    if not report.get("reattach_over_cap"):
+        print("  none")
 
     print("\n== Transitive load of top entrypoints ==")
     for e, t in report["transitive_load"].items():
@@ -1171,16 +1563,157 @@ def print_report(report: dict, profile_hooks_flag: bool) -> None:
                   f"({x['reason']})")
 
 
-def print_budgets(report: dict, failed: list[str]) -> None:
+def print_budgets(report: dict, failed: list[str], cap_over: list[dict] | None = None) -> None:
     print("\n== Budgets ==")
-    for key, (cap, baseline) in report.get("budgets", BUDGETS).items():
-        print(f"  {key}: cap={cap:,}  baseline={baseline:,}")
+    for key, (cap, baseline) in (report.get("budgets") or BUDGETS).items():
+        cap_text = "tripwire" if cap is None else f"cap={cap:,}"
+        print(f"  {key}: {cap_text}  recorded_baseline={baseline:,}")
+    for row in over_baseline(report):
+        files = f"  {', '.join(row['files'])}" if row["budget"] == "oversized_body" else ""
+        print(f"  tripwire {row['budget']}: measured {row['measured']:,} > baseline "
+              f"{row['baseline']:,} (+{row['delta']:,}){files}")
+    peaks = {}
+    for row in report.get("session_start_rows") or []:
+        key = (row["hook"], row["args"])
+        if row["stdout_bytes"] >= peaks.get(key, (-1, ""))[0]:
+            peaks[key] = (row["stdout_bytes"], row["case"])
+    for (hook, args), (peak, case) in peaks.items():
+        print(f"  session_start {hook}{' ' + args if args else ''}: max {peak:,} B at [{case}]")
+    injection = report.get("session_start_injection") or {}
+    if injection.get("rows"):
+        print("\n== SessionStart injection per reader (standing + injected = the least that session loads) ==")
+        for row in injection["rows"][:12]:
+            print("  %-46s %7d B injected  %8d B total" % (row["reader"], row["bytes"], row["load_bytes"]))
+        if len(injection["rows"]) > 12:
+            print("  ... %d more readers in the JSON report" % (len(injection["rows"]) - 12))
+    for where in injection.get("unmeasured") or []:
+        print("  session_start unmeasured (not counted): %s" % where)
+    skipped = {row["hook"]: row["reason"] for row in report.get("session_start_skipped") or []}
+    for hook, reason in skipped.items():
+        print(f"  session_start skipped {hook}: {reason}")
+    if cap_over:
+        print("\n== Listing caps (per-kind; informational unless --caps) ==")
+        for c in cap_over:
+            print("  %-8s %-45s %4d B > %3d B" % (c["kind"], c["name"], c["bytes"], c["cap"]))
     if failed:
         print("FAILED:")
         for f in failed:
             print(f"  - {f}")
     else:
         print("all budgets within cap.")
+
+
+def _is_prior_report(path: Path) -> bool:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and {"root", "listing"} <= data.keys()
+
+
+def context_delta(root: Path, base: str) -> dict:
+    """Changed guidance bytes from a committed base to the working tree, including new files."""
+    repo = root.parent
+
+    def git(*args: str) -> bytes:
+        proc = git_run(args, cwd=str(repo))
+        if proc.returncode:
+            raise ValueError(proc.stderr.decode("utf-8", errors="replace").strip())
+        return proc.stdout
+
+    try:
+        revision = git("rev-parse", "--verify", f"{base}^{{commit}}").decode().strip()
+    except ValueError as exc:
+        raise ValueError(f"cannot read delta base {base}: {exc}") from exc
+    prefix = root.name + "/"
+    # Every git path form below is cwd-relative: the census root's parent need not be the git toplevel
+    # (this base's own layout puts `.claude` under `template/`). `ls-tree` already prints cwd-relative
+    # names; `--relative` makes `diff` do the same, and `rev:./path` resolves `show` from the cwd.
+    tracked = set(git("ls-tree", "-rz", "--name-only", revision, "--", root.name,
+                      "CLAUDE.md", "MEMORY.md").decode("utf-8").split("\0")) - {""}
+    changed = set(git("diff", "--relative", "--name-only", "-z", revision, "--", root.name,
+                      "CLAUDE.md", "MEMORY.md").decode("utf-8").split("\0")) - {""}
+    index = set(git("ls-files", "-z").decode("utf-8").split("\0")) - {""}
+    for family in ("rules", "commands", "skills", "output-styles"):
+        for p in (root / family).rglob("*.md"):
+            rel = prefix + p.relative_to(root).as_posix()
+            if rel not in tracked:
+                changed.add(rel)
+    cache = {}
+    home = Path.home()
+    home_sources = {}
+    # The paths the delta charges: a path here that the base tree lacks is a new file, so its before
+    # bytes are absent. Other untracked paths are unchanged context (an ignored settings.local.json, an
+    # imported file), so both snapshots read the working tree and neither side counts a phantom change.
+    subjects = set(changed)
+
+    def read(path: str, before: bool) -> bytes | None:
+        """The bytes at `path` (cwd-relative) in the snapshot, or None when it is absent."""
+        key = (path, before)
+        if key not in cache:
+            if before and path in tracked:
+                cache[key] = git("show", f"{revision}:./{path}")
+            elif before and (path in index or path in subjects):
+                cache[key] = None
+            else:
+                target = repo / path
+                cache[key] = target.read_bytes() if target.is_file() else None
+        return cache[key]
+
+    def standing(before: bool) -> set[str]:
+        seen = set()
+        queue = [prefix + "CLAUDE.md", prefix + "auto-memory/MEMORY.md", "CLAUDE.md", "MEMORY.md"]
+        while queue:
+            path = queue.pop()
+            if path in seen:
+                continue
+            seen.add(path)
+            for line in (read(path, before) or b"").decode("utf-8", errors="replace").splitlines():
+                if line.startswith("@") and line[1:].strip():
+                    target = ((repo / path).parent / line[1:].strip()).resolve()
+                    if target.is_relative_to(repo.resolve()):
+                        queue.append(target.relative_to(repo.resolve()).as_posix())
+        def style_read(path: Path):
+            if path.is_relative_to(root):
+                return read(prefix + path.relative_to(root).as_posix(), before)
+            if path not in home_sources:
+                home_sources[path] = path.read_bytes() if path.is_file() else None
+            return home_sources[path]
+
+        style, errors = _output_style_row(root, home, read=style_read)
+        if errors:
+            raise ValueError("; ".join(errors))
+        if style:
+            path = Path(style["path"])
+            if path.is_relative_to(root):
+                seen.add(prefix + path.relative_to(root).as_posix())
+        return seen
+
+    old_standing, new_standing = standing(True), standing(False)
+    changed.update(old_standing ^ new_standing)
+    totals = {"standing": 0, "conditional": 0}
+    rows = []
+    for path in sorted(changed):
+        values = []
+        for before, always in ((True, old_standing), (False, new_standing)):
+            content = read(path, before) or b""
+            if path in always:
+                kind = "standing"
+            elif path.startswith(prefix + "rules/") and path.endswith(".md"):
+                text = content.decode("utf-8", errors="replace")
+                match = FM.match(text)
+                kind = "conditional" if match and re.search(r"^paths:", match.group(1), re.M) else "standing"
+            elif path.endswith(".md") and any(path.startswith(prefix + family + "/")
+                                              for family in ("commands", "skills", "output-styles")):
+                kind = "conditional"
+            else:
+                kind = None
+            values.append((kind, len(content)))
+            if kind:
+                totals[kind] += (-1 if before else 1) * len(content)
+        if values[0] != values[1]:
+            rows.append({"path": path, "before": values[0], "after": values[1]})
+    return {**totals, "rows": rows}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1191,22 +1724,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile-hooks", action="store_true",
                          help="run every registered hook against synthetic payloads")
     parser.add_argument("--budgets", action="store_true",
-                         help="check measured numbers against BUDGETS; exit 1 if any is exceeded")
+                         help="check measured numbers against BUDGETS; exit 1 when a cap is exceeded "
+                              "(a tripwire crossing prints and exits 0)")
+    parser.add_argument("--caps", action="store_true",
+                         help="with --budgets, also fail on a per-kind listing-cap violation "
+                              "(LISTING_CAPS); the over-cap report always prints with --budgets")
+    parser.add_argument("--delta", metavar="BASE", help="print changed standing and conditional bytes since BASE")
     parser.add_argument("--root", metavar="PATH", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.caps and not args.budgets:
+        parser.error("--caps needs --budgets")
 
     root = Path(args.root).resolve() if args.root else DEFAULT_ROOT
-    report = build_report(root, profile_hooks_flag=args.profile_hooks, need_budget_hooks=args.budgets)
+    if args.delta:
+        if args.json or args.profile_hooks or args.budgets or args.caps:
+            parser.error("--delta runs alone; census and profiling flags are separate")
+        try:
+            delta = context_delta(root, args.delta)
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"context cost: standing {delta['standing']:+d} B; conditional {delta['conditional']:+d} B; "
+              "hook emission: unmeasured (runtime observation required)")
+        return 0
+    report = build_report(root, profile_hooks_flag=args.profile_hooks, need_budget_hooks=args.budgets,
+                          need_session_start_hooks=args.budgets)
     print_report(report, profile_hooks_flag=args.profile_hooks)
 
     if args.json:
         output_path = Path(args.json)
+        if output_path.exists() and not _is_prior_report(output_path):
+            print(f"--json takes an output path; {output_path} exists and is not a census report, "
+                  "so it was left untouched. Name a new .json path.", file=sys.stderr)
+            return 2
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     if args.budgets:
         failed = check_budgets(report)
-        print_budgets(report, failed)
+        cap_over = check_listing_caps(report)
+        if args.caps:
+            failed.extend(f"listing_cap {c['kind']} {c['name']} {c['bytes']} B > {c['cap']} B"
+                           for c in cap_over)
+        print_budgets(report, failed, cap_over)
         if failed:
             return 1
     return 0

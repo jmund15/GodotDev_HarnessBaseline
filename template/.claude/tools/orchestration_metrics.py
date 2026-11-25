@@ -78,6 +78,7 @@ from _file_lock import locked  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
 from _win_path import drive_path  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adaptation  # noqa: E402
 import model_registry  # noqa: E402
 import model_tier_readout  # noqa: E402
 import session_timeline  # noqa: E402
@@ -994,17 +995,25 @@ def find_session_dir(session_id=None):
     return max(sessions)[1]
 
 
-# Workflows whose agents are a benchmark INSTRUMENT's internal stages (judges, verifiers, persist,
-# rank per cell; reachability judges per key item), not delegated work anyone rates: their cost
-# home is `Model Effort Calibration Baseline.md`. They are never debt and the per-session archive
-# path drops them. Keyed on the record's `workflowName` (= the script's `meta.name`).
-# Measured 2026-09-09: 106 of 127 records in one session were score-cell, 681 unrated labels.
-# The rest are benchmark arms, probes and corpus builders over predefined tasks (.claude/workflows/).
+# Workflows whose agents are a measurement INSTRUMENT's internal stages, not delegated work anyone
+# rates: their cost home is `Model Effort Calibration Baseline.md`. They are never debt and the
+# per-session archive path drops them. Keyed on the record's `workflowName` (= the script's
+# `meta.name`). The core's own set; a plugin's registration adds its names.
 MEASUREMENT_WORKFLOWS = frozenset({
-    'score-cell', 'key-reachability', 'agentic-cloud', 'agenttype-input-cost-probe', 'calibrate-cloud',
-    'cloud-sdf', 'effort-on-agenttype-probe', 'fable51-cells', 'harness-bloat-probe', 'mine-sdf-corpus',
-    'rebuild-agentic', 'rebuild-sdf', 'sdf-cloud', 'test-agents-fixtures', 'test-skill-pressure',
-    'w13-cloud-w6', 'w13-cloud-ladder', 'w-axis-and-floors'})
+    'test-agents-fixtures', 'test-skill-pressure', 'harness-bloat-probe', 'agenttype-input-cost-probe'})
+CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WARNED = set()
+
+
+def instrument_workflows(claude_dir=None):
+    """The core's measurement workflows plus each ready plugin's `measurement_workflows`. An unreadable plugin
+    adds none and names itself on stderr once per process: the report loses its names, never the run."""
+    names, unreadable = adaptation.plugin_list(claude_dir or CLAUDE_DIR, 'measurement_workflows')
+    for line in unreadable:
+        if line not in _WARNED:
+            _WARNED.add(line)
+            print(line, file=sys.stderr)
+    return MEASUREMENT_WORKFLOWS | frozenset(names)
 
 
 def is_instrument_run(run):
@@ -1012,7 +1021,7 @@ def is_instrument_run(run):
     workflow, or any call declaring `args.probe` (a /codify proof or text probe). A pin A/B declares
     only `args.measurement`; its arms are comparison data and stay rated."""
     args = run.get('args')
-    return run.get('workflowName') in MEASUREMENT_WORKFLOWS or (isinstance(args, dict) and args.get('probe') is True)
+    return run.get('workflowName') in instrument_workflows() or (isinstance(args, dict) and args.get('probe') is True)
 
 
 def progress_agents(run):
@@ -2279,7 +2288,8 @@ def sidecar_launches(command, cwd=None, output=None):
             # an existing file that does not parse is refused by sidecar_fanout too.
             out.append(dict(kind='fanout', launcher='sidecar_fanout', label=os.path.basename(jobs_path),
                             model='unresolved', effort='unresolved', record=None, jobs_path=jobs_path,
-                            out_dir=out_dir, missing=not os.path.exists(jobs_path)))
+                            out_dir=out_dir, missing=not os.path.exists(jobs_path),
+                            repo=sidecar_argv.fanout_repo(cwd, _PROJECT_DIR)))
             continue
         handoff, native = native_handoff(out_dir, {j.get('label') for j in jobs})
         if native:
@@ -2316,16 +2326,40 @@ def _command_cwd(command, cwd):
     return states[0] if states else end
 
 
+def _only_known_loops(value, loops):
+    """True when every `$` or backtick in `value` is a `$NAME` / `${NAME}` for an open loop with
+    known literal words, so loop expansion resolves `value` cleanly while runtime substitutions and
+    unknown variables stay unexpanded."""
+    if '`' in value:
+        return False
+    pos = 0
+    while True:
+        idx = value.find('$', pos)
+        if idx < 0:
+            return True
+        match = re.match(r'\$(?:\{(\w+)\}|(\w+))', value[idx:])
+        if not match or not loops.get(match.group(1) or match.group(2)):
+            return False
+        pos = idx + match.end()
+
+
 def _launcher_states(command, cwd):
     """([(cwd, variables, loops)] per launcher segment, in order; the state after the last segment).
     A state holds `cwd` moved by each `cd <dir>` segment, each `NAME=value` segment, and each
-    `for NAME in <words>` loop still open, that precede that launcher segment. A loop whose words hold
-    an unexpanded variable, a glob or a substitution maps to None, and an assignment whose value holds
-    one is dropped, so `$NAME` stays as written. An MSYS drive path (/c/...) maps to its Windows form."""
+    `for NAME in <words>` loop still open, that precede that launcher segment. Leading compound
+    keywords (`do`, `then`, `else`, `{`) are stepped over before reading a statement. A loop whose
+    words hold an unexpanded variable, a glob or a substitution maps to None; an assignment whose
+    only `$` references are open loops with known words stays in `env` for loop expansion, while
+    any other variable or substitution drops the name so `$NAME` stays as written. An MSYS drive
+    path (/c/...) maps to its Windows form."""
     env, loops, opened, states = {}, {}, [], []
     for tokens in sidecar_argv.shell_segments(command):
         if any(t.endswith(('sidecar_fanout.py', '_sidecar.sh')) for t in tokens):
             states.append((cwd, dict(env), dict(loops)))
+            continue
+        while tokens and tokens[0] in ('do', 'then', 'else', '{'):
+            tokens = tokens[1:]
+        if not tokens:
             continue
         if len(tokens) >= 3 and tokens[0] == 'for' and tokens[2] == 'in':
             words = [_expand_vars(w, env) for w in tokens[3:]]
@@ -2334,35 +2368,46 @@ def _launcher_states(command, cwd):
         elif tokens[0] in ('while', 'until'):
             opened.append(None)
         elif tokens[0] == 'done' and opened:
-            loops.pop(opened.pop(), None)
+            closed = opened.pop()
+            loops.pop(closed, None)
+            if closed:
+                pat = re.compile(r'\$(?:\{%s\}|%s(?!\w))' % (closed, closed))
+                env = {k: v for k, v in env.items() if not pat.search(v)}
         elif len(tokens) == 2 and tokens[0] == 'cd':
             target = drive_path(_expand_vars(tokens[1], env))
             cwd = _resolve_session_path(target, cwd)
-        elif len(tokens) == 1 and re.match(r'^[A-Za-z_]\w*=', tokens[0]):
-            name, _, value = tokens[0].partition('=')
-            value = _expand_vars(value, env)
-            if re.search(r'[$`]', value):
-                env.pop(name, None)
-            else:
-                env[name] = value
+        else:
+            assigns = tokens[1:] if tokens[0] == 'export' and len(tokens) > 1 else tokens
+            if assigns and all(re.match(r'^[A-Za-z_]\w*=', t) for t in assigns):
+                for tok in assigns:
+                    name, _, value = tok.partition('=')
+                    value = _expand_vars(value, env)
+                    if _only_known_loops(value, loops):
+                        env[name] = value
+                    else:
+                        env.pop(name, None)
     return states, (cwd, env, loops)
 
 
 def _resolved_launcher_calls(command, cwd):
     """(run cwd, [(kind, script, args)]) for a command's launcher calls, with the leading `cd` and
-    `NAME=value` segments applied, and one call per value of each open `for` loop the arguments name:
-    the one launch reader every attribution path uses. Each call takes its own segment's variables and
-    loops when calls and launcher segments pair one to one, else the first launcher's."""
+    `NAME=value` segments applied, and one call per value of each open `for` loop the arguments
+    (directly or through a loop-dependent variable) name: the one launch reader every attribution
+    path uses. Each call takes its own segment's variables and loops when calls and launcher
+    segments pair one to one, else the first launcher's."""
     states, end = _launcher_states(command, cwd)
     named = _launcher_calls_named(command)
     run_cwd = (states[0] if states else end)[0]
     calls = []
     for index, (kind, script, args) in enumerate(named):
         _cwd, env, loops = states[index] if len(states) == len(named) else (states[0] if states else end)
+        probe = _expand_words(args, env)
         names = [n for n, words in loops.items() if words
-                 and any(re.search(r'\$(?:\{%s\}|%s(?!\w))' % (n, n), a) for a in args)]
+                 and any(re.search(r'\$(?:\{%s\}|%s(?!\w))' % (n, n), a) for a in probe)]
         for values in itertools.product(*(loops[n] for n in names)):
-            scope = dict(env, **dict(zip(names, values)))
+            loop_scope = dict(zip(names, values))
+            scope = {k: _expand_vars(v, loop_scope) for k, v in env.items()}
+            scope.update(loop_scope)
             calls.append((kind, script, _expand_words(args, scope)))
     return run_cwd, calls
 
@@ -2414,7 +2459,8 @@ def _parse_fanout_args(args, cwd):
         except (OSError, ValueError):
             spill = None
     out_dir = sidecar_argv.fanout_out_dir(
-        jobs_path, _resolve_session_path(out_value, cwd) if out_value is not None else None, spill, _PROJECT_DIR)
+        jobs_path, _resolve_session_path(out_value, cwd) if out_value is not None else None, spill,
+        sidecar_argv.fanout_repo(cwd, _PROJECT_DIR))
     return jobs_path, out_dir
 
 
@@ -2521,67 +2567,104 @@ def _inventory_records(out_dir, parent):
     return paths
 
 
+def _dispatch_table_launches(parent):
+    """{record_path: epoch_or_None} recorded by `hooks/dispatch_table.py` for this parent session."""
+    if not parent:
+        return {}
+    try:
+        import dispatch_table
+        return dispatch_table.launched_sidecars(parent)
+    except Exception:
+        return {}
+
+
+def _native_only_out_dir(out_dir):
+    """True when `out_dir` holds a native Workflow hand-off (`native.args.json`) and no sidecar
+    remainder (`sidecar.jobs.json`): all jobs of that fan-out ran natively and left no sidecar record."""
+    if os.path.isfile(os.path.join(out_dir, 'sidecar.jobs.json')):
+        return False
+    spec = _read_json_object(os.path.join(out_dir, NATIVE_ARGS))
+    if not spec:
+        return False
+    return bool(spec.get('jobs') or spec.get('chains'))
+
+
 def uncaptured_fanout_jobs(session):
-    """Fanout jobs files this session launched that no Write in the transcript captured.
-    Attribution reads only captured jobs content, so their records stay unattributed; --pending
-    names them rather than let a smaller sidecar count read as all of the session's work."""
+    """Fanout jobs files this session launched that no Write in the transcript captured and
+    whose out dir holds neither this session's inventory/dispatch-table records nor a
+    native-only hand-off; --pending names them rather than let a smaller sidecar count read
+    as all of the session's work."""
     transcript = session if str(session).endswith('.jsonl') else str(session) + '.jsonl'
     if not os.path.isfile(transcript):
         return []
     jobs_paths = _fanout_jobs_paths(transcript)
     parent = _session_parent(session)
-    captured = {path for path, out_dir in jobs_paths.items() if _inventory_records(out_dir, parent)}
+    dt_dirs = {os.path.normcase(os.path.dirname(os.path.abspath(p)))
+               for p in _dispatch_table_launches(parent)}
+    captured = {path for path, out_dir in jobs_paths.items()
+                if _inventory_records(out_dir, parent)
+                or os.path.normcase(os.path.abspath(out_dir)) in dt_dirs
+                or _native_only_out_dir(out_dir)}
     captured |= {path for path in _launch_scan(transcript)['written'] if path in jobs_paths}
     return sorted(set(jobs_paths) - captured)
 
 
 def _sidecar_record_launches(session):
-    """Exact -R paths proven by assistant tool calls in this session transcript."""
+    """Exact -R paths proven by this session's dispatch table or assistant tool calls in its transcript."""
     transcript = session if str(session).endswith('.jsonl') else str(session) + '.jsonl'
     launches = {}
-    if not os.path.isfile(transcript):
-        return launches
     parent = _session_parent(session)
-    inventory_launches = {}
-    for timestamp, run_cwd, kind, args, content in _launch_scan(transcript)['launches']:
-        launched_at = _iso_instant(timestamp)
-        paths = []
-        if kind == 'fanout':
-            parsed = _parse_fanout_args(args, run_cwd)
-            if not parsed:
-                continue
-            jobs_path, out_dir = parsed
-            # The launcher's inventory lists each job's real -R, attempt-numbered relaunches
-            # included, so it outranks rebuilding `<label>.record.json` from the jobs file.
-            # Several launches can share one out dir, so an inventory record keeps its
-            # earliest launch time: a later launch must not age out an earlier run's record.
-            inventoried = _inventory_records(out_dir, parent)
-            for path in inventoried:
+    if os.path.isfile(transcript):
+        inventory_launches = {}
+        for timestamp, run_cwd, kind, args, content in _launch_scan(transcript)['launches']:
+            launched_at = _iso_instant(timestamp)
+            paths = []
+            if kind == 'fanout':
+                parsed = _parse_fanout_args(args, run_cwd)
+                if not parsed:
+                    continue
+                jobs_path, out_dir = parsed
+                # The launcher's inventory lists each job's real -R, attempt-numbered relaunches
+                # included, so it outranks rebuilding `<label>.record.json` from the jobs file.
+                # Several launches can share one out dir, so an inventory record keeps its
+                # earliest launch time: a later launch must not age out an earlier run's record.
+                inventoried = _inventory_records(out_dir, parent)
+                for path in inventoried:
+                    absolute = _resolve_session_path(path, run_cwd)
+                    prior = inventory_launches.get(absolute)
+                    if prior is None or (launched_at and prior and launched_at < prior):
+                        inventory_launches[absolute] = launched_at
+                if inventoried or not isinstance(content, str):
+                    continue
+                try:
+                    jobs = fanout_spec_jobs(json.loads(content), jobs_path)
+                except json.JSONDecodeError:
+                    continue
+                for job in jobs or []:
+                    label = job.get('label')
+                    if label:
+                        paths.append(os.path.join(out_dir, str(label) + '.record.json'))
+            else:
+                record = sidecar_argv.sidecar_flags(args).get('R')
+                if isinstance(record, str):
+                    paths.append(_resolve_session_path(record, run_cwd))
+            for path in paths:
                 absolute = _resolve_session_path(path, run_cwd)
-                prior = inventory_launches.get(absolute)
-                if prior is None or (launched_at and prior and launched_at < prior):
-                    inventory_launches[absolute] = launched_at
-            if inventoried or not isinstance(content, str):
-                continue
-            try:
-                jobs = fanout_spec_jobs(json.loads(content), jobs_path)
-            except json.JSONDecodeError:
-                continue
-            for job in jobs or []:
-                label = job.get('label')
-                if label:
-                    paths.append(os.path.join(out_dir, str(label) + '.record.json'))
-        else:
-            record = sidecar_argv.sidecar_flags(args).get('R')
-            if isinstance(record, str):
-                paths.append(_resolve_session_path(record, run_cwd))
-        for path in paths:
-            absolute = _resolve_session_path(path, run_cwd)
-            prior = launches.get(absolute)
-            if prior is None or (launched_at and (not prior or launched_at > prior)):
-                launches[absolute] = launched_at
-    for path, launched_at in inventory_launches.items():
-        launches.setdefault(path, launched_at)
+                prior = launches.get(absolute)
+                if prior is None or (launched_at and (not prior or launched_at > prior)):
+                    launches[absolute] = launched_at
+        for path, launched_at in inventory_launches.items():
+            launches.setdefault(path, launched_at)
+    seen_norm = {os.path.normcase(os.path.abspath(p)): p for p in launches}
+    for path, epoch in _dispatch_table_launches(parent).items():
+        launched_at = datetime.fromtimestamp(epoch, timezone.utc) if epoch is not None else None
+        norm = os.path.normcase(os.path.abspath(path))
+        existing = seen_norm.get(norm)
+        if existing is None:
+            launches[path] = launched_at
+            seen_norm[norm] = path
+        elif launched_at and (launches[existing] is None or launched_at > launches[existing]):
+            launches[existing] = launched_at
     return launches
 
 
@@ -4154,9 +4237,10 @@ def main():
     attach_seat_overlap(rows, overlaps)
     attach_review_ledger(rows, load_review_ledger())
     history = [r for r in _archive_records() if not r.get('ignored')]
-    measured = [r for r in rows if r.get('instrument') or r.get('workflow') in MEASUREMENT_WORKFLOWS]
+    instruments = instrument_workflows()
+    measured = [r for r in rows if r.get('instrument') or r.get('workflow') in instruments]
     if measured:
-        rows = [r for r in rows if not (r.get('instrument') or r.get('workflow') in MEASUREMENT_WORKFLOWS)]
+        rows = [r for r in rows if not (r.get('instrument') or r.get('workflow') in instruments)]
         spend, _known, unknown = _field_stats(measured, 'cost')
         w(f"(excluding {len(measured)} measurement agent(s), benchmark instruments and probes: "
           f"{', '.join(sorted({r['workflow'] for r in measured}))}; their spend {fmt(spend)} normalized"

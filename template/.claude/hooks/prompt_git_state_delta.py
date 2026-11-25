@@ -40,6 +40,7 @@ _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_DIR = os.path.join(os.path.dirname(_HOOKS_DIR), "tools")
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+import _git_run  # noqa: E402
 import adaptation  # noqa: E402
 
 # Windows pipes default to cp1252 through Python 3.14; git text now decodes as real
@@ -87,21 +88,13 @@ _SUBMODULE_RE = re.compile(r"^([-+U]?)([0-9a-f]{40})\s+(\S+)")
 
 
 def _run(args: list[str], cwd: str | None = None, timeout: int = 5) -> str:
-    """Run a command and return trimmed stdout, or empty string on any failure.
+    """Git's trimmed stdout, or empty string on any failure.
 
     Why so defensive: this hook fires on every UserPromptSubmit. A single
     crash here would feel to the user like Claude Code itself broke. So we
     swallow everything and just emit nothing on the failure path.
     """
-    try:
-        result = subprocess.run(
-            args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=cwd
-        )
-        if result.returncode != 0:
-            return ""
-        return result.stdout.strip()
-    except Exception:
-        return ""
+    return (_git_run.soft_text(args, cwd=cwd, timeout=timeout) or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +104,7 @@ def _run(args: list[str], cwd: str | None = None, timeout: int = 5) -> str:
 
 def _git_toplevel() -> str:
     """Resolve the current git toplevel (works in worktrees). Empty if not a repo."""
-    return _run(["git", "rev-parse", "--show-toplevel"])
+    return _run(["rev-parse", "--show-toplevel"])
 
 
 def _parse_porcelain_v2(out: str) -> dict[str, str]:
@@ -196,7 +189,7 @@ def _capture_state(repo_root: str) -> dict[str, str]:
     succeeds — so a transient git failure won't trigger spurious deltas.
     """
     porcelain_out = _run(
-        ["git", "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
+        ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
         cwd=repo_root,
     )
     if porcelain_out:
@@ -223,7 +216,7 @@ def _capture_state(repo_root: str) -> dict[str, str]:
         for name in WATCHED_SUBMODULES:
             state[f"sub_{name}_head"] = ""
             state[f"sub_{name}_sync"] = ""
-        for line in _run(["git", "--no-optional-locks", "submodule", "status"], cwd=repo_root).splitlines():
+        for line in _run(["--no-optional-locks", "submodule", "status"], cwd=repo_root).splitlines():
             # Match on the sha, not a fixed column: _run() strips, which eats the
             # in-sync entry's leading-space prefix and shifts every offset by one.
             match = _SUBMODULE_RE.match(line.strip())

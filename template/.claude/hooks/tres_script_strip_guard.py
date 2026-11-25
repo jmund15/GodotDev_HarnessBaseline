@@ -41,7 +41,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _commit_scope import authored_paths, publishes_index  # noqa: E402
+import _git_run  # noqa: E402
+from _commit_scope import publication, publishes_index  # noqa: E402
 from _checkout_root import repo_arg  # noqa: E402
 from _hook_parts import bounded_decision, bounded_report  # noqa: E402
 
@@ -59,10 +60,8 @@ def tree_write_blockers():
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import activity_registry
 
-        repo = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+        args = ["rev-parse", "--show-toplevel"]
+        repo = _git_run.run(args).check(args).text.strip()
         return activity_registry.tree_write_blockers(repo)
     except Exception:
         return []
@@ -86,15 +85,12 @@ def diff_lines(range_arg, worktree=False):
     else:
         cmd += ["--cached"]
     cmd += ["--", "*.tres"]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          env=_GIT_ENV).stdout.splitlines()
+    return _git_run.run(cmd[1:], env=_GIT_ENV).text.splitlines()
 
 
 def _authored(findings, repo, git_env):
-    """Keep only the rows whose path THIS commit wrote. A merge diffs the index against HEAD, so a
-    parent's own .tres edit reads as this commit's; it was judged on that parent's ref. Outside a
-    merge `authored_paths` returns every path, so an ordinary commit is judged as before."""
-    keep = set(authored_paths(sorted({row[0] for row in findings}), repo, git_env))
+    published = publication("commit", (), repo, git_env)
+    keep = set(published.authored(sorted({row[0] for row in findings})))
     return [row for row in findings if row[0] in keep]
 
 
@@ -178,7 +174,8 @@ def hook():
         print("{}")
         return 0
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from _git_commit import commit_invocations, bypass_declared, git_environ, git_invocation, segments
+    from _git_commit import commit_invocations, bypass_declared, git_invocation, segments
+    from _git_run import git_environ
     cmd = data.get("tool_input", {}).get("command", "")
     commits = [c for c in commit_invocations(cmd, data.get("cwd") or ".")
                if publishes_index(c.sub, c.rest)]
@@ -301,7 +298,7 @@ def worktree_scan(revert, repair=False):
         lead = header + f"[tres-script-strip-guard] Repaired {len(findings)} file(s) in place (bindings restored).\n"
         sys.stdout.write(bounded_report(lead, rows + results, scratch_list()))
     elif revert:
-        subprocess.run(["git", "checkout", "--"] + [p for p, _, _ in findings])
+        _git_run.run(["checkout", "--", *[p for p, _, _ in findings]])
         lead = header + f"[tres-script-strip-guard] Reverted {len(findings)} file(s) from HEAD.\n" + (
             "WARNING: git-restore re-plants OLD-FORMAT .tres (ext_resource uid backfill pending), "
             "re-arming the dirty-flag bomb -- the strip recurs at the next editor save. Prefer "
@@ -372,9 +369,7 @@ def repair_inplace(findings):
         if "resource_local_to_scene = \"\"" not in text:
             results.append(f"  {path}: no strip marker -- already repaired?")
             continue
-        head = subprocess.run(
-            ["git", "show", f"HEAD:{path}"], capture_output=True, text=True,
-            encoding="utf-8", errors="replace").stdout
+        head = _git_run.run(["show", f"HEAD:{path}"]).text
         for marker in re.finditer(r'resource_local_to_scene = ""', text):
             block_start = text.rfind("[sub_resource", 0, marker.start())
             if block_start < 0:

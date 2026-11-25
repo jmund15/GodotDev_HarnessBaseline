@@ -1217,21 +1217,51 @@ class DerivedCoverageTests(LedgerFixture):
         self.assertEqual(self.pairs(self.uncovered()), [self.pair()])
 
 
-class MandateKindTests(unittest.TestCase):
-    """`uncovered_pairs` asks a file only the mandates that judge its kind."""
+class CommonReaderTests(LedgerFixture):
+    """`plan`, `uncovered` and the PR block read one coverage resolver."""
 
-    class Open:
-        """A cover where nothing is reviewed."""
-        class ctx:
-            hash_files = staticmethod(lambda files: None)
+    GRID = (("src/a.cs",), ("docs/a.md",), ("src/a.cs", "docs/a.md"),
+            (".claude/rules/x.md",), ("docs/a.md", ".claude/rules/x.md"))
+    MANDATES = ("cq.C", "cq.D", "parity", "architecture-sweep")
 
-        pair_state = staticmethod(lambda mandate, path, seats: "uncovered")
-        subject_kind = "session"
-        request_rigor = "normal"
+    def test_plan_and_uncovered_agree_on_applicability(self):
+        for rel in ("docs/a.md", ".claude/rules/x.md"):
+            self._write(rel, "text\n")
+        for files in self.GRID:
+            with self.subTest(files=files):
+                owed = {tuple(line.split("\t")[:2]) for key in self.MANDATES
+                        for line in self.pairs(self.uncovered(files, key))}
+                seats = [self.seat(key, (key,)) for key in self.MANDATES]
+                planned = {(path, seat["mandates"][0]) for seat in self.kept(self.plan(seats, files=files))["roster"]
+                           for path in seat["uncoveredFiles"]}
+                self.assertEqual(planned, owed)
 
+    def test_pr_covered_asks_the_common_reader(self):
+        module = load_module(TOOL)
+        row = self.row(subject="pr:7", ts="2026-10-01T00:00:00Z")
+
+        def covered():
+            saved, cwd = dict(os.environ), os.getcwd()
+            os.environ.update(self.env())
+            os.chdir(self.repo)
+            try:
+                return module._pr_covered(self.repo, "main", 7, ["src/a.cs"], [row])
+            finally:
+                os.chdir(cwd)
+                os.environ.clear()
+                os.environ.update(saved)
+
+        self.assertEqual(covered(), {"cq.C": ["src/a.cs"]})
+        self.escape_log.write_text(json.dumps({"ts": "2026-10-02T00:00:00Z", "paths": ["src/a.cs"]}) + "\n",
+                                   encoding="utf-8")
+        self.assertEqual(covered(), {})
+
+
+class MandateKindTests(Fixture):
     def owed(self, path, mandate, rigor="normal"):
-        cover = type("Open", (self.Open,), {"request_rigor": rigor})
-        return [m for _p, m in load_module(TOOL).uncovered_pairs(cover, [path], [mandate])]
+        module = load_module(TOOL)
+        cover = module.Cover(module.Ctx(self.repo, "main"), {}, [], [], "session", rigor=rigor)
+        return [m for _p, m in module.uncovered_pairs(cover, [path], [mandate])]
 
     def test_prose_harness_scope_owes_only_the_harness_lens_and_thorough_owes_all(self):
         for path in (".claude/rules/x.md", "CLAUDE.md", ".claude/baseline.lock.json"):
@@ -1555,9 +1585,9 @@ class CoverageClauseTests(LedgerFixture):
 
     def cover_for(self, seat):
         with patch.dict(os.environ, self.env()):
-            cover = load_module(TOOL)._make_cover(self.repo, "main", "session")[0]
+            module = load_module(TOOL)
+            cover = module._make_cover(self.repo, "main", "session", seat=seat)[0]
             cover.standing({"reviewer": "panel"})
-        cover.seat = seat
         return cover
 
     def test_clause9_a_lone_supplementary_panel_row_covers_nothing(self):
@@ -1656,19 +1686,19 @@ class CoverageClauseTests(LedgerFixture):
         self._write("docs/design.md", "design\n")
         self._write("plans/p.md", "plan\n")
         self._commit("design and plan")
-        self.plant_rows(self.row(subject="doc:docs/design.md", files={"docs/design.md": self.blob("docs/design.md")}))
+        self.plant_rows(self.row("parity", subject="doc:docs/design.md", files={"docs/design.md": self.blob("docs/design.md")}))
         if edit_design:
             self._write("docs/design.md", "design changed\n")
 
     def _design_plan(self, *extra, stage="plan-check", subject="plan:plans/p.md"):
-        return self.plan([self.seat()], "--design", "docs/design.md", *extra,
+        return self.plan([self.seat(mandates=("parity",))], "--design", "docs/design.md", *extra,
                          stage=stage, subject=subject, files=("plans/p.md",))
 
     def test_clause8_doc_exception_covers_with_design_and_no_new_decision(self):
         self._design_fixture()
         plan = self.kept(self._design_plan("--no-new-decision"))
         self.assertEqual(plan["roster"], [])
-        self.assertEqual(plan["dropped"][0]["mandate"], "cq.C")
+        self.assertEqual(plan["dropped"][0]["mandate"], "parity")
 
     def test_clause8_doc_exception_off_when_the_design_changed(self):
         self._design_fixture(edit_design=True)
@@ -1680,8 +1710,7 @@ class CoverageClauseTests(LedgerFixture):
 
     def test_clause8_doc_exception_off_for_a_session_subject(self):
         self._design_fixture()
-        result = self.plan([self.seat()], "--design", "docs/design.md", "--no-new-decision",
-                           stage="plan-check", subject="session:s1", files=("plans/p.md",))
+        result = self._design_plan("--no-new-decision", subject="session:s1")
         self.assertTrue(self.kept(result)["roster"])
 
     def test_plan_flag_misuse_exits_2(self):
@@ -2156,7 +2185,8 @@ class LaterRoundFactsTests(LedgerFixture):
         self.assertEqual(len(plan["roster"]), 4)
         for seat, original in zip(plan["roster"], self.four_seats()):
             self.assertEqual(seat, dict(original, uncoveredFiles=["src/a.cs"],
-                earlierReviewedBlobs=[{"mandate": original["mandates"][0], "file": "src/a.cs", "blob": old}]))
+                earlierReviewedBlobs=[{"mandate": original["mandates"][0], "file": "src/a.cs", "blob": old}],
+                pairStates=[{"mandate": original["mandates"][0], "file": "src/a.cs", "state": "ChangedSince"}]))
         self.assertIs(plan["laterRound"], True)
         self.assertNotIn("seats became", result.stderr.decode())
 
@@ -2208,6 +2238,205 @@ class LaterRoundFactsTests(LedgerFixture):
         plan = self.kept(self.plan(seats))
         self.assertEqual([s["key"] for s in plan["roster"]], [s["key"] for s in seats])
         self.assertEqual(plan["roster"][0]["mandates"], ["cq.C", "cq.D"])
+
+
+class DeltaRecordTests(LedgerFixture):
+    """A scoped delta row credits the current bytes only when every hunk of the pair is accounted for that
+    mandate and the base blob stays covered. The hunk ids come from `review_snapshot.hunks`, the one owner
+    `prepare` writes its artifact from."""
+
+    def edit(self, rel, text):
+        """Write `text` over `rel` and return its bytes before and after."""
+        before = (self.repo / rel).read_bytes()
+        self._write(rel, text)
+        return before, (self.repo / rel).read_bytes()
+
+    def artifact(self, rel, base, before, after):
+        """The `prepare` delta artifact for one pair: {path: {base, current, hunks}}, written as JSON."""
+        import review_snapshot
+        data = {rel: {"base": base, "current": self.blob(rel), "hunks": review_snapshot.hunks(before, after)}}
+        path = self.root / "delta.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path, [hunk["id"] for hunk in data[rel]["hunks"]]
+
+    def delta_record(self, artifact, ids, mandate="cq.C", *extra, stage="candidate", subject="session:s1"):
+        return self.record("--inline", "proof", "--mandate", mandate, "--outcome", "clean",
+                           "--delta", str(artifact), "--accounted", *ids, *extra, stage=stage, subject=subject)
+
+    def uncovered_pairs(self, files=("src/a.cs",), mandates="cq.C", roster=None):
+        """(path, mandate) pairs `uncovered` prints, without the optional `after:`/`rule-after:` columns."""
+        return ["\t".join(line.split("\t")[:2])
+                for line in self.pairs(self.uncovered(files=files, mandates=mandates, roster=roster))]
+
+    def test_confining_fold_does_not_reseat(self):
+        """Every hunk of a small fold is accounted, so the pair stays current for the mandate."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row())
+        before, after = self.edit("src/a.cs", "one\nsmall edit\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        result = self.delta_record(artifact, ids)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotIn(self.pair(), self.uncovered_pairs())
+
+    def test_changed_decision_owes_affected_mandates_only(self):
+        """A delta recorded for the mandate that judged the change covers it; the other mandate still owes."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row("cq.C"), self.row("cq.D"))
+        before, after = self.edit("src/a.cs", "one\nchanged decision\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(self.delta_record(artifact, ids, "cq.C").returncode, 0)
+        uncovered = self.uncovered_pairs(mandates="cq.C,cq.D")
+        self.assertNotIn(self.pair("cq.C"), uncovered)
+        self.assertIn(self.pair("cq.D"), uncovered)
+
+    def test_mixed_earlier_and_new_mandate(self):
+        """A never-covered mandate owes the whole pair; the covered one is credited by its delta."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row("cq.C"))
+        before, after = self.edit("src/a.cs", "one\nchanged\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(self.delta_record(artifact, ids, "cq.C").returncode, 0)
+        uncovered = self.uncovered_pairs(mandates="cq.C,cq.D")
+        self.assertNotIn(self.pair("cq.C"), uncovered)
+        self.assertIn(self.pair("cq.D"), uncovered)
+
+    def test_changed_remote_dependency_rechecks_at_unchanged_text(self):
+        """The row's own blob is the current text, but an unjudged base still owes; an unreadable base too."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row("cq.D"))
+        before, after = self.edit("src/a.cs", "one\ncurrent\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(self.delta_record(artifact, ids, "cq.C").returncode, 0)
+        self.assertIn(self.pair("cq.C"), self.uncovered_pairs(mandates="cq.C"))
+        missing = self.row("cq.C", **{"from": {"src/a.cs": "0" * 40},
+                                      "delta": {"src/a.cs": {"base": "0" * 40, "accounted": ids}}})
+        self.plant_rows(missing)
+        self.assertIn(self.pair("cq.C"), self.uncovered_pairs(mandates="cq.C"))
+
+    def test_rewrite_is_full(self):
+        """A rewrite keeps every seat on `--ignore-ledger`, with no later-round facts to read."""
+        self.plant_rows(self.row())
+        self._write("src/a.cs", "rewritten\n")
+        plan = self.kept(self.plan([self.seat("seat", ("cq.C",), "executor", "high")], "--ignore-ledger"))
+        self.assertEqual([seat["key"] for seat in plan["roster"]], ["seat"])
+        self.assertNotIn("laterRound", plan)
+        self.assertNotIn("earlierReviewedBlobs", plan["roster"][0])
+        self.assertNotIn("pairStates", plan["roster"][0])
+
+    def test_stale_unverified_revoked_link_gives_no_credit(self):
+        """Each way the base stops covering the pair stops the delta's credit: reach, rigor, depth, rule, void."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row())
+        before, after = self.edit("src/a.cs", "one\nsmall edit\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(self.delta_record(artifact, ids).returncode, 0)
+        self.assertNotIn(self.pair(), self.uncovered_pairs())
+        delta_row = self.rows()[-1]
+        stale = {
+            "reach": self.row("cq.C", files={"src/a.cs": base}, head="0" * 40),
+            "rigor": self.row("cq.C", files={"src/a.cs": base}, rigor="light"),
+            "depth": self.row("cq.C", files={"src/a.cs": base}, effort="low"),
+        }
+        for label, base_row in stale.items():
+            self.plant_rows(base_row, delta_row)
+            self.assertIn(self.pair(), self.uncovered_pairs(), label)
+        self.plant_rows(self.row("cq.C", files={"src/a.cs": base}), delta_row)
+        rule = self.claude / "commands/checklists/code_quality.md"
+        rule.write_text(rule.read_text(encoding="utf-8").replace("- c1", "- c1 changed"), encoding="utf-8")
+        self.assertIn(self.pair(), self.uncovered_pairs(), "rule")
+        rule.write_text(CODE_QUALITY, encoding="utf-8")
+        self.plant_rows(delta_row)
+        self.assertIn(self.pair(), self.uncovered_pairs(), "void")
+
+    def test_unaccounted_hunk_is_refused(self):
+        """A short `accounted` list is refused at write naming its id, and credits nothing at consume."""
+        self._write("src/a.cs", "".join("line %d\n" % number for number in range(1, 41)))
+        self._commit("base")
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row())
+        text = "".join("line %d\n" % number for number in range(1, 41))
+        text = text.replace("line 1\n", "line 1 changed\n").replace("line 40\n", "line 40 changed\n")
+        before, after = self.edit("src/a.cs", text)
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(len(ids), 2, ids)
+        refused = self.delta_record(artifact, ids[:-1])
+        self.assertEqual(refused.returncode, 2, refused.stdout.decode())
+        self.assertIn(ids[-1], refused.stderr.decode())
+        short = self.row("cq.C", files={"src/a.cs": self.blob("src/a.cs")},
+                         **{"from": {"src/a.cs": base},
+                            "delta": {"src/a.cs": {"base": base, "accounted": ids[:-1]}}})
+        self.plant_rows(self.row("cq.C", files={"src/a.cs": base}), short)
+        self.assertIn(self.pair(), self.uncovered_pairs())
+
+    def test_inline_clean_without_base_does_not_certify_the_current_plan(self):
+        """A plan-subject inline clean over a covered predecessor must carry `--delta`."""
+        self.plant_rows(self.row("cq.C", stage="plan-check", subject="plan:src/a.cs"))
+        self._write("src/a.cs", "edited\n")
+        result = self.record("--inline", "proof", "--mandate", "cq.C", "--outcome", "clean",
+                             "--files", "src/a.cs", stage="plan-check", subject="plan:src/a.cs")
+        self.assertEqual(result.returncode, 2, result.stdout.decode())
+        self.assertIn("--delta", result.stderr.decode())
+
+    def test_session_audit_record_shape_is_not_refused(self):
+        """The candidate-stage `session:<sid>` inline shape has no later round, so it records as today."""
+        self.plant_rows(self.row("parity"))
+        self._write("src/a.cs", "edited\n")
+        result = self.record("--inline", "session_audit", "--mandate", "parity", "--outcome", "clean",
+                             "--files", "src/a.cs")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    def test_mixed_states_are_per_pair(self):
+        """A pair with a base reports ChangedSince beside a pair with none, which reports NoBase."""
+        self._write("src/b.cs", "b\n")
+        self._commit("add b")
+        old = {path: self.blob(path) for path in ("src/a.cs", "src/b.cs")}
+        self._write("src/a.cs", "a changed\n")
+        self._write("src/b.cs", "b changed\n")
+        self.plant_rows(self.row("cq.C", files={"src/a.cs": old["src/a.cs"]}))
+        plan = self.kept(self.plan([self.seat("fx", ("cq.C",), "executor", "high")],
+                                   files=("src/a.cs", "src/b.cs")))
+        self.assertNotIn("laterRound", plan)
+        self.assertEqual(plan["roster"][0]["earlierReviewedBlobs"],
+                         [{"mandate": "cq.C", "file": "src/a.cs", "blob": old["src/a.cs"]}])
+        states = {(entry["mandate"], entry["file"]): entry["state"] for entry in plan["roster"][0]["pairStates"]}
+        self.assertEqual(states[("cq.C", "src/a.cs")], "ChangedSince")
+        self.assertEqual(states[("cq.C", "src/b.cs")], "NoBase")
+
+    def test_split_class_has_no_real_pair_synthetic(self):
+        """Synthetic split fixture (S4.0 found no real split pair): the narrowed parent keeps its delta while
+        the new child plan has no predecessor, so it owes the whole subject."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row("cq.C"))
+        before, after = self.edit("src/a.cs", "one\nparent narrowed\n")
+        self._write("src/child.cs", "new split plan\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(self.delta_record(artifact, ids).returncode, 0)
+        uncovered = self.uncovered_pairs(files=("src/a.cs", "src/child.cs"), mandates="cq.C")
+        self.assertNotIn(self.pair("cq.C", "src/a.cs"), uncovered)
+        self.assertIn(self.pair("cq.C", "src/child.cs"), uncovered)
+        plan = self.kept(self.plan([self.seat("fx", ("cq.C",), "executor", "high")],
+                                   files=("src/a.cs", "src/child.cs")))
+        states = {entry["file"]: entry["state"] for entry in plan["roster"][0]["pairStates"]}
+        self.assertNotIn("src/a.cs", states)
+        self.assertEqual(states["src/child.cs"], "NoBase")
+
+    def test_legacy_rows_stay_file_grained(self):
+        """A row without `delta` never covers a changed blob."""
+        self.plant_rows(self.row())
+        self._write("src/a.cs", "changed\n")
+        self.assertIn(self.pair(), self.uncovered_pairs())
+
+    def test_delta_row_re_validated_at_consume(self):
+        """A predecessor revoked after the delta was written stops crediting it."""
+        base = self.blob("src/a.cs")
+        self.plant_rows(self.row())
+        before, after = self.edit("src/a.cs", "one\nsmall edit\n")
+        artifact, ids = self.artifact("src/a.cs", base, before, after)
+        self.assertEqual(self.delta_record(artifact, ids).returncode, 0)
+        self.assertNotIn(self.pair(), self.uncovered_pairs())
+        self.escape_log.write_text(json.dumps({"paths": ["src/a.cs"], "ts": "2026-10-02T00:00:00Z"}) + "\n",
+                                   encoding="utf-8")
+        self.assertIn(self.pair(), self.uncovered_pairs())
 
 
 class ClauseMutantTests(LedgerFixture):
@@ -2304,15 +2533,17 @@ class RangeCommitsTests(unittest.TestCase):
             {"sha": "resolved", "subject": "merge resolution", "files": [".claude/rules/both.md"]},
         ]
         repo = Path("planted-repo")
-        with patch.object(module, "_git", return_value=Result(0, output, "")) as git:
+        with patch.object(module.review_snapshot, "_git", return_value=Result(0, output, "")) as git:
             self.assertEqual(module.range_commits(repo, "base", "tip"), expected)
-            git.assert_called_once_with(repo, [
+            git.assert_called_once()
+            self.assertEqual(git.call_args.args[0], [
                 "log", "--reverse", "--cc", "--no-renames", "--diff-filter=ACDMR",
                 "--raw", "--no-abbrev", "--format=@@%H\t%s", "base..tip"])
+            self.assertEqual(git.call_args.kwargs["cwd"], str(repo))
 
     def test_shared_enumeration_fails_closed_on_git_error(self):
         module = load_module(TOOL)
-        with patch.object(module, "_git", return_value=Result(128, "", "fatal: missing ref")):
+        with patch.object(module.review_snapshot, "_git", return_value=Result(128, "", "fatal: missing ref")):
             with self.assertRaisesRegex(module.ToolError, "cannot list commits in base..tip: fatal: missing ref"):
                 module.range_commits(Path("planted-repo"), "base", "tip")
 
@@ -2409,13 +2640,15 @@ class OwedTests(LedgerFixture):
     def test_a_cat_file_failure_exits_2_rather_than_listing_nothing(self):
         self._write("src/b.cs", "b\n")
         self._commit("C new file")
-        real = load_module(TOOL)._git
+        module = load_module(TOOL)
+        real = module.review_snapshot._git
 
-        def broken(repo, args, stdin=None):
+        def broken(args, cwd=None, input=None):
             if args[:2] == ["cat-file", "--batch-check"]:
-                return subprocess.CompletedProcess(args, 128, b"", b"fatal: broken")
-            return real(repo, args, stdin)
-        result = self.run_tool("owed", "--base-ref", "main", extra_env=self.keys, attrs={"_git": broken})
+                return Result(128, b"", b"fatal: broken")
+            return real(args, cwd=cwd, input=input)
+        with patch.object(module.review_snapshot, "_git", broken):
+            result = self.run_tool("owed", "--base-ref", "main", extra_env=self.keys)
         self.assertEqual(result.returncode, 2, result.stdout.decode() + result.stderr.decode())
         self.assertEqual(result.stdout.decode().strip(), "")
 
@@ -2558,7 +2791,6 @@ class AcceptedExecutorPipelineTests(RecordBase):
         import review_result
         import post_check
         import orchestration_metrics
-        from unittest.mock import patch
         from types import SimpleNamespace
         env = dict(self.env(), HARNESS_TASK_RECORD_DIR=str(self.root / "tasks"), CLAUDE_PROJECT_DIR=str(self.repo))
         subprocess.run(["git", "-C", str(self.repo), "read-tree", "HEAD"], check=True)
@@ -2594,13 +2826,11 @@ class AcceptedExecutorPipelineTests(RecordBase):
             premise_commits=None, head=None, scope_json=None, no_new_decision=False)
         src = post_check.Source()
         src.record = ("--sidecar-result", str(prepared_path))
-        def record(_cwd, *argv):
-            done = self.run_tool(*argv, extra_env=env)
-            return done.returncode, done.stdout.decode(), done.stderr.decode()
-        with patch.object(post_check, "ledger", side_effect=record) as call:
+        with patch.dict(os.environ, env):
+            before = len(self.rows())
             code, _out, err = post_check.record_panel(self.repo, args, src, [])
         self.assertEqual(code, 0, err)
-        self.assertEqual(call.call_count, 1)
+        self.assertEqual(len(self.rows()) - before, 1)
         row = self.rows()[-1]
         self.assertEqual(row["reviewerSelection"], selection)
         self.assertEqual((row["model"], row["modelObserved"], row["identityBasis"]),
@@ -4091,47 +4321,9 @@ class LedgerNewTests(RecordBase):
 
 
 class CrossFamilyTests(LedgerFixture):
-    """`cross_family` over a planted registry: two executor rows of family `fa`, one of `fb`."""
-
-    DATA = {"transports": {"ta": {}, "tb": {}}, "models": [
-        {"id": "a1", "alias": "a1", "family": "fa", "transport": "ta", "roles": ["executor"]},
-        {"id": "a2", "alias": "a2", "family": "fa", "transport": "ta", "roles": ["executor"]},
-        {"id": "b1", "alias": "b1", "family": "fb", "transport": "tb", "roles": ["executor"]}]}
-
-    def setUp(self):
-        super().setUp()
-        self.mod = load_module(TOOL)
-        self.data = json.loads(json.dumps(self.DATA))
-
-    def room_everywhere(self):
-        return {"transport": "ta", "room": 1.0, "payOptions": [],
-                "ranked": [{"transport": t, "room": 1.0} for t in sorted(self.data["transports"])]}
-
-    def test_pre_merge_over_one_family_returns_another_family_candidate(self):
-        out = self.mod.cross_family(True, ["fa"], [], "executor", self.data, self.room_everywhere())
-        self.assertTrue(out["required"])
-        self.assertEqual(out["usedFamilies"], ["fa"])
-        self.assertEqual([(c["id"], c["family"], c["degraded"]) for c in out["candidates"]], [("b1", "fb", False)])
-
-    def test_with_one_family_registered_it_returns_a_same_family_row_marked_degraded(self):
-        one = dict(self.data, models=[m for m in self.data["models"] if m["family"] == "fa"])
-        out = self.mod.cross_family(True, ["fa"], ["a1"], "executor", one, self.room_everywhere())
-        self.assertTrue(out["required"])
-        self.assertEqual([(c["id"], c["family"], c["degraded"]) for c in out["candidates"]], [("a2", "fa", True)])
-
     def test_pick_reaches_provider_bands_through_its_public_seams(self):
-        bands = self.mod._import("provider_bands")
+        bands = load_module(TOOL)._import("provider_bands")
         self.assertTrue(callable(getattr(bands, "session_plan", None)) and callable(bands.pick))
-
-    def test_a_stage_that_is_not_pre_merge_does_not_require_one(self):
-        out = self.mod.cross_family(False, [], [], "executor", self.data, self.room_everywhere())
-        self.assertFalse(out["required"])
-
-    def test_no_room_anywhere_names_why(self):
-        none = {"transport": None, "room": None, "payOptions": [], "ranked": []}
-        out = self.mod.cross_family(True, ["fa"], [], "executor", self.data, none)
-        self.assertEqual(out["candidates"], [])
-        self.assertTrue(out.get("why"))
 
     def test_plan_output_carries_cross_family_only_for_pre_merge_stages(self):
         self.plant_rows(self.row(subject="pr:7", family="alpha"))
@@ -4342,27 +4534,26 @@ class WorktreeBlobTests(unittest.TestCase):
         tip = self.sh(self.wt, "rev-parse", "HEAD")
         module = load_module(TOOL)
         calls = []
-        real = module._git
+        real = module.review_snapshot._git
 
-        def spy(repo, args, stdin=None):
-            if args[:1] == ["cat-file"]:
-                calls.append(str(repo))
-            return real(repo, args, stdin=stdin)
+        def spy(args, cwd=None, input=None):
+            if args[:1] == ["ls-tree"]:
+                calls.append(str(cwd))
+            return real(args, cwd=cwd, input=input)
 
         ctx = module.Ctx(self.main, "main", snapshot=tip)
-        with patch.object(module, "_git", spy):
+        with patch.object(module.review_snapshot, "_git", spy):
             got = ctx.hash_files([".claude/worktrees/sub/f.cs", ".claude/worktrees/sub/g.cs"])
         self.assertEqual(got[".claude/worktrees/sub/f.cs"], self.blob)
         self.assertIsNotNone(got[".claude/worktrees/sub/g.cs"])
         self.assertEqual(len(calls), 1, calls)
 
     def test_a_main_rooted_key_finds_the_row_a_worktree_subject_recorded(self):
-        from types import SimpleNamespace
         module = load_module(TOOL)
         key = ".claude/worktrees/sub/f.cs"
         row = {"files": {"f.cs": self.blob}}
         ctx = module.Ctx(self.main, "main", snapshot=self.tip)
-        cover = SimpleNamespace(exception=lambda r: False, _resolving_blob=None, ctx=ctx)
+        cover = module.Cover(ctx, {}, [], [], "session", rigor="normal")
         self.assertTrue(module._clause_content(cover, row, "m", key))
         self.assertFalse(module._clause_content(cover, {"files": {"f.cs": "0" * 40}}, "m", key))
         self.assertEqual(module.row_blob(row, key), self.blob)
@@ -4541,6 +4732,26 @@ class FilesFromTests(RecordBase):
         self.assertEqual(by_file.returncode, flagged.returncode, by_file.stderr.decode())
         self.assertTrue(by_flag)
         self.assertEqual([row["files"] for row in self.rows()], by_flag)
+
+
+class GitCallTimeoutTests(unittest.TestCase):
+    """A fetch whose work scales with the repository carries no fixed cap: `_git_run.run`'s 30 s default cut real
+    work on this repo (8.7 s worktree add, 7.8 s submodule update on a quiet machine, slower under load)."""
+
+    def test_the_fetch_that_finds_a_pr_head_carries_no_fixed_timeout(self):
+        module = load_module(TOOL)
+        seen = []
+
+        def fake_run(argv, **kwargs):
+            seen.append((list(argv), kwargs))
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        git_module = importlib.import_module(module._git_run.__module__)
+        with patch.object(git_module.subprocess, "run", fake_run):
+            module._git(Path(tempfile.mkdtemp()), ["fetch", "origin", "abc123"])
+        self.assertTrue(seen, "the fetch spawned no git")
+        self.assertEqual(seen[0][0][-1], "abc123")
+        self.assertIsNone(seen[0][1].get("timeout"))
 
 
 if __name__ == "__main__":

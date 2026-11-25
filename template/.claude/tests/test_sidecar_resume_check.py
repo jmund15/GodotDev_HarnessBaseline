@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -67,6 +68,18 @@ FULL_WINDOW_NO_RESET = ev(type="rate_limit_event", rate_limit_info={"unifiedWind
     "weekly": {"utilization": 1.1}}})
 AVAILABLE_WINDOW = ev(type="rate_limit_event", rate_limit_info={"status": "allowed", "unifiedWindows": {
     "fiveHour": {"utilization": 0.39, "resetsAt": 1900000001}}})
+# Live agy 1.5.14 stream refusal: provider text is nested under the result event's `error`.
+AGY_QUOTA_TEXT = ("Third-party quota reached. Please switch to Gemini models or upgrade your subscription "
+                  "to increase your limits. Resets in 95h34m36s.")
+AGY_QUOTA = ev(event="result", timestamp="2026-11-24T23:46:06.828Z",
+               result={"status": "ERROR", "response": "", "error": AGY_QUOTA_TEXT, "num_turns": 1})
+AGY_QUOTA_NO_RESET = ev(event="result", timestamp="2026-11-24T23:46:06.828Z",
+                        result={"status": "ERROR", "error": "Third-party quota reached."})
+AGY_AUTH = ev(event="result", timestamp="2026-11-24T23:46:06.828Z",
+              result={"status": "ERROR", "error": "Failed to authenticate with the provider"})
+AGY_OK = ev(event="result", result={"status": "SUCCESS", "response": "OK"})
+AGY_RESET_EPOCH = int(datetime(2026, 11, 24, 23, 46, 6, tzinfo=timezone.utc).timestamp()
+                      + 95 * 3600 + 34 * 60 + 36)
 # x2b-s2.record.json.out (2026-11-05): retry envelope trimmed of uuid; no message text was present.
 BARE_RETRIES = [ev(type="system", subtype="api_retry", attempt=n, max_retries=10,
                    retry_delay_ms=2000, error_status=429, error="rate_limit",
@@ -127,6 +140,9 @@ case("the run carries across calls without turning retries into usage evidence",
      lambda: rc.watch([RETRY_429], 9, 10)[1:3] == (10, False))
 case("retries are not work; an assistant event is",
      lambda: rc.watch([RETRY_429], 0, 10)[0] is False and rc.watch([WORK], 0, 10)[0] is True)
+case("a Claude-shaped error saying quota reached is not a usage limit",
+     lambda: rc.watch([ev(type="result", is_error=True, terminal_reason="api_error", session_id="s1",
+                          result="disk quota reached")], 0, 10)[2] is False)
 case("a terminal usage-limit result is limited and not work",
      lambda: rc.watch([LIMIT_RESULT], 0, 10)[0:3:2] == (False, True))
 case("a terminal weekly-limit 429 is limited and not work",
@@ -152,6 +168,14 @@ case("a fully utilized window marks limited, with or without a reset timestamp",
      and rc.watch([FULL_WINDOW_NO_RESET], 0, 10)[2:4] == (True, None))
 case("an available window and bare retries do not mark limited or name a rejected reset",
      lambda: rc.watch([AVAILABLE_WINDOW] + BARE_RETRIES, 0, 10)[2:4] == (False, None))
+case("an agy quota refusal is a usage limit and names its reset from the provider's prose",
+     lambda: rc.watch([AGY_QUOTA], 0, 10)[2:4] == (True, AGY_RESET_EPOCH))
+case("an agy quota refusal with no reset still marks limited, naming none",
+     lambda: rc.watch([AGY_QUOTA_NO_RESET], 0, 10)[2:4] == (True, None))
+case("an agy refusal that is not about quota is not a usage limit",
+     lambda: rc.watch([AGY_AUTH], 0, 10)[2] is False)
+case("an agy success result counts as work, never a limit",
+     lambda: rc.watch([AGY_OK], 0, 10)[0:3] == (True, 0, False))
 
 
 def watch_cli_partial_line():
@@ -225,6 +249,9 @@ case("output_cap: reads the cap size from the terminal message and ignores other
      and rc.output_cap("something else") is None)
 case("stream_status: a finished result is finished",
      lambda: rc.stream_status(stream("done.stream", [WORK, DONE]), NOW)[0] == "finished")
+case("stream_status: an agy quota refusal is usage-limit, never a finished or working run",
+     lambda: rc.stream_status(stream("agyquota.stream", [WORK, AGY_QUOTA]), NOW)[0] == "usage-limit"
+     and rc.stream_status(stream("agyok.stream", [WORK, AGY_OK]), NOW)[0] == "finished")
 case("stream_status: a terminal usage-limit result is usage-limit",
      lambda: rc.stream_status(stream("limit.stream", [WORK, LIMIT_RESULT]), NOW)[0] == "usage-limit")
 case("stream_status: ten trailing bare 429 retries are retrying, not usage-limit",

@@ -49,8 +49,11 @@ SHIPPED = set(lens.shipped())
 NEEDS = {"mode_explore": "explore", "mode_plan_check": "plan_check", "mode_pr_review": "review",
          "mode_design_redteam": "redteam", "mode_pr_ready": "review", "mode_session_audit": "session_audit",
          "over_window_refusal": "redteam", "sidecar_target": "redteam", "stale_kfm_snapshot": "plan_check",
-         "task_text_not_backticked": "explore", "later_round_diff": "explore",
-         "mixed_roster_code_seat_keeps_its_files": "session_audit"}
+         "task_text_not_backticked": "explore", "task_default_checks": "explore",
+         "plan_check_default_carry": "plan_check", "later_round_diff": "explore",
+         "mixed_roster_code_seat_keeps_its_files": "session_audit",
+         "session_audit_code_seat_reads_the_frozen_diff": "session_audit",
+         "session_audit_code_seat_reads_no_citers": "session_audit"}
 
 
 def check(label, ok, detail=""):
@@ -477,14 +480,21 @@ def mode_session_audit():
     record = {"id": "task-1", "title": "planted", "requirements": ["Ship the planted feature."],
               "exclusions": ["Do not touch the ledger."]}
     (f.tasks / "task-1.json").write_text(json.dumps(record), encoding="utf-8")
+    # The harness-quality mandate is owed on harness paths only (review_ledger._owes), so the session's
+    # change must include one; a code-only fixture leaves the seat unowed and prepare writes nothing.
+    harness = f.write(".claude/rules/planted.md", "# Rule\n\nplanted\n")
+    f.git("add", "-A")
+    f.git("commit", "-qm", "harness change")
+    f.head = f.git("rev-parse", "HEAD").strip()
     context = f.write("ctx/audit_context.md", "# Context\n\nplanted\n")
     proc = f.prepare(mode="session-audit", roster=[{"key": "sa-harness-quality", "effort": EFFORT}],
                      pins={"panel": PANEL}, efforts={"panel": EFFORT},
-                     context=str(context), task="task-1",
-                     sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": ["src/thing.py"],
+                     context=str(context), task="task-1", subjectFiles=[str(harness)],
+                     sessionAudit={"sessionBase": f.base, "baseRef": f.base,
+                                   "files": [".claude/rules/planted.md"],
                                    "session": "prepsess", "task": "task-1", "plan": str(f.plan)},
                      ledger={"stage": "candidate", "subject": "session:prepsess",
-                             "files": [str(f.plan)], "baseRef": f.base},
+                             "files": [str(harness)], "baseRef": f.base},
                      fold={"tier": "executor", "model": PANEL, "effort": EFFORT},
                      spillDir=str(f.scratch("run", "spill")))
     good, detail = ok(proc)
@@ -501,19 +511,26 @@ def mode_session_audit():
     brief = (f.out / "p_sa-harness-quality.md").read_text(encoding="utf-8") if good else ""
     check("session-audit: the brief points at the must-read subject diffs instead of inlining them",
           "diff --git" not in brief and "subject-" in brief, brief[-800:])
-    text = context.read_text(encoding="utf-8")
-    check("session-audit: the task record's text is saved into the context",
-          "Ship the planted feature." in text, text[-500:])
-    check("session-audit: the saved task text is never a command the seat must run",
+    section = acceptance_section(brief, "task-1")
+    check("session-audit: the task record's acceptance test is written into the seat brief",
+          "Ship the planted feature." in section, brief[-500:])
+    check("session-audit: the acceptance test is never a command the seat must run",
           not any(line.strip().startswith("`python3") or line.strip().startswith("python3 .claude")
-                  for line in text.splitlines()), text[-500:])
+                  for line in section.splitlines()), section[-500:])
+    check("session-audit: the task record's text stays out of the shared context",
+          "Ship the planted feature." not in context.read_text(encoding="utf-8"))
 
     bare = Fixture()
     (bare.tasks / "task-1.json").write_text(json.dumps(record), encoding="utf-8")
+    harness = bare.write(".claude/rules/planted.md", "# Rule\n\nplanted\n")
+    bare.git("add", "-A")
+    bare.git("commit", "-qm", "harness change")
+    bare.head = bare.git("rev-parse", "HEAD").strip()
     proc = bare.prepare(mode="session-audit", seats=[{"key": "sa-harness-quality", "effort": EFFORT}],
                         pins={"panel": PANEL}, efforts={"panel": EFFORT}, task="task-1",
-                        subjectFiles=["src/thing.py"],
-                        sessionAudit={"sessionBase": bare.base, "baseRef": bare.base, "files": ["src/thing.py"],
+                        subjectFiles=[str(harness)],
+                        sessionAudit={"sessionBase": bare.base, "baseRef": bare.base,
+                                      "files": [".claude/rules/planted.md"],
                                       "session": "prepsess", "task": "task-1", "plan": str(bare.plan)},
                         fold={"tier": "executor", "model": PANEL, "effort": EFFORT})
     good, detail = ok(proc)
@@ -521,7 +538,11 @@ def mode_session_audit():
     code = Fixture()
     (code.tasks / "task-1.json").write_text(json.dumps(record), encoding="utf-8")
     code.write("src/Thing.cs", "class Thing {}\n")
-    both = ["src/thing.py", "src/Thing.cs"]
+    code.write(".claude/rules/planted.md", "# Rule\n\nplanted\n")
+    code.git("add", "-A")
+    code.git("commit", "-qm", "code and harness change")
+    code.head = code.git("rev-parse", "HEAD").strip()
+    both = ["src/thing.py", "src/Thing.cs", ".claude/rules/planted.md"]
     proc_code = code.prepare(mode="session-audit", seats=[{"key": "sa-harness-quality", "effort": EFFORT}],
                              pins={"panel": PANEL}, efforts={"panel": EFFORT}, task="task-1", subjectFiles=both,
                              sessionAudit={"sessionBase": code.base, "baseRef": code.base, "files": both,
@@ -658,26 +679,96 @@ def stale_kfm_snapshot():
           index if index.exists() else "absent")
 
 
+def plant_record(f, task_id, session, requirement, exclusion="Never run `python3 .claude/tools/review_ledger.py record`."):
+    record = {"task_id": task_id, "session_id": session, "title": "planted",
+              "requirements": [requirement], "exclusions": [exclusion]}
+    (f.tasks / (task_id + ".json")).write_text(json.dumps(record), encoding="utf-8", newline="\n")
+
+
+def seat_briefs(f):
+    return "".join(p.read_text(encoding="utf-8") for p in f.out.rglob("*.md"))
+
+
+def acceptance_section(text, task_id):
+    """The acceptance section of `task_id` in a brief, up to the next heading; '' when absent."""
+    head = "## Acceptance test (task %s)" % task_id
+    if head not in text:
+        return ""
+    return text.split(head, 1)[1].split("\n## ")[0]
+
+
 def task_text_not_backticked():
     f = Fixture()
-    record = {"id": "task-2", "title": "planted",
-              "requirements": ["Every seat judges the planted requirement."],
-              "exclusions": ["Never run `python3 .claude/tools/review_ledger.py record`."]}
-    (f.tasks / "task-2.json").write_text(json.dumps(record), encoding="utf-8")
-    context = f.write("ctx/task_context.md", "# Context\n")
+    plant_record(f, "task-2", "other-session", "Every seat judges the planted requirement.")
     proc = f.prepare(mode="explore", lenses=["exp-integration-surface"], task="task-2",
                      engine=str(f.root / "engine.js"),
                      pins={"panel": PANEL}, efforts={"panel": EFFORT},
-                     context=str(context),
                      checker={"model": PANEL, "effort": EFFORTS[0]})
-    text = context.read_text(encoding="utf-8")
-    check("a spec naming the task record saves its text into the context",
-          proc.returncode == 0 and "Every seat judges the planted requirement." in text,
-          (proc.stderr[-400:], text[-300:]))
-    check("the saved task text is not a command line the seat must run",
-          "python3 .claude/tools/review_ledger.py record" in text
-          and not any(line.strip().startswith("python3 .claude") for line in text.splitlines()),
-          text[-600:])
+    section = acceptance_section(seat_briefs(f), "task-2")
+    check("a spec naming the task record writes its acceptance test into each seat brief",
+          proc.returncode == 0 and "Every seat judges the planted requirement." in section,
+          (proc.stderr[-400:], section[-300:]))
+    check("the acceptance test is not a command line the seat must run",
+          "python3 .claude/tools/review_ledger.py record" in section
+          and not any(line.strip().startswith("python3 .claude") for line in section.splitlines()),
+          section[-600:])
+
+
+def task_default_checks():
+    """A spec with no `task` key takes the session's active record; `task: false` opts out; an explicit id wins."""
+    default = Fixture()
+    plant_record(default, "hsr", "prepsess", "Ships the default carry.")
+    proc = default.prepare(mode="explore", lenses=["exp-integration-surface"], engine=str(default.root / "engine.js"),
+                           pins={"panel": PANEL}, efforts={"panel": EFFORT},
+                           checker={"model": PANEL, "effort": EFFORTS[0]})
+    check("no task key: the env session's record is each seat brief's acceptance test",
+          proc.returncode == 0 and "Ships the default carry." in acceptance_section(seat_briefs(default), "hsr"),
+          (proc.stderr[-400:], seat_briefs(default)[-300:]))
+
+    session = Fixture()
+    plant_record(session, "hsr", "sessX", "Ships the named session's carry.")
+    session.prepare(mode="explore", lenses=["exp-integration-surface"], engine=str(session.root / "engine.js"),
+                    pins={"panel": PANEL}, efforts={"panel": EFFORT}, session="sessX",
+                    checker={"model": PANEL, "effort": EFFORTS[0]})
+    check("a spec's `session` names whose record is the default",
+          "Ships the named session's carry." in acceptance_section(seat_briefs(session), "hsr"),
+          seat_briefs(session)[-300:])
+
+    optout = Fixture()
+    plant_record(optout, "hsr", "prepsess", "Must not reach a brief.")
+    optout.prepare(mode="explore", lenses=["exp-integration-surface"], engine=str(optout.root / "engine.js"),
+                   pins={"panel": PANEL}, efforts={"panel": EFFORT}, task=False,
+                   checker={"model": PANEL, "effort": EFFORTS[0]})
+    check("`task: false` writes no acceptance test into any seat brief",
+          "## Acceptance test" not in seat_briefs(optout) and "Must not reach a brief." not in seat_briefs(optout))
+
+    explicit = Fixture()
+    plant_record(explicit, "hsr", "prepsess", "Session record, must lose.")
+    plant_record(explicit, "task-9", "other-session", "Explicit record, must win.")
+    explicit.prepare(mode="explore", lenses=["exp-integration-surface"], engine=str(explicit.root / "engine.js"),
+                     pins={"panel": PANEL}, efforts={"panel": EFFORT}, task="task-9",
+                     checker={"model": PANEL, "effort": EFFORTS[0]})
+    text = seat_briefs(explicit)
+    check("an explicit `task` id beats the session's record",
+          "Explicit record, must win." in text and "Session record, must lose." not in text,
+          text[-300:])
+
+
+def plan_check_default_carry():
+    """The plan-check spec the review commands write names no task: the session's record reaches every seat."""
+    f = Fixture()
+    plant_record(f, "hsr", "prepsess", "Ships the plan-check carry.")
+    proc = f.prepare(mode="plan-check", roster=plan_check_roster(),
+                     pins={"panel": PANEL}, efforts={"panel": EFFORT},
+                     ledger={"stage": "plan-check", "subject": "plan:" + str(f.plan),
+                             "files": [str(f.plan)], "baseRef": f.base},
+                     subjectPlans=["code:" + str(f.plan)],
+                     fold={"tier": "architect", "model": ARCH, "effort": EFFORT_HI},
+                     spillDir=str(f.scratch("run", "spill")))
+    seats = [p for p in f.out.rglob("*.md") if "Ships the plan-check carry." in p.read_text(encoding="utf-8")]
+    check("plan-check with no task key: every seat brief carries the session's acceptance test",
+          proc.returncode == 0 and len(seats) >= len(plan_check_roster()),
+          (proc.stderr[-400:], len(seats)))
 
 
 def later_round_diff():
@@ -698,20 +789,100 @@ def later_round_diff():
 def mixed_roster_code_seat_keeps_its_files():
     f = Fixture()
     checklist = f.write("ctx/cds.md", "C1. planted check\n")
+    harness = f.write(".claude/rules/planted.md", "# Rule\n\nplanted\n")
+    f.git("add", "-A")
+    f.git("commit", "-qm", "harness change")
+    f.head = f.git("rev-parse", "HEAD").strip()
     proc = f.prepare(mode="session-audit",
                      seats=[{"key": "sa-design-semantics", "effort": EFFORT}, {"key": "sa-harness-quality", "effort": EFFORT}],
                      pins={"panel": PANEL}, efforts={"panel": EFFORT}, subs=[f"CHECKLIST_CDS={checklist}"],
-                     seatFiles={"sa-design-semantics": ["src/thing.py"]}, subjectFiles=["src/thing.py"],
-                     sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": ["src/thing.py"],
+                     seatFiles={"sa-design-semantics": ["src/thing.py"]},
+                     subjectFiles=["src/thing.py", str(harness)],
+                     sessionAudit={"sessionBase": f.base, "baseRef": f.base,
+                                   "files": ["src/thing.py", ".claude/rules/planted.md"],
                                    "session": "prepsess"})
     listing = f.out / "must_sa-design-semantics.txt"
-    paths = listing.read_text(encoding="utf-8").split() if listing.exists() else []
-    check("mixed roster: the code seat reads its own files, not the harness packet",
-          any(p.replace("\\", "/").endswith("src/thing.py") for p in paths)
-          and not any("commit-" in p or "doctrine-commits" in p for p in paths), (paths, proc.stdout[-300:]))
+    paths = [p.replace("\\", "/") for p in listing.read_text(encoding="utf-8").split()] if listing.exists() else []
+    packet = json.loads((f.out / "inputs" / "inputs.json").read_text(encoding="utf-8")) \
+        if (f.out / "inputs" / "inputs.json").is_file() else {}
+    diff = next((entry["artifact"] for entry in packet.get("artifacts") or []
+                 if entry.get("kind") == "subject-diff" and entry.get("file") == "src/thing.py"), None)
+    check("mixed roster: the code seat reads its own file's frozen diff, not the harness packet",
+          diff is not None and paths == [diff], (diff, paths, proc.stdout[-300:]))
     harness = f.out / "must_sa-harness-quality.txt"
     check("mixed roster: the harness seat still reads the frozen packet",
           harness.exists() and "doctrine-commits" in harness.read_text(encoding="utf-8"), proc.stdout[-300:])
+
+
+CODE_SEAT = "sa-design-semantics+sa-robustness-performance+sa-intuitiveness-testability"
+
+
+def packet_diff_for(f, rel):
+    """The run's frozen `subject-diff` artifact path for `rel`, from the packet the run itself froze."""
+    packet = json.loads((f.out / "inputs" / "inputs.json").read_text(encoding="utf-8"))
+    return next((entry["artifact"] for entry in packet.get("artifacts") or []
+                 if entry.get("kind") == "subject-diff" and entry.get("file") == rel), None)
+
+
+def seat_listing(f, key):
+    """The must-read list `prepare` wrote for `key`, as POSIX spellings."""
+    path = f.out / ("must_" + key.replace("+", "_") + ".txt")
+    return [entry.replace("\\", "/") for entry in path.read_text(encoding="utf-8").split()] if path.exists() else []
+
+
+def session_audit_code_seat_reads_the_frozen_diff():
+    """A session audit's code seat reads each §1b file as the packet's frozen diff, and each new file whole."""
+    f = Fixture()
+    rel = "src/thing.py"
+    new_rel = "src/new_thing.py"
+    new = f.write(new_rel, "def fresh():\n    return 42\n")
+    proc = f.prepare(mode="session-audit", seats=[{"key": CODE_SEAT, "effort": EFFORT}],
+                     pins={"panel": PANEL}, efforts={"panel": EFFORT}, subjectFiles=[str(f.subject), str(new)],
+                     sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": [rel, new_rel],
+                                   "session": "sess", "widen": False})
+    good, detail = ok(proc)
+    paths = seat_listing(f, CODE_SEAT)
+    frozen = (f.out / "inputs" / "inputs.json").is_file()
+    diff = packet_diff_for(f, rel) if frozen else None
+    new_diff = packet_diff_for(f, new_rel) if frozen else None
+    check("session-audit code seat: prepare exits 0", good, detail)
+    check("session-audit code seat: its §1b files' frozen diffs are the only must-reads",
+          paths == [diff, new_diff], (diff, new_diff, paths))
+    text = (f.root / diff).read_text(encoding="utf-8") if diff else ""
+    check("session-audit code seat: the must-read file holds the change, not the whole file",
+          "-    return 1" in text and "+    return 2" in text, text[:300])
+    fresh = (f.root / new_diff).read_text(encoding="utf-8") if new_diff else ""
+    check("session-audit code seat: a new file's frozen diff holds the whole file",
+          "def fresh():" in fresh and "    return 42" in fresh, fresh[:300])
+
+
+def session_audit_code_seat_reads_no_citers():
+    """A later-round session audit's code seat reads the frozen diff, never a file that cites it."""
+    f = Fixture()
+    rel = "src/thing.py"
+    f.write(".claude/notes/citer.md", f"The shape is read from `{rel}`.\n")
+    f.git("add", "-A")
+    f.git("commit", "-qm", "citer")
+    for mandate in ("cq.C", "cq.D", "cq.S"):
+        recorded = subprocess.run(
+            [sys.executable, str(TOOLS / "review_ledger.py"), "record", "--stage", "candidate",
+             "--subject", "session:sess", "--inline", "proof", "--mandate", mandate,
+             "--outcome", "clean", "--files", rel],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(f.root), env=f.env, timeout=180)
+        if recorded.returncode != 0:
+            check("session-audit code seat citers: the earlier reviewed row records", False, recorded.stderr[-400:])
+            return
+    f.write(rel, "def thing():\n    return 3\n")
+    proc = f.prepare(mode="session-audit", seats=[{"key": "sa-design-semantics", "effort": EFFORT}],
+                     pins={"panel": PANEL}, efforts={"panel": EFFORT}, subjectFiles=[str(f.subject)],
+                     sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": [rel],
+                                   "session": "sess", "widen": False})
+    good, detail = ok(proc)
+    paths = seat_listing(f, "sa-design-semantics")
+    diff = packet_diff_for(f, rel) if (f.out / "inputs" / "inputs.json").is_file() else None
+    check("session-audit code seat citers: prepare exits 0", good, detail)
+    check("session-audit code seat citers: the frozen diff is the only must-read, no citer joins it",
+          paths == [diff], (diff, paths))
 
 
 def base_sizes_past_a_command_line():
@@ -834,12 +1005,15 @@ def default_panels_run_through_the_fanout():
         (f.tasks / "task-1.json").write_text(json.dumps({"id": "task-1", "title": "planted",
                                                          "requirements": ["Ship it."], "exclusions": []}),
                                              encoding="utf-8")
+        harness = f.write(".claude/rules/planted.md", "# Rule\n\nplanted\n")
+        f.git("add", "-A")
+        f.git("commit", "-qm", "harness change")
         builds.append(("session-audit", f, dict(
             mode="session-audit", roster=[{"key": "sa-harness-quality", "effort": EFFORT}],
             pins={"panel": PANEL}, efforts={"panel": EFFORT}, task="task-1",
-            sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": ["src/thing.py"],
+            sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": [".claude/rules/planted.md"],
                           "session": "prepsess", "task": "task-1", "plan": str(f.plan)},
-            ledger={"stage": "candidate", "subject": "session:prepsess", "files": [str(f.plan)], "baseRef": f.base},
+            ledger={"stage": "candidate", "subject": "session:prepsess", "files": [str(harness)], "baseRef": f.base},
             fold={"tier": "executor", "model": PANEL, "effort": EFFORT},
             spillDir=str(f.scratch("run", "spill")))))
     check("every review mode the registries ship is built", len(builds) >= 1, [b[0] for b in builds])
@@ -904,8 +1078,11 @@ def main():
     check("test_lens_briefs_prepare.py finds the tool it proves", (TOOLS / "lens_briefs.py").is_file())
     for case in (mode_explore, explore_manual_seat, mode_plan_check, owner_pick_survives_the_ledger_plan, mode_pr_review, mode_design_redteam, mode_pr_ready,
                  mode_session_audit, over_window_refusal, refusals_state_their_shape, sidecar_target, stale_kfm_snapshot,
-                 task_text_not_backticked, later_round_diff, base_sizes_past_a_command_line,
-                 mixed_roster_code_seat_keeps_its_files, spec_refused_before_any_write,
+                 task_text_not_backticked, task_default_checks, plan_check_default_carry,
+                 later_round_diff, base_sizes_past_a_command_line,
+                 mixed_roster_code_seat_keeps_its_files,
+                 session_audit_code_seat_reads_the_frozen_diff, session_audit_code_seat_reads_no_citers,
+                 spec_refused_before_any_write,
                  doc_defined_none_placeholder, default_panels_run_through_the_fanout,
                  printed_tiers_are_the_guards, record_contract):
         if NEEDS.get(case.__name__, "") and NEEDS[case.__name__] not in SHIPPED:

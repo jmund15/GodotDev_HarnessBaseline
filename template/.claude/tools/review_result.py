@@ -16,6 +16,7 @@ from _win_path import drive_path  # noqa: E402
 sys.path.insert(0, str(REPO / ".claude/tools"))
 import tool_profiles  # noqa: E402
 import finding_bar  # noqa: E402
+import review_snapshot  # noqa: E402
 _EVIDENCE_KINDS = json.loads((REPO / '.claude/schemas/evidence.json').read_text(encoding='utf-8'))['items']['oneOf']
 
 _ACTIONS = {"FIX", "ASK", "PLAN"}
@@ -82,15 +83,27 @@ def _mandate_ids():
                  if (lens.AGENTS / name).exists() for entry in lens.parse(registry)[1]}
 
 
-def _roster_problems(path):
+def roster_document(path):
+    """(seats, problem) for the roster at `path` (a JSON list, or an object's `roster` list).
+
+    `problem` is None, `("unreadable", exc)` or `("shape", None)`. The one read every roster consumer shares:
+    `review_ledger._load_roster` validates and fills each seat, `post_check.load_roster` returns the seats as
+    written, and `_roster_problems` names each launch refusal."""
     try:
-        roster = json.loads(Path(path).read_text(encoding="utf-8"))
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return [f"--ledger-roster {path} is unreadable: {exc}"]
-    if isinstance(roster, dict):
-        roster = roster.get("roster")
-    if not isinstance(roster, list):
+        return None, ("unreadable", exc)
+    if isinstance(document, dict):
+        document = document.get("roster")
+    return (document, None) if isinstance(document, list) else (None, ("shape", None))
+
+
+def _roster_problems(path):
+    roster, problem = roster_document(path)
+    if problem == ("shape", None):
         return [f"--ledger-roster {path} is not a list of seats"]
+    if problem is not None:
+        return [f"--ledger-roster {path} is unreadable: {problem[1]}"]
     ids, by_lens = _mandate_ids()
     problems = []
     for seat in roster:
@@ -108,10 +121,7 @@ def _roster_problems(path):
 
 def _object_kinds(home, shas):
     """sha -> object type in the checkout `home`'s store (`missing` when absent)."""
-    ordered = sorted(shas)
-    run = subprocess.run(["git", "-C", str(home), "cat-file", "--batch-check"],
-                         input="\n".join(ordered) + "\n", capture_output=True, text=True)
-    return {parts[0]: parts[1] for line in run.stdout.splitlines() if len(parts := line.split()) >= 2}
+    return review_snapshot.object_kinds(Path(home), shas)
 
 
 def _blob_problems(path, root):
@@ -812,6 +822,41 @@ def _seat_status(fatal, failed, shortfall, valid, own_limit_only):
     if not shortfall:
         return "completed"
     return "partial" if valid or own_limit_only else "uncovered"
+
+
+# The per-mandate outcomes a seat row may carry; the coverage rule reads only the first two as covering.
+OUTCOMES = ("findings", "clean", "not-reached", "incomplete", "blocked", "failed")
+COVERING_OUTCOMES = ("findings", "clean")
+
+
+def seat_outcome(status, token, stopped_at, capability_partial):
+    """One mandate's final outcome: its token bounded by the seat status.
+
+    A failed seat fails; an uncovered seat or a `not-reached` token reaches nothing (`blocked` when the seat
+    stopped blocked); a partial seat covers nothing unless it is partial only because of capability gaps
+    (`capability_partial`), in which case it keeps its token. This is the one Python home of the rule
+    `review_fanout.js` `seatMandates` applies before an engine return."""
+    if status == "failed":
+        return "failed"
+    if status == "uncovered" or token == "not-reached":
+        return "blocked" if stopped_at == "blocked" else "not-reached"
+    if status == "partial" and not capability_partial and token in COVERING_OUTCOMES:
+        return "incomplete"
+    return token if token in OUTCOMES else "not-reached"
+
+
+def seat_evidence(*, seat, status, stopped, mandates, targets=(), gaps=None, called=None, count=0,
+                  tier=None, effort=None, model=None, observed=False, capability_partial=False,
+                  identity_basis=None, record=None, must_read_evidence=None, must_read_spans=None):
+    """One normalized seat, the shape `review_ledger._seat_rows` consumes and every ingress adapter returns.
+
+    `mandates` is already reduced to catalog-key outcomes; `targets` are the seat's checked tools, `gaps` its
+    whole gap strings (None when the transport clipped them, which engages nothing) and `called` the paths its
+    observed transcript holds (None when it has none)."""
+    return {"seat": seat, "status": status, "stopped": stopped, "mandates": mandates, "targets": list(targets),
+            "gaps": gaps, "called": called, "count": count, "tier": tier, "effort": effort, "model": model,
+            "observed": observed, "capabilityPartial": capability_partial, "identityBasis": identity_basis,
+            "record": record, "mustReadEvidence": must_read_evidence, "mustReadSpans": must_read_spans}
 
 
 def _original_view(sources):

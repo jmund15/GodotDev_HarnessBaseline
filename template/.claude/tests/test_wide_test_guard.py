@@ -15,6 +15,7 @@ session id and paths renamed. `agent_id` and `agent_type` are the job record's l
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -273,6 +274,10 @@ def case_declared_narrowing():
               verdict(run + "FullyQualifiedName~FreshTests", cwd=wt) is None)
         check("a class declared only in the command's checkout is narrow (cd)",
               verdict('cd "%s" && %sFullyQualifiedName~FreshTests' % (wt, run), cwd=root) is None)
+        if os.name == "nt" and re.match(r"^[A-Za-z]:/", wt):
+            msys = "/" + wt[0].lower() + wt[2:]
+            check("a Git Bash /c/... cd operand reaches the same checkout",
+                  verdict('cd "%s" && %sFullyQualifiedName~FreshTests' % (msys, run), cwd=root) is None)
         check("a class declared in no checkout stays wide",
               bool(verdict(run + "FullyQualifiedName~StaleTests", cwd=wt)))
     finally:
@@ -302,21 +307,6 @@ def through(command, env_extra, agent_type="lane-author"):
                           input=json.dumps(data), capture_output=True, text=True, timeout=240, env=env)
 
 
-def case_dispatcher_wiring():
-    clear_env()
-    r = through(CLOSE, {})
-    text = r.stdout + r.stderr
-    check("the dispatcher's exit is a decision or a deny", r.returncode in (0, 2), str(r.returncode))
-    check("the dispatcher carries no traceback", "Traceback" not in text, text[-500:])
-    check("the dispatcher denies a lane-author job's close run", "Wide test run refused" in text, text[-800:])
-    r = through(CLOSE, {}, agent_type="lane-gate")
-    text = r.stdout + r.stderr
-    check("the dispatcher admits a lane-gate job", "Wide test run refused" not in text, text[-800:])
-    r = through("git status --short", {})
-    text = r.stdout + r.stderr
-    check("the dispatcher admits an ordinary command", "Wide test run refused" not in text, text[-800:])
-
-
 def case_command_mode():
     """A runner script's own entry check (a run that hosts no Claude hooks) asks the same question
     through `--command`: exit 2 with the reason on a refused wide run, 0 otherwise."""
@@ -330,6 +320,9 @@ def case_command_mode():
     finally:
         clear_env()
     check("the root session's wide run is admitted", guard.main(["--command", CLOSE]) == 0)
+    # The caller obeys the exit code, so a call the mode cannot read fails closed.
+    for argv in (["--command"], ["--command", "python3", ".claude/scripts/harness_tests.py", "--close"]):
+        check("a malformed --command call exits 2: %r" % (argv,), guard.main(argv) == 2)
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_SIDECAR")}
     env["CLAUDE_CODE_SIDECAR"] = "1"
     r = subprocess.run([sys.executable, os.path.join(HOOKS, "wide_test_guard.py"), "--command",
@@ -346,7 +339,7 @@ if __name__ == "__main__":
         for fn in (case_classifier, case_delegate_verdicts,
                    case_sidecar, case_reach, case_gate_type_owner, case_unreadable_table,
                    case_invalid_rows, case_declared_narrowing, case_must_allow,
-                   case_dispatcher_wiring, case_command_mode):
+                   case_command_mode):
             try:
                 fn()
             except Exception as exc:  # noqa: BLE001 - a crash is a failure, never an allow

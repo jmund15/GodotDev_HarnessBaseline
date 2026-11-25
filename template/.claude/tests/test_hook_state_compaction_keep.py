@@ -1,6 +1,6 @@
-"""Proof for the compaction clear in hooks/_hook_state.py: PreCompact clears every skill marker and the ladder
-markers and stamps the clear; only the client's `invoked_skills` attachment restores a skill
-(tests/test_compaction_state.py proves that read)."""
+"""Proof for the SessionStart(compact) clear in hooks/_hook_state.py: it drops the skill and
+ladder markers and stamps the clear. The client's `invoked_skills` attachment can restore a
+skill (tests/test_compaction_state.py proves that read)."""
 import importlib.util
 from pathlib import Path
 

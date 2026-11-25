@@ -213,7 +213,7 @@ def main():
         Handler.status = 429
         _, limited = run(url)
         cases.append(("429 is a typed rate-limit outcome", limited is not None
-                      and limited.get("status") == "network-error"
+                      and limited.get("status") == "rate-limited"
                       and limited.get("error", {}).get("kind") == "rate-limit"
                       and not validate_reading(limited, "go", "plan-quota")))
     finally:

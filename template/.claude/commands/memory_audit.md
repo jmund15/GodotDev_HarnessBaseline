@@ -50,7 +50,7 @@ index stable for a month from one that just absorbed 4 KB, so run the census at 
 tree and the previous `/memory_audit` anchor and report the per-cluster difference:
 
 ```
-awk '/^#{2,4} /{if(h)printf "%6d B  %s\n",b,h; h=$0; b=0} {b+=length($0)+1} END{printf "%6d B  %s\n",b,h}' .claude/auto-memory/MEMORY.md | sort -rn
+awk '/^#{2,4} /{if(h)printf "%6d B  %s\n",b,h; h=$(0); b=0} {b+=length($(0))+1} END{printf "%6d B  %s\n",b,h}' .claude/auto-memory/MEMORY.md | sort -rn
 ```
 
 Anchor = the most recent commit touching `.claude/auto-memory/MEMORY.md` that came from a

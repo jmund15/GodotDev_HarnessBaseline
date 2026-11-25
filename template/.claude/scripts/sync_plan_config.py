@@ -38,11 +38,10 @@ logins must hold one version.
     that login (`tools/semantic_search_idle_install.py --check`, else `--install`, with
     `--config-dir <login>`). A login whose version and install dir passed every check since the last
     refresh is not checked again until the next one.
-  - `bench_liveness` in project adaptation supplies the installation root, logs provider and
-    process patterns/labels. With that key absent or its root not a directory, plugin work does
-    not defer. While a registered score daemon, campaign pid holder or configured process is live,
-    plugin work defers with one line naming the run; files still sync. With no readable process
-    table every daemon entry counts as live; an unreadable configured logs provider also defers.
+  - The bench plugin (`adaptation.json` `plugins`, read through `tools/adaptation.py`) supplies the live runs.
+    With no `bench` plugin configured, plugin work does not defer. While one of its runs is live, plugin work
+    defers with one line naming the run; files still sync. A configured plugin that cannot be read counts as one
+    live run; with no readable process table every daemon entry counts as live.
 
 Usage:
     sync_plan_config.py [--check] [--files-only] [--plan <name>]
@@ -62,10 +61,8 @@ unreadable file, 3 a plugin step failed, or a step or plan is BLOCKED-ON-USER (e
 unless a failure already sets exit 2. Exit 3 holds in --check too.
 """
 import copy
-import importlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -94,11 +91,6 @@ PER_ACCOUNT_KEYS = ("autoMemoryDirectory", "mcpServers", "effortLevel")
 STATE = "sync_plan_config.state.json"
 REFRESH_SECONDS = 24 * 60 * 60
 EXIT_PLUGINS = 3
-# Existing callers inspect this matcher; live_benchmarks reloads the project configuration.
-try:
-    DAEMON_RE = re.compile(adaptation.get(CLAUDE_DIR, "bench_liveness").get("daemon_pattern", r"(?!)"), re.I)
-except (TypeError, re.error):
-    DAEMON_RE = re.compile(r"(?!)")
 
 
 class SyncError(RuntimeError):
@@ -328,52 +320,13 @@ def process_table():  # a seam test_sync_plan_config plants; keep the wrapper
 
 
 def live_benchmarks():
-    """One name per live benchmark run: a score daemon in the registry or holding a campaign pid file, or a
-    run_grid.sh process. With no readable process table every daemon entry counts as live, and an unreadable
-    benchmark root counts as one live run. An absent adaptation key or installation means no project runs."""
-    config = adaptation.get(CLAUDE_DIR, "bench_liveness")
-    if not config or not config.get("root"):
-        return []
-    root = CLAUDE_DIR.parent / config["root"]
-    if not root.is_dir():
-        return []
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+    """One name per live benchmark run, from the bench plugin's entry (`live_runs`). An absent plugin means no
+    project runs; an unreadable one counts as one live run, so plugin work defers rather than runs blind."""
     try:
-        provider = importlib.import_module(config["roots_module"])
-        logs = Path(getattr(provider, config["logs_function"])())
-        grid_re = re.compile(config["grid_pattern"], re.I)
-        daemon_re = re.compile(config["daemon_pattern"], re.I)
-        grid_label, daemon_label = config["grid_label"], config["daemon_label"]
-    except (ImportError, KeyError, ValueError, OSError, TypeError, AttributeError, re.error) as exc:
-        return ["benchmark root unreadable (%s: %s)" % (type(exc).__name__, exc)]
-    daemons = []
-    for entry in sorted((logs / ".score-daemons").glob("*.json")):
-        try:
-            doc = json.loads(entry.read_text(encoding="utf-8"))
-            pid = int(doc.get("pid") or entry.stem)
-            name = os.path.basename(str(doc.get("logsDir") or "").rstrip("/\\")) or entry.stem
-        except (OSError, ValueError, TypeError, AttributeError):
-            pid, name = (int(entry.stem) if entry.stem.isdigit() else None), entry.name
-        daemons.append((pid, name))
-    for pidfile in sorted(logs.glob("*/score-daemon.pid")):
-        try:
-            fields = pidfile.read_text(encoding="utf-8").split()
-            pid = int(fields[0]) if fields[1:] == ["native"] else None
-        except (OSError, ValueError, IndexError):
-            pid = None
-        if pid is not None:
-            daemons.append((pid, pidfile.parent.name))
-    table = process_table()
-    runs = ["score daemon %s (pid %s)" % (name, pid) for pid, name in daemons if not table or pid in table]
-    named = {pid for pid, _name in daemons}
-    for pid, row in sorted(table.items()):
-        cmd = str((row or {}).get("cmd") or "")
-        if grid_re.search(cmd):
-            runs.append("%s (pid %d)" % (grid_label, pid))
-        elif pid not in named and daemon_re.search(cmd):
-            runs.append("%s (pid %d: %s)" % (daemon_label, pid, cmd.strip()[-80:]))
-    return runs
+        bench = adaptation.plugin_entry(CLAUDE_DIR, "bench")
+    except adaptation.PluginUnreadable as exc:
+        return ["plugin bench unreadable (%s)" % exc.error]
+    return bench.live_runs(process_table()) if bench else []
 
 
 def _verified_key(login, entry):

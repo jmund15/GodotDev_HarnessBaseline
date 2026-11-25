@@ -139,6 +139,21 @@ class PlanFilterTests(unittest.TestCase):
         self.assertIn("anthropic-console warming", text)
         self.assertNotIn("  plan anthropic-console", text)
 
+    def test_an_unmetered_plan_survives_with_its_rows_and_an_unmetered_plan_line(self):
+        data = registry()
+        data["transports"]["agy"] = {"costModel": "plan-quota", "launcher": "y.sh",
+                                     "capacityUnsupported": {"reason": "no quota reader"}}
+        data["models"].append({"transport": "agy", "id": "agy-exec", "alias": "agy-exec", "roles": ["executor"],
+                               "limits": PLAN_LIMITS})
+        got = pb.tier_table(["executor"], "anthropic", data=data, now=NOW, draw=draw,
+                            read=reader({"anthropic": reading("anthropic"), "anthropic-console": reading("anthropic-console"),
+                                         "go": reading("go"), "agy": None}))
+        text = pb.render_tier_table(got)
+        self.assertIn("route agy", text)
+        self.assertIn("agy-exec", text)
+        self.assertIn("plan agy: unmetered", text)
+        self.assertNotIn("agy", got["warming"])
+
     def test_groups_print_in_registry_order(self):
         got, text, _ = self.table({"anthropic": reading("anthropic"),
                                    "anthropic-console": reading("anthropic-console"),
@@ -159,7 +174,7 @@ class RowTests(unittest.TestCase):
         _got, text = self.table({"anthropic": reading("anthropic"),
                                  "anthropic-console": reading("anthropic-console"),
                                  "go": reading("go"), "ds": None}, tiers=("executor", "fanout"))
-        self.assertEqual(text.count("  plan anthropic:"), 1)
+        self.assertEqual(text.count("  plan anthropic "), 1)
         self.assertEqual(text.count("  plan anthropic-console"), 1)
         for alias in ("big", "small"):
             self.assertEqual(len([line for line in text.splitlines()
@@ -200,7 +215,7 @@ class RowTests(unittest.TestCase):
                                  "anthropic-console": reading("anthropic-console", used=10),
                                  "go": reading("go"), "ds": None})
         self.assertIn("route anthropic", text)
-        self.assertIn("plan anthropic-console *", text)
+        self.assertIn("plan anthropic-console (this session)", text)
         anthropic_part = text.split("route anthropic", 1)[1].split("route go", 1)[0]
         self.assertIn("big", anthropic_part)
 
@@ -311,7 +326,7 @@ class JsonTests(unittest.TestCase):
         self.assertIn("plansLow", got)
         self.assertEqual(got["seat"], "go")
         self.assertEqual(set(got["groups"][0]["plans"][0]),
-                         {"plan", "left", "timeLeft", "unusedAtReset", "launchers"})
+                         {"plan", "left", "timeLeft", "unusedAtReset", "launchers", "entry"})
 
 
 if __name__ == "__main__":

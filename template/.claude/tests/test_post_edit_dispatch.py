@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Re-runnable proof for hooks/post_edit_dispatch.py — the PostToolUse Write|Edit chain.
 
-Seven separate settings.json commands became one dispatcher. Every sub-hook's advisory has
-to survive, and they now merge into ONE additionalContext payload instead of seven
-competing ones. Each case feeds a real PostToolUse payload by subprocess and asserts on the
+Separate settings.json commands became one dispatcher. Every sub-hook's advisory has
+to survive, and they merge into ONE additionalContext payload. Each case feeds a real PostToolUse payload by subprocess and asserts on the
 emitted channel.
 
 PostToolUse is advisory-only. Retired block/deny results cannot erase another
@@ -37,25 +36,7 @@ import _optional_hooks  # noqa: E402
 LOGGER_TAGS = _optional_hooks.present("check_logger_tag_prefix")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
-SUBHOOKS = ("check_logger_tag_prefix", "plan_memory_reminder",
-            "design_surface_reminder", "harness_growth_guard",
-            "self_eval_archive_guard", "retire_trigger_advisory")
-
-GAME_PLAN = """# Spell AI status behavior
-
-Implement the game behavior with deterministic coverage and retain the authored data
-contract. The spell applies a status effect through the AI blackboard while the critter
-is active. Tests cover activation, transition, expiry, and visible gameplay outcome.
-The work remains within the named game systems and does not alter harness routing.
-Review the existing abstractions before implementation and keep the status effect
-loosely coupled to spell delivery.
-
-## Critical files
-
-`Spells/Effects/ArcStatusEffect.cs`, `NPCs/AI/CritterBlackboard.cs`,
-`Tests/Logic/Spells/ArcStatusEffectTests.cs`.
-The spell, AI behavior, and status effect are all production game scope; the change refactors them.
-"""
+SUBHOOKS = ("check_logger_tag_prefix",)
 
 # load_steps says 9; the file carries 1 ext_resource + 0 sub_resource, so 2 is correct.
 # The same file also lacks script_class= in its header, which is tres_format_guard's case.
@@ -165,18 +146,6 @@ def main():
         cases.append(("check_logger_tag_prefix still warns about an untagged call",
                       rc == 0 and "[logger_tag_prefix]" in context(out)))
 
-    # --- plan_memory_reminder ---------------------------------------------
-    plan_path = os.path.join(tmp, "repo", ".claude", "plans", "b2-game-fixture.md")
-    rc, out, err = run(written(plan_path, GAME_PLAN, session="postplan"), env)
-    cases.append(("plan_memory_reminder still fires on a game-scope plan",
-                  rc == 0 and "Plan text names domains:" in context(out) and "Before implementing" not in context(out)))
-
-    # --- design_surface_reminder ------------------------------------------
-    rc, out, err = run(written(clean_cs, "[Export] public bool Enabled = false;",
-                               session="postdsgn"), env)
-    cases.append(("design_surface_reminder still fires on an [Export] bool",
-                  rc == 0 and "design_litmus" in context(out)))
-
     # Resource normalization now belongs to PreToolUse.
     tres = plant(os.path.join(tmp, "repo", "Data", "probe.tres"), BAD_TRES)
     rc, out, err = run(written(tres, BAD_TRES, session="posttres"), env)
@@ -184,47 +153,6 @@ def main():
     module = load_dispatch_module()
     cases.append(("only PreToolUse owns resource formatting",
                   'tres_format_guard' not in dict(module.CHAIN)))
-
-    # --- harness_growth_guard ---------------------------------------------
-    repo = os.path.join(tmp, "growth")
-    big_md = plant(os.path.join(repo, ".claude", "commands", "big.md"), "- " + "large " * 500)
-    growth_payload = written(big_md, "- " + "large " * 500, session="postgrow", cwd=repo)
-    growth_payload["tool_response"]["type"] = "create"
-    rc, out, err = run(growth_payload, env)
-    cases.append(("a large harness markdown edit gets no growth report",
-                  rc == 0 and "[harness-growth]" not in context(out)))
-    cases.append(("harness_growth_guard is not in the post-edit chain",
-                  "harness_growth_guard" not in dict(load_dispatch_module().CHAIN)))
-
-    # --- self_eval_archive_guard ------------------------------------------
-    archive = plant(os.path.join(tmp, "repo", "self_evaluate_archive.json"), "not json")
-    rc, out, err = run(written(archive, "not json", session="postarch"), env)
-    cases.append(("self_eval_archive_guard still reports an invalid archive",
-                  rc == 0 and "[self-eval-archive-guard]" in context(out)))
-
-    # --- retire_trigger_advisory --------------------------------------------
-    no_trigger_md = ("---\nname: no-trigger\ndescription: fixture\n---\n\nBody.\n")
-    memory_repo = os.path.join(tmp, "repo")
-    plant(os.path.join(memory_repo, ".claude", "auto-memory", "archive", "probe.md"), no_trigger_md)
-    memory_path = os.path.join(memory_repo, ".claude", "auto-memory", "archive", "probe.md")
-    payload_memory = {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "postmem",
-                      "cwd": memory_repo,
-                      "tool_input": {"file_path": memory_path, "content": no_trigger_md},
-                      "tool_response": {"type": "create", "filePath": memory_path}}
-    rc, out, err = run(payload_memory, env)
-    cases.append(("retire_trigger_advisory stays silent on a new memory file with no trigger",
-                  rc == 0 and "[retire-trigger-advisory]" not in context(out)))
-    malformed_md = ("---\nname: malformed\ndescription: fixture\nretire_when:\n---\n\nBody.\n")
-    payload_malformed = dict(payload_memory, session_id="postmemm",
-                             tool_input={"file_path": memory_path, "content": malformed_md})
-    rc, out, err = run(payload_malformed, env)
-    cases.append(("retire_trigger_advisory fires through the dispatcher on malformed retire_when",
-                  rc == 0 and "[retire-trigger-advisory]" in context(out)))
-    update_memory = dict(payload_memory, session_id="postmemu",
-                         tool_response={"type": "update", "filePath": memory_path})
-    rc, out, err = run(update_memory, env)
-    cases.append(("retire_trigger_advisory stays silent on an update Write",
-                  rc == 0 and "[retire-trigger-advisory]" not in context(out)))
 
     # --- malformed payload ------------------------------------------------
     rc, out, err = run_raw("not json at all", env)
@@ -262,15 +190,15 @@ def main():
                       "def standalone(" in source and "def hook(" not in source
                       and "--hook" not in source))
 
-    rc, out, err = module.dispatch(payload, chain=(("plan_memory_reminder", boom), noisy))
+    rc, out, err = module.dispatch(payload, chain=(("check_logger_tag_prefix", boom), noisy))
     cases.append(("E8: a runtime fault preserves later output and names its hook",
                   rc == 0 and bool(boom_calls) and "advisory-from-noisy" in context(out)
-                  and "plan_memory_reminder" in err))
+                  and "check_logger_tag_prefix" in err))
 
-    rc, out, err = module.dispatch(payload, chain=(noisy, ("plan_memory_reminder", boom)))
+    rc, out, err = module.dispatch(payload, chain=(noisy, ("check_logger_tag_prefix", boom)))
     cases.append(("E8: a runtime fault preserves prior output and names its hook",
                   rc == 0 and "advisory-from-noisy" in context(out)
-                  and "plan_memory_reminder" in err))
+                  and "check_logger_tag_prefix" in err))
 
     original_import_module = module.importlib.import_module
 

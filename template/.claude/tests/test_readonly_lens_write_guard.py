@@ -2,8 +2,7 @@
 """Re-runnable proof for hooks/readonly_lens_write_guard.py.
 
 The dispatcher-level test (test_pre_edit_dispatch.py) exercises this hook as one
-sub-hook in a chain; this file is its own dedicated proof, required by
-git_guardrails.py `_has_proof` before a commit touching the hook is allowed.
+sub-hook in a chain; this file is its own dedicated proof.
 
 Covers: a clean payload (no live marker) emits nothing; a planted violation (live
 marker, agent_id present, target outside allow_prefixes) emits the

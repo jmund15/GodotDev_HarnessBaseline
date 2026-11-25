@@ -1,9 +1,8 @@
 """The proof record of the paths a `baseline_sync.py pull` wrote.
 
 `baseline_sync.py` writes a result per pulled path around its scoped proof run: `pending` before the run,
-then `green`, `red`, or `unbound` (no proof binds the path). `git_guardrails.py` asks `blocked` before a
-commit. A path blocks only while its recorded bytes are still the bytes on disk: an edit after the pull is
-not the pulled tree, and its own commit is judged on its own.
+then `green`, `red`, or `unbound` (no proof binds the path). A path stays open only while its recorded bytes are
+still the bytes on disk: an edit after the pull is not the pulled tree.
 
 The record is also the pull's journal: each entry carries the baseline `pin` it came from and the time, and
 `open_paths` lists the paths still red or pending and uncommitted. The next `pull`, `baseline_sync.py check` and
@@ -18,6 +17,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _git_run  # noqa: E402
 from _hook_state import update_json_locked  # noqa: E402
 
 RECORD = os.path.join(".claude", "logs", "baseline_pull_proof.json")
@@ -136,11 +136,10 @@ def unresolved(root, entries=None):
 
 
 def _git_paths(root, args):
-    out = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8",
-                         timeout=30)
+    out = _git_run.run(["-C", str(root), *args], timeout=30)
     if out.returncode != 0:
-        raise OSError(out.stderr)
-    return out.stdout.split("\0")
+        raise OSError(out.err_text)
+    return out.text.split("\0")
 
 
 def open_paths(root, entries=None):

@@ -35,10 +35,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _git_run  # noqa: E402
 import _hook_state  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
-JOB_MAP_RE = re.compile(r"^#{2,6}\s*Job map\b", re.IGNORECASE | re.MULTILINE)
+JOB_MAP_HEADING = r"^#{2,6}\s*(?:\d+(?:\.\d+)*\.?\s+)?Job map\b"
+JOB_MAP_RE = re.compile(JOB_MAP_HEADING, re.IGNORECASE | re.MULTILINE)
 STATE_KEY = "job_map_plans"
 ADVISED_KEY = "job_map_advised"
 MAX_PLANS = 32
@@ -50,7 +52,7 @@ ADVISORY_TEXT = ("[plan-job-map] advisory: plan without a job map: {paths}. Add 
 
 
 def has_job_map(text):
-    """True when `text` has a `## Job map`-style heading (levels 2 to 6, case-insensitive)."""
+    """True when `text` has a `## Job map`-style heading (levels 2 to 6, case-insensitive, a section number allowed)."""
     return JOB_MAP_RE.search(text or "") is not None
 
 
@@ -101,8 +103,7 @@ def _owning_repo(rel, root):
 
 def _git_ignored(rel, root):
     repo, inner = _owning_repo(rel, root)
-    done = subprocess.run(["git", "-C", repo, "check-ignore", "-q", "--", inner],
-                          capture_output=True, timeout=10)
+    done = _git_run.run(["-C", repo, "check-ignore", "-q", "--", inner], timeout=10)
     if done.returncode not in (0, 1):
         raise RuntimeError("git check-ignore exited %d for %s" % (done.returncode, rel))
     return done.returncode == 0

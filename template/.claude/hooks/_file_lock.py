@@ -18,14 +18,17 @@ No process ID is probed, so PID reuse and signals cannot mislead it, and a live 
 stalls keeps its lock for as long as it lives. A directory at the lock path is a legacy
 `mkdir` lock from the pre-2026-09-14 `_hook_state`; it is removed with `rmdir` and retried.
 
-Limit (Windows): a third-party process that holds the lock file open without delete sharing
-blocks both release and reclaim until it closes the file, because both are unlinks; contenders
-time out meanwhile. Mutual exclusion still holds. No harness process opens these files.
+Limit (Windows): a reader that opens the lock file without delete sharing blocks release and
+reclaim until it closes the file. Contenders can time out meanwhile, but mutual exclusion
+still holds. The slot reporter (`machine_slots._holders`) opens it briefly to read the holder.
 
-  acquire(path, timeout) -> handle | None   total: never raises
+  acquire(path, timeout, content=None) -> handle | None   total: never raises. `content` (bytes or
+                                            text) is what the lock file says its holder is; the pid
+                                            when omitted. A reader that names holders reads it.
   release(handle)                           total: None is a no-op
-  locked(path, timeout)                     context manager; TimeoutError on timeout,
-                                            OSError when the lock path cannot exist
+  locked(path, timeout, content=None)       context manager; TimeoutError on timeout,
+                                            OSError when the lock path cannot exist,
+                                            TypeError or ValueError for invalid content
 """
 
 import os
@@ -57,16 +60,25 @@ def _same_file(fd, path):
     return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
 
 
-def _create(path):
+def _said(content):
+    """The lock file's text: `content`, or the holder's pid when the caller names nothing."""
+    if content is None:
+        return str(os.getpid()).encode("ascii")
+    if isinstance(content, str):
+        return content.encode("utf-8")
+    return content if isinstance(content, bytes) else memoryview(content).tobytes()
+
+
+def _create(path, content):
     """Return a descriptor that owns `path`, or None when another owner may hold it."""
     if os.name != "nt":
-        return _create_flocked(path)
-    return _create_in_place(path)
+        return _create_flocked(path, content)
+    return _create_in_place(path, content)
 
 
-def _create_in_place(path):
+def _create_in_place(path, content):
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_BINARY", 0))
     except FileExistsError:
         return None
     except PermissionError:
@@ -78,20 +90,20 @@ def _create_in_place(path):
             if not _same_file(fd, path):
                 os.close(fd)
                 return None
-        os.write(fd, str(os.getpid()).encode("ascii"))
+        os.write(fd, content)
     except OSError:
         _release_fd(path, fd)
         raise
     return fd
 
 
-def _create_flocked(path):
+def _create_flocked(path, content):
     """Flock a private file, then link it to `path`, so no contender sees the lock unflocked."""
     staged = "%s.%s.new" % (path, os.urandom(8).hex())
     fd = os.open(staged, os.O_CREAT | os.O_EXCL | os.O_RDWR)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, str(os.getpid()).encode("ascii"))
+        os.write(fd, content)
         os.link(staged, path)
     except FileExistsError:
         os.close(fd)
@@ -99,7 +111,7 @@ def _create_flocked(path):
     except OSError:
         os.close(fd)
         # A filesystem without hard links (FAT, exFAT) falls back to the in-place create.
-        return _create_in_place(path)
+        return _create_in_place(path, content)
     finally:
         try:
             os.unlink(staged)
@@ -169,12 +181,13 @@ def _release_fd(path, fd):
             pass
 
 
-def _acquire(path, timeout):
-    """Return a handle, None on timeout; raise OSError when the lock cannot exist."""
+def _acquire(path, timeout, content=None):
+    """Return a handle, None on timeout; raise if the content or path is invalid."""
+    content = _said(content)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     deadline = time.monotonic() + timeout
     while True:
-        fd = _create(path)
+        fd = _create(path, content)
         if fd is not None:
             return _Held(path, fd)
         retry_now = _remove_abandoned(path)
@@ -184,10 +197,10 @@ def _acquire(path, timeout):
             time.sleep(POLL_SECONDS)
 
 
-def acquire(path, timeout):
+def acquire(path, timeout, content=None):
     try:
-        return _acquire(path, timeout)
-    except OSError:
+        return _acquire(path, timeout, content)
+    except (OSError, TypeError, ValueError):
         return None
 
 
@@ -198,8 +211,8 @@ def release(handle):
 
 
 @contextmanager
-def locked(path, timeout):
-    handle = _acquire(path, timeout)
+def locked(path, timeout, content=None):
+    handle = _acquire(path, timeout, content)
     if handle is None:
         raise TimeoutError("timed out waiting for lock: " + path)
     try:

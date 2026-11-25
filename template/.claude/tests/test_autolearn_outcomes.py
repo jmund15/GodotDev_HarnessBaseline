@@ -228,10 +228,14 @@ def main():
             "--outcome", "applied", "--fix", "hook")
         _, out, _ = run(r, "record", "--date", "2026-11-12", "--target", "hooks/a.py", "--signal", "after landing",
                         *base, *rec)
-        cases.append(("an applied row closes the earlier recorded rows", "repeat" not in out))
+        cases.append(("an applied row closes no earlier recorded row: both print, with the applied row",
+                      "repeat" in out and "2026-10-18" in out and "idled again" in out
+                      and "2026-11-11" in out and "fixed" in out))
         _, out, _ = run(r, "record", "--date", "2026-11-13", "--target", "hooks/a.py", "--signal", "declined now",
                         "--session", "s1", "--recommended", "apply", "--reason", "no", "--outcome", "declined")
         cases.append(("a declined row prints no repeat", "repeat" not in out))
+        _, out, _ = run(r, "record", "--date", "2026-12-20", "--target", "hooks/a.py", "--signal", "much later", *base, *rec)
+        cases.append(("recorded rows older than 30 days name no repeat", "repeat" not in out))
         # A target's path is the first word of each `;` part, the `.claude/` prefix optional: the label words after
         # it name no path, and a bare `CLAUDE.core.md` and `.claude/CLAUDE.core.md` are one file.
         run(r, "record", "--date", "2026-11-14", "--target", "hooks/c.py deny text", "--signal", "c slip", *base, *rec)

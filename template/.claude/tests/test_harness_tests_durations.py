@@ -40,7 +40,6 @@ class Durations(unittest.TestCase):
         runner._record_durations({'test_a.py': ('pass', 3.0, '')})
         runner._record_durations({'test_a.py': ('pass', 510.0, '')})
         with patch.object(runner, 'select_for', return_value=['test_a.py']), patch.object(runner, '_jobs', return_value=1):
-            self.assertEqual(runner.select_for_commit('unused', ['tool.py']), (['test_a.py'], 0))
             self.assertIn('~3s at recorded times', runner._selection_estimate(['test_a.py']))
 
     def test_timeout_reads_the_last_whole_pass_which_carries_the_load_the_proof_meets(self):
@@ -80,6 +79,14 @@ class Durations(unittest.TestCase):
             {'proof': 'test_b.py', 'status': 'pass', 'run_s': 20.0}]}
         self.assertIn('load x2.0', runner._time_line(row, history))
         self.assertEqual(runner._wall_floor(row, history)[0], 10.0)
+
+    def test_a_deadline_cut_proof_is_skipped_and_leaves_no_trace(self):
+        """A proof the run's deadline cut short is skipped: it reaches neither the flaky nor the red path and
+        records no duration, so its timeout never stretches on a run that did not measure it."""
+        runner._record_durations({'test_a.py': ('pass', 3.0, '')})
+        runner._record_durations({'test_a.py': ('skipped', 9.0, 'not run: HARNESS_DEADLINE passed')})
+        self.assertEqual(self.read()['test_a.py'], 3.0)
+        self.assertEqual(self.read()['__last_passes__']['test_a.py']['run_s'], 3.0)
 
     def test_run_history_keeps_actual_load_but_partial_and_reused_passes_do_not_train(self):
         rows = {}

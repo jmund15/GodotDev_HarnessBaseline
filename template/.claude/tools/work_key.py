@@ -22,6 +22,12 @@ A row without a `workKey` never matches.
 that observed the launch return without its deliverable (the score daemon: exit 0 and no score file); it has no
 command line. A finished row for the same key under another launch still refuses.
 
+`record_paid(key, path, ledger)` appends the row naming the record that finished work wrote, with the sha256 of its
+bytes; `record_paths(key, ledger)` returns those (path, sha256) pairs newest first. The score daemon writes one when
+it persists a score and a mover re-points it after moving the record, so a later pass whose folder scan cannot reach
+the record (the probe archive moved it) resumes the work instead of meeting exit 15. These rows are not launches: a
+row without `exitCode` never matches `finished`.
+
 The decision rests on the ledger's recorded rows and the key, never on a reason a caller writes. Caller:
 scripts/lib/sidecar_common.sh sc_gate_repay, which refuses a launch with exit 15.
 """
@@ -39,6 +45,7 @@ import _hook_state  # noqa: E402
 
 REPAID = 15
 KEY_ENV = "SIDECAR_WORK_KEY"
+RECORD_FIELD = "scoreRecord"
 
 
 def default_ledger():
@@ -89,6 +96,37 @@ def void(key, launch_id, reason, ledger):
     row = {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "workKey": key, "voids": launch_id, "reason": reason}
     _hook_state.append_jsonl_rotating(str(ledger), [row], max_bytes=None)
+
+
+def record_paid(key, path, ledger=None):
+    """Append the row naming the record finished work wrote under `key`, bound to the record's bytes. Nothing is
+    indexed when the file cannot be read or its stamped `workKey` is another key: a record is only reachable through
+    the key it carries."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        rec = json.loads(raw)
+    except (OSError, ValueError, UnicodeError):
+        return False
+    if not isinstance(rec, dict) or rec.get("workKey") != key:
+        return False
+    row = {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "workKey": key, RECORD_FIELD: str(path), "sha256": hashlib.sha256(raw).hexdigest()}
+    return _hook_state.append_jsonl_rotating(str(ledger or default_ledger()), [row], max_bytes=None)
+
+
+def record_paths(key, ledger=None):
+    """The (path, sha256) pairs `record_paid` wrote for this key, newest first. OSError when the ledger exists but
+    cannot be read."""
+    found = []
+    for line in spend_ledger.iter_lines(ledger or default_ledger(), needle=key):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("workKey") == key and isinstance(row.get(RECORD_FIELD), str):
+            found.append((row[RECORD_FIELD], row.get("sha256")))
+    return list(reversed(found))
 
 
 def main(argv=None):

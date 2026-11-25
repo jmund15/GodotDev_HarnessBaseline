@@ -67,12 +67,12 @@ _LEGACY_ASK = """Add a section headed "Owner directives". Give one line for ever
 
 _CARRY_ASK = """Add a section headed "Owner directives". Keep the preceding summary's statused IDs, updating them from later conversation. Carry every settled ID in one comma-separated line, `Settled (done/scoped/replaced): U<id>, U<id>, ...`, with no text; reopen one with a full line only when later conversation reopened it. Every other ID gets a full line: `U<id> — <status> — <scope or result>`. The status is exactly one of:"""
 
-_STATUS_MENU = """- holds: still binds the rest of the session (a goal, constraint or preference);
-- done: carried out, answered, or no longer needed;
+_STATUS_MENU = """- holds: still binds the rest of the session (a goal, constraint, preference or grant of authority);
+- done: carried out, answered, or no longer needed; a grant of authority is not done because the action it allowed ran;
 - replaced by U<id>: a later owner message changed it;
 - scoped: bound a step or moment that has passed;
 - unclear: the conversation does not settle it.
-A message with any part still pending or still binding holds; name that part, its scope, when it stops and the doc anchor holding its full text. Every holds line is ID, status and scope only: compact_directive_anchor.py re-injects the owner's words under the same IDs and supplies --show recovery for clipped or omitted messages. Recover their binding sentences verbatim there, never quote or paraphrase them in the summary. A ruling holds while it constrains work, even after its first use. When a reply only names an option ("O2", "Sure"), keep the option's meaning unless the anchor's labeled answering context already carries it.
+A message with any part still pending or still binding holds; name that part, its scope, when it stops and the doc anchor holding its full text. Every holds line is ID, status and scope only: compact_directive_anchor.py re-injects the owner's words under the same IDs and supplies --show recovery for clipped or omitted messages. Recover their binding sentences verbatim there, never quote or paraphrase them in the summary. A ruling holds while it constrains work, even after its first use. A grant of authority (to push, land, spend, delete) holds while the line of work it was given for continues, past its first use and past the instances the question that drew it listed; its holds line names that line of work. When a reply only names an option ("O2", "Sure"), keep the option's meaning unless the anchor's labeled answering context already carries it.
 Judge each status from what happened after the message, not its wording."""
 
 _KEEP_ALL = "Keep every ID."

@@ -126,8 +126,9 @@ and a nested launch's launcher (its own job) are spared with their subtrees. It 
 the subshell that ran env) is outside every tree walk. Exit 0 none left, 1 a kill failed or the table is
 unreadable, 2 bad usage.
 
-The kill is `taskkill /PID <root> /T /F` — the whole tree. A launcher detaches its headless claude seat
-outside that tree, so killing a process whose tree carries launch X also kills each owned process carrying
+The kill stops the target's verified tree member by member, deepest first (`taskkill /PID <pid> /F`, never `/T`,
+which walks reused OS parent pids; a child belongs to a parent only if the parent started no later). A launcher
+detaches its headless claude seat outside that tree, so killing a process whose tree carries launch X also kills each owned process carrying
 SIDECAR_SEAT_LAUNCH_ID=X (its never-kill members spared), printed `KILLED <pid> ... (seat of launch X)`.
 Exit 0 = every target killed (or dry-run); 2 = at least one target refused (nothing partial
 is hidden: refused targets are listed, killed ones are killed).
@@ -441,41 +442,44 @@ def resolve_pid(pid, table):
     return mapped if mapped in table else None
 
 
-def ancestors(table, pid):
-    out, seen = [], set()
-    cur = _parent(table.get(pid, {}), table)
-    while isinstance(cur, int) and cur in table and cur not in seen:
-        seen.add(cur)
-        out.append(cur)
-        cur = _parent(table[cur], table)
+def parents(table, row):
+    """Pids that are `row`'s parent: the recorded Windows parent, then the MSYS parent `link_msys_parents` recorded,
+    each only while it lives and started no later than `row`. Windows reuses pids, so a recorded parent that started
+    after its child is a stranger holding the old number, never the parent. A missing start time cannot rule the
+    link out."""
+    out = []
+    for key in ("ppid", "msys_ppid"):
+        pid = row.get(key)
+        parent = table.get(pid) if isinstance(pid, int) else None
+        if parent is not None and pid != row.get("pid") and pid not in out and not _starts_after(parent, row):
+            out.append(pid)
     return out
 
 
-def _parent(row, table):
-    """The Windows parent while it lives, else the MSYS parent `link_msys_parents` recorded."""
-    ppid = row.get("ppid")
-    return ppid if ppid in table else row.get("msys_ppid")
+def children_of(table):
+    """{parent pid: [child pids]} over `parents`: the one reader of the parent link."""
+    out = {}
+    for pid, row in table.items():
+        for parent in parents(table, row):
+            out.setdefault(parent, []).append(pid)
+    return out
 
 
-def outside_windows_tree(table, pid, tree):
-    """Members of `tree` that `taskkill /T` on `pid` cannot reach: no Windows-parent chain to `pid`."""
-    out = []
-    for k in tree:
-        cur, seen = table[k].get("ppid"), set()
-        while isinstance(cur, int) and cur in table and cur != pid and cur not in seen:
-            seen.add(cur)
-            cur = table[cur].get("ppid")
-        if k != pid and cur != pid:
-            out.append(k)
+def ancestors(table, pid):
+    out, seen = [], set()
+    cur = (parents(table, table.get(pid, {})) or [None])[0]
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        out.append(cur)
+        cur = (parents(table, table[cur]) or [None])[0]
     return out
 
 
 def descendants(table, pid):
-    out, frontier = [], [pid]
+    kids, out, frontier = children_of(table), [], [pid]
     while frontier:
-        cur = frontier.pop()
-        for k, r in table.items():
-            if cur in (r.get("ppid"), r.get("msys_ppid")) and k not in out and k != pid:
+        for k in kids.get(frontier.pop(), ()):
+            if k not in out and k != pid:
                 out.append(k)
                 frontier.append(k)
     return sorted(out)
@@ -492,8 +496,8 @@ def never_reason(row, table=None):
             return why
     if PROXY_IMAGE.match(row.get("name") or "") and not launch_of(row.get("pid")):
         return "a transport PROXY other sessions may route through (no SIDECAR_LAUNCH_ID)"
-    parent = (table or {}).get(row.get("ppid")) or {}
-    if (row.get("name") or "").lower() == "codex.exe" and (parent.get("name") or "").lower() == "chatgpt.exe":
+    if (row.get("name") or "").lower() == "codex.exe" and any(
+            ((table or {})[p].get("name") or "").lower() == "chatgpt.exe" for p in parents(table or {}, row)):
         return "a codex.exe run by ChatGPT.exe"
     return None
 
@@ -805,9 +809,7 @@ def session_host(table, session, exclude=frozenset()):
                  if (table[pid].get("name") or "").lower() != "conhost.exe"
                  and (any(pat.search(table[pid].get("cmd") or "") for pat in HOST_PATTERNS)
                       or SEAT_HOST.search(table[pid].get("cmd") or ""))]
-        children = {}
-        for pid, row in table.items():
-            children.setdefault(row.get("ppid"), []).append(pid)
+        children = children_of(table)
         for pid in hosts:
             if pid in exclude:
                 continue
@@ -1210,13 +1212,11 @@ def queued_evidence(table, pid):
 
 
 # ----------------------------------------------------------------- act + record
-def taskkill(pid, *, tree=True):
-    """Kill `pid`. tree=True takes its whole tree; tree=False kills only that process, which is what
-    a tree containing never-kill INFRA members needs (see `kill_subtree_sparing_infra`). Success is the
-    target gone: `/T` exits nonzero when a member dies before its turn, though the root is killed."""
-    cmd = ["taskkill", "/PID", str(pid), "/F"] + (["/T"] if tree else [])
+def taskkill(pid):
+    """Kill the one process `pid`. Never `/T`: it walks the OS parent pids, which Windows reuses, so it can stop a
+    stranger; a tree goes member by member through `kill_subtree_sparing_infra`. Success is the target gone."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=30)
         if r.returncode == 0:
             return True
         listing = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/FO", "CSV", "/NH"],
@@ -1232,7 +1232,9 @@ def kill_subtree_sparing_infra(table, root, never_pids):
     A tree-kill is refused outright when any member is shared INFRA, which is right -- but it also
     means a sidecar whose tree merely CONTAINS an MCP server could never be stopped. Enumerating
     the tree lets both hold: the spared set is every INFRA member plus everything below it, and the
-    rest dies deepest-first so no target is orphaned mid-kill. Returns (killed, failed, spared)."""
+    rest dies deepest-first so no target is orphaned mid-kill. The tree is the verified one (`descendants`: a child
+    belongs to a parent only if the parent started no later), so a stop of a tree with no never-kill member is this
+    call with none. Returns (killed, failed, spared)."""
     tree = [root] + descendants(table, root)
     spared = set()
     for pid in never_pids:
@@ -1242,8 +1244,14 @@ def kill_subtree_sparing_infra(table, root, never_pids):
     depth = {p: len(ancestors(table, p)) for p in doomed}
     killed, failed = [], []
     for pid in sorted(doomed, key=lambda p: -depth.get(p, 0)):
-        (killed if taskkill(pid, tree=False) else failed).append(pid)
+        (killed if taskkill(pid) else failed).append(pid)
     return killed, failed, sorted(spared)
+
+
+def kill_tree(table, pid):
+    """Stop `pid` and its verified tree, deepest first: True when every member is gone."""
+    killed, failed, _spared = kill_subtree_sparing_infra(table, pid, [])
+    return pid in killed and not failed
 
 
 def record(entry):
@@ -1292,7 +1300,7 @@ def dispatch_servers_of(table, pid, session_pid, sid, tree, reason=None):
 
 def seats_of(table, session_pid, sid, tree, reason=None):
     """[(seat pid, launch, proof)]: the owned detached seats of every launch the target's tree carries. A
-    launcher detaches its seat, so the seat sits outside the launcher's tree and taskkill /T never reaches
+    launcher detaches its seat, so the seat sits outside the launcher's tree and the tree stop never reaches
     it. A seat carries SIDECAR_SEAT_LAUNCH_ID=X; only the topmost carrier of each seat is listed."""
     launches = set()
     for k in tree:
@@ -1349,14 +1357,14 @@ def launch_strays(table, pid, session_pid, sid, tree, reason):
 
         def kill(k=k, never=never):
             if not never:
-                return taskkill(k)
+                return kill_tree(table, k)
             killed, bad, _spared = kill_subtree_sparing_infra(table, k, never)
             return k in killed and not bad
         strays.append((k, "seat of launch %s" % launch, proof, kill, {"tree": sub, "spared_never": never}))
     launch, servers = dispatch_servers_of(table, pid, session_pid, sid, tree, reason)
     for k, proof in servers:
         strays.append((k, "dispatch server of launch %s" % launch, proof,
-                       lambda k=k: taskkill(k, tree=False), {"tree": [k]}))
+                       lambda k=k: taskkill(k), {"tree": [k]}))
     return strays
 
 
@@ -1525,6 +1533,13 @@ def _starts_after(parent, child):
     """True when `parent` started after `child`: the pid was reused, so it did not launch it."""
     p, c = (parent or {}).get("start") or "", (child or {}).get("start") or ""
     return bool(p and c and p > c)
+
+
+def _parent(row, table):
+    """The recorded Windows parent while it lives, else the MSYS parent `link_msys_parents` recorded, unverified:
+    `ancestry_chain` reads it to name a reused parent pid, which `parents` drops."""
+    ppid = row.get("ppid")
+    return ppid if ppid in table else row.get("msys_ppid")
 
 
 def ancestry_chain(table, pid, depth=REPORT_DEPTH):
@@ -1739,6 +1754,8 @@ def live_launch_main(argv):
     if not table:
         print("[sidecar] WARN: process table unreadable; the duplicate-launch check is skipped", file=sys.stderr)
         return 4
+    # A tool's `bash -c` wrapper names this launch's command line; only the `ps -W` link shows it is an ancestor.
+    link_msys_parents(table, ps_text())
     hits = live_launches(table, args.prompt, args.resume, args.self_pid, args.launch, args.fanout,
                          args.label, args.record)
     if not hits:
@@ -2036,10 +2053,7 @@ def _main(argv=None, env=None):
             if pid in killed:
                 refused += reap_strays(table, pid, strays, args, base)
             continue
-        done = taskkill(pid)
-        if done:
-            for k in outside_windows_tree(table, pid, tree):
-                done = taskkill(k, tree=False) and done
+        done = kill_tree(table, pid)
         print("%s %s\n   owned: %s\n   %s: %s\n   tree: %s" % ("KILLED" if done else "FAILED", head, proof, args.reason or "default", evidence, tree))
         entry["result"] = "killed" if done else "kill-failed"; record(entry)
         if not done:

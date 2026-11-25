@@ -12,7 +12,7 @@ Windows validation cannot see Linux-only failures: a `C:/` path is relative on P
 symlinks exist. Each one otherwise surfaces only as a red PR check, costing a closed PR and a
 fresh dry run. This tool runs every `run:` step of every job, one lane per job, in the worktree's own
 `.github/workflows/baseline.yml` in order, so it tracks CI without a copied step list. Unlike
-CI, it runs every step after a failure. A person runs it to rerun a red; `publish` runs it before each PR push, each lane limited to the proofs bound to the paths the publish commit changes (`scope_to_paths`).
+CI, it runs every step after a failure. A person runs it to rerun a red; `publish` runs it before each PR push, each lane's pytest call limited to the proofs bound to the paths the publish commit changes (`bound_proofs`, `scope_to_paths`).
 
 The worktree is copied, without `.git`, to the run's own tree under `~/baseline-linux-preview`, named
 for the worktree and the run's pid, and committed to a fresh repo, as `actions/checkout` gives; a run
@@ -22,9 +22,10 @@ targets, which flips the proofs that plant an unsafe path. `~/.local/ci-tools/{p
 lead PATH. WSL's Windows `/mnt` entries are dropped from it, as a runner has none. `--setup` downloads the latest Python (a uv-managed venv, as setup-python's `3.x`), Node 20
 and the latest PowerShell there and checks their SHA-256.
 
-Full output: `.claude/scratch/linux_preview/<worktree>.log`. Stdout carries each step's verdict,
-FAIL lines and the battery summary, then one `::result <json>` line: `status` green | red | incomplete |
-unavailable, and per lane its seconds, failed steps and failed proofs.
+Full output: `.claude/scratch/linux_preview/<worktree>.log`. Stdout carries each step's verdict, pytest's
+FAILED and ERROR lines and its closing counts line, then one `::result <json>` line: `status` green | red |
+incomplete | unavailable, and per lane its seconds, failed steps, failed proofs (the test files pytest names)
+and counts (`run`, `pass`, `fail`, `cannot_run`, from pytest's closing line).
 Exit: 0 every lane passed; 1 a lane failed; 2 an unknown option; 3 the preview broke (no worktree, a workflow with no parsed
 step, a launch that produced no lane verdicts); 4 this machine cannot run it (no WSL, a missing
 `--setup` tool, or a tree with no baseline workflow), which is no verdict on the lanes.
@@ -32,6 +33,7 @@ step, a launch that produced no lane verdicts); 4 this machine cannot run it (no
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -52,23 +54,24 @@ STEP_EOF = "PREVIEW_STEP_EOF"
 # binary there (claude.cmd) passes here and fails in CI.
 STRIP_HOST_PATH = ('_kept=; IFS=: read -ra _dirs <<< "$PATH"; for _d in "${_dirs[@]}"; do'
                    ' case "$_d" in /mnt/*) ;; *) _kept="${_kept:+$_kept:}$_d" ;; esac; done; PATH="$_kept"')
-SHOWN = re.compile(r"^(::(step|pass|fail|lane|unavailable) |FAIL|harness_tests:|\s+\| FAIL)")
-# What the verdict reads; a battery's progress lines stay in the log.
-VERDICT_LINE = re.compile(r"^(::(fail|lane|unavailable) |FAIL \d|harness_tests: (scoped: )?\d+ run, )")
-BATTERY = re.compile(r"^harness_tests: (?:scoped: )?(\d+) run, (\d+) pass, (\d+) fail, (\d+) cannot-run")
+# pytest's closing line under `-q`: `15 failed, 2083 passed, 1 skipped in 650.97s (0:10:50)`, or `no tests ran in 0.01s`.
+_TALLY = r"(?:=+ )?(\d+ [a-z]+(?:, \d+ [a-z]+)*|no tests ran) in \d+(?:\.\d+)?s\b"
+PYTEST_END = re.compile("^" + _TALLY)
+SUMMARY_HEAD = re.compile(r"^=+ short test summary info =+$")
+# One line per failed test or errored file in that summary: `FAILED <path>::<test> - <why>`, `ERROR <path> - <why>`.
+PROOF_FAIL = re.compile(r"^(?:FAILED|ERROR) (\S+?)(?:::| - |$)")
+SHOWN = re.compile(r"^(?:::(?:step|pass|fail|lane|unavailable) |(?:FAILED|ERROR) |=+ short test summary info|%s)" % _TALLY)
+# What the verdict reads; a test run's progress and failure detail stay in the log.
+VERDICT_LINE = re.compile(r"^(?:::(?:fail|lane|unavailable) |(?:FAILED|ERROR) |=+ short test summary info|%s)" % _TALLY)
 LANE_END = re.compile(r"^::lane (\S+) (\d+)s$")
 STEP_FAIL = re.compile(r"^::fail (.+) rc=\d+ \d+s$")
-PROOF_FAIL = re.compile(r"^FAIL \d+(?:\.\d+)?s (\S.*)$")
-BATTERY_CALL = re.compile(r"python3 (\S*harness_tests\.py)(?=\s|$)(?! --)")
-ROOT_PROOFS = re.compile(r"for f in tests/test_\*\.py")
-SKIPPED_SCOPED = ("echo 'harness_tests: scoped: 0 run, 0 pass, 0 fail, 0 cannot-run, 0 skipped"
-                  " (no template path changed)'")
+# A lane's pytest call: its last word is the tests folder, the words between are the lane's own options.
+PYTEST_CALL = re.compile(r"python3 -m pytest\b(?P<options>.*?) (?P<folder>\S+)[ \t]*$", re.M)
+NO_TESTS = "echo 'no tests ran in 0.00s (%s)'"
+# A `${{ ... }}` in a run: step is a GitHub Actions context the runner expands. The preview has no event, so it
+# expands empty, as an unset context does; left in, bash stops the step on a bad substitution.
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 TEMPLATE = "template/"
-# `--proofs-for` exits 1 for "no proof selected" as for a red proof; a change that binds no proof is no red.
-SCOPED_SHIM = (r'_scoped() { local o rc; o=$(mktemp); set +e; "$@" 2>&1 | tee "$o"; rc=${PIPESTATUS[0]}; set -e;'
-               r' if [ "$rc" = 1 ] && grep -q "^harness_tests: no proof selected" "$o"; then'
-               r' echo "harness_tests: scoped: 0 run, 0 pass, 0 fail, 0 cannot-run, 0 skipped (no proof bound to the changed paths)";'
-               r' rc=0; fi; rm -f "$o"; return $rc; }')
 TOOLS = ("py/bin/python", "node/bin/node", "pwsh/pwsh", "dotnet/dotnet")
 
 SETUP_SCRIPT = r"""set -euo pipefail
@@ -174,36 +177,52 @@ def exec_paths_of(worktree: Path) -> list[str]:
     return [path for path, mode in baseline_identity.file_modes(out).items() if mode == "100755"]
 
 
+def _counts(tally: str) -> dict:
+    """The counts a pytest closing line gives. `run` is every outcome, `fail` its failures and errors, `cannot_run` its
+    skips; `xfailed` and `xpassed` are outcomes the test declared, so they pass."""
+    n = {word: int(num) for num, word in re.findall(r"(\d+) ([a-z]+)", tally)}
+    fail = n.get("failed", 0) + n.get("error", 0) + n.get("errors", 0)
+    ok = n.get("passed", 0) + n.get("xfailed", 0) + n.get("xpassed", 0)
+    return {"run": ok + fail + n.get("skipped", 0), "pass": ok, "fail": fail, "cannot_run": n.get("skipped", 0)}
+
+
 def summarize(lines: list[str], expected: list[str]) -> dict:
     """The verdict of one preview run, read from its output. Each lane's block ends at its `::lane` line, so
-    the `::fail` and `FAIL` lines before it belong to that lane. `green` needs every expected lane closed and
-    none failed; a lane the log never closes makes the run `incomplete`, which is not green."""
+    the `::fail` and pytest lines before it belong to that lane. A lane is red when a step failed, whatever pytest
+    printed. Its failed proofs are the files pytest's short test summary names, and its counts come from the last
+    closing line before its `::lane`: a nested run's closing line, in a failing test's captured output, comes
+    earlier. `green` needs every expected lane closed and none failed; a lane the log never closes makes the run
+    `incomplete`, which is not green."""
     lanes: list[dict] = []
     steps: list[str] = []
     proofs: list[str] = []
     counts: dict | None = None
+    in_summary = False
     for line in lines:
         failed = STEP_FAIL.match(line)
         if failed:
             steps.append(failed.group(1))
+            in_summary = False
             continue
-        proof = PROOF_FAIL.match(line)
+        if SUMMARY_HEAD.match(line):
+            in_summary = True
+            continue
+        proof = PROOF_FAIL.match(line) if in_summary else None
         if proof:
-            name = proof.group(1).rsplit("/tests/", 1)[-1]
+            name = re.sub(r"^(?:.*/)?tests/", "", proof.group(1))
             if name not in proofs:
                 proofs.append(name)
             continue
-        battery = BATTERY.match(line)
-        if battery:
-            run, passed, failed_count, not_run = (int(n) for n in battery.groups())
-            counts = {"run": run, "pass": passed, "fail": failed_count, "cannot_run": not_run}
+        tally = PYTEST_END.match(line)
+        if tally:
+            counts, in_summary = _counts(tally.group(1)), False
             continue
         closed = LANE_END.match(line)
         if closed:
             lanes.append({"lane": closed.group(1), "status": "red" if steps else "green",
                           "seconds": int(closed.group(2)), "failed_steps": steps, "failed_proofs": proofs,
                           "counts": counts})
-            steps, proofs, counts = [], [], None
+            steps, proofs, counts, in_summary = [], [], None, False
     seen = [lane["lane"] for lane in lanes]
     missing = [name for name in expected if name not in seen]
     status = "incomplete" if (not lanes or missing) else "red" if any(l["status"] == "red" for l in lanes) else "green"
@@ -217,35 +236,56 @@ def changed_paths(worktree: Path) -> list[str]:
     return [p for p in out.stdout.decode("utf-8", "replace").split("\0") if p]
 
 
-def scope_to_paths(jobs: list[tuple[str, list[tuple[str, str]]]],
-                   paths: list[str] | None) -> list[tuple[str, list[tuple[str, str]]]]:
-    """`jobs` with each `harness_tests.py` call limited to the proofs bound to `paths` (the runner's `--proofs-for`),
-    so a lane's wall tracks the change. Every battery the workflow runs, the template's or a bootstrapped profile's,
-    reads template-relative paths, so `paths` under `template/` lose that prefix. None keeps every battery whole. A
-    publish that changes nothing under `template/` leaves the battery nothing to run. The baseline-repo root proofs
-    (`tests/test_*.py`, over the root tools and the template as a whole) run only when a path outside `template/`
-    changed."""
+def _harness_tests():
+    scripts = str(Path(__file__).resolve().parent.parent / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import harness_tests
+    return harness_tests
+
+
+def bound_proofs(worktree: Path, paths: list[str] | None) -> list[str] | None:
+    """The proofs the runner's `select_for` binds to the template paths among `paths`, as names inside a tests
+    folder (`test_a.py`), sorted. Those paths lose their `template/` prefix, as the runner reads them. None when
+    `paths` is None: no scope."""
+    if paths is None:
+        return None
+    mine = [p[len(TEMPLATE):] for p in paths if p.startswith(TEMPLATE)]
+    if not mine:
+        return []
+    template = worktree / "template"
+    selected = _harness_tests().select_for(str(template), mine)
+    return sorted({Path(os.path.relpath(path, template / ".claude" / "tests")).as_posix() for path in selected})
+
+
+def _scoped_call(call: re.Match, bound: list[str], root_changed: bool) -> str:
+    """One pytest call limited to `bound`, or the call itself when its folder is not one a scope reads. The folder is
+    the baseline-repo root's `tests`, or a template or profile install's `.claude/tests`. An install holds only the
+    bound proofs its layers deliver, so each file is checked for before pytest runs."""
+    folder = call.group("folder")
+    if folder == "tests":
+        return call.group(0) if root_changed else NO_TESTS % "no path outside template/ changed"
+    if not folder.endswith(".claude/tests"):
+        return call.group(0)
+    if not bound:
+        return NO_TESTS % "no proof bound to the changed paths"
+    return ('{ _f=(); for _n in %s; do if [ -e "%s/$_n" ]; then _f+=("%s/$_n"); fi; done; '
+            'if [ "${#_f[@]}" = 0 ]; then %s; else python3 -m pytest%s "${_f[@]}"; fi; }'
+            % (" ".join(_quote(name) for name in bound), folder, folder,
+               NO_TESTS % "no bound proof in this install", call.group("options")))
+
+
+def scope_to_paths(jobs: list[tuple[str, list[tuple[str, str]]]], paths: list[str] | None,
+                   bound: list[str] | None) -> list[tuple[str, list[tuple[str, str]]]]:
+    """`jobs` with each pytest call over a tests folder limited to `bound`, the proofs `bound_proofs` finds for
+    `paths`, so a lane's wall tracks the change. None keeps every call whole. A lane that runs nothing prints
+    pytest's own zero-run line. The baseline-repo root proofs (`tests`, over the root tools and the template as a
+    whole) run only when a path outside `template/` changed."""
     if paths is None:
         return jobs
-    mine = [p[len(TEMPLATE):] for p in paths if p.startswith(TEMPLATE)]
     root_changed = any(not p.startswith(TEMPLATE) for p in paths)
-    args = " ".join(_quote(p) for p in mine)
-    scoped = []
-    for job, steps in jobs:
-        out = []
-        for name, body in steps:
-            if ROOT_PROOFS.search(body):
-                out.append((name, body if root_changed else
-                            "echo 'baseline-repo root proofs: 0 run (no path outside template/ changed)'"))
-            elif not BATTERY_CALL.search(body):
-                out.append((name, body))
-            elif mine:
-                out.append((name, SCOPED_SHIM + "\n" + BATTERY_CALL.sub(
-                    lambda m: "_scoped python3 %s --proofs-for %s" % (m.group(1), args), body)))
-            else:
-                out.append((name, BATTERY_CALL.sub(lambda m: SKIPPED_SCOPED, body)))
-        scoped.append((job, out))
-    return scoped
+    return [(job, [(name, PYTEST_CALL.sub(lambda call: _scoped_call(call, bound or [], root_changed), body))
+                   for name, body in steps]) for job, steps in jobs]
 
 
 def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], origin: str | None = None,
@@ -306,6 +346,7 @@ def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], orig
             'HOME="$D/%s.home"; export HOME; cd "$D/%s" || exit 3; fail=0; lane0=$SECONDS' % (job, job),
         ]
         for name, body in steps:
+            body = EXPRESSION.sub("", body)
             label = name.replace("'", "").replace('"', "").replace("$", "").replace("`", "")
             parts += [
                 "echo '::step %s'; s0=$SECONDS" % label,
@@ -371,8 +412,8 @@ def preview(worktree: Path, only: list[str] | None = None,
             paths: list[str] | None = None) -> tuple[int, dict | None]:
     """Run the lanes of `worktree`'s baseline workflow in WSL. Returns (exit code, result): the result is the
     `::result` object (None when the run never starts, and that error goes to stderr). Exit codes as the module
-    docstring gives them. `only` names the lanes to run; None runs every lane. `paths` limits each lane's battery to the
-    proofs bound to those changed paths; None runs every battery whole."""
+    docstring gives them. `only` names the lanes to run; None runs every lane. `paths` limits each lane's pytest call
+    to the proofs bound to those changed paths; None runs every call whole."""
     workflow = worktree / WORKFLOW
     if not workflow.is_file():
         return _unavailable("no %s in the tree: no CI lane to run" % WORKFLOW.as_posix())
@@ -383,7 +424,7 @@ def preview(worktree: Path, only: list[str] | None = None,
             print("error: no lane %s in %s" % (", ".join(unknown), WORKFLOW.as_posix()), file=sys.stderr)
             return 3, None
         jobs = [(job, job_steps) for job, job_steps in jobs if job in only]
-    jobs = scope_to_paths(jobs, paths)
+    jobs = scope_to_paths(jobs, paths, bound_proofs(worktree, paths))
     step_count = sum(len(job_steps) for _, job_steps in jobs)
     if not step_count:
         print("error: no run: step parsed from %s; a preview of nothing is not green"

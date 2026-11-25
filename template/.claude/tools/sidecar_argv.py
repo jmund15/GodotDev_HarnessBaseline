@@ -380,6 +380,57 @@ def fanout_out_dir(jobs_path, out_value, spill_value, repo):
     return os.path.join(os.path.dirname(os.path.abspath(jobs_path)), "fanout")
 
 
+def fanout_repo(cwd, default):
+    """The checkout whose `sidecar_fanout.py` a launch run in `cwd` executes (a launch names it repo-relative):
+    the nearest ancestor of `cwd` holding `.claude/tools/sidecar_fanout.py`, else `default`. A relative
+    spillDir resolves against it, since the launcher resolves it against its own checkout."""
+    here = os.path.abspath(cwd) if cwd else None
+    while here:
+        if os.path.isfile(os.path.join(here, ".claude", "tools", "sidecar_fanout.py")):
+            return here
+        parent = os.path.dirname(here)
+        here = None if parent == here else parent
+    return default
+
+
+LAUNCHER_PATH_FIELDS = ("promptFile", "promptPath", "schemaFile", "contextPath")
+LAUNCHER_PATH_LISTS = ("contextFiles",)
+
+
+def launcher_inputs(job, shared=None):
+    """[(field, path as written)] for every file the launcher opens for `job`: its brief, schema, context files
+    and the jobs file's shared `contextPath`. A path a brief merely names is not one."""
+    out = []
+    if isinstance(shared, str) and shared.strip():
+        out.append(("contextPath", shared))
+    for field in LAUNCHER_PATH_FIELDS:
+        value = job.get(field)
+        if isinstance(value, str) and value.strip():
+            out.append((field, value))
+    for field in LAUNCHER_PATH_LISTS:
+        for value in job.get(field) if isinstance(job.get(field), list) else []:
+            if isinstance(value, str) and value.strip():
+                out.append((field, value))
+    return out
+
+
+def unresolved_inputs(jobs, shared, base):
+    """One line per launcher input of `jobs` that is no file under `base`, the checkout a relative path resolves
+    against: `job <label>: <field> <path as written> not found (resolved against <base>)`. The fan-out refuses on
+    these lines and the dispatch preflight lists them, so both read the same resolution."""
+    base = os.path.abspath(base)
+    lines = []
+    for index, job in enumerate(jobs):
+        if not isinstance(job, dict):
+            continue
+        label = job.get("label") or "job%d" % (index + 1)
+        for field, written in launcher_inputs(job, shared):
+            if not os.path.isfile(os.path.join(base, written)):
+                lines.append("job %s: %s %s not found (resolved against %s)"
+                             % (label, field, written, base.replace("\\", "/")))
+    return lines
+
+
 def _full_fanout_option(token, known):
     """`token` with its option name spelled in full the way argparse resolves it (its default
     abbreviation rule: an exact name, else the one option the prefix starts); unchanged when it names

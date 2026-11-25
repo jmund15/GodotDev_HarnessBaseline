@@ -51,6 +51,11 @@ def _load_tool(name):
     return importlib.import_module(name)
 
 
+if str(HOOKS_DIR) not in sys.path:
+    sys.path.insert(0, str(HOOKS_DIR))
+from _git_run import run as _run_git  # noqa: E402
+
+
 # The commit summary a shell prints: `[<branch> <hash>] <subject>`, `[<branch> (root-commit) <hash>] <subject>`.
 _COMMIT_SUMMARY = re.compile(r"^\[[^\]]*? ([0-9a-f]{7,40})\]", re.M)
 # The range a merge or fast-forward prints: `Updating <a>..<b>`.
@@ -70,24 +75,23 @@ def _names_path(needle, line):
 def _ignored(repo, paths):
     """The `paths` git ignores: a session's scratch writes are not reviewable change."""
     # check-ignore dies on a path inside a submodule, and the superproject's ignore rules never reach one.
-    staged = subprocess.run(["git", "-C", str(repo), "ls-files", "-s", "-z"], capture_output=True, text=True,
-                            encoding="utf-8", errors="replace", timeout=60)
+    staged = _run_git(["ls-files", "-s", "-z"], cwd=str(repo), timeout=60)
     if staged.returncode != 0:
         raise RuntimeError(f"git ls-files exited {staged.returncode}")
-    gitlinks = [entry.split("\t", 1)[1] + "/" for entry in staged.stdout.split("\0") if entry.startswith("160000 ")]
+    listing = staged.stdout.decode("utf-8", errors="replace")
+    gitlinks = [entry.split("\t", 1)[1] + "/" for entry in listing.split("\0") if entry.startswith("160000 ")]
     paths = [p for p in paths if not any(p.startswith(link) for link in gitlinks)]
     if not paths:
         return set()
-    result = subprocess.run(["git", "-C", str(repo), "check-ignore", "--stdin", "-z"], capture_output=True,
-                            text=True, encoding="utf-8", errors="replace", timeout=60,
-                            input="\0".join(sorted(paths)) + "\0")
+    result = _run_git(["check-ignore", "--stdin", "-z"], cwd=str(repo), timeout=60,
+                      input=("\0".join(sorted(paths)) + "\0").encode("utf-8"))
     if result.returncode not in (0, 1):
         raise RuntimeError(f"git check-ignore exited {result.returncode}")
-    return set(filter(None, result.stdout.split("\0")))
+    return set(filter(None, result.stdout.decode("utf-8", errors="replace").split("\0")))
 
 
 def _repo_relative(path):
-    found = _load_tool("review_ledger").worktree_split(path)
+    found = _load_tool("review_snapshot").worktree_split(path)
     return found[1] if found else path
 
 
@@ -417,10 +421,7 @@ def predicate_hot_set_review(ctx):
     report = census.build_report(ctx.repo / ".claude", profile_hooks_flag=False, need_budget_hooks=True)
     if report.get("source_errors"):
         return None, {"error": "census source errors", "source_errors": report["source_errors"]}
-    try:
-        rows = census.over_baseline(report)
-    except census.NotConfigured:
-        return None, {"error": "not-configured"}
+    rows = census.over_baseline(report)
     unmeasured = report.get("prompt_hooks_unmeasured") or []
     if unmeasured and not rows:
         return None, {"error": "prompt hooks unmeasured", "prompt_hooks_unmeasured": unmeasured}
@@ -639,11 +640,11 @@ def predicate_update_roadmap(ctx):
 
 
 def _git(repo, *args, input=None):
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60, input=input)
+    data = input.encode("utf-8") if isinstance(input, str) else input
+    result = _run_git(list(args), cwd=str(repo), timeout=60, input=data)
     if result.returncode != 0:
         raise RuntimeError(f"git {args[0]} exited {result.returncode}")
-    return result.stdout
+    return result.stdout.decode("utf-8", errors="replace")
 
 
 def _commits_present(repo, tokens):

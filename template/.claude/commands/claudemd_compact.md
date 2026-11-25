@@ -40,7 +40,7 @@ Gaps at M2–M4, M7, M8 are intentional, not renumbered away: the labels are sta
 
 ```bash
 for f in .claude/CLAUDE.md $(sed -n 's/^@//p' .claude/CLAUDE.md | sed 's|^|.claude/|'); do
-  awk -v f="$f" '/^#{2,4} /{if(h)printf "%6d B  %s  %s\n",b,f,h; h=$0; b=0} {b+=length($0)+1} END{printf "%6d B  %s  %s\n",b,f,h}' "$f"
+  awk -v f="$f" '/^#{2,4} /{if(h)printf "%6d B  %s  %s\n",b,f,h; h=$(0); b=0} {b+=length($(0))+1} END{printf "%6d B  %s  %s\n",b,f,h}' "$f"
 done | sort -rn
 ```
 

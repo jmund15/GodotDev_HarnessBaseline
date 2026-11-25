@@ -57,17 +57,6 @@ class RepromptTest(unittest.TestCase):
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertEqual(len([h for h in json.loads(again.stdout)["hooks"]["SessionStart"]
                                   if h["matcher"] == "compact"]), 1)
-            # The bench guard rows come from the project's `adaptation.json` `sidecar_hook_rows`, the one source
-            # the merge reads; a lane whose seed configures none must merge none.
-            try:
-                project = json.loads((HOOK.parents[1] / "skills/project_subsystems/adaptation.json")
-                                     .read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                project = {}
-            bench_rows = [row for row in project.get("sidecar_hook_rows", [])
-                          if (row.get("when") or {}).get("BENCH_ARM") == "1"]
-            commands = [h["hooks"][0]["command"] for h in settings["hooks"].get("PreToolUse", [])]
-            self.assertEqual(any("bench_arm_escape_guard" in command for command in commands), bool(bench_rows), settings)
             pre = [h for h in json.loads(again.stdout)["hooks"].get("PreCompact", [])
                    if "sidecar_recompact_reprompt.py" in h["hooks"][0]["command"]]
             self.assertEqual(len(pre), 1, settings)

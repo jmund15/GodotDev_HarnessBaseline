@@ -152,6 +152,28 @@ with tempfile.TemporaryDirectory() as home:
             else:
                 os.environ[k] = v
 
+# The guard judges the checkout the path is in: a checkout with no composer (harness v2, hand-owned
+# settings.json) has nothing to overwrite a direct edit, so a write there is justified work.
+with tempfile.TemporaryDirectory() as raw:
+    def planted(name, composer):
+        co = os.path.join(raw, name)
+        os.makedirs(os.path.join(co, ".claude", "tools"))
+        if composer is not None:
+            open(os.path.join(co, ".claude", "tools", "baseline_sync.py"), "w", newline="\n").write(composer)
+        return co
+    lists = 'WATCH_COMPOSED_INPUTS = {".claude/settings.json": [], ".claude/reference/memory_domains.md": []}\n'
+    bare = planted("v2", None)
+    composing = planted("v1", lists)
+    unlisting = planted("other", "X = 1\n")
+    for tool in ("Write", "Edit"):
+        for rel in ("settings.json", "reference/memory_domains.md"):
+            check("%s %s in a checkout with no composer passes" % (tool, rel),
+                  not guard.process(ed(os.path.join(bare, ".claude", *rel.split("/")), "a", "{}", tool)))
+            check("%s %s in a checkout whose composer lists it is blocked" % (tool, rel),
+                  "block" in (guard.process(ed(os.path.join(composing, ".claude", *rel.split("/")), "a", "{}", tool)) or {}))
+    check("settings.json in a checkout whose composer does not list it passes",
+          not guard.process(ed(os.path.join(unlisting, ".claude", "settings.json"), "a")))
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

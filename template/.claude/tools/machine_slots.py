@@ -2,7 +2,8 @@
 
 Usage:
   machine_slots.py run -- COMMAND ...   hold one lane while COMMAND runs
-  machine_slots.py broker               print a JSON ready line, then hold until stdin closes
+  machine_slots.py broker [--holder J]   print a JSON ready line, then hold until stdin closes;
+                                        J (a holder note) names the work the broker holds for
   machine_slots.py root                 print the common pool path
 
 Waiters take a ticket in queue/ and only the oldest live one claims lanes (first come,
@@ -172,12 +173,16 @@ def release_all(handles):
         release(handle)
 
 
-def _proxy_take(exclusive, count, folder, width, deadline, notice):
+def _proxy_take(exclusive, count, folder, width, deadline, notice, holder=None):
+    """The Windows broker's take. `holder` is this side's note: the broker writes it into the lane it holds, so the
+    lock names the work the WSL caller runs, not only the broker process."""
     command = _windows_bridge() + ['broker', '--folder', _windows_folder(folder), '--width', str(width), '--count', str(count)]
     if exclusive:
         command.append('--exclusive')
     if notice:
         command.append('--notice')
+    if holder:
+        command += ['--holder', holder]
     if deadline is not None:
         command += ['--deadline', str(deadline)]
     env = dict(os.environ)
@@ -233,7 +238,8 @@ def admit(command):
     return held
 
 
-def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, inherit=True, notice=False, split=None):
+def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, inherit=True, notice=False,
+         split=None, holder=None):
     """`notice` prints a stderr line while queued, so a waiting proof never reads as a hang. `split`, a dict,
     receives the seconds this take spent `behind` an older ticket, `drain` (head, another process holds
     drain.lock) and `collect` (head, holding drain.lock, slots short)."""
@@ -245,11 +251,12 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
         return []
     # Native /tmp pools are planted fixtures. The WSL default and mounted Windows pools use Windows handles.
     if is_wsl() and (folder.startswith('/mnt/') or ':' in folder):
-        return _proxy_take(exclusive, count, folder, width, deadline, notice)
+        return _proxy_take(exclusive, count, folder, width, deadline, notice, holder=holder or _holder_note())
     try:
         os.makedirs(folder, exist_ok=True)
     except OSError as exc:
         raise SlotStoreError('machine slot directory unusable: %s (%s)' % (folder, exc)) from exc
+    note = holder or _holder_note()
     held = []
     ticket = drain = None
     try:
@@ -292,7 +299,7 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
                         if len(held) >= wanted:
                             break
                         path = os.path.join(folder, 'slot-%d.lock' % index)
-                        handle = None if path in mine else _file_lock.acquire(path, 0)
+                        handle = None if path in mine else _file_lock.acquire(path, 0, note)
                         if handle:
                             held.append(handle)
                     if len(held) >= wanted:
@@ -313,20 +320,54 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
         _file_lock.release(ticket)
 
 
+def _holder_note():
+    """What this taker can say about itself, written into every lane it takes: its pid, the command it runs, its
+    label (a sidecar job's) and its checkout, so a queued notice names the holder and not only a pid."""
+    command = ' '.join(sys.argv)
+    if len(command) > 400:
+        command = command[:397] + '...'
+    try:
+        checkout = os.getcwd()
+    except OSError:
+        checkout = ''
+    note = {'pid': os.getpid(), 'command': command, 'checkout': checkout}
+    label = os.environ.get('CLAUDE_CODE_SIDECAR_LABEL') or os.environ.get('SC_LABEL')
+    if label:
+        note['label'] = label
+    return json.dumps(note)
+
+
+def _holder_of(text):
+    """`(pid, label, command, checkout)` a lock file names: its taker's note, or a bare pid from an older runner."""
+    try:
+        note = json.loads(text)
+    except ValueError:
+        note = None
+    if not isinstance(note, dict):
+        return text, '', '', ''
+    return (str(note.get('pid') or ''), str(note.get('label') or ''),
+            str(note.get('command') or ''), str(note.get('checkout') or ''))
+
+
 def _holders(folder, mine):
-    """`; held by pid N (k slots), ...` over the slots another process holds, read from their lock files."""
+    """`; held by pid N (k slots) <label> <command> in <checkout>, ...` over the slots another process holds, read
+    from their lock files."""
     ours = {handle.path for handle in mine}
     counts = {}
     for entry in sorted(os.listdir(folder)):
         path = os.path.join(folder, entry)
         if entry.startswith('slot-') and path not in ours:
             try:
-                with open(path, encoding='ascii') as fh:
-                    pid = fh.read().strip()
-            except (OSError, ValueError):
+                with open(path, encoding='utf-8', errors='replace') as fh:
+                    holder = _holder_of(fh.read().strip())
+            except OSError:
                 continue
-            counts[pid] = counts.get(pid, 0) + 1
-    return ''.join('; held by pid %s (%d)' % item for item in sorted(counts.items()) if item[0])
+            if holder[0]:
+                counts[holder] = counts.get(holder, 0) + 1
+    return ''.join('; held by pid %s (%d)%s%s' % (
+        pid, count, ' ' + ' '.join(part for part in (label, command) if part) if label or command else '',
+        ' in ' + checkout if checkout else '')
+        for (pid, label, command, checkout), count in sorted(counts.items()))
 
 
 _TICKETS = itertools.count()
@@ -353,9 +394,9 @@ def _live_ticket_before(queue, name):
 
 
 @contextmanager
-def guard(exclusive=False, count=1):
+def guard(exclusive=False, count=1, *, notice=False):
     deadline = os.environ.get('HARNESS_DEADLINE')
-    held = take(exclusive, count, deadline=float(deadline) if deadline else None)
+    held = take(exclusive, count, deadline=float(deadline) if deadline else None, notice=notice)
     if held is None:
         raise SlotStoreError('deadline passed before the machine slots were free')
     try:
@@ -393,24 +434,8 @@ def parallel_budget(wanted):
 
 
 def proof_environment(env):
-    """Admission for direct Python/Node proofs launched by a remote-work fan-out."""
+    """The pool root a remote-work fan-out's shells and proofs share; no shell is wrapped in a lane."""
     env = dict(env)
-    bootstrap = str(_CLAUDE / 'scripts' / '_slot_bootstrap')
-    paths = [p for p in env.get('PYTHONPATH', '').split(os.pathsep) if p and p != bootstrap]
-    env['PYTHONPATH'] = os.pathsep.join([bootstrap] + paths)
-    node = str(Path(bootstrap) / 'node_slots.js')
-    option = '--require ' + json.dumps(node)
-    if option not in env.get('NODE_OPTIONS', ''):
-        env['NODE_OPTIONS'] = (env.get('NODE_OPTIONS', '') + ' ' + option).strip()
-    env['HARNESS_SLOT_PYTHON'] = sys.executable
-    env['HARNESS_SLOT_SCRIPT'] = str(Path(__file__).resolve())
-    shell = (Path(bootstrap) / 'bash_slots.sh').as_posix()
-    # Another checkout's bootstrap (a publish battery's template) is this one, not a previous BASH_ENV to chain:
-    # chained, it sourced itself until the shell crashed.
-    previous = env.get('BASH_ENV') or ''
-    if previous and previous != shell and Path(previous).name != 'bash_slots.sh':
-        env['HARNESS_PREVIOUS_BASH_ENV'] = previous
-    env['BASH_ENV'] = shell
     env.setdefault('HARNESS_MACHINE_ROOT', machine_root())
     return env
 
@@ -431,6 +456,24 @@ def _self_admitting(command):
     return False
 
 
+def _broker_holder(given):
+    """`given`'s holder note as the broker must write it: the work it holds for, with the broker's own pid (the
+    process the lane belongs to) and the caller's kept as `caller_pid`."""
+    if not given:
+        return None
+    try:
+        note = json.loads(given)
+    except ValueError:
+        note = None
+    if not isinstance(note, dict):
+        note = {'command': str(given)}
+    caller = note.get('pid')
+    note['pid'] = os.getpid()
+    if caller and str(caller) != str(note['pid']):
+        note['caller_pid'] = str(caller)
+    return json.dumps(note)
+
+
 def main():
     from cli_usage import usage
     parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -441,6 +484,7 @@ def main():
     parser.add_argument('--exclusive', action='store_true')
     parser.add_argument('--deadline', type=float)
     parser.add_argument('--notice', action='store_true')
+    parser.add_argument('--holder', help='a holder note (JSON) naming the work a broker holds for')
     args, command = parser.parse_known_args()
     if args.mode == 'root':
         print(json.dumps(slot_dir()), flush=True)
@@ -458,7 +502,7 @@ def main():
         deadline = bounded = job_deadline()
     try:
         held = take(args.exclusive, args.count, folder=args.folder, width=args.width, deadline=deadline,
-                    notice=args.notice or args.mode == 'run')
+                    notice=args.notice or args.mode == 'run', holder=_broker_holder(args.holder))
         if held is None and bounded:
             print(owed_line(command), file=sys.stderr, flush=True)
             return 2

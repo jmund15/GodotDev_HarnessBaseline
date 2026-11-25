@@ -36,6 +36,11 @@ disposition to `.claude/census_reviews.jsonl` and commit it: `date`, `item`, `ki
 `approved` or `rejected` for the owner's ruling), `litmus`, `evidence`, `change`, `source`. The item's latest `date`
 is its next comparison point, so a ruled item re-lists only on new facts.
 
+Append the census's reading in the same commit: `git show origin/main-check-state:mechanism_census.json >
+.claude/scratch/mechanism_census.json`, then `python3 .claude/tools/mechanism_census.py --record
+.claude/scratch/mechanism_census.json`. The command prints the row it appended, or `already recorded` when the file
+holds that census's head and date. Commit `.claude/census_readings.jsonl` with the rulings.
+
 ## Per-cut steps
 
 For each approved cut, in this order:

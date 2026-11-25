@@ -189,10 +189,11 @@ def an_explicit_max_parallel_bounds_the_total():
     return peak == 2 and len(results) == 5
 
 
-def the_real_registry_caps_only_codex():
+def the_real_registry_caps_only_codex_and_the_antigravity_login():
     real = sf.model_registry.load()
     caps = {name: (cfg.get("maxChildren") or {}).get("count") for name, cfg in real["transports"].items()}
-    return caps.pop("codex") == 4 and not any(caps.values())
+    return {name: count for name, count in caps.items() if count} == {
+        "codex": 4, "antigravity": 2, "antigravity-claude": 1, "antigravity-argon": 1}
 
 
 def the_registry_rejects_a_cap_without_a_count_or_basis():
@@ -397,7 +398,7 @@ case("a driver that exited before deciding is reported with its exit code", dead
 case("seven jobs on a transport with no cap and plan room all start at once", seven_jobs_on_an_uncapped_transport_start_at_once)
 case("jobs on a capped transport beyond its cap wait for a running one", jobs_beyond_a_transport_cap_wait_for_a_running_one)
 case("an explicit --max-parallel 2 still bounds the total", an_explicit_max_parallel_bounds_the_total)
-case("the real registry caps codex at 4 and no other transport", the_real_registry_caps_only_codex)
+case("the real registry caps codex at 4 and the antigravity login family at 2/1/1, no other transport", the_real_registry_caps_only_codex_and_the_antigravity_login)
 case("the registry rejects a cap that is not a positive integer with a basis", the_registry_rejects_a_cap_without_a_count_or_basis)
 case("a queued job's line names the transport cap that held it", a_queued_job_names_the_transport_cap_that_held_it)
 

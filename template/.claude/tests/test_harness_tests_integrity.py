@@ -24,7 +24,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='harness-integrity-') as tmp:
             stamp = Path(tmp) / 'stamp.json'
             state = {'.claude/tools/subject.py': 'tested-version'}
-            def proof(_path, _timeout=None, **_):
+            def proof(_path, _timeout=None, _root=None, **_):
                 if mutate:
                     state['.claude/tools/subject.py'] = 'untested-version'
                 return status, 0.0, 'unavailable target' if status == 'cannot-run' else ''
@@ -96,7 +96,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_direct_run_takes_the_default_or_its_explicit_timeout(self):
-        with patch.object(runner, '_run_child', return_value=(0, '')) as process, \
+        with patch.object(runner._attempt, '_run_child', return_value=(0, '')) as process, \
                 patch.dict(runner._PROOF_TIMEOUTS, {}, clear=True):
             runner.run_proof('test_ordinary.py')
             self.assertEqual(process.call_args.args[2], 120)
@@ -113,7 +113,7 @@ class HarnessIntegrityTests(unittest.TestCase):
     def test_cold_timed_out_proof_reruns_alone_at_three_times_the_default_red(self):
         # Real input: a checkout with no durations record, publish times out at its first attempt.
         seen = []
-        def proof(_path, _timeout=None, **_):
+        def proof(_path, _timeout=None, _root=None, **_):
             seen.append(_timeout)
             if len(seen) == 1:
                 return 'fail', 0.0, 'TIMEOUT after %ss' % _timeout
@@ -150,7 +150,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         barrier = threading.Barrier(2, timeout=5)
         inherited = str(ROOT / '.claude/scratch/unrelated-slots')
         seen = []
-        def proof(_path, _timeout=None, **_):
+        def proof(_path, _timeout=None, _root=None, **_):
             seen.append(Path(runner._slot_dir()))
             barrier.wait()
             return 'pass', 0.0, ''
@@ -165,7 +165,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_serial_proof_never_overlaps_another(self):
         live, peak, lock = [0], {}, threading.Lock()
-        def proof(path, _timeout=None, **_):
+        def proof(path, _timeout=None, _root=None, **_):
             with lock:
                 live[0] += 1
                 peak[path] = live[0]
@@ -180,7 +180,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_failure_that_passes_alone_is_flaky_not_red(self):
         calls = {}
-        def proof(path, _timeout=None, **_):
+        def proof(path, _timeout=None, _root=None, **_):
             calls[path] = calls.get(path, 0) + 1
             if path == 'test_flaky.py' and calls[path] == 1:
                 return 'fail', 0.0, 'TIMEOUT after 120s'
@@ -196,7 +196,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_cold_timeout_that_passes_on_retry_is_not_flaky(self):
         calls = {}
-        def proof(path, _timeout=None, **_):
+        def proof(path, _timeout=None, _root=None, **_):
             calls[path] = calls.get(path, 0) + 1
             if path == 'test_slow.py' and calls[path] == 1:
                 return 'fail', 0.0, 'TIMEOUT after 120s'
@@ -210,7 +210,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_failure_that_repeats_alone_is_red_and_loses_its_pass_record(self):
         calls = {}
-        def proof(path, _timeout=None, **_):
+        def proof(path, _timeout=None, _root=None, **_):
             calls[path] = calls.get(path, 0) + 1
             return ('fail', 0.0, 'assertion') if path == 'test_red.py' else ('pass', 0.0, '')
         code, stamped, output, flaky_rows, timing = self.run_pool(
@@ -245,7 +245,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         self.assertEqual(row.get('failures'), ['FAIL  E4 refuses before the probe', 'AssertionError: boom'])
 
     def test_full_battery_names_proofs_with_flaky_history(self):
-        def proof(_path, _timeout=None, **_):
+        def proof(_path, _timeout=None, _root=None, **_):
             return 'pass', 0.0, ''
         now = time.time()
         seed = [{'ts': ts, 'proof': name} for ts, name in
@@ -257,7 +257,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_an_assertion_failure_with_no_recorded_pass_is_not_retried(self):
         calls = {}
-        def proof(path, _timeout=None, **_):
+        def proof(path, _timeout=None, _root=None, **_):
             calls[path] = calls.get(path, 0) + 1
             return ('fail', 0.0, 'FAIL: case') if path == 'test_known_red.py' else ('pass', 0.0, '')
         code, _, _, _ = self.run_pool(proof, ['test_ok.py', 'test_known_red.py'])
@@ -266,7 +266,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_timeout_with_no_recorded_pass_is_retried_once_with_a_longer_timeout(self):
         calls = {}
-        def proof(path, timeout=None, **_):
+        def proof(path, timeout=None, _root=None, **_):
             calls.setdefault(path, []).append(timeout)
             return ('fail', 0.0, 'TIMEOUT after 120s') if path == 'test_slow.py' else ('pass', 0.0, '')
         code, _, _, _ = self.run_pool(proof, ['test_ok.py', 'test_slow.py'])
@@ -276,7 +276,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_slowest_recorded_proof_starts_first(self):
         order = []
-        def proof(path, _timeout=None, **_):
+        def proof(path, _timeout=None, _root=None, **_):
             order.append(path)
             return 'pass', 0.0, ''
         self.run_pool(proof, ['test_a.py', 'test_slow.py', 'test_b.py'], jobs=1,
@@ -285,7 +285,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_the_process_tree_has_one_home(self):
         import _bounded_run
-        self.assertIs(runner.ProcessTree, _bounded_run.ProcessTree)
+        self.assertIs(runner._attempt.ProcessTree, _bounded_run.ProcessTree)
         self.assertFalse(hasattr(runner, '_ProcessTree'))
 
     def test_timeout_returns_even_when_a_grandchild_holds_the_pipe(self):
@@ -353,13 +353,13 @@ class HarnessIntegrityTests(unittest.TestCase):
             cases = 'def test_plain():\n    pass\ndef test_fixture(tmp_path):\n    pass\n'
             proof.write_text(cases + 'def main():\n    return pytest.main([__file__, "-q"])\n' + guard,
                              encoding='utf-8')
-            self.assertEqual(runner._pytest_cases(str(proof)), [])
+            self.assertEqual(runner._attempt._pytest_cases(str(proof)), [])
             proof.write_text(cases + 'def main():\n    for name, fn in sorted(globals().items()):\n'
                              '        if name.startswith("test_"):\n            fn()\n' + guard, encoding='utf-8')
-            self.assertEqual(runner._pytest_cases(str(proof)), [str(proof) + '::test_fixture'])
+            self.assertEqual(runner._attempt._pytest_cases(str(proof)), [str(proof) + '::test_fixture'])
 
     def test_proofs_get_a_narrower_case_pool_than_standalone(self):
-        with patch.object(runner, '_run_child', return_value=(0, '')) as process, \
+        with patch.object(runner._attempt, '_run_child', return_value=(0, '')) as process, \
                 patch.dict(runner.os.environ, {}, clear=False):
             runner.os.environ.pop('HARNESS_CASE_JOBS', None)
             runner.run_proof('test_ordinary.py')
@@ -382,7 +382,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='harness-capacity-') as tmp:
             live = Path(tmp) / 'live.json'
             live.write_text('{"anthropic": {"marker": "live"}}', encoding='utf-8')
-            with patch.object(runner, '_run_child', side_effect=child), \
+            with patch.object(runner._attempt, '_run_child', side_effect=child), \
                     patch.dict(runner.os.environ, {'PROVIDER_CAPACITY_CACHE': str(live)}, clear=False):
                 runner.os.environ.pop('HARNESS_CAPACITY_WARM', None)
                 runner.run_proof('test_ordinary.py')
@@ -393,7 +393,7 @@ class HarnessIntegrityTests(unittest.TestCase):
             self.assertEqual(live.read_text(encoding='utf-8'), '{"anthropic": {"marker": "live"}}')
 
             seen.clear()
-            with patch.object(runner, '_run_child', side_effect=child), \
+            with patch.object(runner._attempt, '_run_child', side_effect=child), \
                     patch.dict(runner.os.environ, {'PROVIDER_CAPACITY_CACHE': str(Path(tmp) / 'absent.json')},
                                clear=False):
                 runner.run_proof('test_ordinary.py')
@@ -411,7 +411,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         exts = ('.py', '.js', '.mjs', '.sh', '.ps1')
         names = [form % ext for ext in exts for form in ('test_x%s', 'x_test%s')]
         for name in names:
-            runner._runner_cmd(name)
+            runner._attempt._runner_cmd(name)
         with tempfile.TemporaryDirectory(prefix='harness-discover-') as tmp:
             for name in names:
                 (Path(tmp) / name).write_text('', encoding='utf-8')

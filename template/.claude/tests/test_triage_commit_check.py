@@ -95,8 +95,8 @@ check("a -F trailer joins an existing trailer block",
 missing = os.path.join(STATE, "absent.txt").replace("\\", "/")
 rc, out, err = run('git commit -q -F "%s"' % missing)
 output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a -F file that is not readable yet keeps the -m-style command rewrite",
-      rc == 0 and "Triage-Derived:" in output.get("updatedInput", {}).get("command", ""), out + err)
+check("a -F file that is not readable yet is left as written: a derived trailer has no reader",
+      rc == 0 and "updatedInput" not in output, out + err)
 
 
 rc, out, err = run("ls -la")

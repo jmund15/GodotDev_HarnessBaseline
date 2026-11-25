@@ -188,7 +188,11 @@ def run_sharded(path, part=0, parts=1, jobs=None):
     """Run a pytest file as `jobs` shard processes (default `HARNESS_CASE_JOBS`) of round-robin node ids, or only
     the `part`-th of `parts` shares of them for a `_part<N>` file. 0 when all pass."""
     base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
-    listing = subprocess.run(base + ["--collect-only", "-q", path], stdin=subprocess.DEVNULL,
+    # Both children are pytest runs inside a proof: the marker the runner sets keeps the tests conftest's bridge from
+    # taking the file as one `::proof` item, which a part file run directly would otherwise shard to nothing.
+    child_env = dict(os.environ)
+    child_env.setdefault("HARNESS_PROOF_TIMEOUT_S", "300")
+    listing = subprocess.run(base + ["--collect-only", "-q", path], stdin=subprocess.DEVNULL, env=child_env,
                              capture_output=True, text=True, encoding="utf-8")
     file = os.path.abspath(path)
     ids = [file + "::" + line.split("::", 1)[1] for line in listing.stdout.splitlines() if "::" in line]
@@ -215,7 +219,7 @@ def run_sharded(path, part=0, parts=1, jobs=None):
         batches.append(batch)
         code, text = 0, ""
         for batch in batches:
-            proc = subprocess.run(base + ["-q", "-s"] + batch, stdin=subprocess.DEVNULL,
+            proc = subprocess.run(base + ["-q", "-s"] + batch, stdin=subprocess.DEVNULL, env=child_env,
                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
             code = code or proc.returncode
             text += proc.stdout + proc.stderr

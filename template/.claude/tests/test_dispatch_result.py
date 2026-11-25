@@ -395,7 +395,7 @@ import importlib.util
 _spec = importlib.util.spec_from_file_location("dispatch_result_tool", TOOL)
 _tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_tool)
-# `floor_reason` replays git_guardrails against `REPO`, and a discard check reads that checkout's diff: plant it,
+# `floor_reason` replays dangerous_shell_guard against `REPO`, and a discard check reads that checkout's diff: plant it,
 # with `x/notes.txt` committed then edited, so `git checkout -- notes.txt` there really would discard work.
 import pathlib
 
@@ -418,8 +418,8 @@ case("a check that runs taskkill, kill or Stop-Process is refused even beside a 
      lambda: all(_tool.floor_reason(c) == "kills a process outside tools/reap.py" for c in _KILL_REFUSED))
 _DISCARD_REFUSED = ("git reset --hard HEAD", "git clean -fd", "cd x && git checkout -- notes.txt")
 _DISCARD_ALLOWED = ("git clean -n", "git status --short", "git diff --stat")
-case("a check that git_guardrails would block as a discard is refused; a dry run or a read is not",
-     lambda: all(_tool.floor_reason(c) == "discards work git_guardrails blocks" for c in _DISCARD_REFUSED)
+case("a check that the floor's git check would block as a discard is refused; a dry run or a read is not",
+     lambda: all(_tool.floor_reason(c) == "discards work dangerous_shell_guard blocks" for c in _DISCARD_REFUSED)
      and all(_tool.floor_reason(c) is None for c in _DISCARD_ALLOWED))
 
 _changed = consume(plant_consume("changed",'result\nchangedPaths: ["inside.txt", "outside.txt"]\n',

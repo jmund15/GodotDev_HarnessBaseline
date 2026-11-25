@@ -34,7 +34,8 @@ failed runs are REPORTED -- with their resume id when the launcher persisted one
 THE PICK COUNTS LOAD; FORECASTS PACE WAVES. Among plans that hold this job's expected drain
 (`provider_bands.job_drain`) plus live launchers and earlier picks, `provider_bands.pick_key` ranks.
 If none holds the forecast, the plan with the most positive headroom pays; a named plan stays named.
-Only observed lack of room refuses. An unreadable reading keeps the launcher's own gate.
+Only observed lack of room refuses: an unreadable meter is not exhaustion, so the last good reading
+places the job and with none the launch goes ahead with a warning, the launcher's own gate deciding.
 A job names ONE row (`alias` + `effort`) or SEVERAL (`rows: {alias: effort}`, every row that meets its bar; which
 rows qualify is the caller's judgment). Several rows rank the union of their routes' plans in the one ranking above,
 and the cheapest listed row (the ladder `cost` cell, compared on one plan only) runs on the winner with its own
@@ -103,7 +104,8 @@ its `spillDir` is the default --out-dir, and an --out-dir naming another directo
 may use dispatch.js's names `promptPath`, `model` and `contextPath` for `promptFile`, `alias` and
 `contextFiles`; a job carrying both names of one field with different values refuses. dispatch.js
 fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, like `shape` and
-`disclosure`: the `kind` sets them. Per job:
+`disclosure`: the `kind` sets them. A jobs file's top-level `task` names the record whose acceptance test every job
+carries (default: the session's active record; `false` opts out). Per job:
     label       required  attribution key; becomes `-l` and names the output files
     mandates              required by --review; catalog or lens keys the seat reports in checked.mandates
                           (findings|clean|not-reached per key; per-key checked.basis text is the fallback)
@@ -199,7 +201,7 @@ REFUSALS IN YOUR OWN CALL. These refusals a job's launcher would make from the j
 before anything spawns or detaches, in `--dry-run` too: an unknown alias or kind, an unavailable row, an effort
 outside the transport's vocabulary or in the row's registry `effort.avoid` (each row of `rows` checked alike), a plan
 that does not pay for the route (of any listed row), `rows` beside `alias` or `effort`, and a pin outside the job's tier (`tier`, else its `kind` row's in `guards/tool_profiles.json`; the refusal text is the
-launcher's, printed to stdout, naming every unfit job), and a job whose reading (brief, context, must-read and named files) is past its pin's usable window (the refusal names the job, its reading and its window; `dispatch_size.over_window_lines` owns the measure). Every exit before an inventory exists also writes its
+launcher's, printed to stdout, naming every unfit job), and a resident seat whose certain reading (brief, context and must-read files, never a file the brief only names) is past its pin's usable window (the refusal names the job, its reading and its window; `dispatch_size.over_window_lines` owns the measure). Every exit before an inventory exists also writes its
 text, exit code and UTC time to `<out-dir>/launch-refused.txt`, which a launch that writes an inventory removes.
 A `--detach` run returns only once each first-wave job is printed `admitted`, `refused ... nothing ran`, `queued` or `undecided` (a `<label>.stream` written since the launch marks a job past every gate), and a child's capacity refusal moves the job to its next plan. Not decided here, because only the shell launcher owns them: an
 `armDisclosure` outside bare|pointer|full and `longContext` on a row with no long-context step (`sidecar_common.sh`).
@@ -258,6 +260,7 @@ try:
     import ui_round  # noqa: E402 -- a UI round's one-owner and page-entry launch refusals
 except ImportError:  # a project with no UI round has no such refusals
     ui_round = None
+import task_record  # noqa: E402 -- the session's task record: the acceptance test every job carries by default
 
 GUARD_SOURCE = ROOT / "guards" / "single_flight.json"
 
@@ -594,6 +597,48 @@ def normalize_job(job, data=None, shared_context=None):
     return out
 
 
+def jobs_task(path):
+    """The jobs file's `task`: an id, `false` (no acceptance test), or None when it names none (the session's
+    active record then applies). A bare list names none."""
+    try:
+        spec = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise JobError(f"cannot read jobs file {path}: {err}")
+    value = spec.get("task") if isinstance(spec, dict) else None
+    if value is None or value is False or (isinstance(value, str) and value.strip()):
+        return value
+    raise JobError(f"{path}: `task` must be a task record id, or false to carry no acceptance test")
+
+
+def carry_acceptance(jobs, task_value, out_dir):
+    """Carry the task record's acceptance test into every job: written once to `<out_dir>/acceptance_<id>.md`,
+    listed first in each job's contextFiles. A job whose prompt already holds the heading (a lens_briefs brief)
+    gets no second copy."""
+    task = task_record.task_for(task_value)
+    if not task:
+        return jobs
+    try:
+        text = task_record.acceptance_text(task)
+    except task_record.RecordMissing as err:
+        raise JobError(f"task {task}: {err}")
+    os.makedirs(str(out_dir), exist_ok=True)
+    path = os.path.join(str(out_dir), "acceptance_%s.md" % task)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    heading = "## Acceptance test (task %s)" % task
+    carried = 0
+    for job in jobs:
+        prompt = job.get("promptFile")
+        if isinstance(prompt, str) and os.path.isfile(prompt):
+            with open(prompt, encoding="utf-8", errors="replace") as fh:
+                if any(line.strip() == heading for line in fh):
+                    continue
+        job["contextFiles"] = [path] + list(job.get("contextFiles") or [])
+        carried += 1
+    print("[fanout] task %s: acceptance carried to %d job(s)" % (task, carried), file=sys.stderr)
+    return jobs
+
+
 def _missing_inputs(alias, needs, data):
     """Input types the row's catalog entry lacks; [] when it declares them or its input is unknown (`inputGap`):
     unknown is not proven wrong, so the session's listing stands."""
@@ -875,24 +920,26 @@ def _holds(row, load, signature, now):
     return holds, binding[1], binding[2]
 
 
-def _drain_text(drain):
-    window = f" on {drain['window']}" if drain.get("window") else ""
-    return f"drain {drain['pct']:.1f} {drain['basis']}{window}"
-
-
-def _headroom_text(drain):
-    """`headroom 96` of the window `drain` is priced on."""
-    return f"headroom {drain['headroom']:.0f}" if drain.get("headroom") is not None else "headroom unread"
+def _fit_text(drain):
+    """`5h 15% left, this job takes about 44%`: the window the job is priced on, what is left of it, and
+    the job's draw, in the terms the owner reads a quota fact in."""
+    window = provider_bands.window_name({"name": drain.get("window")}) if drain.get("window") else "window"
+    left = "%.0f%% left" % drain["headroom"] if drain.get("headroom") is not None else "unread"
+    basis = "" if drain.get("basis") == "measured" else " (a default, not measured)"
+    return "%s %s, this job takes about %.0f%%%s" % (window, left, drain["pct"], basis)
 
 
 def _unfit_text(row, drain, committed, jobs_on, now):
-    """One plan's reason for not holding a job: its binding window's headroom against what is committed and this
-    job's estimate."""
+    """One plan's reason for not holding a job, in the job's terms: the window's room, the jobs already
+    charging it, and this job's draw."""
     reset = drain.get("resetsAt")
-    before = (f" ({drain['charged']:.1f} before its reset)"
-              if drain.get("charged") is not None and abs(drain["charged"] - drain["pct"]) >= 0.05 else "")
-    return (f"{row['transport']}: {_headroom_text(drain)} points, {jobs_on} job{'' if jobs_on == 1 else 's'} "
-            f"on it commit {committed:.1f}, this job {_drain_text(drain)}{before}"
+    window = provider_bands.window_name({"name": drain.get("window")}) if drain.get("window") else "window"
+    left = "%.0f%% left" % drain["headroom"] if drain.get("headroom") is not None else "unread"
+    charged = (f" ({drain['charged']:.0f}% before its reset)"
+               if drain.get("charged") is not None and abs(drain["charged"] - drain["pct"]) >= 0.05 else "")
+    return (f"{row['transport']} does not hold it: {window} {left}, "
+            f"{jobs_on} job{'' if jobs_on == 1 else 's'} on it take {committed:.0f}%, "
+            f"this job about {drain['pct']:.0f}%{charged}"
             + (f", resets {provider_bands.reset_text(reset, now)}" if reset is not None else ""))
 
 
@@ -957,10 +1004,16 @@ def worth_waiting(fit, reopen_room):
 
 def choose_plan(placed):
     """(row, reopening) the plan `pick_plan` and `admission_refusal` choose: the best fitting row, unless the
-    first reopening plan is `worth_waiting` for. `reopening` is the reopen entry then, else None."""
+    first reopening plan is `worth_waiting` for; with no readable row, the first plan whose reading could
+    not be taken, since an unreadable meter is not exhaustion and the launcher's own gate decides.
+    `reopening` is the reopen entry then, else None."""
     best = placed.fit[0] if placed.fit else None
     if placed.reopen and worth_waiting(best, placed.reopen[0]["room"]):
         return placed.reopen[0]["row"], placed.reopen[0]
+    if best is None:
+        unknown = [row for row in placed.rows if _decides_nothing(row)]
+        if unknown:
+            return unknown[0], None
     return best, None
 
 
@@ -988,7 +1041,7 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
     now = time.time()
     read = read or provider_bands.read_capacity
     placed = place_job(plans, data, read, now, load, plan_signature(job or {}, data))
-    rows, held, fit, load = placed.rows, placed.held, placed.fit, placed.load
+    rows, held, fit, load = placed.rows, placed.held, placed.fit, placed.load or {}
     if len(plans) == 1 and not held and placed.blind:
         return plans[0]
     best, reopening = choose_plan(placed)
@@ -1014,17 +1067,20 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
                         f"room {info['room']:.2f} on {provider_bands.window_name({'name': info.get('longWindow')})}")
             if row.get("room") is None:
                 return None if _decides_nothing(row) else _why_text(row)
-            ok, drain, committed = held[name]
+            if name not in held:
+                return None
+            ok, drain, _committed = held[name]
             if not ok:
-                return f"{name} does not hold it: {_headroom_text(drain)}, {_drain_text(drain)}"
-            return f"{name} {_pick_facts(row)}, {_headroom_text(drain)}, {_drain_text(drain)}"
+                return f"{name} does not hold it: {_fit_text(drain)}"
+            return f"{name} {_pick_facts(row)}; {_fit_text(drain)}"
 
         # An unreadable plan decides nothing and is not a viable option: name it once, then leave it out.
         for row in rows:
             if row.get("room") is None and _decides_nothing(row) and row["transport"] not in _REPORTED_UNREADABLE:
                 _REPORTED_UNREADABLE.add(row["transport"])
-                detail = (row.get("why") or "unreadable").removeprefix("unreadable: ")
-                print(f"[fanout] plan {row['transport']} unreadable ({detail}); leaving it out of placement lines",
+                state = "unmetered" if row.get("unmetered") else "unreadable"
+                detail = (row.get("why") or state).removeprefix(state + ": ")
+                print(f"[fanout] plan {row['transport']} {state} ({detail}); leaving it out of placement lines",
                       file=sys.stderr)
         on = len(load.get(best["transport"], ()))
         others = ", ".join(text for text in (clause(row) for row in rows if row is not best) if text)
@@ -1040,8 +1096,18 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
                          f"{provider_bands.window_name({'name': waits_on.get('longWindow')})} is spent faster "
                          f"than time, so this job waits for the reset")
         else:
-            drain = held[best["transport"]][1]
-            fact = f"{_pick_facts(best)}, {_headroom_text(drain)}, {_drain_text(drain)}"
+            held_entry = held.get(best["transport"])
+            if held_entry is None:
+                fact = "its capacity cannot be read; the launcher's own meter check decides"
+            else:
+                holds, drain = held_entry[:2]
+                fact = (f"{_pick_facts(best)}; "
+                        + ("" if holds else "does not hold it, and no plan does: ") + _fit_text(drain))
+        if held.get(best["transport"]) is None:
+            subject = (f"plan {best['transport']} cannot be read" if len(plans) == 1
+                       else f"no plan of {transport} can be read")
+            print(f"[fanout] {label}: {subject}; launching on {best['transport']} with a warning and the "
+                  "launcher's own meter check", file=sys.stderr)
         print(f"[fanout] {label}: plan {best['transport']}{named} ({fact}"
               + (f", {on} jobs on it" if on else "")
               + (f"; {others}" if others else "") + ")", file=sys.stderr)
@@ -1050,19 +1116,23 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
 
 def _decides_nothing(row):
     """True for a plan row whose reading could not be taken, so its launcher's own gate decides. A `stale`
-    row is a cache-only reading that returned nothing yet: it is warming, never a refusal."""
+    row is a cache-only reading that returned nothing yet: it is warming, never a refusal. An `unmetered` plan
+    has no reading to take."""
     why = row.get("why") or ""
-    return not why or row.get("stale") or why.startswith("unreadable")
+    return not why or row.get("stale") or row.get("unmetered") or why.startswith("unreadable")
 
 
 def _pick_facts(row):
-    """`room R`, led by `~N% unused at reset in Dd` when the plan's projection reaches whole percents."""
-    pct = provider_bands.spare_pct(row)
-    days = (row.get("unusedAtReset") or {}).get("daysLeft")
-    room = f"room {row['room']:.2f}"
-    if pct is not None and isinstance(days, (int, float)):
-        return f"~{pct}% unused at reset in {days:.1f}d, {room}"
-    return room
+    """The routing window's figures (`7d 41% left, resets in 6.2d`) and the forecast clause. A row with no
+    routing-window share prints its room instead, as a planted or partial row may."""
+    left = row.get("left")
+    if not isinstance(left, (int, float)) or isinstance(left, bool):
+        return f"room {row['room']:.2f}"
+    days = row.get("daysLeft")
+    text = "%s %.0f%% left" % (provider_bands.window_name({"name": row.get("window")}), left)
+    text += ", resets in %.1fd" % days if isinstance(days, (int, float)) else ""
+    clause = provider_bands.unused_text(row.get("unusedAtReset"))
+    return text + (", " + clause if clause else "")
 
 
 def admission_refusal(jobs, data, read=None, now=None, load=None):
@@ -1417,9 +1487,10 @@ class Waves:
         name = target["transport"]
         self.slots[label] = slot._replace(plan=name, signature=slot.picks[name][2] if slot.picks else slot.signature)
         self.states.setdefault(name, _PlanWave())
-        why = "cannot hold it beside its running jobs" if holds else "has no room"
+        why = "does not hold it beside its running jobs" if holds else "has no room"
         self._say(f"[fanout] {label}: plan {slot.plan} {why}; moved to plan {name} ("
-                  + (_headroom_text(placed.held[name][1]) if name in placed.held else "its launcher decides") + ")")
+                  + (_fit_text(placed.held[name][1]) if name in placed.held
+                     else "its capacity cannot be read, so its launcher decides") + ")")
         return True
 
     def decide(self, label):
@@ -2474,7 +2545,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
             if died:
                 after = freeze_fingerprint(wd, reads)
                 results[label] = {
-                    **identity, "exit": None,
+                    **identity, "workdir": os.path.abspath(wd) if wd else None, "exit": None,
                     "error": f"detached pid died without recording its end (no ended journal row or .exit) for {record_path}",
                     "stdout": out_path, "stderr": err_path, "record": None, "resumeWith": None,
                     **_delivery(out_dir, label, out_path, since),
@@ -2497,6 +2568,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                 record = None
             results[label] = {
                 **identity,
+                "workdir": os.path.abspath(wd) if wd else None,
                 "exit": code,
                 "meaning": LAUNCHER_EXITS.get(code, "unrecognised launcher exit"),
                 "preSpawnRefusal": pre_spawn_refusal,
@@ -3176,6 +3248,11 @@ def native_blockers(job, shared_context, session, data):
         why.append("no `effort` on its row: the Workflow engine fills none")
     try:
         tool_profiles.engine_job(job.get("kind"))
+        add, remove = tool_profiles.tools_delta(job.get("tools"))
+        row = tool_profiles.load_table()["kinds"].get(job.get("kind")) or {}
+        # agent() takes no tools option: a delta runs native only through a generated variant agent file.
+        tool_profiles.native_agent_type({"kind": job.get("kind"), "agentType": row.get("agentType"),
+                                         "add": add, "remove": remove})
     except ValueError as err:
         why.append(str(err))
     return why
@@ -3520,7 +3597,8 @@ def close_claims(args, out_dir, *, results=None):
     if not rows and not errors:
         return 0
     for row in rows:
-        row['root'] = str(Path(root).resolve())
+        own = (results or {}).get(row['lens'], {}).get('workdir')
+        row['root'] = str(Path(own or root).resolve())
     source = out_dir / 'claims.input.json'
     report_path = out_dir / 'post_check_claims.json'
     post_check._write(source, {'claims': sidecar_completion.checker_rows(rows)})
@@ -3894,10 +3972,11 @@ def fit_facts(jobs, size=None):
 
 
 def over_window_refusal(size):
-    """The refusal text for every resident seat (`dispatch_size.RESIDENT_KINDS`) whose reading is past the point it
-    compacts at, else None: the job, its reading and its window. A seat that reads more than it can hold compacts
-    away the subject it must keep, so the run pays for a review that did not read its brief. Other kinds compact and
-    carry on; their overage is a fact on the fit line. `dispatch_size.over_window_lines` owns the measure, the one
+    """The refusal text for every resident seat (`dispatch_size.RESIDENT_KINDS`) whose certain reading (its brief,
+    context and must-read files) is past the point it compacts at, else None: the job, its reading and its window. A
+    seat that must hold more than it can compacts away the subject it must keep, so the run pays for a review that did
+    not read its brief. A file the brief only names is a pointer, so it never refuses; other kinds compact and carry
+    on. Both overages are facts on the fit line. `dispatch_size.over_window_lines` owns the measure, the one
     `lens_briefs.seat_overage` refuses a review seat on."""
     if size is None:
         return None
@@ -3908,7 +3987,7 @@ def over_window_refusal(size):
         return None
     if not lines:
         return None
-    return ("Launch refused: a review seat reads more than its window holds. Split its reading across jobs. "
+    return ("Launch refused: a review seat must hold more than its window holds. Split its brief, context and must-read files across jobs. "
             "Nothing dispatched.\n  " + "\n  ".join(lines))
 
 
@@ -4326,6 +4405,11 @@ def _main(argv):
         jobs, shared_context, spill_dir = load_jobs(args.jobs)
         lanes = job_lanes(jobs)
         groups = wake_groups(jobs, jobs_measurement(args.jobs))
+        if not args.refold:
+            missing = sidecar_argv.unresolved_inputs(jobs, shared_context, os.getcwd())
+            if missing:
+                raise JobError("launch refused before anything spawned; a relative path resolves against the "
+                               "launching checkout:\n  " + "\n  ".join(missing))
         if lanes and args.review:
             raise JobError("chains do not combine with --review: a review consolidates independent seats")
         selection = None
@@ -4361,6 +4445,7 @@ def _main(argv):
         ui_round_denial = ui_round.jobs_refusal(jobs) if ui_round else None
         if ui_round_denial:
             raise JobError(ui_round_denial)
+        jobs = carry_acceptance(jobs, jobs_task(args.jobs), out_dir)
     except (JobError, model_registry.RegistryError) as err:
         return _refused(str(err))
     saved_review = None

@@ -34,6 +34,7 @@ class TestSuiteGateCoverageContract(unittest.TestCase):
         shutil.copy(ROOT / ".claude" / "hooks" / "test_suite_gate_coverage_guard.py",
                     hooks / "test_suite_gate_coverage_guard.py")
         shutil.copy(ROOT / ".claude" / "hooks" / "_checkout_root.py", hooks / "_checkout_root.py")
+        shutil.copy(ROOT / ".claude" / "hooks" / "_git_run.py", hooks / "_git_run.py")
         self.guard = hooks / "test_suite_gate_coverage_guard.py"
         scripts = self.temp / ".claude" / "scripts"
         scripts.mkdir(parents=True)

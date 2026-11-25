@@ -3747,28 +3747,45 @@ def test_the_shipped_set_reads_the_pushed_rows_once_per_judge_call() -> None:
     assert len(reads) == 1 and sorted(reads[0]) == rows, reads
 
 
+def _planted_launch(ht, answer):
+    """Plant the runner's launch seam: `answer(rel, root, timeout)` is a status or an `AttemptResult`; the planted
+    function records each call as (relpath in its tree, root, timeout)."""
+    calls = []
+    saved = ht.run_proof
+
+    def run_proof(path, timeout=None, root=None, **_kw):
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        calls.append((rel, root, timeout))
+        result = answer(rel, root, timeout)
+        return result if not isinstance(result, str) else ht._attempt.AttemptResult(
+            result, 0.0, "" if result == "pass" else "FAIL " + rel, timeout=False)
+    ht.run_proof = run_proof
+    return calls, lambda: setattr(ht, "run_proof", saved)
+
+
 def test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone() -> None:
     """A judge call's proof rows run at once, one tree per layer and a line per start; a green there stands, and a
     red reruns alone before it refuses."""
     import threading
     import time
     engine = _load_engine()
+    ht = engine._harness_tests()
     proofs = [".claude/tests/test_a.py", ".claude/tests/test_b.py", ".claude/tests/test_c.py"]
     lock = {"files": {rel: {"layer": "pure"} for rel in proofs}}
     trees, live, peak, guard, ran_alone = [], [0], [0], threading.Lock(), []
 
-    def run_in_tree(rel, _tree):
+    def first(rel, _root, _timeout):
         with guard:
             live[0] += 1
             peak[0] = max(peak[0], live[0])
         time.sleep(0.3)
         with guard:
             live[0] -= 1
-        return ["FAIL b"] if rel.endswith("test_b.py") else None
-    saved = (engine._shipped_tree, engine._run_in_tree, engine._row_bytes)
+        return "fail" if rel.endswith("test_b.py") else "pass"
+    calls, unplant = _planted_launch(ht, first)
+    saved = (engine._shipped_tree, engine._row_bytes)
     engine._shipped_tree = lambda *a: trees.append(a[1])
     engine._row_bytes = lambda _root, _commit, rels: {rel: b"x\n" for rel in rels}
-    engine._run_in_tree = run_in_tree
     slots = tempfile.mkdtemp(prefix="bs_slots_")
     # Extra lanes come from HARNESS_MACHINE_ROOT, which a slot-run proof inherits: unplanted, a busy machine runs
     # the three proofs one at a time.
@@ -3780,7 +3797,8 @@ def test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone() -
     try:
         with contextlib.redirect_stderr(err):
             engine._prerun_shipped_proofs(Path("."), proofs, lock, object(), {rel: "sha" for rel in proofs}, None)
-            engine._run_in_tree = lambda rel, _tree: ran_alone.append(rel) or ["FAIL b alone"]
+            unplant()
+            calls, unplant = _planted_launch(ht, lambda rel, _root, _timeout: ran_alone.append(rel) or "fail")
             engine._shipped_tree = lambda *a: None
             engine._refuse_proof_red_in_shipped_set(Path("."), proofs[0], b"x\n", lock, object(), {}, None)
             try:
@@ -3789,7 +3807,8 @@ def test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone() -
             except engine.BaselineError:
                 refused = True
     finally:
-        engine._shipped_tree, engine._run_in_tree, engine._row_bytes = saved
+        unplant()
+        engine._shipped_tree, engine._row_bytes = saved
         engine._SHIPPED_RUNS.clear()
         for key, value in old_env.items():
             if value is None:
@@ -3803,10 +3822,46 @@ def test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone() -
     assert ran_alone == [proofs[1]] and refused, (ran_alone, refused)
 
 
-def test_a_shipped_set_red_reruns_with_the_machine_to_itself() -> None:
-    """A red side by side reruns alone to tell load from a defect, so the rerun holds every machine slot, as the
-    runner's alone retries do: beside other work, two proofs that pass in 30 s timed out at 120 s and were refused."""
+def test_the_judge_launches_through_the_runners_attempt_in_the_shipped_tree() -> None:
+    """The judge has no launcher of its own: each run is the runner's launch, rooted in the shipped tree, with the
+    runner's timeout, and a rerun after a timeout gets the runner's longer retry timeout."""
     engine = _load_engine()
+    ht = engine._harness_tests()
+    proof = ".claude/tests/test_unrecorded_proof.py"
+    lock = {"files": {proof: {"layer": "pure"}}}
+    timed_out = ht._attempt.AttemptResult("fail", 1.0, "TIMEOUT after 9s", timeout=True)
+    calls, unplant = _planted_launch(ht, lambda rel, _root, _timeout: timed_out if len(calls) == 1 else "pass")
+    saved = (engine._shipped_tree, engine._row_bytes)
+    engine._shipped_tree = lambda *a: None
+    engine._row_bytes = lambda _root, _commit, rels: {rel: b"x\n" for rel in rels}
+    slots = tempfile.mkdtemp(prefix="bs_slots_")
+    env = {"HARNESS_SLOT_DIR": slots, "HARNESS_MACHINE_ROOT": slots, "HARNESS_MACHINE_SLOTS": "2"}
+    old_env = {k: os.environ.get(k) for k in (*env, "HARNESS_SLOT_BUDGET")}
+    os.environ.update(env)
+    os.environ.pop("HARNESS_SLOT_BUDGET", None)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            engine._prerun_shipped_proofs(Path("."), [proof], lock, object(), {proof: "sha"}, None)
+            engine._refuse_proof_red_in_shipped_set(Path("."), proof, b"x\n", lock, object(), {}, None)
+    finally:
+        unplant()
+        engine._shipped_tree, engine._row_bytes = saved
+        engine._SHIPPED_RUNS.clear()
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    assert [(rel, timeout) for rel, _root, timeout in calls] == [
+        (proof, ht._TIMEOUT_SEC), (proof, ht._TIMEOUT_SEC * ht._LOAD_FACTOR)], calls
+    assert all(root and os.path.basename(root).startswith("shipped_set_") for _rel, root, _t in calls), calls
+
+
+def test_a_shipped_set_red_reruns_in_one_lane_beside_other_work() -> None:
+    """A red side by side reruns to tell load from a defect, in one lane at the runner's retry timeout, as the
+    runner's own confirmations do: it never takes the whole machine, so other work keeps its lanes."""
+    engine = _load_engine()
+    ht = engine._harness_tests()
     rel = ".claude/tests/test_b.py"
     slots = tempfile.mkdtemp(prefix="bs_slots_")
     env = {"HARNESS_SLOT_DIR": slots, "HARNESS_MACHINE_ROOT": slots, "HARNESS_MACHINE_SLOTS": "3"}
@@ -3816,30 +3871,31 @@ def test_a_shipped_set_red_reruns_with_the_machine_to_itself() -> None:
              "print('free' if held else 'held'); m.release_all(held or [])")
     seen = []
 
-    def run_in_tree(_rel, _tree):
+    def beside(_rel, _root, _timeout):
         out = subprocess.run([sys.executable, "-c", probe, str(ENGINE.parent), slots], capture_output=True,
                              text=True, env=dict(os.environ), timeout=60)
         seen.append(out.stdout.strip() or out.stderr.strip()[-300:])
-        return None
-    saved = (engine._shipped_tree, engine._consumer_checkout, engine._run_in_tree)
+        return "pass"
+    calls, unplant = _planted_launch(ht, beside)
+    saved = (engine._shipped_tree, engine._consumer_checkout)
     engine._shipped_tree = lambda *a: None
     engine._consumer_checkout = lambda _tree: None
-    engine._run_in_tree = run_in_tree
-    engine._SHIPPED_RUNS[rel] = ["FAIL b"]
+    engine._SHIPPED_RUNS[rel] = ht._attempt.AttemptResult("fail", 1.0, "FAIL b")
     os.environ.update(env)
     os.environ.pop("HARNESS_SLOT_BUDGET", None)
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             engine._refuse_proof_red_in_shipped_set(Path("."), rel, b"x\n", {"files": {}}, object(), {}, None)
     finally:
-        engine._shipped_tree, engine._consumer_checkout, engine._run_in_tree = saved
+        unplant()
+        engine._shipped_tree, engine._consumer_checkout = saved
         engine._SHIPPED_RUNS.clear()
         for key, value in old_env.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-    assert seen == ["held"], seen
+    assert seen == ["free"], seen
 
 
 def test_the_shipped_set_is_built_outside_the_system_temp_folder() -> None:
@@ -3880,14 +3936,14 @@ def test_a_shipped_set_proof_that_outlives_its_timeout_ends_with_every_process_i
                          "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
                          "time.sleep(60)\n", encoding="utf-8")
         real = engine._proof_timeout
-        engine._proof_timeout = lambda _path: 3
+        engine._proof_timeout = lambda _path, _timed_out=False: 3
         try:
             started = time.monotonic()
-            red = engine._run_in_tree(".claude/tests/test_holds.py", Path(tree))
+            result = engine._judge_proof(".claude/tests/test_holds.py", Path(tree))
             took = time.monotonic() - started
         finally:
             engine._proof_timeout = real
-    assert red and "timed out" in red[0], red
+    assert result.timeout and result.status == "fail", result
     assert took < 30, took
 
 
@@ -4088,7 +4144,7 @@ def test_dependency_check_failure_refuses_the_push() -> None:
 
 def test_unproven_tools_binds_every_tool_in_one_scan() -> None:
     engine = _load_engine()
-    ht = engine._harness_tests()
+    catalog = engine._proof_catalog()
     names = ("alpha", "beta", "gamma")
     with _fixture() as path:
         for name in names:
@@ -4097,19 +4153,39 @@ def test_unproven_tools_binds_every_tool_in_one_scan() -> None:
         files = {".claude/tools/%s.py" % n: {"status": "tracked"} for n in names}
         files[".claude/tests/test_alpha.py"] = {"status": "tracked"}
         calls = {"discover": 0}
-        real = ht.discover
+        real = catalog.discover
 
         def counted(*a, **k):
             calls["discover"] += 1
             return real(*a, **k)
 
-        ht.discover = counted
+        catalog.discover = counted
         try:
             got = engine.unproven_tools(path, files, list(files))
         finally:
-            ht.discover = real
+            catalog.discover = real
         assert calls["discover"] == 1, calls
         assert got == [".claude/tools/beta.py", ".claude/tools/gamma.py"], got
+
+
+def test_unproven_tools_reads_a_loss_floor_row_as_the_proof_of_a_floor_module() -> None:
+    engine = _load_engine()
+    with _fixture() as path:
+        _write(path / ".claude" / "hooks" / "kill_guard.py", b"x = 1\n")
+        _write(path / ".claude" / "hooks" / "unrelated_guard.py", b"x = 2\n")
+        _write(path / ".claude" / "tests" / "floor" / "test_floor_kill.py", b"pass\n")
+        files = {rel: {"status": "tracked", "layer": "pure"} for rel in (
+            ".claude/hooks/kill_guard.py", ".claude/hooks/unrelated_guard.py", ".claude/tests/floor/test_floor_kill.py")}
+        assert engine.unproven_tools(path, files, list(files)) == [".claude/hooks/unrelated_guard.py"]
+
+
+def test_unproven_tools_never_reads_a_frozen_fixture_copy_as_a_tool() -> None:
+    engine = _load_engine()
+    frozen = ".claude/tests/fixtures/evidence/tree/.claude/hooks/frozen_guard.py"
+    with _fixture() as path:
+        _write(path / frozen, b"x = 1\n")
+        files = {frozen: {"status": "tracked", "layer": "pure"}}
+        assert engine.unproven_tools(path, files, list(files)) == []
 
 
 def test_new_tool_with_a_row_less_proof_judged_push_in_this_call_publishes() -> None:
@@ -4969,6 +5045,8 @@ def main(part: int = 1) -> int:
         test_pull_stops_when_the_engine_pull_reports_a_conflict,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
+        test_unproven_tools_reads_a_loss_floor_row_as_the_proof_of_a_floor_module,
+        test_unproven_tools_never_reads_a_frozen_fixture_copy_as_a_tool,
         test_new_tool_with_a_row_less_proof_judged_push_in_this_call_publishes,
         test_candidates_lists_a_row_less_test_only_when_its_subject_ships,
         test_carry_refuses_a_new_tool_whose_proof_is_local,
@@ -5108,7 +5186,8 @@ def main(part: int = 1) -> int:
         test_judge_push_counts_a_sibling_judged_push_in_the_same_call_as_shipped,
         test_the_shipped_set_reads_the_pushed_rows_once_per_judge_call,
         test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone,
-        test_a_shipped_set_red_reruns_with_the_machine_to_itself,
+        test_the_judge_launches_through_the_runners_attempt_in_the_shipped_tree,
+        test_a_shipped_set_red_reruns_in_one_lane_beside_other_work,
         test_the_shipped_set_is_a_committed_checkout_like_a_consumers,
         test_the_shipped_set_is_built_outside_the_system_temp_folder,
         test_a_shipped_set_proof_that_outlives_its_timeout_ends_with_every_process_it_started,

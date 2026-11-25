@@ -154,12 +154,7 @@ def main():
         elif got == DENY and ("Edit" not in reason or "CLAUDE.core.md" not in reason):
             failures.append("%s: deny names no next step or rule home: %s" % (label, reason[:300]))
 
-    # Wired: the Bash dispatcher reaches the guard.
-    got, reason = run(HEREDOC_WRITE, hook=DISPATCH)
-    if got != DENY:
-        failures.append("dispatcher: want deny got %s %s" % (got, reason[:300]))
-
-    total = len(CASES) + 1
+    total = len(CASES)
     for line in failures:
         print("FAIL " + line)
     print("%d/%d passed" % (total - len(failures), total))

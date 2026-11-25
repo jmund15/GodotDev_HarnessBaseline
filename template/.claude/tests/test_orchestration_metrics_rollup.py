@@ -380,7 +380,7 @@ class RollupClassTests(unittest.TestCase):
         self.assertAlmostEqual(rows_by_id(doc)["T"]["list"]["sidecar"], 4.0, places=6)
 
     def test_instrument_runs_count_in_totals_and_never_in_waste(self):
-        self.plant.run(workflow="score-cell", agents=[("a1", 100, 130, usage(inp=250000)),
+        self.plant.run(workflow="harness-bloat-probe", agents=[("a1", 100, 130, usage(inp=250000)),
                                                       ("a2", 140, 170, usage(inp=250000))], progress=["a2"],
                        journal=[{"type": "launched"}, started("a1", "cell", 1), finished("a1", 1),
                                 started("a2", "cell", 2), finished("a2", 2)])

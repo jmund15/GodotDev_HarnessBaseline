@@ -14,6 +14,7 @@ Usage:
                              | --script <name> --outcome <o> [--mandate <key>]
                              | --inline <command> --outcome <o> --mandate <key>)
                             [--files <path>... | --files-from <file>] [--scope-json <file>] [--head <commit>] [--blobs <map.json>] [--from <map.json>]
+                            [--delta <artifact> --accounted <hunk ids>...]
                             [--roster <roster.json>] [--premise-commits <commits.json>]
                             [--author-model <id>] [--task <id>] [--degraded] [--no-new-decision]
                             [--escaped <finding id>=<sha>[:<mandate key>]...] [--base-ref <ref>]
@@ -43,10 +44,11 @@ row to the rigor it was recorded at: a row with a recognized `rigor` covers only
 row without one covers every request, and a request with no resolved rigor counts as `thorough`. `uncovered` prints the tab-separated `<file>\\t<mandate>` pairs no row
 covers, and `plan` drops from a roster the mandates every file already has and names each kept seat's
 `uncoveredFiles`, the files where one of its kept mandates is uncovered. What it returns is a ceiling, never a width: a later round sizes its seats per `orchestration` §2 *Later rounds*.
-When every owed `(mandate, file)` pair of the kept seats has an earlier reviewed blob (the `after:<blob>` test below), `plan`
-keeps the seats unchanged and reports `laterRound: true` with each seat's `earlierReviewedBlobs`
-(mandate, file and blob). The session chooses the later round's width. `--ignore-ledger` omits these
-facts; so does a round where any owed pair has no earlier blob. Clause 6 (depth) judges a panel row
+Each kept seat reports its owed `(mandate, file)` pairs in `pairStates`: `ChangedSince` when a pair has an
+earlier reviewed blob (the `after:<blob>` test below), else `NoBase`, and each seat carries the `earlierReviewedBlobs`
+(mandate, file and blob) it holds, per pair. `laterRound` stays as a compat key, true only when every owed pair is
+`ChangedSince`. The session chooses the later round's width. `--ignore-ledger` omits these
+facts. Clause 6 (depth) judges a panel row
 against the roster seat that would carry the mandate, so `uncovered` applies it per mandate from `--roster`
 (a mandate two seats carry is covered only when both seats' depth holds). Without a roster, or for a mandate no
 roster seat carries, depth cannot be checked: a pair that only panel rows cover prints with a third field,
@@ -65,9 +67,13 @@ row, so nothing covers until it is repaired.
 
 A row's `from` map derives each recorded path from a covered predecessor blob, or null for a
 policy root. `Cover.resolve` checks every link, including escapes and root depth; derived panel
-links compare tier only. `record --inline fold` requires an exact `--from` map. Panel recording
-with a roster derives each path from its newest covered other blob. Recorded blobs are written
-to the repository object database.
+links compare tier only. `record --inline fold` requires an exact `--from` map. A `delta` row
+(`record --inline <name> --delta <prepare artifact> --accounted <hunk ids>`) derives each path
+from its base blob and covers the current bytes only when every hunk between them is accounted
+for the mandate; consuming it re-checks the base's reach, rigor, depth, rule text and escapes, so
+identical bytes alone never credit a pair. A plan or doc inline name other than fold that has a
+covered predecessor is refused without `--delta`. Panel recording with a roster derives each path
+from its newest covered other blob. Recorded blobs are written to the repository object database.
 
 `record` writes rows only for review_mandates keys: a `--mandate` outside the catalog, or a `--script` name
 that is not a key when no `--mandate` is given, exits 2 naming it. A panel row's outcome is the engine's
@@ -154,9 +160,11 @@ run's per-seat rows are not all available, else 0.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
@@ -168,9 +176,17 @@ from pathlib import Path
 from typing import NamedTuple
 
 import model_registry  # noqa: E402
+import review_result  # noqa: E402
+import review_snapshot  # noqa: E402
+from review_snapshot import (  # noqa: E402
+    Deleted, Unreadable, blob_at, gitlink_files, normalize_files, owning_repo,
+    readable_submodule, row_blob, row_checkout, split_submodule, split_worktree, submodule_paths, worktree_split,
+)
 
 TOOLS_DIR = Path(__file__).resolve().parent
 CLAUDE_DIR = TOOLS_DIR.parent
+sys.path.insert(0, str(CLAUDE_DIR / "hooks"))
+from _git_run import run as _git_run  # noqa: E402
 
 RECORD_HEADING = "## Review record"
 FENCE = "```"
@@ -179,8 +195,8 @@ STAGES = ("candidate", "pr-review", "pre-merge", "pr-ready", "design", "plan-che
 PRE_MERGE_STAGES = ("pre-merge", "pr-review")
 REVIEW_REGISTRIES = ("review", "session_audit", "plan_check")
 SUBJECT_KINDS = ("session", "pr", "plan", "doc")
-OUTCOMES = ("findings", "clean", "not-reached", "incomplete", "blocked", "failed")
-COVERING_OUTCOMES = ("findings", "clean")
+OUTCOMES = review_result.OUTCOMES
+COVERING_OUTCOMES = review_result.COVERING_OUTCOMES
 EFFORT_ORDER = ("none",) + model_registry.EFFORT_ORDER  # `none` ranks weakest: a mandate at `none` covers no rung seat
 # Sized for about 600 median-PR reviews before a rotation (sizing evidence: this comment as commit acb99030d
 # wrote it); a review that outgrows the cap costs a re-run, never a skipped review.
@@ -223,118 +239,35 @@ def _run(cmd, cwd: Path, shell: bool = False, stdin: bytes | None = None) -> sub
         raise ToolError(f"{cmd if isinstance(cmd, str) else ' '.join(cmd)} failed: {exc}") from exc
 
 
-def _git(repo: Path, args: list[str], stdin: bytes | None = None) -> subprocess.CompletedProcess:
-    return _run(["git", *args], repo, stdin=stdin)
+def _git(repo: Path, args: list[str], stdin: bytes | None = None):
+    # No fixed cap: a fetch whose ref the repo lacks scales with the remote and the repository it lands in.
+    try:
+        return _git_run(args, cwd=str(repo), input=b"" if stdin is None else stdin, timeout=None)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(f"git {' '.join(args)} failed: {exc}") from exc
 
 
 def _git_text(repo: Path, args: list[str]) -> str:
     result = _git(repo, args)
+    stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else result.stdout
     if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise ToolError(f"git {' '.join(args)} failed (exit {result.returncode})" + ((": " + detail) if detail else ""))
-    return result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr
+        raise ToolError(f"git {' '.join(args)} failed (exit {result.returncode})" + ((": " + stderr.strip()) if stderr.strip() else ""))
+    return stdout
 
 
 def _git_lines(repo: Path, args: list[str]) -> list[str]:
     return [line for line in _git_text(repo, args).splitlines() if line.strip()]
 
 
-def submodule_paths(top: Path) -> list[str]:
-    """The gitlink paths (mode 160000) in `top`'s index, longest first."""
-    lines = _git_text(top, ["ls-files", "--stage"]).splitlines() if (top / ".git").exists() else []
-    found = [line.split("\t", 1)[1] for line in lines if line.startswith("160000 ") and "\t" in line]
-    return sorted(found, key=len, reverse=True)
-
-
-def split_submodule(top: Path, path: str):
-    """`(gitlink path, path inside it)` when `path` lies under a submodule of `top`, else None."""
-    for sub in submodule_paths(top):
-        if path.startswith(sub + "/"):
-            return sub, path[len(sub) + 1:]
-    return None
-
-
-def worktree_split(path: str):
-    """`(".claude/worktrees/<name>", path inside it)` when a repo-relative `path` lies under a linked worktree's
-    root, else None. Text only: the caller checks the worktree exists."""
-    parts = path.split("/", 3)
-    if len(parts) == 4 and parts[:2] == [".claude", "worktrees"]:
-        return "/".join(parts[:3]), parts[3]
-    return None
-
-
-def split_worktree(top: Path, path: str):
-    """`(linked worktree directory, path inside it)` when `path` lies under `.claude/worktrees/<name>/` of `top`,
-    else None. A linked worktree shares `top`'s object store, so its files hash at any commit of `top`."""
-    found = worktree_split(path)
-    if found and (top / found[0] / ".git").exists():
-        return found
-    return None
-
-
-def row_checkout(row: dict):
-    """The checkout a row recorded: None for a row written before the `repo` field, `.claude/worktrees/<name>` for a
-    linked worktree, `.` for the main checkout."""
-    repo = row.get("repo")
-    if not repo:
-        return None
-    parts = str(repo).replace("\\", "/").rstrip("/").split("/")
-    if parts[-3:-1] == [".claude", "worktrees"]:
-        return "/".join(parts[-3:])
-    return "."
-
-
-def row_blob(row: dict, path: str):
-    """The blob `row` recorded for `path`. A worktree subject's row keys its files worktree-relative, so a
-    main-rooted `.claude/worktrees/<name>/<rest>` key falls back to `<rest>` when the row recorded that worktree
-    or predates the `repo` field; a row from another checkout never credits it. The compare against the current
-    blob stays the content check."""
-    files = row.get("files") or {}
-    blob = files.get(path)
-    found = worktree_split(path)
-    if blob is None and found and row_checkout(row) in (None, found[0]):
-        blob = files.get(found[1])
-    return blob
-
-
-def owning_repo(top: Path, path: str) -> tuple[Path, str]:
-    """`(checkout, path inside it)` for the deepest submodule checkout that holds `path`, else `(top, path)`."""
-    found = split_submodule(top, path)
-    return owning_repo(top / found[0], found[1]) if found else (top, path)
-
-
-def readable_submodule(top: Path, link: str, pins) -> Path:
-    """The checkout of submodule `link` when it holds every commit in `pins`; raises `LedgerUnreadable` otherwise,
-    so a pointer whose history is not local owes review instead of nothing."""
-    inside = top / link
-    if not (inside / ".git").exists() or any(
-            _git(inside, ["cat-file", "-e", pin + "^{commit}"]).returncode for pin in pins):
-        raise LedgerUnreadable(f"cannot read submodule {link} at {', '.join(pins)}: run `git submodule update "
-                               f"--init {link}` and fetch it so the pinned commits are local")
-    return inside
-
-
-def gitlink_files(top: Path, link: str, old: str, new: str) -> set:
-    """`<link>/<file>` for each file submodule `link` changed between pins `old` and `new`, filtered as
-    `range_commits` filters; an all-zero pin is absent, so every file the other pin holds changed."""
-    pins = [pin for pin in (old, new) if pin.strip("0")]
-    inside = readable_submodule(top, link, pins)
-    args = (["diff", "--name-only", "-z", "--no-renames", "--diff-filter=ACDMR", old, new] if len(pins) == 2
-            else ["ls-tree", "-r", "--name-only", "-z", pins[0]])
-    return {f"{link}/{name}" for name in _git_text(inside, args).split("\0") if name}
-
-
-def blob_at(top: Path, revision: str, path: str):
-    """The blob sha of `path` at `revision` in `top`, or None when absent. A path under a submodule is read from
-    that submodule's object store at the commit the gitlink pins at `revision`, since `revision:path` stops at
-    the gitlink."""
-    found = split_submodule(top, path)
-    if found:
-        pinned = _git(top, ["rev-parse", "--verify", "--quiet", f"{revision}:{found[0]}"])
-        commit = pinned.stdout.decode().strip() if pinned.returncode == 0 else ""
-        return blob_at(top / found[0], commit, found[1]) if commit else None
-    done = _git(top, ["rev-parse", "--verify", "--quiet", f"{revision}:{path}"])
-    return done.stdout.decode().strip() if done.returncode == 0 else None
+def range_commits(repo: Path, base: str, rev: str) -> list[dict]:
+    """Commits in base..rev as {sha, subject, files} through the snapshot owner, with this module's error types."""
+    try:
+        return review_snapshot.range_commits(repo, base, rev)
+    except review_snapshot.SnapshotError as exc:
+        raise LedgerUnreadable(str(exc)) from exc
+    except OSError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _resolve_gh() -> str:
@@ -653,13 +586,16 @@ def _pr_covered(repo: Path, base_ref: str, pr: int, files: list[str], rows: list
         catalog = load_catalog()
     except ToolError:
         return {}
-    cover = Cover(Ctx(repo, base_ref), catalog, own, [], "pr")
+    ctx = Ctx(repo, base_ref)
+    escapes, _ = read_escapes(repo, ctx.toplevel)
+    cover = Cover(ctx, catalog, own, escapes, "pr")
+    result = query(cover, files=files, mandates=sorted({row.get("mandate") for row in own} & set(catalog)),
+                   mode=Mode(seat={}), applicable=False)
     out = {}
-    for mandate in sorted({row.get("mandate") for row in own} & set(catalog)):
-        done = [f for f in files if cover.covering_row(mandate, f) is not None]
-        if done:
-            out[mandate] = done
-    return out
+    for (mandate, path), pair in result.pairs.items():
+        if pair.state is None:
+            out.setdefault(mandate, []).append(path)
+    return dict(sorted(out.items()))
 
 
 def _review_section_end(text: str):
@@ -978,9 +914,11 @@ def _toplevel(repo: Path) -> Path | None:
 
 
 def ledger_path(repo: Path) -> Path:
+    """The ledger store: `HARNESS_REVIEW_LEDGER`, a relative name resolving against `repo` (the checkout the
+    command records for, which an in-process caller need not be the working directory of)."""
     override = os.environ.get("HARNESS_REVIEW_LEDGER")
     if override:
-        return Path(override)
+        return Path(override) if Path(override).is_absolute() else repo / override
     superproject = _git(repo, ["rev-parse", "--show-superproject-working-tree"])
     if superproject.returncode == 0 and superproject.stdout.strip():
         raise ToolError(f"{repo} is a submodule checkout: the review ledger keys superproject paths, so run this "
@@ -992,9 +930,10 @@ def ledger_path(repo: Path) -> Path:
 
 
 def escape_log_path(repo: Path, toplevel: Path | None = None) -> Path:
+    """The escape log: `HARNESS_ESCAPE_LOG`, a relative name resolving against `repo` like the ledger's."""
     override = os.environ.get("HARNESS_ESCAPE_LOG")
     if override:
-        return Path(override)
+        return Path(override) if Path(override).is_absolute() else repo / override
     return (toplevel or _toplevel(repo) or repo) / ".claude" / "escape_log.jsonl"
 
 
@@ -1049,172 +988,69 @@ class Ctx:
         self.repo = repo
         self.snapshot = snapshot
         self.base_ref = base_ref
-        both = _git(repo, ["rev-parse", "--show-toplevel", "HEAD"])
-        found = both.stdout.decode("utf-8", errors="replace").splitlines() if both.returncode == 0 else []
-        self.toplevel = Path(found[0]) if len(found) >= 2 else (_toplevel(repo) or repo)
-        self.overrides = dict(hashes or {})
+        self._snap = review_snapshot.open(repo, self._source())
+        self.toplevel = self._snap.toplevel
+        self._frozen_hashes = dict(hashes or {})
         self._hashes: dict = {}
-        self._head = snapshot or (found[1].strip() if len(found) >= 2 else "unset")
         self._merge_base = "unset"
-        self._ancestor: dict = {}
-        self._merges: dict = {}
-        self._resolved: dict = {}
+
+    def _source(self):
+        if self.snapshot == "INDEX":
+            return review_snapshot.Index()
+        if self.snapshot:
+            return review_snapshot.Commit(self.snapshot)
+        return review_snapshot.Disk()
 
     @property
     def head(self):
-        if self._head == "unset":
-            result = _git(self.repo, ["rev-parse", "HEAD"])
-            self._head = result.stdout.decode().strip() if result.returncode == 0 else None
-        return self._head
+        return self.snapshot if self.snapshot else self._snap.head
 
     def merge_base(self):
         if self._merge_base == "unset":
-            result = _git(self.repo, ["merge-base", self.base_ref, self.head or "HEAD"])
-            self._merge_base = result.stdout.decode().strip() if result.returncode == 0 else None
+            self._merge_base = review_snapshot.merge_base(self.repo, self.base_ref, self.head or "HEAD")
         return self._merge_base
 
-    def hash_files(self, paths) -> dict:
-        """path -> content hash now (git blob sha; SHA-256 outside a git tree); None for a missing file. With a
-        `snapshot` commit it is the blob at that commit, never the worktree. `INDEX` reads staged blobs."""
-        todo = [p for p in paths if p not in self._hashes and p not in self.overrides]
-        if self.snapshot:
-            if todo:
-                revision = "" if self.snapshot == "INDEX" else self.snapshot
-                for path, line in zip(todo, self._batch_check(self.toplevel, revision, todo)):
-                    fields = line.split()
-                    self._hashes[path] = fields[0] if len(fields) == 3 and fields[1] == "blob" else None
-            return {p: self.overrides.get(p, self._hashes.get(p)) for p in paths}
-        present = [p for p in todo if (self.toplevel / p).is_file()]
-        for path in todo:
-            self._hashes[path] = None
-        if present:
-            result = _run(["git", "hash-object", "-w", "--stdin-paths"], self.toplevel,
-                          stdin=("\n".join(present) + "\n").encode("utf-8"))
-            lines = result.stdout.decode().split() if result.returncode == 0 else []
-            for path, sha in zip(present, lines if len(lines) == len(present) else [None] * len(present)):
-                self._hashes[path] = sha
-            for path in present:
-                if self._hashes[path] is None:
-                    self._hashes[path] = "sha256:" + hashlib.sha256((self.toplevel / path).read_bytes()).hexdigest()
-        return {p: self.overrides.get(p, self._hashes.get(p)) for p in paths}
-
-    def _batch_check(self, repo: Path, revision: str, paths: list[str]) -> list[str]:
-        """`cat-file --batch-check` lines for `revision:path` in `repo`. A path under a submodule is read from
-        that submodule's object store at the commit the gitlink pins at `revision` (`missing` when it is
-        absent), since `revision:path` stops at the gitlink. A path under a linked worktree is read from that
-        worktree at the same `revision`, since the worktree shares the object store."""
-        worktrees = {p: split_worktree(repo, p) for p in paths}
-        splits = {p: None if worktrees[p] else split_submodule(repo, p) for p in paths}
-        flat = [p for p in paths if splits[p] is None and worktrees[p] is None]
-        lines = {}
-        if flat:
-            query = "".join(f"{revision}:{p}\n" for p in flat).encode("utf-8")
-            result = _git(repo, ["cat-file", "--batch-check"], stdin=query)
-            found = result.stdout.decode("utf-8", errors="replace").splitlines() if result.returncode == 0 else []
-            if len(found) != len(flat):
-                raise ToolError(f"cannot read {self.snapshot} blobs for {len(flat)} files")
-            lines.update(zip(flat, found))
-        by_home = {}
-        for path in paths:
-            if worktrees[path]:
-                by_home.setdefault(worktrees[path][0], []).append(path)
-        for home, members in by_home.items():
-            rests = [worktrees[p][1] for p in members]
-            lines.update(zip(members, self._batch_check(repo / home, revision, rests)))
-        for path in paths:
-            if worktrees[path] or splits[path] is None:
-                continue
-            link, rest = splits[path]
-            pinned = _git(repo, ["rev-parse", "--verify", "--quiet", f"{revision}:{link}"])
-            commit = pinned.stdout.decode().strip() if pinned.returncode == 0 else ""
-            lines[path] = self._batch_check(repo / link, commit, [rest])[0] if commit else "missing"
-        return [lines[p] for p in paths]
+    def hash_files(self, paths, overrides=None) -> dict:
+        """path -> content hash now (git blob sha; SHA-256 outside a git tree); None for a missing, deleted or
+        unreadable file. With a `snapshot` commit it is the blob at that commit, never the worktree. `INDEX` reads
+        staged blobs."""
+        hashes = self._frozen_hashes if overrides is None else overrides
+        todo = [p for p in paths if p not in self._hashes and p not in hashes]
+        for path, result in self._snap.blobs(todo).items():
+            self._hashes[path] = result.sha if isinstance(result, review_snapshot.Blob) else None
+        return {p: hashes.get(p, self._hashes.get(p)) for p in paths}
 
     def deleted_hash(self, path: str):
-        """The last deletion at the reviewed head, never an uncommitted removal or a never-created path. A path
-        under a submodule takes the submodule commit that deleted it, read from the commit the gitlink pins at the
-        head; with the gitlink itself gone, the superproject commit that removed it."""
-        if not self.head or Ctx(self.repo, self.base_ref, snapshot=self.head).hash(path) is not None:
+        """The last deletion at the reviewed head, never an uncommitted removal, a never-created path or an
+        unreadable history. A path under a submodule takes the submodule commit that deleted it."""
+        if not self.head:
             return None
-        found = split_submodule(self.toplevel, path)
-        pinned = _git(self.toplevel, ["rev-parse", "--verify", "--quiet", f"{self.head}:{found[0]}"]) if found else None
-        if pinned is not None and pinned.returncode == 0:
-            pin = pinned.stdout.decode().strip()
-            commits = _git_lines(readable_submodule(self.toplevel, found[0], [pin]),
-                                 ["log", "-1", "--format=%H", "--no-renames", "--diff-filter=D", pin, "--", found[1]])
-        else:
-            commits = _git_lines(self.repo, ["log", "-1", "--format=%H", "--no-renames", "--diff-filter=D",
-                                             self.head, "--", found[0] if found else path])
-        return "deleted:" + commits[0] if commits else None
+        snap = self._snap if self.snapshot else review_snapshot.open(
+            self.repo, review_snapshot.Commit(self.head))
+        result = snap.deleted(path)
+        if isinstance(result, Unreadable):
+            raise LedgerUnreadable(result.reason)
+        return result.tombstone if isinstance(result, Deleted) else None
 
-    def hash(self, path: str):
-        return self.hash_files([path])[path]
+    def hash(self, path: str, overrides=None):
+        return self.hash_files([path], overrides)[path]
+
+    def content(self, path: str, overrides=None) -> bytes | None:
+        """The bytes `hash` resolves for `path`, read from the object store; None when the hash or its
+        object is missing or unreadable, never empty bytes."""
+        blob = self.hash(path, overrides)
+        if blob is None:
+            return None
+        home, _inner = review_snapshot.owning_repo(self.toplevel, path)
+        return review_snapshot.cat_blob(home, blob)
 
     def reaches(self, sha: str, path: str | None = None) -> bool:
-        """HEAD holds the history `sha` reviewed of `path` (of every file when None): `sha` is an ancestor, or a
-        rebase or land replayed its line onto HEAD's and every commit of it that touched `path` has a
-        patch-equivalent in HEAD (`git cherry`). A commit a conflict resolution changed is paired with HEAD's
-        commit of the same subject, and only the files whose own patch differs stay owed; with no such commit,
-        every file it touched does."""
-        if sha not in self._ancestor:
-            unmatched = None
-            if sha == self.head or _is_ancestor(self.repo, sha, "HEAD"):
-                unmatched = set()
-            elif _commit_present(self.repo, sha):
-                cherry = _git(self.repo, ["cherry", "HEAD", sha])
-                if cherry.returncode == 0:
-                    unmatched = set()
-                    replays = self._unmatched_by_subject(sha)
-                    for line in cherry.stdout.decode("ascii", errors="replace").splitlines():
-                        if line.startswith("+"):
-                            unmatched.update(self._changed_paths(line[2:].strip(), replays))
-            self._ancestor[sha] = unmatched
-        unmatched = self._ancestor[sha]
-        return unmatched is not None and (not unmatched if path is None else path not in unmatched)
-
-    def _unmatched_by_subject(self, sha: str) -> dict:
-        """{subject: commit} for HEAD's commits with no patch-equivalent on `sha`'s line; a subject two of them
-        share maps to None, so neither pairs."""
-        cherry = _git(self.repo, ["cherry", "-v", sha, "HEAD"])
-        found: dict = {}
-        if cherry.returncode != 0:
-            return found
-        for line in cherry.stdout.decode("utf-8", errors="replace").splitlines():
-            if line.startswith("+"):
-                commit, _, subject = line[2:].partition(" ")
-                subject = subject.strip()
-                found[subject] = None if subject in found else commit
-        return found
-
-    def _changed_paths(self, old: str, replays: dict) -> set:
-        """The files of `old` whose own patch its replay in HEAD does not carry unchanged."""
-        paths = set(_git_lines(self.repo, ["show", "--no-renames", "--name-only", "--format=", old]))
-        new = replays.get(_git_text(self.repo, ["log", "-1", "--format=%s", old]).strip())
-        if not new:
-            return paths
-        paths |= set(_git_lines(self.repo, ["show", "--no-renames", "--name-only", "--format=", new]))
-        return {path for path in paths if self._file_patch_id(old, path) != self._file_patch_id(new, path)}
-
-    def _file_patch_id(self, commit: str, path: str):
-        show = _git(self.repo, ["show", "--no-color", "--no-renames", "--format=", commit, "--", path])
-        if show.returncode != 0 or not show.stdout.strip():
-            return None
-        out = _git(self.repo, ["patch-id", "--stable"], stdin=show.stdout)
-        words = out.stdout.decode("ascii", errors="replace").split()
-        return words[0] if out.returncode == 0 and words else "unreadable:" + commit
+        """HEAD holds the history `sha` reviewed of `path` (of every file when None)."""
+        return self._snap.reaches(sha, path)
 
     def merge_touched(self, sha: str, path: str) -> bool:
         """True when a merge between `sha` and HEAD rewrote `path` in its conflict resolution."""
-        if sha not in self._merges:
-            result = _git(self.repo, ["rev-list", "--merges", f"{sha}..HEAD"])
-            self._merges[sha] = result.stdout.decode().split() if result.returncode == 0 else []
-        for merge in self._merges[sha]:
-            if merge not in self._resolved:
-                shown = _git(self.repo, ["show", "--remerge-diff", "--name-only", "--format=", merge])
-                self._resolved[merge] = set(shown.stdout.decode("utf-8", errors="replace").split("\n"))
-            if path in self._resolved[merge]:
-                return True
-        return False
+        return self._snap.merge_touched(sha, path)
 
 
 def _tier_order():
@@ -1231,8 +1067,17 @@ def _subject_kind(subject: str) -> str:
 # ---- coverage: the clauses a covering row passes ----------------------------------------------------------
 
 
+class Mode(NamedTuple):
+    seat: dict | None = None
+    premise: str | None = None
+    rule_at: str | None = None
+    overrides: dict | None = None
+    subject_kind: str | None = None
+    revision: str | None = None
+
+
 class Cover:
-    """Decides whether a ledger row covers a (mandate, file) pair for one subject and one seat."""
+    """Coverage evidence and per-query caches."""
 
     def __init__(self, ctx: Ctx, catalog: dict, rows: list, escapes: list | None, subject_kind: str,
                  seat: dict | None = None, design: str | None = None, claude_dir: Path | None = None, *,
@@ -1242,9 +1087,15 @@ class Cover:
         self.ctx = ctx
         self.catalog = catalog
         self.rows = rows
+        self._by_mandate = {}
+        for row in reversed(rows):
+            key = row.get("mandate")
+            if isinstance(key, str):
+                self._by_mandate.setdefault(key, []).append(row)
+        self._by_path = {}
         self.escapes = escapes
         self.subject_kind = subject_kind
-        self.seat = seat
+        self._default_mode = Mode(seat=seat)
         self.design = design
         self.claude_dir = claude_dir or _claude_dir()
         self.request_rigor = rigor if rigor is not None else _import("finding_bar").run_rigor(task_id, ctx.repo)
@@ -1253,9 +1104,6 @@ class Cover:
         self._tiers = None
         self._resolved_rows = {}
         self._visiting = set()
-        self._resolving_blob = None
-        self._rule_at = None
-        self._premise = None
         self._registry = None
 
     def rule(self, mandate: str):
@@ -1263,84 +1111,91 @@ class Cover:
             self._rules[mandate] = rule_hash(mandate, self.claude_dir, self.catalog)
         return self._rules[mandate]
 
-    def rule_in_force(self, mandate: str):
-        """The rule hash clause 1 judges against: the current rule, or the rule a `ruleFrom` predecessor was judged under."""
-        return self._rule_at if self._rule_at is not None else self.rule(mandate)
-
     def tiers(self):
         if self._tiers is None:
             self._tiers = _tier_order()
         return self._tiers
 
-    def exception(self, row: dict) -> bool:
-        return (self.design is not None and self.subject_kind == "plan"
+    def exception(self, row: dict, mode: Mode) -> bool:
+        return (self.design is not None and (mode.subject_kind or self.subject_kind) == "plan"
                 and row.get("subject") == f"doc:{self.design}")
 
-    def _row_holds(self, row, mandate, path, blob, seat):
-        saved = self.seat, self._resolving_blob
-        self.seat, self._resolving_blob = seat, blob
-        try:
-            if row.get("mandate") != mandate or not all(fn(self, row, mandate, path) for _, fn in CLAUSES):
-                return False
-            if "ruleFrom" in row and not self._rule_delta_holds(row, mandate, path, blob, seat):
-                return False
-            if "from" not in row:
-                return not ((seat or {}).get("nonPanelRoot") and row.get("reviewer") == "panel")
-            origins = row["from"]
-            if not isinstance(origins, dict) or path not in origins:
-                return False
-            previous = origins[path]
-            return previous is None or (isinstance(previous, str)
-                                         and self.resolve(mandate, path, previous, seat) is not None)
-        finally:
-            self.seat, self._resolving_blob = saved
+    def _row_holds(self, row, mandate, path, blob, mode):
+        if mode.premise is not None:
+            return (not ((mode.seat or {}).get("nonPanelRoot") and row.get("reviewer") == "panel")
+                    and self._premise_covers(row, mandate, path, mode.premise, mode))
+        if row.get("mandate") != mandate or not all(fn(self, row, mandate, path, blob, mode) for _, fn in CLAUSES):
+            return False
+        if "ruleFrom" in row and not self._rule_delta_holds(row, mandate, path, blob, mode):
+            return False
+        if "from" not in row:
+            return not ((mode.seat or {}).get("nonPanelRoot") and row.get("reviewer") == "panel")
+        origins = row["from"]
+        if not isinstance(origins, dict) or path not in origins:
+            return False
+        previous = origins[path]
+        if previous is None:
+            return "delta" not in row
+        if not (isinstance(previous, str) and self._resolve(mandate, path, previous, mode) is not None):
+            return False
+        return "delta" not in row or self._delta_holds(row, mandate, path, previous, mode)
 
-    def _resolve_at(self, rule: str | None, mandate: str, path: str, blob: str, seat: dict | None):
-        saved, self._rule_at = self._rule_at, rule
-        try:
-            return self.resolve(mandate, path, blob, seat)
-        finally:
-            self._rule_at = saved
+    def _delta_holds(self, row, mandate: str, path: str, base: str, mode) -> bool:
+        """A delta row credits the current bytes only when every hunk between its base and those bytes is
+        in its `accounted` list. The base is re-read here, so a missing or unreadable object never credits."""
+        entry = (row.get("delta") or {}).get(path)
+        if not isinstance(entry, dict) or entry.get("base") != base:
+            return False
+        accounted = entry.get("accounted")
+        if not isinstance(accounted, list) or not all(isinstance(item, str) for item in accounted):
+            return False
+        home, _inner = review_snapshot.owning_repo(self.ctx.toplevel, path)
+        before = review_snapshot.cat_blob(home, base)
+        after = self.ctx.content(path, mode.overrides)
+        if before is None or after is None:
+            return False
+        return all(hunk["id"] in accounted for hunk in review_snapshot.hunks(before, after))
 
-    def _rule_delta_holds(self, row, mandate, path, blob, seat) -> bool:
-        """A `ruleFrom` row covers only when the resolver covers the pair at the rule its `ruleFrom` blob names."""
-        for old in self.rows:
-            if old is not row and old.get("mandate") == mandate and old.get("ruleBlob") == row["ruleFrom"] \
-                    and old.get("ruleHash") and self._resolve_at(old["ruleHash"], mandate, path, blob, seat):
-                return True
-        return False
+    def _candidates(self, mandate, path, mode):
+        rows = self._by_mandate.get(mandate, ())
+        if mode.premise:
+            return rows
+        kind = mode.subject_kind or self.subject_kind
+        key = (mandate, path, kind, self.design)
+        if key not in self._by_path:
+            self._by_path[key] = [row for row in rows if not isinstance(row.get("files"), dict)
+                                  or row_blob(row, path) is not None or self.exception(row, mode)]
+        return self._by_path[key]
 
-    def rule_after(self, mandate: str, path: str, seats: list):
-        """`ruleBlob` of the newest row that holds for every seat at the rule it was judged under, but not under the
-        current rule; None when no such row exists."""
-        blob = self.ctx.hash(path)
+    def _rule_delta_holds(self, row, mandate, path, blob, mode) -> bool:
+        return any(old is not row and old.get("ruleBlob") == row["ruleFrom"]
+                   and old.get("ruleHash") and self._resolve(mandate, path, blob, mode._replace(rule_at=old["ruleHash"]))
+                   for old in self._by_mandate.get(mandate, ()))
+
+    def rule_after(self, mandate: str, path: str, seats: list, mode: Mode = Mode()):
+        blob = self.ctx.hash(path, mode.overrides)
         current = self.rule(mandate)
-        for row in reversed(self.rows):
+        for row in self._candidates(mandate, path, mode):
             judged = row.get("ruleHash")
-            if not row.get("ruleBlob") or judged in (None, current) or row.get("mandate") != mandate:
+            if not row.get("ruleBlob") or judged in (None, current):
                 continue
-            if all(self._holds_at(judged, row, mandate, path, blob, seat) for seat in seats or [None]):
+            if all(self._row_holds(row, mandate, path, blob, mode._replace(rule_at=judged, seat=seat))
+                   for seat in seats or [None]):
                 return row["ruleBlob"]
         return None
 
-    def _holds_at(self, rule, row, mandate, path, blob, seat) -> bool:
-        saved, self._rule_at = self._rule_at, rule
-        try:
-            return self._row_holds(row, mandate, path, blob, seat)
-        finally:
-            self._rule_at = saved
-
-    def resolve(self, mandate: str, path: str, blob: str, seat: dict | None):
-        """Newest valid direct or derived row; every predecessor passes the same clauses."""
-        key = (mandate, path, blob, json.dumps(seat, sort_keys=True), self.subject_kind, self.design, self._rule_at)
+    def _resolve(self, mandate: str, path: str, blob: str | None, mode: Mode):
+        design_blob = self.ctx.hash(self.design, mode.overrides) if self.design else None
+        key = (mandate, path, blob, json.dumps(mode.seat, sort_keys=True), mode.subject_kind,
+               design_blob, mode.rule_at, mode.premise, mode.revision)
         if key in self._resolved_rows:
             return self._resolved_rows[key]
         if key in self._visiting:
             return None
         self._visiting.add(key)
         try:
-            for row in reversed(self.rows):
-                if self._row_holds(row, mandate, path, blob, seat):
+            for row in self._candidates(mandate, path, mode):
+                if self._row_holds(row, mandate, path, blob, mode):
                     self._resolved_rows[key] = row
                     return row
             # A miss through a cycle is contextual; do not memoize it.
@@ -1369,16 +1224,8 @@ class Cover:
         entry = registry.row_by_id(row.get("model"), data)
         return registry.seat_standing(entry, row.get("tier")) if entry else None
 
-    def _premise_covers(self, row: dict, mandate: str, path: str, premise: str) -> bool:
+    def _premise_covers(self, row: dict, mandate: str, path: str, premise: str, mode: Mode = Mode()) -> bool:
         """A premise audit's row: its frozen commits include `premise`, which its head descends from."""
-        saved = self._premise
-        self._premise = premise
-        try:
-            return self._premise_row_covers(row, mandate, path, premise)
-        finally:
-            self._premise = saved
-
-    def _premise_row_covers(self, row: dict, mandate: str, path: str, premise: str) -> bool:
         inputs = row.get("premise_commits")
         if not isinstance(inputs, list) or not row.get("head"):
             return False
@@ -1393,7 +1240,7 @@ class Cover:
         if not self._premise_ancestors[pair]:
             return False
         return row.get("mandate") == mandate and all(
-            fn(self, row, mandate, path) for number, fn in CLAUSES if number != 3)
+            fn(self, row, mandate, path, None, mode._replace(premise=premise)) for number, fn in CLAUSES if number != 3)
 
     def _rebased_from(self, premise: str, inputs: list) -> str | None:
         """The audited commit `premise` replays: a rebase or land rewrites a commit's id but keeps its patch.
@@ -1415,104 +1262,79 @@ class Cover:
                    and _clause_outcome(self, row, mandate, path) and _clause_rule_text(self, row, mandate, path)
                    for row in self.rows)
 
-    def covers(self, row: dict, mandate: str, path: str, premise_commit: str | None = None) -> bool:
-        if premise_commit is not None:
-            return self._premise_covers(row, mandate, path, premise_commit)
-        return self._row_holds(row, mandate, path, self.ctx.hash(path), self.seat)
+    def covers(self, row: dict, mandate: str, path: str, premise_commit: str | None = None, *, mode=None) -> bool:
+        mode = mode or self._default_mode._replace(premise=premise_commit)
+        return self._row_holds(row, mandate, path, self.ctx.hash(path, mode.overrides), mode)
 
-    def covering_row(self, mandate: str, path: str, premise_commit: str | None = None):
-        if premise_commit is not None:
-            for row in reversed(self.rows):
-                if self._premise_covers(row, mandate, path, premise_commit):
-                    return row
-            return None
-        return self.resolve(mandate, path, self.ctx.hash(path), self.seat)
+    def covering_row(self, mandate: str, path: str, premise_commit: str | None = None, *, mode=None):
+        mode = mode or self._default_mode._replace(premise=premise_commit)
+        return self._resolve(mandate, path, self.ctx.hash(path, mode.overrides), mode)
 
-    def covering_ids(self, paths) -> list[str]:
-        """The sorted ids of the rows that cover any of `paths` for any catalog mandate under any subject kind."""
-        kind, found = self.subject_kind, set()
-        try:
-            for subject_kind in SUBJECT_KINDS:
-                self.subject_kind = subject_kind
-                for path in paths:
-                    for mandate in self.catalog:
-                        try:
-                            row = self.covering_row(mandate, path)
-                        except ToolError as exc:
-                            print(f"review_ledger: {exc}", file=sys.stderr)
-                            continue
-                        if row is not None:
-                            found.add(row.get("id"))
-        finally:
-            self.subject_kind = kind
+    def covering_ids(self, paths, *, mode: Mode = Mode()) -> list[str]:
+        found = set()
+        for kind in SUBJECT_KINDS:
+            for path in paths:
+                for mandate in self.catalog:
+                    try:
+                        pair = self._pair(mandate, path, [{}], mode._replace(subject_kind=kind))
+                    except ToolError as exc:
+                        print(f"review_ledger: {exc}", file=sys.stderr)
+                        continue
+                    if pair.state is None:
+                        found.add(pair.rows[0].get("id"))
         return sorted(found)
 
-    def earlier_blob(self, mandate: str, path: str, seats: list):
-        """The blob of `path` that the newest row passing every clause except content (3) reviewed, or None.
-        Clause 6 is judged against each of `seats`, and passes when there are none."""
-        current = self.ctx.hash(path)
+    def earlier_blob(self, mandate: str, path: str, seats: list, mode: Mode = Mode()):
+        current = self.ctx.hash(path, mode.overrides)
         for row in reversed(self.rows):
             blob = row_blob(row, path)
             if blob and blob != current and all(
-                    self.resolve(mandate, path, blob, seat) is not None for seat in seats or [None]):
+                    self._resolve(mandate, path, blob, mode._replace(seat=seat)) is not None for seat in seats or [None]):
                 return blob
         return None
 
-    def _depth_holds(self, row: dict, mandate: str, path: str, seat: dict) -> bool:
-        self.seat = seat
-        return _clause_depth(self, row, mandate, path)
+    def pair_state(self, mandate: str, path: str, seats: list, premise_commit: str | None = None, *,
+                   mode: Mode = Mode()):
+        return self._pair(mandate, path, seats, mode._replace(premise=premise_commit or mode.premise)).state
 
-    def pair_state(self, mandate: str, path: str, seats: list, premise_commit: str | None = None):
-        """None when (mandate, path) is covered, else `uncovered` or `depth-unchecked`.
-
-        `seats` are the depth seats (tier, effort, load) that would carry the mandate, and each must find a
-        covering row. With none, clause 6 cannot be judged: a pair only panel rows cover is `depth-unchecked`."""
-        if premise_commit is not None:
-            if seats:
-                for seat in seats:
-                    self.seat = seat
-                    if self.covering_row(mandate, path, premise_commit) is None:
-                        return "uncovered"
-                return None
-            self.seat = None
-            reviewers = [row.get("reviewer") for row in self.rows if self.covers(row, mandate, path, premise_commit)]
-            if not reviewers:
-                return "uncovered"
-            return "depth-unchecked" if all(reviewer == "panel" for reviewer in reviewers) else None
-        blob = self.ctx.hash(path)
+    def _pair(self, mandate, path, seats, mode):
+        blob = self.ctx.hash(path, mode.overrides)
         if seats:
-            return None if all(self.resolve(mandate, path, blob, seat) is not None for seat in seats) else "uncovered"
-        if self.resolve(mandate, path, blob, {"nonPanelRoot": True}) is not None:
-            return None
-        return "depth-unchecked" if self.resolve(mandate, path, blob, None) is not None else "uncovered"
+            rows = tuple(self._resolve(mandate, path, blob, mode._replace(seat=seat)) for seat in seats)
+            return Pair("uncovered" if None in rows else None, rows)
+        root = self._resolve(mandate, path, blob, mode._replace(seat={"nonPanelRoot": True}))
+        if root is not None:
+            return Pair(None, (root,))
+        row = self._resolve(mandate, path, blob, mode._replace(seat=None))
+        return Pair("uncovered" if row is None else "depth-unchecked", (row,))
 
 
-def _clause_rule_text(cover, row, mandate, path):
-    current = cover.rule_in_force(mandate)
+def _clause_rule_text(cover, row, mandate, path, blob=None, mode=Mode()):
+    current = mode.rule_at if mode.rule_at is not None else cover.rule(mandate)
     return current is not None and row.get("ruleHash") == current
 
 
-def _clause_outcome(cover, row, mandate, path):
+def _clause_outcome(cover, row, mandate, path, blob=None, mode=Mode()):
     return row.get("outcome") in COVERING_OUTCOMES
 
 
-def _clause_content(cover, row, mandate, path):
-    if cover.exception(row):
-        current = cover.ctx.hash(cover.design)
+def _clause_content(cover, row, mandate, path, blob=None, mode=Mode()):
+    if cover.exception(row, mode):
+        current = cover.ctx.hash(cover.design, mode.overrides)
         return current is not None and (row.get("files") or {}).get(cover.design) == current
-    current = cover._resolving_blob if cover._resolving_blob is not None else cover.ctx.hash(path)
+    current = blob if blob is not None else cover.ctx.hash(path, mode.overrides)
     return current is not None and row_blob(row, path) == current
 
 
-def _clause_reach(cover, row, mandate, path):
+def _clause_reach(cover, row, mandate, path, blob=None, mode=Mode()):
     head = row.get("head")
-    target = cover.design if cover.exception(row) else path
+    target = cover.design if cover.exception(row, mode) else path
     if not head:
         return str(row.get("subject", "")).startswith("doc:")
     return cover.ctx.reaches(head, target) and not cover.ctx.merge_touched(head, target)
 
 
-def _clause_no_escape(cover, row, mandate, path):
+def _clause_no_escape(cover, row, mandate, path, blob=None, mode=Mode()):
     if cover.escapes is None:
         return False
     ts = str(row.get("ts", ""))
@@ -1522,7 +1344,7 @@ def _clause_no_escape(cover, row, mandate, path):
                    for escape in cover.escapes)
 
 
-def _clause_depth(cover, row, mandate, path):
+def _clause_depth(cover, row, mandate, path, blob=None, mode=Mode()):
     if row.get("reviewer") != "panel":
         return True
     tiers = cover.tiers()
@@ -1532,7 +1354,7 @@ def _clause_depth(cover, row, mandate, path):
     derived = "from" in row
     if not derived and (effort not in EFFORT_ORDER or not isinstance(load, list)):
         return False
-    seat = cover.seat or {}
+    seat = mode.seat or {}
     if seat.get("tier") is not None:
         if seat["tier"] not in tiers or tiers.index(tier) > tiers.index(seat["tier"]):
             return False
@@ -1544,7 +1366,7 @@ def _clause_depth(cover, row, mandate, path):
     return True
 
 
-def _clause_standing(cover, row, mandate, path):
+def _clause_standing(cover, row, mandate, path, blob=None, mode=Mode()):
     """A row whose model holds the row's tier in registry `supplementary` covers only beside a qualified row.
 
     The weakness: a review seat from such a row alone leaves defects a qualified seat finds, or reports invalid
@@ -1557,44 +1379,33 @@ def _clause_standing(cover, row, mandate, path):
     An unloadable registry is the exception: no panel row covers (`Cover.standing`)."""
     if cover.standing(row) != "supplementary":
         return True
-    seat = cover.seat
+    seat = mode.seat
     peer = None if seat is None else {k: v for k, v in seat.items() if k != "load"}
-    for other in cover.rows:
-        if other is row or cover.standing(other) != "qualified":
-            continue
-        if cover._premise is not None:
-            saved, cover.seat = cover.seat, peer
-            try:
-                if cover._premise_covers(other, mandate, path, cover._premise):
-                    return True
-            finally:
-                cover.seat = saved
-        elif cover._row_holds(other, mandate, path,
-                              cover._resolving_blob if cover._resolving_blob is not None else cover.ctx.hash(path),
-                              peer):
-            return True
-    return False
+    return any(other is not row and cover.standing(other) == "qualified"
+               and cover._row_holds(other, mandate, path, blob, mode._replace(seat=peer))
+               for other in cover.rows)
 
 
-def _clause_merge_base(cover, row, mandate, path):
+def _clause_merge_base(cover, row, mandate, path, blob=None, mode=Mode()):
     if not (cover.catalog.get(mandate) or {}).get("interaction"):
         return True
     current = cover.ctx.merge_base()
     return current is not None and row.get("mergeBase") == current
 
 
-def _clause_subject(cover, row, mandate, path):
-    if cover.exception(row):
+def _clause_subject(cover, row, mandate, path, blob=None, mode=Mode()):
+    if cover.exception(row, mode):
         return True
     try:
         kind = _subject_kind(row.get("subject"))
     except ToolError:
         return False
     readers = ("session", "pr")
-    return kind == cover.subject_kind or (kind in readers and cover.subject_kind in readers)
+    requested = mode.subject_kind or cover.subject_kind
+    return kind == requested or (kind in readers and requested in readers)
 
 
-def _clause_bar(cover, row, mandate, path):
+def _clause_bar(cover, row, mandate, path, blob=None, mode=Mode()):
     """A row recorded at a rigor covers a request at that rigor or a higher one. A row with no recognized `rigor`
     is a legacy row and covers every request. A request with no resolved rigor counts as `thorough`."""
     rigors = _import("triage").RIGORS
@@ -1624,21 +1435,6 @@ def _note_ledger(problem, corrupt) -> None:
         print(f"{problem}: every pair is uncovered", file=sys.stderr)
     if corrupt:
         print(f"{corrupt} corrupt ledger line(s) skipped", file=sys.stderr)
-
-
-def normalize_files(toplevel: Path, files) -> list[str]:
-    """Repo-relative POSIX paths: an absolute path inside `toplevel` loses that prefix, and `./` goes."""
-    out = []
-    for raw in files:
-        path = Path(str(raw).replace("\\", "/"))
-        if path.is_absolute():
-            try:
-                path = path.relative_to(toplevel)
-            except ValueError:
-                pass
-        text = path.as_posix()
-        out.append(text[2:] if text.startswith("./") else text)
-    return list(dict.fromkeys(out))
 
 
 def read_escapes(repo: Path, toplevel: Path | None = None):
@@ -1671,17 +1467,21 @@ def _make_cover(repo: Path, base_ref: str, subject_kind: str, seat=None, design=
     return Cover(ctx, catalog, rows, escapes, subject_kind, seat, design, task_id=task_id), problem
 
 
-def cover_at(repo: Path, hashes: dict, base_ref: str = "origin/main") -> Cover:
-    """A session-subject `Cover` that reads each file in `hashes` (path -> blob sha) at that blob."""
-    return _make_cover(repo, base_ref, "session", hashes=hashes)[0]
+def cover_at(repo: Path, hashes: dict, base_ref: str = "origin/main", *, subject=None) -> Cover:
+    return _make_cover(repo, base_ref, _subject_kind(subject) if subject else "session", hashes=hashes)[0]
 
 
-def reviewed_blob(cover: Cover, path: str, mandates, seats):
-    """Newest blob covered by every mandate at all its roster depth seats, else None."""
+def reviewed_blob(cover: Cover, path: str, mandates, seats, *, skip_derived: bool = False):
+    """Newest blob covered by every mandate at all its roster depth seats, else None.
+
+    `skip_derived` ignores a row carrying `from`: it transcribes a predecessor's edit, so its blob is the bytes
+    after that edit, never the bytes a reviewer read. Callers judging what a seat read pass it."""
     for row in reversed(cover.rows):
+        if skip_derived and row.get("from"):
+            continue
         blob = row_blob(row, path)
-        if blob and all(cover.resolve(m, path, blob, seat) is not None
-                        for m in mandates for seat in seats.get(m, []) or [{"nonPanelRoot": True}]):
+        if blob and all(cover._pair(m, path, seats.get(m, []), Mode(overrides={path: blob})).state is None
+                        for m in mandates):
             return blob
     return None
 
@@ -1702,25 +1502,41 @@ def _owes(path: str, mandate: str, *, prose_scope: bool = False) -> bool:
     return not prose_scope
 
 
-def uncovered_pairs(cover: Cover, files: list[str], mandates: list[str], roster: list | None = None) -> list[tuple]:
-    """`(path, mandate)` for a pair no row covers; `(path, mandate, "depth-unchecked")` for a pair only panel
-    rows cover when `roster` names no seat to judge clause 6 against, so it never reads as covered.
+class Pair(NamedTuple):
+    state: str | None
+    rows: tuple[dict | None, ...]
 
-    A file owes only the mandates that judge its kind, per `execution_depth.md` §Mandate admission: a `.md`
-    file owes no code-quality (`cq.*`) or test-quality (`tq`) mandate, and a file outside the harness set
-    (`.claude/**`, `CLAUDE.md`, `MEMORY.md`) owes no `harness-quality` mandate. A session or PR scope whose
-    every path is a non-executable harness path owes no other mandate below thorough rigor."""
-    cover.ctx.hash_files(files)
-    prose = _prose_harness_scope(files, cover.subject_kind, cover.request_rigor)
-    pairs = []
-    for path in files:
-        for mandate in mandates:
-            if not _owes(path, mandate, prose_scope=prose):
-                continue
-            state = cover.pair_state(mandate, path, _depth_seats(roster or [], mandate))
-            if state:
-                pairs.append((path, mandate) + (("depth-unchecked",) if state == "depth-unchecked" else ()))
-    return pairs
+
+class Coverage(NamedTuple):
+    pairs: dict[tuple[str, str], Pair]
+
+    def uncovered(self):
+        return [(path, mandate) + ((pair.state,) if pair.state == "depth-unchecked" else ())
+                for (mandate, path), pair in self.pairs.items() if pair.state]
+
+
+def _applicable_pairs(cover, files, mandates, kind):
+    prose = _prose_harness_scope(files, kind, cover.request_rigor)
+    return ((m, path) for path in files for m in mandates if _owes(path, m, prose_scope=prose))
+
+
+def query(repo: Path | Cover, *, files, mandates, roster=None, mode: Mode = Mode(),
+          subject=None, stage=None, applicable=True) -> Coverage:
+    if stage is not None and stage not in STAGES:
+        raise ToolError(f"unknown review stage: {stage}")
+    kind = _subject_kind(subject) if subject is not None else mode.subject_kind
+    cover = repo if isinstance(repo, Cover) else _make_cover(repo, "origin/main", kind or "session")[0]
+    mode = mode._replace(subject_kind=kind or cover.subject_kind)
+    files, mandates = tuple(files), tuple(mandates)
+    cover.ctx.hash_files([*files, *([cover.design] if cover.design else [])], mode.overrides)
+    depths = {m: [mode.seat] if mode.seat is not None else _depth_seats(roster or [], m) for m in mandates}
+    pairs = (_applicable_pairs(cover, files, mandates, mode.subject_kind) if applicable
+             else ((m, path) for path in files for m in mandates))
+    return Coverage({(m, path): cover._pair(m, path, depths[m], mode) for m, path in pairs})
+
+
+def uncovered_pairs(cover: Cover, files: list[str], mandates: list[str], roster: list | None = None) -> list[tuple]:
+    return query(cover, files=files, mandates=mandates, roster=roster).uncovered()
 
 
 class LedgerUnreadable(Exception):
@@ -1736,6 +1552,11 @@ def owed_staged(repo: Path, hashes: dict, mandates: list[str] | None = None,
     an escape log that exists and cannot be parsed, raises `LedgerUnreadable` naming the path, so a caller
     never mistakes a failed read for coverage.
     """
+    chosen = resolve_candidate(roster) if mandates is None else list(mandates)
+    return query(staged_cover(repo, hashes, base_ref), files=hashes, mandates=chosen, roster=roster).uncovered()
+
+
+def staged_cover(repo: Path, hashes: dict, base_ref: str = "origin/main") -> Cover:
     path = ledger_path(repo)
     rows, _, problem = read_rows(path)
     if problem and path.exists():
@@ -1743,10 +1564,7 @@ def owed_staged(repo: Path, hashes: dict, mandates: list[str] | None = None,
     escapes, escape_problem = read_escapes(repo)
     if escape_problem:
         raise LedgerUnreadable(escape_problem)
-    catalog = load_catalog()
-    chosen = resolve_candidate(roster) if mandates is None else list(mandates)
-    cover = Cover(Ctx(repo, base_ref, hashes), catalog, rows, escapes, "session")
-    return uncovered_pairs(cover, list(hashes), chosen, roster)
+    return Cover(Ctx(repo, base_ref, hashes), load_catalog(), rows, escapes, "session")
 
 
 def _resolve_mandates(text: str, roster: list | None = None) -> list[str]:
@@ -1788,9 +1606,12 @@ def cmd_uncovered(args, repo: Path) -> int:
     return 0
 
 
+def _seat_depth(seat: dict) -> dict:
+    return {"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
+
+
 def _depth_seats(roster: list, mandate: str) -> list[dict]:
-    return [{"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
-            for seat in roster if mandate in seat["mandates"]]
+    return [_seat_depth(seat) for seat in roster if mandate in seat["mandates"]]
 
 
 # ---- plan -------------------------------------------------------------------------------------------------
@@ -1810,41 +1631,12 @@ def _pick(tier: str) -> dict:
 CODE_REVIEW_SEAT = "lane-code-reviewer"
 
 
-def cross_family(required: bool, used_families: list, used_models: list, tier: str, data: dict,
-                 pick_result: dict) -> dict:
-    """The cross-family seat a pre-merge panel is owed: another family with room, else another model of one."""
-    out = {"required": bool(required), "usedFamilies": sorted(set(used_families)), "candidates": []}
-    if not required:
-        return out
-    model_registry = _import("model_registry")
-    ready = {row["transport"] for row in pick_result.get("ranked") or [] if row.get("room") is not None}
-    pay = {row.get("id") for row in pick_result.get("payOptions") or []}
-
-    def eligible(row):
-        plans = model_registry.plans_of(row["transport"], data)
-        return row["id"] in pay or any(plan in ready for plan in plans)
-
-    rows = [row for row in model_registry.rows_for_tier(tier, data) if eligible(row)]
-    used = set(used_families)
-    other = [row for row in rows if row["family"] not in used]
-    chosen, degraded = (other, False) if other else (
-        [row for row in rows if row["family"] in used and row["id"] not in set(used_models)], True)
-    out["candidates"] = [{"alias": row.get("alias"), "id": row["id"], "family": row["family"],
-                          "transport": row["transport"], "degraded": degraded} for row in chosen]
-    if not out["candidates"]:
-        out["why"] = pick_result.get("reason") or f"no available {tier} row with room"
-    return out
-
-
 def _load_roster(path: str, catalog: dict) -> list[dict]:
-    try:
-        roster = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ToolError(f"cannot read roster {path}: {exc}") from exc
-    if isinstance(roster, dict):
-        roster = roster.get("roster")
-    if not isinstance(roster, list):
+    roster, problem = review_result.roster_document(path)
+    if problem == ("shape", None):
         raise ToolError(f"roster {path} is not a list of seats")
+    if problem is not None:
+        raise ToolError(f"cannot read roster {path}: {problem[1]}")
     for seat in roster:
         if isinstance(seat, dict) and seat.get("key"):
             seat.setdefault("mandates", _seat_mandates(seat["key"]))
@@ -2090,12 +1882,13 @@ def _freshness(selection, required, cover, roster, ignored, candidates):
             seats = [dict(s, tier=_strongest(["architect", s.get("tier")]))
                      for s in _depth_seats(roster, mandate)] or [{"tier": "architect"}]
             if mandate not in cover.catalog or not all(
-                    cover._row_holds(row, mandate, path, blob, seat)
+                    cover._row_holds(row, mandate, path, blob, Mode(seat=seat))
                     for path, blob in revision.items() for seat in seats):
                 continue
             # Every mandate admitted to this backstop must still be covered; dependency checks stay in Cover.
-            if not all(cover.pair_state(m, p, _depth_seats(roster, m)) is None
-                       for m in {m for s in roster for m in s["mandates"]} for p in revision):
+            if not all(pair.state is None for pair in query(
+                    cover, files=revision, mandates=sorted({m for s in roster for m in s["mandates"]}),
+                    roster=roster, applicable=False).pairs.values()):
                 continue
             out["reusedBy"].append(row["id"])
     if out["reusedBy"]:
@@ -2135,7 +1928,7 @@ def plan(repo: Path, *, stage, subject, roster, base_ref="origin/main", task=Non
     design = normalize_files(cover.ctx.toplevel, [design])[0] if design and no_new_decision else None
     cover.design = design
     required = stage == "pre-merge" or (stage == "pr-review" and kind == "pr")
-    kept, dropped, families, models = [], [], [], []
+    kept, dropped, families, panel_rows = [], [], [], []
     if waived and not files:
         print("nothing changed since the owner-waived head: no seat planned", file=sys.stderr)
         roster = []
@@ -2145,27 +1938,27 @@ def plan(repo: Path, *, stage, subject, roster, base_ref="origin/main", task=Non
         print("no files named (--files or --scope-json): every seat kept", file=sys.stderr)
     cover.ctx.hash_files(files + ([design] if design else []))
     owed_pairs = []
-    prose = not ignore_ledger and _prose_harness_scope(files, kind, cover.request_rigor)
     for seat in roster:
-        cover.seat = {"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
+        mode = Mode(seat=_seat_depth(seat))
+        pairs = query(cover, files=files, mandates=seat["mandates"], mode=mode).pairs if not ignore_ledger else {}
         left, owed, ruled = [], set(), []
         for mandate in seat["mandates"]:
-            if prose and not _owes(files[0], mandate, prose_scope=True):
+            selected = [(path, pairs[mandate, path].rows[0]) for path in files if (mandate, path) in pairs]
+            if not selected and files and not ignore_ledger:
                 continue
-            covering = [] if ignore_ledger or not files else [
-                cover.covering_row(mandate, path) for path in files]
-            if covering and all(covering):
+            covering = [row for _, row in selected if row is not None]
+            panel_rows.extend((path, row) for path, row in selected if row and row.get("reviewer") == "panel")
+            if selected and len(covering) == len(selected):
                 ids = list(dict.fromkeys(row.get("id", "") for row in covering))
                 dropped.append({"mandate": mandate, "coveredBy": ",".join(ids)})
                 families += [row.get("family") for row in covering if row.get("family")]
-                models += [row.get("model") for row in covering if row.get("model")]
             else:
                 left.append(mandate)
-                missing = [path for path, row in zip(files, covering) if row is None] if covering else files
+                missing = [path for path, row in selected if row is None] if selected else files
                 owed.update(missing)
                 owed_pairs += [(len(kept), mandate, path) for path in missing]
                 for path in missing:
-                    ruled_from = cover.rule_after(mandate, path, [cover.seat])
+                    ruled_from = cover.rule_after(mandate, path, [mode.seat], mode)
                     if ruled_from:
                         ruled.append({"mandate": mandate, "file": path, "ruleFrom": ruled_from,
                                       "ruleTo": rule_blob(cover.ctx.repo, mandate, catalog=catalog)})
@@ -2175,12 +1968,19 @@ def plan(repo: Path, *, stage, subject, roster, base_ref="origin/main", task=Non
     result = {"roster": kept, "dropped": dropped}
     earlier = {(index, mandate, path): cover.earlier_blob(mandate, path, _depth_seats(roster, mandate))
                for index, mandate, path in owed_pairs} if files and not ignore_ledger else {}
-    if kept and earlier and all(earlier.values()):
-        result["laterRound"] = True
+    if kept and earlier:
         for index, seat in enumerate(kept):
-            seat["earlierReviewedBlobs"] = [
-                {"mandate": mandate, "file": path, "blob": blob}
-                for (owner, mandate, path), blob in earlier.items() if owner == index]
+            states = [{"mandate": mandate, "file": path,
+                       "state": "ChangedSince" if earlier[index, mandate, path] else "NoBase"}
+                      for owner, mandate, path in owed_pairs if owner == index]
+            if states:
+                seat["pairStates"] = states
+            entries = [{"mandate": mandate, "file": path, "blob": blob}
+                       for (owner, mandate, path), blob in earlier.items() if owner == index and blob]
+            if entries:
+                seat["earlierReviewedBlobs"] = entries
+        if all(blob for blob in earlier.values()):
+            result["laterRound"] = True
     registry = _import("model_registry")
     data = registry.load()
     currency_tier = ("executor" if any(seat["key"] == CODE_REVIEW_SEAT for seat in roster)
@@ -2208,19 +2008,11 @@ def plan(repo: Path, *, stage, subject, roster, base_ref="origin/main", task=Non
         "rules": {m: rule_hash(m, catalog=catalog) for m in sorted({m for seat in roster for m in seat["mandates"]})},
         "noNewDecision": bool(no_new_decision), "design": design,
         "designBlob": cover.ctx.hash(design) if design else None})
-    covering = []
-    if not ignore_ledger:
-        for seat in roster:
-            cover.seat = {"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
-            for mandate in seat["mandates"]:
-                for path in files:
-                    row = cover.covering_row(mandate, path)
-                    if row and row.get("reviewer") == "panel":
-                        observed = row.get("modelObserved") is True
-                        covering.append({"row": row.get("id"), "model": row.get("model"),
-                            "group": registry.review_group(row.get("model"), data) if observed else None,
-                            "modelObserved": observed, "scope": {path: cover.ctx.hash(path)}})
-    selection["coveringReviewers"] = _canonical_rows(covering)
+    selection["coveringReviewers"] = _canonical_rows([
+        {"row": row.get("id"), "model": row.get("model"),
+         "group": registry.review_group(row.get("model"), data) if row.get("modelObserved") is True else None,
+         "modelObserved": row.get("modelObserved") is True, "scope": {path: cover.ctx.hash(path)}}
+        for path, row in panel_rows])
     ranked = {r.get("transport"): r for r in pick.get("ranked") or []}
     paid = {r.get("id") for r in pick.get("payOptions") or []}
     candidates = []
@@ -2342,22 +2134,8 @@ def _must_read_engaged(must_read_spans, toplevel, hashes: dict | None = None) ->
 
 
 def _seat_outcome(status: str, token: str, stopped_at: str | None, capability_partial: bool) -> str:
-    """A sidecar mandate's final outcome: its token bounded by the seat status.
-
-    A failed seat fails; an uncovered seat or a `not-reached` token reaches nothing (`blocked` when the seat
-    stopped blocked); a partial seat covers nothing unless it is partial only because of capability gaps
-    (`capability_partial`, computed once by `review_result.ingest`). Such a seat keeps its map's token, because the coverage rule "a not-reached, INCOMPLETE,
-    blocked or failed outcome covers nothing" reads per mandate and per engaged file: the seat's own map and
-    the engagement floor in `_seat_rows` decide which pairs a gap left incomplete. This is the Python home of
-    the rule `review_fanout.js` `seatMandates` applies before an engine return, whose tokens are recorded as
-    returned."""
-    if status == "failed":
-        return "failed"
-    if status == "uncovered" or token == "not-reached":
-        return "blocked" if stopped_at == "blocked" else "not-reached"
-    if status == "partial" and not capability_partial and token in COVERING_OUTCOMES:
-        return "incomplete"
-    return token if token in OUTCOMES else "not-reached"
+    """Adapter: `review_result.seat_outcome`, the one home of the per-mandate outcome rule."""
+    return review_result.seat_outcome(status, token, stopped_at, capability_partial)
 
 
 def _live_journal_source(directory: str, seats_file: str, toplevel: Path):
@@ -2610,15 +2388,17 @@ def _engine_seats(result: dict, where: str, pins=None, tiers=None, served=None, 
                       f"{review_result.unread_text(seat_row['mustRead'], seat_row['reads'], unread, root) or 'entries'}"
                       f"; recorded failed", file=sys.stderr)
                 status, mandates = "failed", {mandate: "failed" for mandate in mandates}
-        seats.append({"seat": key, "status": status, "stopped": row.get("stoppedAt"),
-                      "mustReadEvidence": evidence,
-                      "mustReadSpans": review_result.must_read_spans(seat_row.get("mustRead"), reads, root),
-                      "capabilityPartial": row.get("capabilityPartial") is True,
-                      "mandates": mandates, "targets": targets, "gaps": texts if whole else None,
-                      "called": seat_row.get("called"),
-                      "count": row.get("count") or 0, "tier": (tiers or {}).get(label) or row.get("tier"),
-                      "effort": (pins or {}).get(label) or row.get("effort"), "model": model,
-                      "observed": bool(seat_row.get("served_model"))})
+        # The engine's transport returns each token already bounded by the seat status (`review_fanout.js`
+        # `seatMandates`), so this adapter passes them through; the reducer applies where a raw token exists.
+        seats.append(review_result.seat_evidence(
+            seat=key, status=status, stopped=row.get("stoppedAt"), mandates=mandates, targets=targets,
+            gaps=texts if whole else None, called=seat_row.get("called"), count=row.get("count") or 0,
+            tier=(tiers or {}).get(label) or row.get("tier"),
+            effort=(pins or {}).get(label) or row.get("effort"), model=model,
+            observed=bool(seat_row.get("served_model")),
+            capability_partial=row.get("capabilityPartial") is True,
+            must_read_evidence=evidence,
+            must_read_spans=review_result.must_read_spans(seat_row.get("mustRead"), reads, root)))
     return seats
 
 
@@ -2666,14 +2446,15 @@ def _sidecar_seats(prepared: dict, catalog: dict) -> list[dict]:
             for key in _catalog_keys(mandate, catalog):
                 mandates[key] = _seat_outcome(entry.get("status"), raw.get(key, token), checked.get("stoppedAt"),
                                               entry.get("capabilityPartial") is True)
-        seats.append({"seat": label, "status": entry.get("status"), "stopped": checked.get("stoppedAt"),
-                      "mustReadEvidence": entry.get("mustReadEvidence"), "mustReadSpans": entry.get("mustReadSpans"),
-                      "mandates": mandates, "targets": checked.get("toolsUsed") or [],
-                      "gaps": [text for text in map(_import("review_result").gap_text, entry.get("gaps") or []) if text],
-                      "called": None,
-                      "count": entry.get("valid") or 0, "tier": entry.get("tier"), "effort": entry.get("effort"),
-                      "model": entry.get("model"), "observed": bool(entry.get("modelObserved")),
-                      "identityBasis": entry.get("identityBasis"), "record": entry.get("record")})
+        seats.append(review_result.seat_evidence(
+            seat=label, status=entry.get("status"), stopped=checked.get("stoppedAt"), mandates=mandates,
+            targets=checked.get("toolsUsed") or [],
+            gaps=[text for text in map(review_result.gap_text, entry.get("gaps") or []) if text], called=None,
+            count=entry.get("valid") or 0, tier=entry.get("tier"), effort=entry.get("effort"),
+            model=entry.get("model"), observed=bool(entry.get("modelObserved")),
+            capability_partial=entry.get("capabilityPartial") is True,
+            identity_basis=entry.get("identityBasis"), record=entry.get("record"),
+            must_read_evidence=entry.get("mustReadEvidence"), must_read_spans=entry.get("mustReadSpans")))
     return seats
 
 
@@ -2858,7 +2639,105 @@ def _seat_rows(seat, seat_findings, record: _RecordContext) -> list:
     return rows
 
 
-def cmd_record(args, repo: Path) -> int:
+class RecordRequest(NamedTuple):
+    """One review recording request: the CLI's `record` flags as data, so `main` and an in-process caller
+    (`post_check`) reach the one recorder with no argument list in between."""
+    stage: str
+    subject: str
+    run: str | None = None
+    seats_file: str | None = None
+    workflow_dir: str | None = None
+    sidecar_result: str | None = None
+    result: str | None = None
+    script: str | None = None
+    inline: str | None = None
+    outcome: str | None = None
+    mandate: str | None = None
+    files: list | None = None
+    scope_json: str | None = None
+    head: str | None = None
+    blobs: str | None = None
+    premise_commits: str | None = None
+    from_map: str | None = None
+    delta: str | None = None
+    accounted: list | None = None
+    roster: str | None = None
+    author_model: str | None = None
+    task: str | None = None
+    degraded: bool = False
+    no_new_decision: bool = False
+    escaped: list | None = None
+    rule_from: str | None = None
+    base_ref: str = "origin/main"
+
+    @classmethod
+    def from_args(cls, args) -> "RecordRequest":
+        return cls(**{field: getattr(args, field, None) for field in cls._fields})
+
+
+def _load_delta(path: str) -> dict:
+    """`{path: {base, current, hunks}}` from a `prepare` delta artifact, validated to the shape `record` reads."""
+    data = _load_json(path, "--delta")
+    if not isinstance(data, dict) or not data:
+        raise ToolError("--delta must be a non-empty object keyed by repo-relative path")
+    out = {}
+    for rel, entry in data.items():
+        if not isinstance(entry, dict):
+            raise ToolError(f"--delta {rel} must be an object with base, current and hunks")
+        for field in ("base", "current"):
+            value = entry.get(field)
+            if not (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40,64}", value)):
+                raise ToolError(f"--delta {rel} needs a {field} blob id")
+        hunks = entry.get("hunks")
+        if not isinstance(hunks, list) or not all(
+                isinstance(hunk, dict) and isinstance(hunk.get("id"), str) and hunk["id"] for hunk in hunks):
+            raise ToolError(f"--delta {rel} needs a hunks list of objects carrying an id")
+        out[rel] = {"base": entry["base"], "current": entry["current"],
+                    "hunks": [hunk["id"] for hunk in hunks]}
+    return out
+
+
+def _bind_delta(delta_map: dict, hashes: dict, accounted: list) -> tuple[dict, dict]:
+    """(from map, delta map) for a record over `delta_map`. Refuses a stale artifact and an `accounted` list
+    that leaves any hunk of a pair unjudged, naming the ids so the agent can complete the list."""
+    wanted = set(accounted or [])
+    origins, delta = {}, {}
+    for rel, entry in delta_map.items():
+        if rel not in hashes:
+            raise ToolError(f"--delta names {rel}, which this record does not name")
+        if hashes[rel] != entry["current"]:
+            raise ToolError(f"--delta is stale for {rel}: prepared at {entry['current']}, the recorded bytes hash "
+                            f"{hashes[rel]}; run prepare again")
+        missing = [hunk for hunk in entry["hunks"] if hunk not in wanted]
+        if missing:
+            raise ToolError(f"--accounted misses hunk id(s) {', '.join(missing)} of {rel}: a delta row covers "
+                            f"only when every hunk of the pair is accounted")
+        origins[rel] = entry["base"]
+        delta[rel] = {"base": entry["base"], "accounted": [hunk for hunk in entry["hunks"] if hunk in wanted]}
+    unknown = wanted - {hunk for entry in delta_map.values() for hunk in entry["hunks"]}
+    if unknown:
+        raise ToolError(f"--accounted names hunk id(s) no --delta pair holds: {', '.join(sorted(unknown))}")
+    return origins, delta
+
+
+def _refuse_unbased_inline(args, ctx: Ctx, hashes: dict, roster: dict) -> None:
+    """A plan or doc inline clean over a covered predecessor must carry `--delta`: a name other than fold
+    certifies only the hunks it states, so an unstated one would certify the whole file."""
+    kind = _subject_kind(args.subject)
+    if kind not in ("plan", "doc") or not hashes or not args.mandate:
+        return
+    cover, _problem = _make_cover(ctx.repo, args.base_ref, kind, hashes=hashes)
+    seats = _depth_seats(list(roster.values()), args.mandate)
+    for path in hashes:
+        earlier = cover.earlier_blob(args.mandate, path, seats)
+        if earlier:
+            raise ToolError(f"--inline {args.inline} over {path} has a covered predecessor {earlier}: pass "
+                            f"--delta <prepare artifact> --accounted <hunk ids> so the row states the hunks it judged")
+
+
+def record(request: RecordRequest, repo: Path) -> list:
+    """Append the rows this request records and return them, so a caller reads the count it wrote."""
+    args = request
     sources = [name for name in ("run", "seats_file", "sidecar_result", "result", "script", "inline")
                if getattr(args, name) is not None]
     if len(sources) != 1:
@@ -2909,12 +2788,23 @@ def cmd_record(args, repo: Path) -> int:
         for sha in premise_commits:
             if not _is_ancestor(repo, sha, snapshot):
                 raise ToolError(f"--premise-commits {sha} is not a commit ancestor of --head {snapshot}")
-    if args.blobs:
-        blobs = blob_map(args.blobs)
-        ctx.overrides.update({normalize_files(ctx.toplevel, [path])[0]: sha for path, sha in blobs.items()})
+    frozen = {normalize_files(ctx.toplevel, [path])[0]: sha for path, sha in blob_map(args.blobs).items()} if args.blobs else {}
+    delta_map = None
+    if args.delta:
+        if not args.inline or args.inline == "fold":
+            raise ToolError("--delta applies to --inline <name> other than fold")
+        if args.accounted is None:
+            raise ToolError("--delta needs --accounted <hunk ids>")
+        if args.from_map:
+            raise ToolError("--delta and --from name the same predecessor; pass one")
+        delta_map = _load_delta(args.delta)
+    elif args.accounted is not None:
+        raise ToolError("--accounted needs --delta <prepare artifact>")
     files_in = list(args.files or [])
     if args.scope_json:
         files_in += [str(p) for p in _load_scope(args.scope_json).get("files") or []]
+    if delta_map and not files_in:
+        files_in = list(delta_map)
     files = normalize_files(ctx.toplevel, files_in)
     origins = None
     if args.inline == "fold" and not args.from_map:
@@ -2926,7 +2816,7 @@ def cmd_record(args, repo: Path) -> int:
                 for value in origins.values()):
             raise ToolError("--from must map exactly --files to predecessor blob shas or null")
     hashes = {}
-    for path, blob in ctx.hash_files(files).items():
+    for path, blob in ctx.hash_files(files, frozen).items():
         state = blob if blob is not None else ctx.deleted_hash(path)
         if state is not None:
             hashes[path] = state
@@ -2935,8 +2825,11 @@ def cmd_record(args, repo: Path) -> int:
     if files and not hashes:
         raise ToolError(f"none of the {len(files)} named files resolved in {ctx.toplevel}, so the row would cover "
                         f"nothing: name them relative to the checkout that holds them and record from there")
+    delta = None
+    if delta_map is not None:
+        origins, delta = _bind_delta(delta_map, hashes, args.accounted)
     for path, blob in hashes.items():
-        if path not in ctx.overrides:
+        if path not in frozen:
             continue
         home, inner = owning_repo(ctx.toplevel, path)
         present = _git(home, ["cat-file", "-e", blob + "^{blob}"])
@@ -2947,6 +2840,8 @@ def cmd_record(args, repo: Path) -> int:
     roster = {}
     if args.roster:
         roster = {seat["key"]: seat for seat in _load_roster(args.roster, catalog)}
+    if args.inline and args.inline != "fold" and origins is None and delta is None:
+        _refuse_unbased_inline(args, ctx, hashes, roster)
 
     author = args.author_model or served_model()
     if author is None:
@@ -2983,7 +2878,8 @@ def cmd_record(args, repo: Path) -> int:
         rows.append(dict(base, id=f"{name}:{stamp}:{mandate}", ts=stamp, mandate=mandate, ruleHash=rule,
                          ruleBlob=rule_blob(repo, mandate, catalog=catalog), reviewer=reviewer, family="none", model=None, modelObserved=False, tier=None, effort=None,
                          seat=name, seatMandates=[mandate], files=hashes, outcome=args.outcome,
-                         findings=0, **({"from": origins} if origins is not None else {})))
+                         findings=0, **({"from": origins} if origins is not None else {}),
+                         **({"delta": delta} if delta is not None else {})))
     else:
         seat_named = bool(args.sidecar_result)
         if args.seats_file:
@@ -3083,7 +2979,7 @@ def cmd_record(args, repo: Path) -> int:
         chosen.append({"id": finding_id, "sha": sha, "file": _finding_paths([by_id[finding_id]], ctx.toplevel)[0],
                        "mandate": mandate})
     _write_escapes(repo, args.stage, chosen, author, catalog, args.base_ref, base["call"])
-    return 0
+    return rows
 
 
 # ---- owed, rows, keys -------------------------------------------------------------------------------------
@@ -3093,36 +2989,6 @@ def is_doctrine_path(path: str) -> bool:
     return _import("harness_edit_skill_reminder", CLAUDE_DIR / "hooks").is_doctrine_path(path)
 
 
-def range_commits(repo: Path, base: str, rev: str) -> list[dict]:
-    """Commits in base..rev as {sha, subject, files}, oldest first; merges list only authored resolutions.
-
-    A gitlink change lists the files its submodule changed between the pins (`gitlink_files`), not the gitlink:
-    the pointer has no reviewable bytes, so it is reviewed through those files. A merge lists the submodule files
-    its resolved pin changed against every parent's pin."""
-    rng = f"{base}..{rev}"
-    log = _git(repo, ["log", "--reverse", "--cc", "--no-renames", "--diff-filter=ACDMR", "--raw", "--no-abbrev",
-                      "--format=@@%H\t%s", rng])
-    if log.returncode != 0:
-        raise ToolError(f"cannot list commits in {rng}: {log.stderr.decode('utf-8', errors='replace').strip()}")
-    commits, current = [], None
-    for line in log.stdout.decode("utf-8", errors="replace").splitlines():
-        if line.startswith("@@"):
-            sha, _, subject = line[2:].partition("\t")
-            current = {"sha": sha, "subject": subject, "files": []}
-            commits.append(current)
-        elif line.startswith(":") and current is not None:
-            meta, _, path = line.partition("\t")
-            parents = len(meta) - len(meta.lstrip(":"))
-            fields = meta.lstrip(":").split()
-            modes, pins = fields[:parents + 1], fields[parents + 1:2 * parents + 2]
-            if "160000" in modes:
-                changed = set.intersection(*(gitlink_files(repo, path, old, pins[-1]) for old in pins[:-1]))
-                current["files"].extend(sorted(changed))
-            else:
-                current["files"].append(path)
-    return commits
-
-
 def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: list | None = None,
                *, coverage_base: str | None = None, task_id: str | None = None) -> list[dict]:
     """Uncovered commits in base..rev, judged per commit as `owed` lists them.
@@ -3130,25 +2996,18 @@ def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: lis
     State read errors raise LedgerUnreadable; missing ledger rows cover nothing.
     """
     commits = range_commits(repo, base, rev)
-    queries = [f"{c['sha']}:{f}" for c in commits for f in c["files"]]
-    blobs = {}
-    if queries:
-        check = _git(repo, ["cat-file", "--batch-check"], stdin=("\n".join(queries) + "\n").encode("utf-8"))
-        replies = check.stdout.decode().splitlines()
-        if check.returncode != 0 or len(replies) != len(queries):
-            raise ToolError(f"git cat-file --batch-check answered {len(replies)} of {len(queries)} objects "
-                            f"(exit {check.returncode}): {check.stderr.decode('utf-8', errors='replace').strip()}")
-        for query, row in zip(queries, replies):
-            fields = row.split()
-            if len(fields) >= 2 and fields[1] == "blob":
-                blobs[query] = fields[0]
-            elif split_submodule(repo, query.partition(":")[2]):
-                tip, _, file = query.partition(":")
-                found = blob_at(repo, tip, file)
-                if found is not None:
-                    blobs[query] = found
-    if not queries:
+    if not commits:
         return []
+    blobs = {}
+    for commit in commits:
+        snap = review_snapshot.open(repo, review_snapshot.Commit(commit["sha"]))
+        for file, result in snap.blobs(commit["files"]).items():
+            if isinstance(result, review_snapshot.Blob):
+                blobs[(commit["sha"], file)] = result.sha
+            elif isinstance(result, Deleted):
+                blobs[(commit["sha"], file)] = result.tombstone
+            elif isinstance(result, Unreadable):
+                raise ToolError(f"cannot read {file} at {commit['sha']}: {result.reason}")
     path = ledger_path(repo)
     rows, _, problem = read_rows(path)
     if problem and path.exists():
@@ -3161,17 +3020,9 @@ def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: lis
     owed = []
     for commit in commits:
         tip = commit["sha"]
-        cover.ctx.overrides = {}
-        for file in commit["files"]:
-            blob = blobs.get(f"{tip}:{file}")
-            if blob is not None:
-                cover.ctx.overrides[file] = blob
-            else:
-                state = Ctx(repo, coverage_base or base, snapshot=tip).deleted_hash(file)
-                if state is not None:
-                    cover.ctx.overrides[file] = state
-        files = list(cover.ctx.overrides)
-        pairs = uncovered_pairs(cover, files, mandates, roster) if files else []
+        hashes = {file: blobs[tip, file] for file in commit["files"] if (tip, file) in blobs}
+        pairs = query(cover, files=hashes, mandates=mandates, roster=roster,
+                      mode=Mode(overrides=hashes, revision=tip)).uncovered()
         if pairs:
             owed.append(dict(commit, pairs=list(dict.fromkeys(pairs))))
     return owed
@@ -3207,14 +3058,15 @@ def whole_scope(cover: Cover, subject: str, files: list[str], mandates: list[str
         if (row.get("subject") == subject and row.get("stage") == "candidate"
                 and row.get("reviewer") == "panel" and isinstance(call, str) and call and row.get("head")):
             groups.setdefault((call, row["head"]), []).append(row)
-    if _prose_harness_scope(files, _subject_kind(subject), cover.request_rigor) and not any(
-            _owes(path, mandate, prose_scope=True) for path in files for mandate in mandates):
+    kind = _subject_kind(subject)
+    if _prose_harness_scope(files, kind, cover.request_rigor) and not any(
+            _applicable_pairs(cover, files, mandates, kind)):
         return {"wholeScope": True, "call": None, "files": files, "mandates": mandates, "runs": [], "owed": False}
     runs = []
     for (call, head), rows in reversed(list(groups.items())):
-        candidate = Cover(cover.ctx, cover.catalog, rows, cover.escapes, _subject_kind(subject),
+        candidate = Cover(cover.ctx, cover.catalog, rows, cover.escapes, kind,
                           claude_dir=cover.claude_dir, rigor=cover.request_rigor)
-        pairs = uncovered_pairs(candidate, files, mandates, roster)
+        pairs = query(candidate, files=files, mandates=mandates, roster=roster, stage="candidate").uncovered()
         runs.append({"call": call, "head": head, "uncovered": [list(pair) for pair in pairs]})
     complete = next((run for run in runs if not run["uncovered"]), None) if files and mandates else None
     return {"wholeScope": complete is not None, "call": complete["call"] if complete else None,
@@ -3352,6 +3204,9 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--premise-commits", help="a frozen JSON list of full commit IDs read by the audit; "
                                                 "requires --head and never infers commits from current HEAD")
     record.add_argument("--from", dest="from_map", help="predecessor blobs per path; required for --inline fold")
+    record.add_argument("--delta", help="the prepare delta artifact: per path its base blob and hunks")
+    record.add_argument("--accounted", nargs="+",
+                        help="the hunk ids this row accounted for: every hunk of each --delta pair")
     record.add_argument("--roster")
     record.add_argument("--author-model")
     record.add_argument("--task")
@@ -3397,30 +3252,59 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv=None) -> int:
+def _dispatch(argv, repo=None):
+    args = _build_parser().parse_args(list(argv))
+    if getattr(args, "files_from", None) is not None:
+        args.files = (args.files or []) + load_files_from(args.files_from)
+    if args.command == "uncovered" and args.files is None:
+        raise ToolError("uncovered needs --files or --files-from")
+    repo = Path(getattr(args, "repo", None) or repo or Path.cwd())
+    if args.command == "scope":
+        sys.stdout.write(json.dumps(build_scope(repo, args.base_ref, args.pr)) + "\n")
+        return 0
+    if args.command == "project":
+        date = args.date or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        write_record(repo, args.pr, args.scope_json, args.out, date, args.waive)
+        return 0
+    if args.command == "record":
+        record(RecordRequest.from_args(args), repo)
+        return 0
+    handler = {"plan": cmd_plan, "uncovered": cmd_uncovered, "owed": cmd_owed,
+               "whole-scope": cmd_whole_scope, "rows": cmd_rows, "keys": cmd_keys}[args.command]
+    return handler(args, repo)
+
+
+def _guard(work, *args):
+    """(return value, exit code) for `work(*args)`, printing the CLI's error and mapping it to its status."""
     try:
-        args = _build_parser().parse_args(sys.argv[1:] if argv is None else argv)
-        if getattr(args, "files_from", None) is not None:
-            args.files = (args.files or []) + load_files_from(args.files_from)
-        if args.command == "uncovered" and args.files is None:
-            raise ToolError("uncovered needs --files or --files-from")
-        repo = Path(getattr(args, "repo", None) or Path.cwd())
-        if args.command == "scope":
-            sys.stdout.write(json.dumps(build_scope(repo, args.base_ref, args.pr)) + "\n")
-            return 0
-        if args.command == "project":
-            date = args.date or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-            write_record(repo, args.pr, args.scope_json, args.out, date, args.waive)
-            return 0
-        handler = {"plan": cmd_plan, "record": cmd_record, "uncovered": cmd_uncovered, "owed": cmd_owed,
-                   "whole-scope": cmd_whole_scope, "rows": cmd_rows, "keys": cmd_keys}[args.command]
-        return handler(args, repo)
+        return work(*args), 0
     except LedgerUnreadable as exc:
         print(exc, file=sys.stderr)
-        return 2
+        return None, 2
     except ToolError as exc:
         print(exc, file=sys.stderr)
-        return exc.code
+        return None, exc.code
+
+
+def run(argv, repo=None) -> tuple[int, str, str]:
+    """One CLI command in process: (exit code, stdout, stderr). `main` is this without the streams."""
+    code, value, out, err = attempt(_dispatch, list(argv), repo)
+    return (code if code else (value or 0)), out, err
+
+
+def attempt(work, *args) -> tuple[int, object, str, str]:
+    """`work(*args)` with the CLI's error mapping and captured streams: (code, return value, stdout, stderr).
+
+    `code` is nonzero only for a LedgerUnreadable or ToolError; a command's own status is its return value."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        value, code = _guard(work, *args)
+    return code, value, out.getvalue(), err.getvalue()
+
+
+def main(argv=None, repo=None) -> int:
+    value, code = _guard(_dispatch, sys.argv[1:] if argv is None else argv, repo)
+    return code if code else (value or 0)
 
 
 if __name__ == "__main__":

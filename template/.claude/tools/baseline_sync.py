@@ -1665,7 +1665,7 @@ def _strict_findings(root: Path, source: BaselineSource, lock: dict,
     return findings
 
 
-_TOOL_RELPATH = re.compile(r"\.claude/(hooks|tools|scripts)/(lib/)?[^/_][^/]*\.(py|sh|ps1|js|mjs)$")
+_TOOL_RELPATH = re.compile(r"^\.claude/(hooks|tools|scripts)/(lib/)?[^/_][^/]*\.(py|sh|ps1|js|mjs)$")
 
 
 def _harness_tests():
@@ -1677,11 +1677,20 @@ def _harness_tests():
 
 
 def _bound_proofs(root: Path, tools: list[str]) -> dict[str, list[str]]:
-    """Each tool's proof files bound by name or importer, never by a mention. A proof needs no row (D1):
-    its status is read from its row only where one exists."""
-    ht = _harness_tests()
-    bound = ht.shipped_proofs_by_tool(str(root), tools)
-    return {tool: [rel for rel in bound[tool] if rel.count("/") == 2] for tool in tools}
+    """Each tool's proof files bound by name or importer, never by a mention; a loss-floor module is also proved by
+    the floor's table rows. A proof needs no row (D1): its status is read from its row only where one exists."""
+    catalog = _proof_catalog()
+    inventory = catalog.Catalog.open(catalog.View.worktree(root))
+    return {tool: inventory.shipped_for(tool) + (inventory.floor if tool in catalog.FLOOR_MODULES else [])
+            for tool in tools}
+
+
+def _proof_catalog():
+    scripts = str(_TOOLS_DIR.parent / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from _proof_runner import catalog
+    return catalog
 
 
 def _proves_at_layer(files: dict, tool: str, proof: str) -> bool:
@@ -2333,16 +2342,13 @@ def _print_dependent_notes(root: Path, pushed: dict[str, bytes | None], lock: di
         print(f"dependents: not checked ({type(exc).__name__}: {exc})")
 
 
-_PROOF_RELPATH = re.compile(r"\.claude/tests/(test_[^/]+\.py|[^/]+_test\.(js|mjs))$")
-_PROOF_RUNNERS = {".py": [sys.executable], ".js": ["node"], ".mjs": ["node"]}
-
-
-def _proof_timeout(relpath: str) -> float:
-    """The runner's own time for this proof (`harness_tests._timeout_for`: its `proof_timeouts` cap, else its
-    recorded pass times the load factor, never under the default), so a slow proof the runner passes is not refused here."""
+def _proof_timeout(relpath: str, timed_out: bool = False) -> float:
+    """The runner's own time for this proof (`harness_tests._retry_timeout`: its `proof_timeouts` cap, else its
+    recorded pass times the load factor, never under the default, longer again for a rerun after a timeout), so a
+    slow proof the runner passes is not refused here."""
     ht = _harness_tests()
     path = ht.durations_path()
-    return ht._timeout_for(relpath, ht.read_json_salvage(path) if os.path.exists(path) else {})
+    return ht._retry_timeout(relpath, ht.read_json_salvage(path) if os.path.exists(path) else {}, timed_out)
 
 
 # One judge call's row bytes, read once: every proof row builds its own shipped set over the same pushed rows.
@@ -2430,34 +2436,30 @@ def _shipped_checkout(root: Path, relpath: str, data: bytes | None, lock: dict, 
         yield tree
 
 
-def _run_in_tree(relpath: str, tree: Path) -> list[str] | None:
-    """The proof's last failing lines when it is red run in `tree` (CLAUDE_PROJECT_DIR and cwd), else None."""
-    runner = _PROOF_RUNNERS[os.path.splitext(relpath)[1]]
-    env = {key: value for key, value in os.environ.items() if key != "CLAUDE_PROJECT_DIR"}
-    env["CLAUDE_PROJECT_DIR"] = str(tree)
-    timeout = _proof_timeout(str(tree / relpath))
-    # Output to files and the whole process tree ended at return: a piped run waits for any child the proof leaves
-    # holding its pipe (a case pool's workers), past every timeout.
-    sys.path.insert(0, str(_HOOKS_DIR))
-    try:
-        from _bounded_run import run_bounded
-    finally:
-        sys.path.remove(str(_HOOKS_DIR))
-    try:
-        run = run_bounded([*runner, str(tree / relpath)], timeout, cwd=tree, env=env)
-    except OSError as exc:
-        return [f"could not run: {exc}"]
-    if run.returncode is None:
-        return [f"timed out after {timeout:g}s"]
-    return None if run.returncode == 0 else (run.stdout + run.stderr).strip().splitlines()[-6:]
+def _judge_proof(relpath: str, tree: Path, timed_out: bool | None = None):
+    """One attempt at the proof in `tree`, the runner's own launch (`_proof_runner.attempt.run`: its environment,
+    cwd, slot admission and process-tree cleanup). `timed_out` is None for the first run, else whether the run it
+    confirms timed out."""
+    ht = _harness_tests()
+    job = ht._attempt.AttemptJob(proof=str(tree / relpath), purpose="judge" if timed_out is None else "confirm",
+                                 timeout=_proof_timeout(relpath, bool(timed_out)), root=str(tree))
+    return ht._attempt.run(ht._run_context(root=str(tree)), job)
+
+
+def _red_lines(result) -> list[str] | None:
+    """The proof's last failing lines when the attempt is red, else None. Only a pass and a platform skip are green:
+    a run that never ran (cannot-run, skipped) refuses, so a missing runner never ships a proof."""
+    if result.status in ("pass", "platform-skip"):
+        return None
+    return (result.detail or result.status).strip().splitlines()[-6:] or [result.status]
 
 
 def _is_shipped_proof(relpath: str) -> bool:
-    return os.path.splitext(relpath)[1] in _PROOF_RUNNERS and bool(_PROOF_RELPATH.search(relpath))
+    return _proof_catalog().shipped_row(relpath)
 
 
-# One judge call's shipped-set proof results run side by side: {relpath: red lines or None}.
-_SHIPPED_RUNS: dict[str, list[str] | None] = {}
+# One judge call's shipped-set proof results run side by side: {relpath: the red attempt, or None when green}.
+_SHIPPED_RUNS: dict[str, object] = {}
 # One judge call's choice: run proof rows here (`--run-proofs`, or a baseline with no CI workflow), and whether the
 # hand-off to CI was printed.
 _PROOF_RUN = {"here": False, "noted": False}
@@ -2510,13 +2512,14 @@ def _prerun_shipped_proofs(root: Path, relpaths: list[str], lock: dict, source: 
             tree = stack.enter_context(_shipped_checkout(root, rels[0], data[rels[0]], lock, source, pushing, commit))
             trees.update((rel, tree) for rel in rels)
 
-        def run(rel: str) -> tuple[str, list[str] | None]:
+        def run(rel: str) -> tuple[str, object]:
             started[0] += 1
             print(f"judge: shipped-set proof {started[0]} of {len(jobs)}: {rel}", file=sys.stderr, flush=True)
-            return rel, _run_in_tree(rel, trees[rel])
+            result = _judge_proof(rel, trees[rel])
+            return rel, None if _red_lines(result) is None else result
         with parallel_budget(len(jobs)) as width, ThreadPoolExecutor(max_workers=width) as pool:
             _SHIPPED_RUNS.update(pool.map(run, jobs))
-    red = sorted(rel for rel, lines in _SHIPPED_RUNS.items() if lines is not None)
+    red = sorted(rel for rel, result in _SHIPPED_RUNS.items() if result is not None)
     print(f"judge: shipped-set proofs: {len(jobs) - len(red)} green, {len(red)} red side by side"
           + (f"; each red reruns alone: {', '.join(red)}" if red else ""), file=sys.stderr, flush=True)
 
@@ -2532,19 +2535,12 @@ def _refuse_proof_red_in_shipped_set(root: Path, relpath: str, data: bytes | Non
         return
     if relpath in _SHIPPED_RUNS and _SHIPPED_RUNS[relpath] is None:
         return
-    if relpath in _SHIPPED_RUNS:
+    first = _SHIPPED_RUNS.get(relpath)
+    if first is not None:
         print(f"judge: shipped-set proof red side by side, rerun alone: {relpath}", file=sys.stderr, flush=True)
     # Windows refuses to remove a tree a scanner or a lingering child still holds; it is regenerable scratch.
     with _shipped_checkout(root, relpath, data, lock, source, pushing, commit) as tree:
-        # Alone means the whole machine, as the runner's alone retries: beside other work, two proofs that pass in
-        # 30 s timed out at 120 s here and were refused.
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from machine_slots import release_all, take
-        held = take(exclusive=True, notice=True)
-        try:
-            red = _run_in_tree(relpath, tree)
-        finally:
-            release_all(held or [])
+        red = _red_lines(_judge_proof(relpath, tree, timed_out=None if first is None else first.timeout))
     if red is not None:
         raise BaselineError(
             f"{relpath} is red in the shipped set (the baseline's files plus the rows judged push, which is "

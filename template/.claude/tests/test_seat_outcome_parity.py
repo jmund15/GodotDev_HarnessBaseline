@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
 """Parity proof for the seat outcome rule kept in two copies: `seatMandates` in workflows/review_fanout.js
-(engine runs) and `_seat_outcome` in tools/review_ledger.py (sidecar runs). Each `ROWS` row hands its
-per-key token to both, and the per-mandate outcomes must match. `ROUTE_ROWS` feeds each seat return, the
-capability-partial one and its negative controls, and the must-read coverage cases, through the engine's `perAgent`
-and through `review_result.ingest` plus `review_ledger._sidecar_seats`, so each route's capability-partial fact and
-must-read verdict are computed from the same return rather than handed in, and both routes must keep the same
-number of findings.
+(engine runs) and `review_result.seat_outcome` (the reducer, shared by every Python ingress). Each `ROWS` row
+hands its per-key token to both, and the per-mandate outcomes must match. `ROUTE_ROWS` feeds each seat return,
+the capability-partial one and its negative controls, and the must-read coverage cases, through the engine's
+`perAgent` and through `review_result.ingest` plus `review_ledger._sidecar_seats`, so each route's
+capability-partial fact and must-read verdict are computed from the same return rather than handed in, and both
+routes must keep the same number of findings. `four_ingress_rows` records one seat through each of the four
+source flags and requires one coverage decision from all four.
 
     python3 .claude/tests/test_seat_outcome_parity.py
 """
 import json
 import os
+from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "..", "tools")
 FANOUT = os.path.join(HERE, "..", "workflows", "review_fanout.js")
+LEDGER = os.path.join(TOOLS, "review_ledger.py")
+ENGINE_RUN = os.path.join(HERE, "_engine_run.js")
 sys.path.insert(0, TOOLS)
 import review_ledger  # noqa: E402
+import review_result  # noqa: E402
 
 # name, status, keys, tokens (the per-key token the seat carries), stoppedAt, valid finding count,
 # map (the typed checked.mandates handed to the engine, or None for a missing map), capabilityPartial (the route's fact)
@@ -87,11 +94,8 @@ def js_outcomes():
 
 
 def py_outcomes():
-    return [{key: review_ledger._seat_outcome(status, tokens[key], stopped, partial) for key in keys}
+    return [{key: review_result.seat_outcome(status, tokens[key], stopped, partial) for key in keys}
             for _, status, keys, tokens, stopped, _valid, _map, partial in ROWS]
-
-
-ENGINE_RUN = os.path.join(HERE, "_engine_run.js")
 
 
 def engine_return(reply, seat, keys, must_read):
@@ -224,6 +228,91 @@ def lens_route_outcomes():
     return engine["perAgent"][0]["mandates"], sidecar
 
 
+def _git(root, *args):
+    return subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                          capture_output=True, text=True, check=True).stdout
+
+
+def _record(root, env, *argv):
+    return subprocess.run([sys.executable, LEDGER, *argv], cwd=str(root), capture_output=True, text=True, env=env)
+
+
+# The row's coverage decision: what the ingest forms must agree on. Provenance the transport physically carries
+# (`model`, `tier`, `identityBasis`, `mustReadEvidence`) is excluded: a saved return holds no launcher pins, so
+# its absence there is explicit, not a different decision.
+DECISION = ("mandate", "outcome", "files", "findings", "seatMandates", "reviewer")
+
+
+def four_ingress_rows():
+    """One seat's evidence recorded through each source flag -> {form: the row's coverage decision}.
+
+    `--seats-file` reads a live journal, `--run` the completed session tree, `--result` a saved engine return and
+    `--sidecar-result` a prepared review.json. Each records one panel row; every row must carry the same decision."""
+    mandate, subject = "plc-pattern-fit", "doc:plan.md"
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        root = tmp / "repo"
+        root.mkdir()
+        _git(root, "init", "-q")
+        (root / "plan.md").write_text("# Plan\n\nStep 1.\n", encoding="utf-8")
+        _git(root, "add", "plan.md")
+        _git(root, "commit", "-qm", "init")
+        env = dict(os.environ, HARNESS_REVIEW_LEDGER=str(root / "ledger.jsonl"),
+                   HARNESS_ESCAPE_LOG=str(root / "escape.jsonl"), HARNESS_REVIEW_SESSIONS=str(tmp / "sessions"))
+        (root / "roster.json").write_text(json.dumps([{"key": mandate, "mandates": [mandate], "tier": "executor",
+                                                       "effort": "high"}]), encoding="utf-8")
+        checked = {"toolsUsed": ["Read:plan.md"], "stoppedAt": "nothing-in-scope", "basis": mandate + ": clean",
+                   "mandates": {mandate: "clean"}}
+        payload = {"findings": [], "gaps": [], "checked": checked}
+        must_read = [{"path": "plan.md", "lines": 3}]
+        seat = {"model": "fixture-model", "effort": "high", "tier": "executor", "mandates": [mandate],
+                "mustRead": must_read}
+        directory = tmp / "sessions" / "s1" / "subagents" / "workflows" / "wf_one"
+        directory.mkdir(parents=True)
+        (directory.parents[1]).mkdir(exist_ok=True)
+        (tmp / "sessions" / "s1" / "workflows").mkdir()
+        events = [{"type": "started", "agentId": "a1", "label": "review:" + mandate, "phase": "Review"},
+                  {"type": "result", "agentId": "a1", "result": payload}]
+        (directory / "journal.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+        jobs = [{"label": "review:" + mandate, "seat": mandate, "mandates": [mandate], "mustRead": must_read}]
+        (tmp / "sessions" / "s1" / "workflows" / "wf_one.json").write_text(
+            json.dumps({"runId": "wf_one", "workflowName": "dispatch", "args": {"jobs": jobs}, "result": {}}),
+            encoding="utf-8")
+        (root / "seats.json").write_text(json.dumps({"review:" + mandate: seat}), encoding="utf-8")
+        prepared = review_result.ingest([{"label": mandate, "mandates": [mandate], "mustRead": must_read,
+                                          "payload": {"structured_output": payload},
+                                          "record": {"exitCode": 0, "schemaValid": True, "engagement": "proven"}}])
+        prepared["findings"] = [source["finding"] for source in prepared["sources"]]
+        (root / "review.json").write_text(json.dumps(prepared), encoding="utf-8")
+        agent = {"key": mandate, "prompt": "Review fixture.", "model": "fixture-model", "effort": "high",
+                 "kind": "reviewer", "mustRead": must_read}
+        args = {"agents": [agent], "consolidate": False, "resultMode": "full", "__lensMandates": {mandate: [mandate]},
+                "checker": {"model": "fixture-model", "effort": "medium"}}
+        done = subprocess.run(["node", ENGINE_RUN], capture_output=True, text=True,
+                              input=json.dumps({"script": FANOUT, "args": args, "reply": payload}))
+        if done.returncode != 0:
+            raise SystemExit("node failed: " + done.stderr.strip())
+        (root / "result.json").write_text(done.stdout, encoding="utf-8")
+        forms = {
+            "seats-file": ["--workflow-dir", str(directory), "--seats-file", str(root / "seats.json")],
+            "run": ["--run", "wf_one"],
+            "result": ["--result", str(root / "result.json")],
+            "sidecar-result": ["--sidecar-result", str(root / "review.json")],
+        }
+        rows = {}
+        for name, source in forms.items():
+            done = _record(root, env, "record", "--stage", "plan-check", "--subject", subject, *source,
+                           "--roster", str(root / "roster.json"), "--files", "plan.md",
+                           "--author-model", "fixture-model")
+            if done.returncode != 0:
+                raise SystemExit(f"{name} record failed: {done.stderr.strip()}")
+            got = json.loads(_record(root, env, "rows", "--subject", subject, "--json").stdout)
+            rows[name] = {key: got[-1].get(key) for key in DECISION}
+        return rows
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     js, py = js_outcomes(), py_outcomes()
     bad = 0
@@ -243,6 +332,13 @@ def main():
     bad += not ok
     print("%-4s both routes: a lens-keyed seat keeps each catalog key's token" % ("ok" if ok else "FAIL")
           + ("" if ok else "\n       engine=%s sidecar=%s expected=%s" % (engine, sidecar, LENS_MAP)))
+    rows = four_ingress_rows()
+    first = next(iter(rows.values()))
+    for name, row in rows.items():
+        ok = row == first
+        bad += not ok
+        print("%-4s four ingress forms: %s" % ("ok" if ok else "FAIL", name)
+              + ("" if ok else "\n       %s != %s" % (row, first)))
     return 1 if bad else 0
 
 

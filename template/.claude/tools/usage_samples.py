@@ -106,6 +106,38 @@ def record(samples, now=None, path=None):
     return count if written else None
 
 
+def read_log_path():
+    """Where live read outcomes go, beside the samples: `capacity_reads.jsonl` in their directory."""
+    return os.path.join(os.path.dirname(samples_path()), "capacity_reads.jsonl")
+
+
+def record_read(row, now=None, path=None):
+    """Append one live capacity read's outcome beside the samples; True when written.
+
+    A failed read writes no usage sample, so this line is the only record of it: its time, status,
+    HTTP code, Retry-After and the checkout that asked, which is what a limiting episode must be
+    traced from. Pruned on the samples' daily retention. Never raises."""
+    now = time.time() if now is None else now
+    path = path or read_log_path()
+
+    def update(state):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        today = time.strftime("%Y-%m-%d", time.gmtime(now))
+        if state.get("pruned_day") != today:
+            _prune(path, now - RETENTION_DAYS * 86400)
+            state["pruned_day"] = today
+        # bare-append: runs inside update_json_locked on this log's state file, one writer at a time.
+        with io.open(path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return 1
+
+    try:
+        written, count = update_json_locked(path + ".state.json", update)
+    except Exception:
+        return False
+    return bool(written)
+
+
 def read(path=None, bad=None):
     """Every sample object in the file; malformed lines are counted in `bad['lines']`."""
     path = path or samples_path()

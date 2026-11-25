@@ -116,6 +116,15 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/job_inbox_deliver.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -153,16 +162,6 @@
       {
         "hooks": [
           {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/kill_guard.py\"",
-            "timeout": 20,
-            "type": "command"
-          }
-        ],
-        "matcher": "TaskStop"
-      },
-      {
-        "hooks": [
-          {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/peer_message_guard.py\"",
             "timeout": 20,
             "type": "command"
@@ -173,17 +172,12 @@
       {
         "hooks": [
           {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash_dispatch.py\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash.py\"",
             "timeout": 75,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/kill_guard.py\"",
-            "timeout": 20,
             "type": "command"
           }
         ],
-        "matcher": "Bash|PowerShell|Monitor"
+        "matcher": "Bash|PowerShell|Monitor|TaskStop"
       },
       {
         "hooks": [

@@ -18,6 +18,7 @@ SC_CREDENTIAL="stub"; SC_TRANSPORT="go"; OC_SESSION_ID="0123"
 
 cat > "$D/litellm-dies" <<'SH'
 #!/usr/bin/env bash
+date +%s > "$DIES_STAMP"
 echo "boom: this launch's own failure"
 exit 1
 SH
@@ -40,9 +41,12 @@ mkdir -p "$OC_USER_HOME/.local/state/litellm-opencode"
 OC_LOG="$D/serve.log"
 echo "OLD-LINE from an earlier launch" > "$OC_LOG"
 OC_LITELLM_BIN="$D/litellm-dies"
+export DIES_STAMP="$D/dies-started"
 start=$(date +%s)
 out="$( (oc_proxy_start) 2>&1 )"; rc=$?
-secs=$(( $(date +%s) - start ))
+# Timed from the proxy process's own start: the launcher's setup before it is a few process spawns whose cost
+# follows machine load, and the bound below is on the wait loop.
+secs=$(( $(date +%s) - $(cat "$DIES_STAMP" 2>/dev/null || echo "$start") ))
 if [ "$rc" = 4 ] && [ "$secs" -lt 30 ] && [[ "$out" == *boom* ]] && [[ "$out" != *OLD-LINE* ]]; then
   echo "OK   a proxy that exits is refused at once, naming this launch's own log lines (${secs}s)"
 else
@@ -66,16 +70,21 @@ fi
 cat > "$D/litellm-hang" <<'SH'
 #!/usr/bin/env bash
 [ "${1:-}" = "--version" ] && { echo "LiteLLM: Current Version = 1.99.0"; exit 0; }
+date +%s > "$HANG_STAMP"
 exec sleep 15
 SH
 chmod +x "$D/litellm-hang"
 OC_LITELLM_BIN="$D/litellm-hang"
 OC_PROXY_WAIT_MAX=5
+export HANG_STAMP="$D/hang-started"
 start=$(date +%s)
 # Time the call where it returns: on Git Bash the killed stub's sleep keeps the substitution open until it ends.
 out="$( (oc_proxy_start; r=$?; echo "RETURNED_AT=$(date +%s)"; kill "$OC_PID" 2>/dev/null; exit "$r") 2>&1 )"; rc=$?
 returned="$(printf '%s' "$out" | sed -n 's/^RETURNED_AT=//p' | head -n 1)"
-secs=$(( ${returned:-$(date +%s)} - start ))
+# The wait loop starts when the proxy process does: the launcher's setup before it (version probe, free port, key)
+# is a few process spawns whose cost follows machine load, and it is not what the message counts.
+loop_start="$(cat "$HANG_STAMP" 2>/dev/null)"
+secs=$(( ${returned:-$(date +%s)} - ${loop_start:-$start} ))
 reported="$(printf '%s' "$out" | sed -n 's/.*not healthy on :[0-9]* after \([0-9]*\)s.*/\1/p' | head -n 1)"
 if [ "$rc" = 4 ] && [ -n "$reported" ] && [ "$reported" -ge $((secs - 1)) ]; then
   echo "OK   the wait cap and its message count wall time, not a nominal 2 s per probe chunk (${reported}s of ${secs}s)"

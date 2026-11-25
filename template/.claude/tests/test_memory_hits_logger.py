@@ -2,7 +2,7 @@
 
 instruction_quality §14: registration proves wiring, not matching. Each case
 feeds the logger a real PostToolUse payload via subprocess (through
-post_read_dispatch.py, the wired entry point) and asserts on the JSONL it
+its own entry point) and asserts on the JSONL it
 writes, then checks the reader tool groups/orders it.
 
     python3 .claude/tests/test_memory_hits_logger.py
@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DISPATCH = os.path.join(HERE, "..", "hooks", "post_read_dispatch.py")
+DISPATCH = os.path.join(HERE, "..", "hooks", "memory_hits_logger.py")
 MEMORY_HITS_TOOL = os.path.join(HERE, "..", "tools", "memory_hits.py")
 
 

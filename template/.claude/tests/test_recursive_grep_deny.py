@@ -143,7 +143,7 @@ def main():
 
     for tool, command in ALLOW:
         verdict, text = dispatch(tool, command, env)
-        # Another guard may deny for its own reason (git_guardrails on a stale stamp); the arm
+        # Another guard may deny for its own reason (the floor's git check, say); the arm
         # asserts only that the recursive-grep deny did not fire.
         check("allow %-10s %r (no recursive-grep deny; verdict %s)" % (tool, command, verdict),
               verdict != "CRASH" and "RECURSIVE GREP DENIED" not in text, verdict + " " + text)
@@ -208,6 +208,13 @@ def test_former_rewrites_are_denied(command):
     hso = hook_verdict(command, REPO)
     assert hso.get('permissionDecision') == 'deny' and 'updatedInput' not in hso, (command, hso)
     assert '-uu' in hso['permissionDecisionReason'], hso['permissionDecisionReason']
+
+
+@pytest.mark.parametrize('command', ["stdbuf -oL grep -r foo .", "time -p grep -r foo .",
+                                     "bash <<'EOF'\ngrep -r foo .\nEOF"])
+def test_a_grep_behind_a_wrapper_option_or_in_a_shell_heredoc_is_denied(command):
+    """v2 936577a's bypass rows: a wrapper's own options and a heredoc a shell runs hide no grep (one shell lexer)."""
+    assert hook_verdict(command, REPO).get('permissionDecision') == 'deny', command
 
 
 def test_deny_names_the_bounded_forms():

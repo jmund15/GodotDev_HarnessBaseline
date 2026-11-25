@@ -80,10 +80,10 @@ def _consume_deps():
         if path not in sys.path:
             sys.path.insert(0, path)
     from _bounded_run import run_bounded
-    from _commit_scope import publishes_index, writes_index
+    from _commit_scope import publication, writes_index
     from _git_commit import git_invocations
     from sidecar_launch import git_bash
-    return run_bounded, publishes_index, writes_index, git_invocations, git_bash
+    return run_bounded, publication, writes_index, git_invocations, git_bash
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _FULL_LINE = re.compile(r"^FULL:\s*(\S.*?)\s*$")
@@ -504,14 +504,14 @@ def _kills_process(command):
 
 def floor_reason(command):
     """Why `command` matches a floor guard's predicate (an index write, a commit, a push, a discard
-    `git_guardrails` blocks, a process kill outside tools/reap.py), or None. The guards do not see a check run
+    `dangerous_shell_guard` blocks, a process kill outside tools/reap.py), or None. The guards do not see a check run
     here, so this replays them."""
-    _run, publishes_index, writes_index, git_invocations, _bash = _consume_deps()
-    import git_guardrails
+    _run, publication, writes_index, git_invocations, _bash = _consume_deps()
+    import dangerous_shell_guard
     for inv in git_invocations(command, str(REPO)):
-        if git_guardrails.verdict([inv.sub, *inv.rest], cwd=inv.cwd, git_env=inv.git_env):
-            return "discards work git_guardrails blocks"
-        if publishes_index(inv.sub, inv.rest):
+        if dangerous_shell_guard.verdict([inv.sub, *inv.rest], cwd=inv.cwd, git_env=inv.git_env):
+            return "discards work dangerous_shell_guard blocks"
+        if publication(inv.sub, inv.rest, inv.cwd, inv.git_env).publishes:
             return "writes a commit"
         if writes_index([inv.sub, *inv.rest]):
             return "writes the index"

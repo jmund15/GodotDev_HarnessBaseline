@@ -93,7 +93,7 @@ class TriggerInputsTests(DoctrineFixture):
             {"sha": "fourth", "subject": "deleted", "files": [DOCTRINE]},
         ]
         original = json.loads(json.dumps(commits))
-        with patch.object(inputs.ledger, "range_commits", return_value=commits, create=True) as enumerate_range:
+        with patch.object(inputs.review_snapshot, "range_commits", return_value=commits) as enumerate_range:
             actual = inputs.doctrine_commits(self.repo, self.base_sha, self.head())
             enumerate_range.assert_called_once_with(self.repo, self.base_sha, self.head())
         self.assertEqual(actual, [
@@ -434,18 +434,19 @@ class TriggerInputsTests(DoctrineFixture):
         roster = self.root / "roster.json"
         roster.write_text(json.dumps(ROSTER), encoding="utf-8")
         out = self.repo / ".claude/scratch/drift/inputs.json"
-        actual_git = inputs.git
+        actual_hash = inputs.review_snapshot.hash_objects
         changed = False
 
-        def git_with_drift(root, *argv, **kwargs):
+        def hash_with_drift(root, paths, **kwargs):
             nonlocal changed
-            answer = actual_git(root, *argv, **kwargs)
-            if argv[0] == "hash-object" and not changed:
+            answer = actual_hash(root, paths, **kwargs)
+            if not changed:
                 changed = True
                 (self.repo / DOCTRINE).write_text("changed during freeze\n", encoding="utf-8")
             return answer
 
-        with patch.dict(os.environ, self.env()), patch.object(inputs, "git", side_effect=git_with_drift):
+        with patch.dict(os.environ, self.env()), patch.object(
+                inputs.review_snapshot, "hash_objects", side_effect=hash_with_drift):
             with self.assertRaisesRegex(inputs.ledger.ToolError, "changed while freezing"):
                 inputs.freeze(root=str(self.repo), out=str(out), base_ref=self.base_sha,
                               session_base=self.base_sha, widen=True, roster=str(roster))

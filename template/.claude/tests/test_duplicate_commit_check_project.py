@@ -383,11 +383,11 @@ def case_budget_constant_fits_the_settings_timeout():
     import duplicate_commit_check as dcc
 
     def timeout_of(settings):
-        """The `timeout` on a settings document's entry that runs pre_bash_dispatch.py, or None."""
+        """The `timeout` on a settings document's Bash entry (`hooks/pre_bash.py`, which runs the dispatcher), or None."""
         for entries in (settings.get("hooks") or {}).values():
             for entry in entries:
                 for hook in entry.get("hooks", []):
-                    if "pre_bash_dispatch" in str(hook.get("command", "")):
+                    if "hooks/pre_bash" in str(hook.get("command", "")):
                         return hook.get("timeout")
         return None
 

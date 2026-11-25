@@ -34,6 +34,7 @@ if str(HOOKS) not in sys.path:
     sys.path.insert(0, str(HOOKS))
 
 import _hook_state  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 from cli_usage import usage  # noqa: E402
 
 PLATFORM = sys.platform
@@ -207,13 +208,13 @@ def committed_blobs(template):
     """Blob ids of every committed version of the template; empty when its history is unreadable, so an unknown
     home copy stays `drift` and keeps its bytes."""
     try:
-        done = subprocess.run(["git", "log", "--format=", "--raw", "--no-abbrev", "--", template.name],
-                              cwd=template.parent, capture_output=True, timeout=30)
+        done = git_run(["log", "--format=", "--raw", "--no-abbrev", "--", template.name],
+                       cwd=str(template.parent), timeout=30)
     except (OSError, subprocess.SubprocessError):
         return set()
     if done.returncode:
         return set()
-    return {line.split()[3] for line in done.stdout.decode("utf-8", "replace").splitlines()
+    return {line.split()[3] for line in done.text.splitlines()
             if line.startswith(":") and len(line.split()) > 4}
 
 

@@ -22,6 +22,8 @@ the last file that sets it. The godot defaults file holds `index_prebuild` (`lis
 commands `/reindex_search` Step 3 runs. Command line:
   - `python3 .claude/tools/adaptation.py get <key>` prints a list one item per line, a dict as one JSON
     line and a scalar as is; an unknown key exits 2.
+  - `python3 .claude/tools/adaptation.py plugin <name>` prints `state:`, `root:` and `error:` lines for one
+    plugin; exit 1 when it is unreadable.
   - `python3 .claude/tools/adaptation.py run <key>` runs each entry of a list key once from the repo
     root as an argv list (`shlex.split`, no shell), prints each command's output, reports a failing
     entry and continues, and exits 0; a non-list key exits 2.
@@ -38,21 +40,25 @@ Two contracts share this loader:
     YAML block is absent, unparseable, or a known key is wrong-typed; they do not call
     `load()` for that check, because a hook must never block and these three must.
 
-`bench_liveness` supplies the installation root, logs provider and process patterns/labels
-read by `scripts/sync_plan_config.py`; an absent key means no project benchmark extras.
+`plugins` maps a plugin name to its checkout root (relative: against the checkout holding this file; default
+`{}`). `plugin()` reads `<root>/.claude/plugin.<name>.json` on each call and answers `absent` (no `plugins` key
+for the name), `unreadable` (the root, registration, schema, a required key or the entry file is bad) or
+`ready`; `plugin_entry()` loads a ready plugin's entry module by path, after naming the running checkout in
+`HARNESS_CORE_ROOT`. `ENTRY_CALLS` is each plugin's declared entry calls ({plugin: {call: [parameter names]}}), the
+one list the core's consumers, their proofs and the plugin's own contract proof read. The registration's
+`sidecar_hooks` are the launcher's hook rows for that plugin's kinds, `measurement_workflows` the workflow names
+`orchestration_metrics.py` skips, and `usage_markers` the folder-name fragments `usage_report.py` credits to `bench`.
+`adaptation.py plugin <name>` prints the state, root and error.
 `rigor_defaults` maps project classes to path globs and levels, read by `tools/triage.py`.
 `usage_reset` is the weekly quota reset ({weekday, hour}, machine-local), read by `tools/usage_report.py`.
-`usage_bench_markers` is the list of folder-name fragments that mark a benchmark run's project folder, read by
-`tools/usage_report.py` so the report credits those runs to `bench` rather than `other` (empty: no project benchmark runs).
 `land_prefix` is the branch prefix whose pushes a project's land runner integrates and fast-forwards onto the
-default branch, with no proof run (empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
-`main_check` names the workflow that proves the default branch after each push (empty: the project has none), read by
-`hooks/git_guardrails.py`: a project that declares one needs no local close before a harness push.
+default branch, with no proof run (empty: no runner), read by `/commit_push` step 6.
+`main_check` names the workflow that proves the default branch after each push (empty: the project has none).
 `land_watch` is the command `/commit_push` step 6 starts after a land push to wait on the land and report it
 (`<land branch>` and `<pushed sha>` filled in; empty: no watcher).
 `regenerable_ignored` lists the project's ignored build outputs that a delete of an orphaned or retired worktree may
 discard: paths from the worktree root, `fnmatch` patterns, a listed directory covering everything under it; read by
-`hooks/_regenerable_clone.py` from the project root it judges for (empty: only the shared caches).
+`hooks/_delete_rule.py` from the project root it judges for (empty: only the shared caches).
 `gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks` line
 prints verbatim, and `wide` holds one row per wide runner (invocation regex, exempt arguments, optional narrow rule,
 optional `hint` the deny prints as the narrow form to write instead). `reach` ({name, paths: [glob], cmd}),
@@ -72,6 +78,8 @@ optional `hint` the deny prints as the narrow form to write instead). `reach` ({
 `gate_cadence_errors` validates the merged table; `hooks/_dispatch_checks.py` and `hooks/wide_test_guard.py`
 read it through `hooks/_wide_runs.py`, `tools/guard_text.py` reads `slice`, `merge` and `close` directly for
 its `Your checks` line, and a malformed row fails `get gate_cadence` (exit 1).
+`areas` is the ordered list of `[area, path prefix]` rows the census reads for size by area (`tools/mechanism_census.py`): a file
+takes the row whose prefix is longest among those that start its path, and a file no row matches counts as unassigned (empty: every file is unassigned).
 `drift_scan` is the config of `tools/drift_scan.py` ({sources, consumers, min_length, ignore}; empty: not configured).
 `gate_cadence.main` ({command: argv list, retry_exits: [int], outputs: [path]}) is the gate `scripts/main_check.py` runs on the default
 branch after a land (absent: the project runs none); exit 0 passes, exit 1 fails and names each failed test as a
@@ -82,12 +90,15 @@ Unknown top-level keys are ignored; the `gate_cadence` table rejects its own unk
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 DEFAULTS: dict = {
     "read_only_commands": [],
@@ -117,12 +128,12 @@ DEFAULTS: dict = {
     "symbol_stopwords": [],
     "instruction_scope": {"paths": [], "rows_dir": None},
     "doc_roots": [],
-    "bench_liveness": {},
+    "areas": [],
+    "plugins": {},
     "lens_prefixes": {},
     "lens_preloads": {},
     "index_prebuild": [],
     "usage_reset": {"weekday": "sunday", "hour": 13},
-    "usage_bench_markers": [],
     "land_prefix": "",
     "main_check": "",
     "land_watch": "",
@@ -166,12 +177,12 @@ _TYPES: dict = {
     "symbol_stopwords": list,
     "instruction_scope": dict,
     "doc_roots": list,
-    "bench_liveness": dict,
+    "areas": list,
+    "plugins": dict,
     "lens_prefixes": dict,
     "lens_preloads": dict,
     "index_prebuild": list,
     "usage_reset": dict,
-    "usage_bench_markers": list,
     "land_prefix": str,
     "main_check": str,
     "land_watch": str,
@@ -429,16 +440,139 @@ def get(claude_dir, key):
     return load(claude_dir).get(key, DEFAULTS.get(key))
 
 
+class Plugin(NamedTuple):
+    state: str
+    root: Path | None
+    manifest: dict
+    error: str
+
+
+class PluginUnreadable(Exception):
+    def __init__(self, name: str, error: str):
+        super().__init__("plugin %s unreadable: %s" % (name, error))
+        self.name = name
+        self.error = error
+
+
+ENTRY_CALLS = {
+    "bench": {
+        "roster_summary": [],
+        "ladder_banner": [],
+        "has_rosters": [],
+        "rosters": ["pid_alive"],
+        "running_cells": ["name"],
+        "detached_units": ["session_id", "pid_alive"],
+        "campaign_of": ["label"],
+        "grid_running": ["campaign"],
+        "wait_call": ["target"],
+        "live_runs": ["process_table"],
+    },
+}
+REGISTRATION_SCHEMA = 1
+_REGISTRATION_REQUIRED = {"core_root": str, "entry": str, "sidecar_hooks": list}
+_REGISTRATION_OPTIONAL = {"measurement_workflows": list, "usage_markers": list}
+_ENTRIES: dict = {}
+
+
+def _unreadable(root, error: str) -> Plugin:
+    return Plugin("unreadable", root, {}, error)
+
+
+def plugin_at(root, name: str) -> Plugin:
+    """The registration check of one plugin root: `ready` with its parsed manifest, else `unreadable` with the cause."""
+    root = Path(root)
+    if not root.is_dir():
+        return _unreadable(root, "root %s is not a directory" % root)
+    path = root / ".claude" / ("plugin.%s.json" % name)
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return _unreadable(root, "registration %s is missing" % path)
+    except ValueError:
+        return _unreadable(root, "registration %s does not parse" % path)
+    if not isinstance(manifest, dict) or type(manifest.get("schema")) is not int             or manifest["schema"] != REGISTRATION_SCHEMA:
+        return _unreadable(root, "registration %s is not schema %d" % (path, REGISTRATION_SCHEMA))
+    for key, expected in _REGISTRATION_REQUIRED.items():
+        if not isinstance(manifest.get(key), expected):
+            return _unreadable(root, "registration key %s is missing or not a %s" % (key, expected.__name__))
+    for key, expected in _REGISTRATION_OPTIONAL.items():
+        if key in manifest and not isinstance(manifest[key], expected):
+            return _unreadable(root, "registration key %s is not a %s" % (key, expected.__name__))
+    if not (root / manifest["entry"]).is_file():
+        return _unreadable(root, "entry %s is missing" % (root / manifest["entry"]))
+    return Plugin("ready", root, manifest, "")
+
+
+def plugin(claude_dir, name: str) -> Plugin:
+    """The state of plugin `name`, read fresh from `plugins` and its registration on every call."""
+    roots = get(claude_dir, "plugins")
+    if name not in roots:
+        return Plugin("absent", None, {}, "")
+    value = roots[name]
+    if not isinstance(value, str) or not value.strip():
+        return _unreadable(None, "plugins.%s is not a root path" % name)
+    root = Path(value)
+    return plugin_at(root if root.is_absolute() else Path(claude_dir).parent / root, name)
+
+
+def plugins(claude_dir) -> list:
+    """[(name, Plugin)] for each configured plugin, in key order."""
+    return [(name, plugin(claude_dir, name)) for name in get(claude_dir, "plugins")]
+
+
+def plugin_list(claude_dir, key: str):
+    """(items, unreadable): `key` of every ready plugin's registration, and one line per unreadable plugin."""
+    items, unreadable = [], []
+    for name, found in plugins(claude_dir):
+        if found.state == "ready":
+            items += found.manifest.get(key, [])
+        else:
+            unreadable.append("plugin %s unreadable: %s" % (name, found.error))
+    return items, unreadable
+
+
+def plugin_entry(claude_dir, name: str):
+    """The plugin's entry module, loaded by path once per resolved entry file; None when the plugin is absent.
+    Raises PluginUnreadable for an unreadable plugin or an entry that fails to import."""
+    found = plugin(claude_dir, name)
+    if found.state == "absent":
+        return None
+    if found.state != "ready":
+        raise PluginUnreadable(name, found.error)
+    path = (found.root / found.manifest["entry"]).resolve()
+    os.environ["HARNESS_CORE_ROOT"] = str(Path(__file__).resolve().parents[2])
+    if str(path) not in _ENTRIES:
+        module_name = "harness_plugin_" + name
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            sys.modules.pop(module_name, None)
+            raise PluginUnreadable(name, "entry %s failed to import: %s: %s" % (path, type(exc).__name__, exc))
+        _ENTRIES[str(path)] = module
+    return _ENTRIES[str(path)]
+
+
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2 or args[0] not in ("get", "run"):
-        print("usage: adaptation.py get|run <key>", file=sys.stderr)
+    if len(args) != 2 or args[0] not in ("get", "run", "plugin"):
+        print("usage: adaptation.py get|run <key> | plugin <name>", file=sys.stderr)
         return 2
     verb, key = args
     claude_dir = Path(__file__).resolve().parent.parent
+    if verb == "plugin":
+        found = plugin(claude_dir, key)
+        print("state: %s" % found.state)
+        if found.root:
+            print("root: %s" % found.root)
+        if found.error:
+            print("error: %s" % found.error)
+        return 1 if found.state == "unreadable" else 0
     if key not in DEFAULTS:
         print(f"adaptation: unknown key '{key}'", file=sys.stderr)
         return 2

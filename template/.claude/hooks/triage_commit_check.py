@@ -10,11 +10,12 @@ harness-quality-seat admission, not a declaration. A commit with no trailer unde
 `--trailer "Triage: <recorded fields>"` through `updatedInput`, so `review_ledger.py owed` and the escape log
 read the triage this check used. A commit whose message is one `-F <file>` (no `-m`) gets its trailer appended
 into that file and its command is not rewritten, because auto mode denies a call whose input a hook changed
-after review; a `-F` file not readable yet falls back to the `updatedInput` rewrite. A plain `-m` commit with
+after review; a `-F` file not readable yet (written in the same call) takes the `updatedInput` rewrite only for a
+recorded `Triage:` trailer, and is left as written when its trailer would be derived. A plain `-m` commit with
 neither trailer nor record is left as written: no reader parses a derived trailer (`triage.py rederive` and
 `escape_log.py` recompute from the diff), and a rewritten call costs a turn under auto mode, whose classifier
 gives no verdict on a call a hook changed. A `-F` commit with neither carries `Triage-Derived: reach=<r>
-oracle=<o>` (in its message file when readable, else the rewrite), so the derived fields travel with it; the
+oracle=<o>` in its message file when readable, so the derived fields travel with it; the
 derived-fields line speaks once per distinct text per session and only above local reach.
 Derived fields are not a judged triage. This hook never denies. An exception, a read error or an
 import failure exits non-zero; the dispatcher reports the unavailable check on stderr and in context.
@@ -45,9 +46,9 @@ for _d in (HERE, TOOLS):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 
-from _commit_scope import authored_paths, publishes_index  # noqa: E402
-from _git_commit import (_flag_values, commit_invocations, commit_message, commit_source,  # noqa: E402
-                         commit_trailer_lines, in_project, run_git, staged_paths)
+from _commit_scope import publication, publishes_index  # noqa: E402
+from _git_commit import (_flag_values, commit_invocations, commit_message, commit_trailer_lines,  # noqa: E402
+                         in_project, run_git)
 import triage  # noqa: E402
 
 OWED = ("[review] %d staged file(s) changed since their last review (%d edited after a reviewed blob, "
@@ -80,8 +81,8 @@ def _recorded(message, session_id, with_source=False):
 def _blobs(invocation, paths):
     """path -> content hash the commit publishes: the index blob, or the working file for a pathspec or -a commit."""
     top = triage._toplevel(invocation.cwd, invocation.git_env)
-    source = commit_source(invocation.rest, invocation.cwd, invocation.git_env)
-    if source is None:
+    source = publication(invocation.sub, invocation.rest, invocation.cwd, invocation.git_env).mode
+    if source == "unknown":
         raise OSError("a -i commit that mixes index and working-tree content")
     if source == "worktree":
         present = [p for p in paths if os.path.isfile(os.path.join(top, *p.split("/")))]
@@ -166,11 +167,7 @@ def _owed(invocation, paths, fields, session_id):
         owed_pairs = [pair for pair in pairs if len(pair) == 2]
         if not owed_pairs:
             return None
-        # owed_staged has already validated state; avoid _make_cover's missing-ledger diagnostic in a hook.
-        rows = review_ledger.read_rows(review_ledger.ledger_path(repo))[0]
-        escapes = review_ledger.read_escapes(repo)[0]
-        cover = review_ledger.Cover(review_ledger.Ctx(repo, "origin/main", hashes),
-                                    review_ledger.load_catalog(), rows, escapes, "session")
+        cover = review_ledger.staged_cover(repo, hashes)
         changed = {pair[0] for pair in owed_pairs
                    if cover.earlier_blob(pair[1], pair[0], []) is not None}
     except review_ledger.LedgerUnreadable as exc:
@@ -187,10 +184,11 @@ def _owed(invocation, paths, fields, session_id):
 
 def _check(invocation, session_id, tags):
     """The advisory blocks for one commit: the triage block when one applies, then the owed-review line."""
-    paths, failed = staged_paths(invocation.rest, invocation.cwd, invocation.git_env)
+    published = publication(invocation.sub, invocation.rest, invocation.cwd, invocation.git_env)
+    paths, failed = published.selection
     if paths is None:
         raise _ReadError("cannot read the content this commit publishes (%s)" % failed)
-    paths = authored_paths(sorted(paths), invocation.cwd, invocation.git_env)
+    paths = published.authored(sorted(paths))
     if not paths:
         return [], None
     changes = triage.changes_from_index(invocation.cwd, paths, invocation.git_env, invocation.rest)
@@ -294,8 +292,8 @@ def _rewrite(command, trailers, calls):
 
 def _has_message_file(invocation):
     """Whether the commit's message comes from a `-F`/`--file` flag, with no `-m`, readable or not."""
-    files, from_stdin = _flag_values(invocation.rest, "--file", "F")
-    messages, _ = _flag_values(invocation.rest, "--message", "m")
+    files, from_stdin = _flag_values(invocation.rest, "F")
+    messages, _ = _flag_values(invocation.rest, "m")
     return len(files) == 1 and not from_stdin and not messages
 
 
@@ -303,7 +301,7 @@ def _message_file(invocation):
     """The one `-F` message file of a commit whose message is that file alone, else None."""
     if not _has_message_file(invocation):
         return None
-    files, _ = _flag_values(invocation.rest, "--file", "F")
+    files, _ = _flag_values(invocation.rest, "F")
     path = os.path.join(invocation.cwd, files[0])
     return path if os.path.isfile(path) else None
 
@@ -339,6 +337,8 @@ def main():
             blocks.extend(found)
             if trailer is not None:
                 path = _message_file(invocation)
+                if path is None and trailer.startswith("Triage-Derived:") and _has_message_file(invocation):
+                    continue
                 if path is None:
                     trailers[ordinal] = trailer
                 else:

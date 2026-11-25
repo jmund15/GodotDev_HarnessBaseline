@@ -54,6 +54,22 @@ def main():
         if got != [os.path.normcase(os.path.join(spill, "lens-a.record.json"))]:
             failures.append("spillDir with no --out-dir: records %r, want them under the spillDir %s" % (got, spill))
 
+    with tempfile.TemporaryDirectory() as tmp:
+        # A launch run inside another checkout (a worktree) runs that checkout's sidecar_fanout.py, which
+        # resolves a relative spillDir against its own checkout, not the project dir the hook runs in.
+        checkout = os.path.join(tmp, "wt")
+        os.makedirs(os.path.join(checkout, ".claude", "tools"))
+        open(os.path.join(checkout, ".claude", "tools", "sidecar_fanout.py"), "w").close()
+        jobs = os.path.join(tmp, "jobs.json")
+        with open(jobs, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"jobs": [job_a], "spillDir": ".claude/scratch/rel"}, fh)
+        rows = om.sidecar_launches("python3 .claude/tools/sidecar_fanout.py %s --detach" % jobs.replace("\\", "/"),
+                                   checkout)
+        got = [os.path.normcase(os.path.abspath(r.get("record"))) for r in rows if r.get("record")]
+        want = os.path.normcase(os.path.join(checkout, ".claude", "scratch", "rel", "lens-a.record.json"))
+        if got != [want]:
+            failures.append("relative spillDir from another checkout: records %r, want %s" % (got, want))
+
     out_text = open(os.path.join(HERE, "fixtures", "dispatch_table", "fanout_detach_output.txt"),
                     encoding="utf-8").read()
     for name, rows, output, want in (

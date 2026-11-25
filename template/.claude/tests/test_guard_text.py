@@ -266,7 +266,8 @@ def main():
     with open(common, encoding="utf-8") as fh:
         calls = [line.split("guard_text.py\"", 1)[1].split(">", 1)[0].split()
                  for line in fh if 'tools/guard_text.py"' in line]
-    values = {'"$shape"': "review", '"$SC_SHAPE"': "review", '"$SC_MODEL"': "vendor-noted-1"}
+    values = {'"$shape"': "review", '"$SC_SHAPE"': "review", '"${SC_SHAPE:-}"': "review",
+              '"$SC_MODEL"': "vendor-noted-1"}
     argv = [[values.get(a, a.strip('"')) for a in call] for call in calls]
     results = [run(TOOL, *args, env=env) for args in argv]
     cases.append(("every guard_text.py call in sidecar_common.sh runs clean (%d found)" % len(argv),

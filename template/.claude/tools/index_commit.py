@@ -33,7 +33,7 @@ accepted. A committed path whose shared-index entry differs from the old, the st
 HEAD blob is a peer's staged change: it is reported and left alone. It prints
 `RESYNC OK` when every committed path is clean, otherwise it names each mismatch and exits non-zero.
 The stage record also names the base HEAD the index was read from, at `<index>.paths.json`;
-`hooks/git_guardrails.py` refuses to commit that index over any other HEAD. Should a commit land over
+`hooks/dangerous_shell_guard.py` refuses to commit that index over any other HEAD. Should a commit land over
 a moved base anyway, the private index still held the old blobs of the paths that intervening commit
 changed, so the commit reverts them: `resync` names each and refuses.
 The private index and its sidecar are deleted on success only.
@@ -54,7 +54,6 @@ import os
 import posixpath
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -66,10 +65,25 @@ for _d in (HERE.parent / "hooks", HERE):
         sys.path.insert(0, str(_d))
 import _hook_state  # noqa: E402
 import cli_usage  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 from lock_merge import dump_lock  # noqa: E402
 
 INDEX_LOCK_TIMEOUT = 5.0
 LOCK_RELPATH = ".claude/baseline.lock.json"
+STAGE_RECORD_SUFFIX = ".paths.json"
+
+
+def stage_record_path(index):
+    return Path(str(index) + STAGE_RECORD_SUFFIX)
+
+
+def stage_record_base(record):
+    try:
+        base = _read_lock(record, "the stage record").get("base_head")
+    except (IndexCommitError, AttributeError):
+        return None
+    return base if isinstance(base, str) else None
+
 COMMIT_TEMPLATE = "GIT_INDEX_FILE=%s git commit -F %s"
 BASE_NOTE = "base HEAD %s; the commit guard refuses this index once HEAD moves, so rerun stage then"
 
@@ -79,13 +93,9 @@ class IndexCommitError(Exception):
 
 
 def _git(root, args, index=None, check=True, input_bytes=None):
-    env = dict(os.environ)
-    if index is not None:
-        env["GIT_INDEX_FILE"] = str(index)
-    proc = subprocess.run(["git"] + list(args), cwd=str(root), env=env, input=input_bytes,
-                          capture_output=True)
-    out = proc.stdout.decode("utf-8", "replace")
-    err = proc.stderr.decode("utf-8", "replace")
+    env = None if index is None else {"GIT_INDEX_FILE": str(index)}
+    proc = git_run(args, cwd=str(root), env=env, input=input_bytes)
+    out, err = proc.text, proc.err_text
     if check and proc.returncode != 0:
         raise IndexCommitError("git %s failed: %s" % (" ".join(args), (err or out).strip()))
     return proc.returncode, out, err
@@ -250,7 +260,7 @@ def cmd_stage(args):
     if not name or name.startswith(".") or "/" in name or "\\" in name:
         raise IndexCommitError("--name must be a plain fragment (no leading dot, no separator): %r" % name)
     index = git_dir / ("index-%s" % name)
-    sidecar = git_dir / ("index-%s.paths.json" % name)
+    sidecar = stage_record_path(index)
 
     paths = []
     for raw in args.paths:
@@ -467,7 +477,7 @@ def _reset_shared_index(root, git_dir, entries):
 def cmd_resync(args):
     root, git_dir = _repo()
     index = git_dir / ("index-%s" % args.name)
-    sidecar = git_dir / ("index-%s.paths.json" % args.name)
+    sidecar = stage_record_path(index)
     if not sidecar.exists():
         raise IndexCommitError("no staged cycle recorded for name %r (%s); run stage first" % (args.name, sidecar))
     record = _read_lock(sidecar, "the stage record")

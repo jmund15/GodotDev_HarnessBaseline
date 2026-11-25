@@ -10,10 +10,12 @@
 """
 import argparse
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+from _git_run import run as git_run  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 LOCK = '.claude/baseline.lock.json'
@@ -22,10 +24,10 @@ DAY = 86400
 
 
 def _git(repo, *args):
-    run = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True, encoding='utf-8')
+    run = git_run(args, cwd=str(repo))
     if run.returncode not in (0, 1):
-        raise RuntimeError(f'git {args[0]} failed: {run.stderr.strip()}')
-    return run.stdout
+        raise RuntimeError(f'git {args[0]} failed: {run.err_text.strip()}')
+    return run.text
 
 
 def _entries(repo):

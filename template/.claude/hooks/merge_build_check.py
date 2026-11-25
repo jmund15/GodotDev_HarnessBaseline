@@ -32,6 +32,7 @@ from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import _git_run  # noqa: E402
 
 SHOWN_ERRORS = 10
 BYPASS = "`--no-verify` skips this check."
@@ -43,12 +44,15 @@ def child_env():
 
 
 def git(*args, env=None):
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    """git's result for `args`; `env` is the child environment a build gets, so its GIT_* variables are removed
+    from the transport's overlay rather than inherited."""
+    overlay = {key: None for key in os.environ if key.startswith("GIT_")} if env is not None else None
+    return _git_run.run(list(args), env=overlay)
 
 
 def changed_paths():
     """(paths, gitlinks): staged paths vs HEAD, and the submodule pointers among them with their index sha."""
-    out = git("diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "HEAD").stdout.split("\0")
+    out = git("diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "HEAD").text.split("\0")
     paths, gitlinks = [], {}
     for meta, path in zip(out[0::2], out[1::2]):
         paths.append(path)
@@ -80,7 +84,7 @@ def main(argv):
     paths, gitlinks = changed_paths()
     if not gitlinks and not any(p.endswith((".cs", ".csproj")) for p in paths):
         return 0
-    root = git("rev-parse", "--show-toplevel").stdout.strip()
+    root = git("rev-parse", "--show-toplevel").text.strip()
     projects = sorted(Path(root).glob("*.csproj"))
     if not projects:
         return 0
@@ -94,7 +98,7 @@ def main(argv):
     for path, sha in gitlinks.items():
         checkout = os.path.join(root, path)
         initialized = os.path.exists(os.path.join(checkout, ".git"))
-        have = git("-C", checkout, "rev-parse", "HEAD", env=child_env()).stdout.strip() if initialized else ""
+        have = git("-C", checkout, "rev-parse", "HEAD", env=child_env()).text.strip() if initialized else ""
         if have != sha:
             return refuse(f"the merge moves {path} to {sha[:9]} but the {path} checkout is at {have[:9] or 'nothing'}, "
                           f"so a build would compile the old {path}. Run `git submodule update {path}`.")

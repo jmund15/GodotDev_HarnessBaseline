@@ -95,7 +95,7 @@ def scene(tmp, name):
     shutil.copy2(TOOL, root / ".claude" / "tools" / "index_commit.py")
     shutil.copy2(TOOL.parent / "lock_merge.py", root / ".claude" / "tools" / "lock_merge.py")
     shutil.copy2(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
-    for module in ("_hook_state.py", "_file_lock.py"):
+    for module in ("_git_run.py", "_hook_state.py", "_file_lock.py"):
         shutil.copy2(HOOKS / module, root / ".claude" / "hooks" / module)
     (root / ".gitignore").write_text(".claude/tests/\n", encoding="utf-8", newline="\n")
     (root / LOCK).write_text(lock_text(LOCK_SCAFFOLD), encoding="utf-8", newline="\n")

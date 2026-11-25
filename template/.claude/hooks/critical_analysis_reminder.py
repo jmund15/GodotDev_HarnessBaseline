@@ -15,8 +15,10 @@ prior fire this session.
 
 Challenges: a prompt that questions a decision or result already taken ("what made you select X", "are you
 sure", "that was wasteful") gets its own reminder on every match, with no session flag. The failure it covers
-is conceding or defending before running the check that settles the question; `CLAUDE.core.md` Preferences
-("No performative agreement") owns the rule, and this is its decision-point text. A challenge prompt never sets
+is answering a challenge by agreeing or defending instead of working out what the owner meant; the reminder says to
+check each factual claim, then act this turn on what all the owner's words aim at, changing the part that failed
+and keeping the rest. `CLAUDE.core.md` Preferences ("No performative agreement", "Owner's words") owns the rule,
+and this is its decision-point text. A challenge prompt never sets
 the suggestion flag, and a suggestion reminder never suppresses a challenge reminder.
 
 State file:
@@ -125,8 +127,10 @@ def main() -> None:
 
     if prompt and _is_challenge(prompt):
         print("<user-prompt-submit-hook>\n"
-              "Challenge-shape prompt: run the check that settles it (tool output, registry row, log) "
-              "before agreeing or defending (CLAUDE.core.md Preferences, no performative agreement).\n"
+              "Challenge-shape prompt: check each factual claim in it against its source (tool output, registry row, log). "
+              "Then act, this turn, on what all the owner's words on this subject aim at: change the part that failed "
+              "and keep what they did not object to; the opposite of the rejected move is a second error "
+              "(CLAUDE.core.md Preferences, Owner's words).\n"
               "</user-prompt-submit-hook>")
         sys.exit(0)
 

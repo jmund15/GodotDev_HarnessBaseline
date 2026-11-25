@@ -648,8 +648,9 @@ def main():
         Handler.payload = {"error": "rate limited"}
         limited_run, limited = run(url, cred)
         cases.append(("429 is a typed rate-limit outcome", limited_run.returncode == 0
-                      and limited.get("status") == "network-error"
+                      and limited.get("status") == "rate-limited"
                       and limited.get("error", {}).get("kind") == "rate-limit"
+                      and limited.get("error", {}).get("httpStatus") == 429
                       and "429" in limited.get("error", {}).get("message", "")))
 
         Handler.status = 200

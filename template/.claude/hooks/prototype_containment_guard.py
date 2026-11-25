@@ -71,7 +71,6 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -89,8 +88,9 @@ REGISTRY_ROW = re.compile(r"^\|\s*([a-z0-9-]+)\s*\|.*\|\s*([a-z]+)\s*\|\s*$")
 SHIPPING_STATUSES = ("active", "absorbing")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _git_commit import commit_invocations, git_environ, staged_paths as _seam_staged_paths  # noqa: E402
-from _commit_scope import authored_paths, publishes_index  # noqa: E402
+import _git_run  # noqa: E402
+from _git_commit import commit_invocations  # noqa: E402
+from _commit_scope import publication, publishes_index  # noqa: E402
 
 
 # The commit's GIT_* variables, set by hook() from the invocation it judges: every git read below uses
@@ -106,14 +106,7 @@ def _git(args, repo=None):
     has its own branch and its own index, and querying this one instead would
     silently answer about the wrong tree.
     """
-    cmd = ["git"] + (["-C", repo] if repo else []) + args
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=git_environ(_COMMIT_GIT_ENV),
-    )
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
+    return _git_run.soft_text(args, prefix=("-C", repo) if repo else (), env=_COMMIT_GIT_ENV)
 
 
 def current_branch(repo=None):
@@ -125,7 +118,7 @@ def current_branch(repo=None):
 def staged_paths(repo=None, rest=()):
     """Paths the commit will publish (index, plus `-a` / `--amend` / pathspec widening per
     `_git_commit.staged_paths`), posix-normalized. None when git failed; [] when none."""
-    paths, _failed = _seam_staged_paths(list(rest), repo or ".", env=_COMMIT_GIT_ENV)
+    paths, _failed = publication("commit", rest, repo or ".", _COMMIT_GIT_ENV).selection
     return None if paths is None else sorted(paths)
 
 
@@ -226,10 +219,11 @@ def hook():
         branch = current_branch(repo)
         if not branch or branch == "HEAD":
             return allow()
-        paths = staged_paths(repo, commit.rest)
+        published = publication(commit.sub, commit.rest, repo, commit.git_env)
+        paths, _failed = published.selection
         if paths is None:
             return allow()
-        paths = authored_paths(paths, repo, _COMMIT_GIT_ENV)
+        paths = published.authored(sorted(paths))
         if branch.startswith(PROTOTYPE_BRANCH_PREFIX):
             non_proto = [p for p in paths if not p.startswith(PROTOTYPES_DIR)]
             if non_proto:

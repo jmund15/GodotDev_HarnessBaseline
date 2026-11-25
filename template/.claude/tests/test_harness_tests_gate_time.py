@@ -12,6 +12,7 @@
 
     python3 .claude/tests/test_harness_tests_gate_time.py
 """
+from collections import Counter
 import contextlib
 import io
 import json
@@ -20,6 +21,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from unittest.mock import patch
 
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
@@ -54,54 +56,100 @@ def write_proof(repo, name):
     return path
 
 
-def run_stubbed(repo, paths, outcomes, options=None, serial=()):
-    """_run_selected over `paths` with run_proof stubbed: each proof pops its next outcome. Returns
-    (statuses, details, launches as (proof name, exclusive), exclusive slot takes, printed text)."""
-    launches, takes = [], []
-    real_run, real_take, real_launch, real_serial = (harness_tests.run_proof, harness_tests._take_slots,
-                                                    harness_tests._launch, harness_tests.SERIAL)
-    saved = dict(os.environ)
+def run_stubbed(repo, paths, outcomes, options=None, serial=(), peer=False):
+    """Run planted proof outcomes through real slot admission. Return statuses, details, launches
+    as (proof name, machine held), exclusive takes, and stdout."""
+    launches, takes, holder = [], [], {}
+    real_take = harness_tests._take_slots
+    real_make = harness_tests._run_context
+    slots = os.path.join(repo, "slots")
+
+    def make(*args, **kwargs):
+        holder["ctx"] = ctx = real_make(*args, **kwargs)
+        return ctx
 
     def stub(proof, timeout=None, root=None, **_):
-        return outcomes[os.path.basename(proof)].pop(0)
+        name = os.path.basename(proof)
+        launches.append((name, holder["ctx"].held))
+        return outcomes[name].pop(0)
 
     def take(exclusive, count=1, split=None):
         if exclusive:
             takes.append(exclusive)
-        return real_take(exclusive, count)
+        return real_take(exclusive, count, split=split)
 
-    def launch(path, timeout=None, exclusive=False, *args, **kwargs):
-        launches.append((os.path.basename(path), exclusive))
-        return real_launch(path, timeout, exclusive, *args, **kwargs)
-
-    harness_tests.run_proof, harness_tests._take_slots, harness_tests._launch = stub, take, launch
-    harness_tests.SERIAL = {name: "" for name in serial}
-    os.environ["HARNESS_SLOT_DIR"] = os.path.join(repo, "slots")
-    os.environ["HARNESS_MACHINE_SLOTS"] = "2"
     statuses, details, buf = {}, {}, io.StringIO()
-    try:
-        with contextlib.redirect_stdout(buf):
+    with patch.dict(os.environ, HARNESS_SLOT_DIR=slots, HARNESS_MACHINE_SLOTS="2"), \
+            patch.multiple(harness_tests, run_proof=stub, _take_slots=take, _run_context=make,
+                           SERIAL=dict.fromkeys(serial),
+                           durations_path=lambda: os.path.join(repo, "harness_proof_durations.json")), \
+            contextlib.redirect_stdout(buf):
+        os.environ.pop("HARNESS_SLOT_BUDGET", None)
+        os.environ.pop("HARNESS_DEADLINE", None)
+        held = harness_tests._slot_pool.take(folder=slots, width=2) if peer else []
+        try:
+            if peer:
+                assert len(held) == 1, "the planted peer must hold one lane"
+                os.environ["HARNESS_DEADLINE"] = str(time.time() + 5)
             harness_tests._run_selected(paths, False, statuses, details, options or harness_tests.RunOptions())
-    finally:
-        harness_tests.run_proof, harness_tests._take_slots, harness_tests._launch = real_run, real_take, real_launch
-        harness_tests.SERIAL = real_serial
-        os.environ.clear()
-        os.environ.update(saved)
+        finally:
+            harness_tests._slot_pool.release_all(held)
     names = {os.path.basename(p): s for p, s in statuses.items()}
     return names, {os.path.basename(p): d for p, d in details.items()}, launches, takes, buf.getvalue()
 
 
-def case_alone_work_takes_the_machine_once():
-    durations = {"test_a.py": 1.0, "test_b.py": 1.0, "test_serial.py": 1.0}
-    repo = make_repo(durations)
-    paths = [write_proof(repo, name) for name in sorted(durations)]
-    flaky = [("fail", 1.0, "AssertionError: load"), ("pass", 1.0, "")]
-    statuses, _, launches, takes, _ = run_stubbed(repo, paths, {
-        "test_a.py": list(flaky), "test_b.py": list(flaky), "test_serial.py": [("pass", 1.0, "")]},
-        serial=("test_serial.py",))
-    check("a run's SERIAL proofs and alone retries take the machine once",
-          statuses == {"test_a.py": "pass", "test_b.py": "pass", "test_serial.py": "pass"} and len(takes) == 1,
-          "statuses=%s exclusive takes=%d" % (statuses, len(takes)))
+def confirmations(launches):
+    counts = Counter()
+    for name, _ in launches:
+        counts[name] += 1
+        if counts[name] == 2:
+            yield name
+
+
+FLAKY_OUTCOMES = [("fail", 1.0, "AssertionError: load"), ("pass", 1.0, "")]
+
+
+def case_an_ordinary_confirmation_takes_no_exclusive_lease():
+    durations = {"test_a.py": 1.0, "test_b.py": 1.0}
+    with tempfile.TemporaryDirectory() as root, patch.object(tempfile, "tempdir", root):
+        repo = make_repo(durations)
+        paths = [write_proof(repo, name) for name in durations]
+        statuses, _, launches, takes, _ = run_stubbed(repo, paths, {name: list(FLAKY_OUTCOMES) for name in durations})
+    check("ordinary confirmations take no exclusive lease",
+          statuses == dict.fromkeys(durations, "pass") and sorted(confirmations(launches)) == sorted(durations)
+          and len(takes) == 0, "statuses=%s exclusive takes=%d" % (statuses, len(takes)))
+
+
+def case_a_peer_lane_never_stalls_a_confirmation():
+    name = "test_flaky.py"
+    with tempfile.TemporaryDirectory() as root, patch.object(tempfile, "tempdir", root):
+        repo = make_repo({name: 1.0})
+        path = write_proof(repo, name)
+        statuses, _, launches, takes, out = run_stubbed(repo, [path], {name: list(FLAKY_OUTCOMES)}, peer=True)
+    check("a confirmation passes as flaky with the other lane still held",
+          statuses == {name: "pass"} and list(confirmations(launches)) == [name] and "FLAKY" in out,
+          "statuses=%s launches=%s exclusive takes=%d" % (statuses, launches, len(takes)))
+
+
+def case_a_serial_proof_keeps_its_own_exclusive_take():
+    durations = {"test_a.py": 1.0, "test_serial.py": 1.0}
+    with tempfile.TemporaryDirectory() as root, patch.object(tempfile, "tempdir", root):
+        repo = make_repo(durations)
+        paths = [write_proof(repo, name) for name in durations]
+        statuses, _, launches, takes, _ = run_stubbed(repo, paths, {
+            "test_a.py": list(FLAKY_OUTCOMES), "test_serial.py": [("pass", 1.0, "")]}, serial=("test_serial.py",))
+        check("the SERIAL batch takes the machine once and releases it before the ordinary confirmation",
+              statuses == dict.fromkeys(durations, "pass") and len(takes) == 1
+              and launches == [("test_a.py", False), ("test_serial.py", True), ("test_a.py", False)],
+              "statuses=%s launches=%s exclusive takes=%d" % (statuses, launches, len(takes)))
+
+        repo = make_repo({"test_serial.py": 1.0})
+        path = write_proof(repo, "test_serial.py")
+        statuses, _, launches, takes, _ = run_stubbed(repo, [path], {
+            "test_serial.py": list(FLAKY_OUTCOMES)}, serial=("test_serial.py",))
+        check("a SERIAL confirmation takes its own exclusive lease by name",
+              statuses == {"test_serial.py": "pass"} and list(confirmations(launches)) == ["test_serial.py"]
+              and len(takes) == 2, "statuses=%s launches=%s exclusive takes=%d" % (statuses, launches, len(takes)))
 
 
 def case_a_red_alone_skips_the_timeout_retries():
@@ -114,7 +162,7 @@ def case_a_red_alone_skips_the_timeout_retries():
                 "test_red.py": [red, red],
                 "test_flaky.py": [("fail", 1.0, "AssertionError: race"), ("pass", 1.0, "")]}
     statuses, details, launches, _, out = run_stubbed(repo, paths, outcomes)
-    retries = [name for name, exclusive in launches if exclusive]
+    retries = list(confirmations(launches))
     check("assertion failures retry alone before timeouts",
           retries[:2] == ["test_flaky.py", "test_red.py"], "retries=%s" % retries)
     check("a proof that failed alone leaves the timeout retries unrun, reported skipped with the red named",
@@ -133,7 +181,7 @@ def case_a_red_alone_skips_the_timeout_retries():
     def judge(reds):
         seen.append(sorted(os.path.basename(p) for p in reds))
         return False
-    statuses, _, launches, _, _ = run_stubbed(repo, paths, outcomes, harness_tests.RunOptions(red=judge))
+    statuses, _, launches, _, _ = run_stubbed(repo, paths, outcomes, harness_tests.RunOptions(red=harness_tests.RedRule.judge(judge)))
     check("a red the run's judge excuses (pre-existing) leaves the timeout retries running",
           statuses == {"test_aslow.py": "pass", "test_red.py": "fail", "test_flaky.py": "pass"}
           and seen == [["test_red.py"]], "statuses=%s judge saw %s" % (statuses, seen))
@@ -144,8 +192,11 @@ def case_a_close_judges_only_new_reds():
     calls, memo = [], {}
     real = harness_tests._reds_at
 
-    def at_base(root, rev, failing):
+    def at_base(root, rev, failing, answers=None):
         calls.append(sorted(os.path.basename(p) for p in failing))
+        if answers is not None:
+            for proof in failing:
+                answers[proof] = 'red' if proof == "/x/test_old.py" else 'pass'
         return {"/x/test_old.py": "FAIL: same\n"}
     harness_tests._reds_at = at_base
     try:
@@ -165,7 +216,7 @@ def case_a_red_alone_skips_the_other_assertion_retries():
     red = ("fail", 1.0, "FAIL: the claim\nAssertionError: real")
     statuses, details, launches, _, out = run_stubbed(
         repo, paths, {"test_along.py": [red, red], "test_zshort.py": [red, red]})
-    retries = [name for name, exclusive in launches if exclusive]
+    retries = list(confirmations(launches))
     check("the shortest assertion failure retries alone first, and once it fails alone the rest stay red unretried",
           retries == ["test_zshort.py"] and statuses == {"test_along.py": "fail", "test_zshort.py": "fail"}
           and "not retried alone" in details.get("test_along.py", "") and "test_zshort.py" in details.get("test_along.py", "")
@@ -190,7 +241,7 @@ def case_reds_rerun_at_base_side_by_side():
     def checkout(repo_root, rev, proofs=()):
         yield root
 
-    def launch(path, timeout=None, exclusive=False, root=None, *args, **kwargs):
+    def launch(path, timeout=None, root=None, *args, **kwargs):
         with lock:
             live[0] += 1
             peak[0] = max(peak[0], live[0])
@@ -198,19 +249,25 @@ def case_reds_rerun_at_base_side_by_side():
         with lock:
             live[0] -= 1
         return ("fail", 0.3, "FAIL: " + os.path.basename(path))
-    real = harness_tests._revision_checkout, harness_tests._launch
+    real = harness_tests._revision_checkout, harness_tests._run_context
+
+    def make(*args, **kwargs):
+        ctx = real[1](*args, **kwargs)
+        ctx.launch = lambda job: launch(job.proof, job.timeout, job.root)
+        return ctx
+
     saved = dict(os.environ)
     os.environ["HARNESS_SLOT_DIR"] = os.path.join(root, "slots")
     os.environ["HARNESS_MACHINE_SLOTS"] = "3"
     os.environ["HARNESS_TEST_JOBS"] = "3"
     os.environ.pop("HARNESS_SLOT_BUDGET", None)  # a runner inside an inherited lane runs serially by design
-    harness_tests._revision_checkout, harness_tests._launch = checkout, launch
+    harness_tests._revision_checkout, harness_tests._run_context = checkout, make
     buf = io.StringIO()
     try:
         with contextlib.redirect_stderr(buf), contextlib.redirect_stdout(buf):
             reds = harness_tests._reds_at(root, "base", failing)
     finally:
-        harness_tests._revision_checkout, harness_tests._launch = real
+        harness_tests._revision_checkout, harness_tests._run_context = real
         os.environ.clear()
         os.environ.update(saved)
     check("a red's rerun at base runs beside the others, each start printed",
@@ -241,6 +298,10 @@ def close_repo(proofs, durations):
     for name, source in proofs.items():
         case.write(".claude/tests/" + name,
                    source % {"log": case.tmp_path(name), "marker": case.tmp_path(name + ".marker")})
+    # Only a sleeping proof is meant to time out, and its sleep outlasts the cap. A loaded machine that starts a
+    # proof late must not turn it into a timeout, so every other proof gets a cap no start delay reaches.
+    case.write(".claude/skills/project_subsystems/adaptation.json", json.dumps(
+        {"proof_timeouts": {name: 6 if "time.sleep" in source else 60 for name, source in proofs.items()}}))
     durations_path = case.tmp_path("proof_durations.json")
     with open(durations_path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(durations, fh)
@@ -302,7 +363,7 @@ SLOW_ONCE = READ_UNIT + ("import os, sys, time\n"
                          "    fh.write('x\\n')\n"
                          "if not os.path.exists(%(marker)r):\n"
                          "    open(%(marker)r, 'w').close()\n"
-                         "    time.sleep(5)\n")
+                         "    time.sleep(10)\n")
 HANG = READ_UNIT + ("import time\n"
                     "with open(%(log)r, 'a') as fh:\n"
                     "    fh.write('x\\n')\n"
@@ -408,13 +469,13 @@ def case_a_proof_runs_on_the_land_path():
     probe = os.path.join(root, "test_path_probe.py")
     with open(probe, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("import os, sys\nsys.stdout.write(os.environ['PATH'])\nsys.exit(1)\n")
-    real_bash, saved = harness_tests._bash_exe, os.environ.get("PATH", "")
-    harness_tests._bash_exe = lambda: os.path.join(root, "bin", "bash.exe")
+    real_bash, saved = harness_tests._attempt._bash_exe, os.environ.get("PATH", "")
+    harness_tests._attempt._bash_exe = lambda: os.path.join(root, "bin", "bash.exe")
     os.environ["PATH"] = os.pathsep.join(shell_dirs + [home_bin, kept, saved])
     try:
         _, _, detail = harness_tests.run_proof(probe, 30)
     finally:
-        harness_tests._bash_exe = real_bash
+        harness_tests._attempt._bash_exe = real_bash
         os.environ["PATH"] = saved
     seen = [os.path.normcase(p) for p in detail.strip().split(os.pathsep)]
     check("a proof's PATH drops the folders Git Bash prepends and keeps the rest",
@@ -429,14 +490,33 @@ def case_a_whole_tree_closure_proof_binds_every_claude_file():
           bound.get(".claude/tests/fixtures/zz_new_fixture.txt") == [proof], bound)
 
 
+def case_red_rule_refuses_non_callable_judge_and_direct_init():
+    for bad in (None, "not callable"):
+        try:
+            harness_tests.RedRule.judge(bad)
+            threw = False
+        except (TypeError, ValueError):
+            threw = True
+        check("RedRule.judge(%r) refuses a non-callable" % (bad,), threw)
+    for kwargs in ({}, {"decide": lambda _: False, "never": True}):
+        try:
+            harness_tests.RedRule(**kwargs)
+            threw = False
+        except TypeError:
+            threw = True
+        check("RedRule(%r) refuses direct construction" % (kwargs,), threw)
+
+
 def main():
-    for case in (case_alone_work_takes_the_machine_once, case_a_red_alone_skips_the_timeout_retries,
+    for case in (case_an_ordinary_confirmation_takes_no_exclusive_lease, case_a_peer_lane_never_stalls_a_confirmation,
+                 case_a_serial_proof_keeps_its_own_exclusive_take, case_a_red_alone_skips_the_timeout_retries,
                  case_a_close_judges_only_new_reds, case_a_red_alone_skips_the_other_assertion_retries,
                  case_reds_rerun_at_base_side_by_side, case_a_ranged_close_runs_the_timeout_retry_after_a_red_fails_alone,
                  case_a_timeout_red_skips_the_first_red_bisect, case_a_proof_whose_own_subprocess_timed_out_is_a_timeout,
                  case_a_ranged_close_runs_every_alone_retry,
                  case_also_runs_a_named_proof_once_in_the_pool, case_a_proof_runs_on_the_land_path,
-                 case_a_whole_tree_closure_proof_binds_every_claude_file):
+                 case_a_whole_tree_closure_proof_binds_every_claude_file,
+                 case_red_rule_refuses_non_callable_judge_and_direct_init):
         try:
             case()
         except Exception as exc:  # noqa: BLE001 - a crashing case is a failed case

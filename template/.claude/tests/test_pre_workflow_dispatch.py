@@ -133,41 +133,27 @@ class World:
         return subprocess.run([sys.executable, str(DISPATCH)], input=text, capture_output=True, text=True,
                               encoding="utf-8", env=self.env, cwd=str(REPO), timeout=120)
 
-    def marker(self):
-        return self.home / ".claude" / ".routing_state" / ("readonly-%s.json" % self.session[:8])
-
 
 def reason_of(proc):
     return hso(proc.stdout).get("permissionDecisionReason", "")
 
 
 CAPACITY = "Provider capacity exhausted for anthropic"
-DOCTRINE = "the dispatch doctrine is not in context"
 
 
 def real_payload_cases():
-    both = World("exhausted", False, "pwdboth1")
-    proc = both.run()
-    reason = reason_of(proc)
-    check("capacity exhausted + doctrine unloaded -> ONE deny naming both",
-          classify(proc) == "deny" and CAPACITY in reason and DOCTRINE in reason, (proc.stdout, proc.stderr[-300:]))
-    check("the doctrine reason precedes the capacity reason (stable member order)",
-          reason.find(DOCTRINE) != -1 and reason.find(DOCTRINE) < reason.find(CAPACITY), reason[:300])
-    check("each reason appears once", reason.count(CAPACITY) == 1 and reason.count(DOCTRINE) == 1, reason)
-    check("exactly one JSON verdict is emitted", len(proc.stdout.strip().splitlines()) == 1, proc.stdout)
-
     cap_only = World("exhausted", True, "pwdcap01")
     proc = cap_only.run()
     reason = reason_of(proc)
-    check("capacity exhausted alone -> its own reason only",
-          classify(proc) == "deny" and CAPACITY in reason and DOCTRINE not in reason, (proc.stdout, proc.stderr[-300:]))
-
-    doctrine_only = World("available", False, "pwddoc01")
-    proc = doctrine_only.run()
-    reason = reason_of(proc)
-    check("doctrine unloaded alone -> its own reason only",
-          classify(proc) == "deny" and DOCTRINE in reason and "capacity" not in reason.lower(),
+    check("capacity exhausted -> one deny with its own reason",
+          classify(proc) == "deny" and CAPACITY in reason and reason.count(CAPACITY) == 1,
           (proc.stdout, proc.stderr[-300:]))
+    check("exactly one JSON verdict is emitted", len(proc.stdout.strip().splitlines()) == 1, proc.stdout)
+
+    no_doctrine = World("available", False, "pwddoc01")
+    proc = no_doctrine.run()
+    check("an unloaded dispatch doctrine denies nothing at the dispatcher",
+          classify(proc) == "allow", (proc.stdout[:300], proc.stderr[-300:]))
 
     clean = World("available", True, "pwdclean")
     proc = clean.run()
@@ -178,21 +164,12 @@ def real_payload_cases():
     check("the updatedInput keeps the caller's script", (out.get("updatedInput") or {}).get("script", "").startswith(
         "await agent(p"), proc.stdout[:300])
 
-    nested = World("exhausted", True, "pwdnest1")
-    brief = nested.root / "brief.md"
-    brief.write_text("Dispatch via review_fanout.js.\n", encoding="utf-8")
-    proc = nested.run(nested.payload(tool_input={"script": "await agent(p, {effort: 'high'})",
-                                                 "args": {"jobs": [{"promptPath": str(brief)}]}}))
-    reason = reason_of(proc)
-    check("a nested fan-out and an exhausted plan surface in one deny",
-          classify(proc) == "deny" and "dispatch a fan-out" in reason and CAPACITY in reason, proc.stdout[:400])
-
     delegate = World("exhausted", False, "pwdsub01")
     proc = delegate.run(delegate.payload(transcript_path="C:/x/subagents/agent-1.jsonl"))
     reason = reason_of(proc)
     check("a delegate's dispatch denies as orchestrator-only and names no orchestrator-side precondition",
-          classify(proc) == "deny" and "orchestrator-only" in reason and CAPACITY not in reason
-          and DOCTRINE not in reason, proc.stdout[:400])
+          classify(proc) == "deny" and "orchestrator-only" in reason and CAPACITY not in reason,
+          proc.stdout[:400])
 
     tool = World("exhausted", False, "pwdbash1")
     proc = tool.run(tool.payload(tool_name="Bash", tool_input={"command": "ls"}))
@@ -206,15 +183,12 @@ def real_payload_cases():
     proc = clean.run(clean.payload(tool_input={"scriptPath": str(engine), "args": {}}))
     check("a read-only engine dispatch rewrites CRLF to LF through the lf member",
           classify(proc) == "allow" and b"\r" not in engine.read_bytes(), (proc.stdout[:300], proc.stderr[-300:]))
-    check("a read-only engine dispatch that passes arms the marker", clean.marker().is_file(), proc.stdout[:300])
 
     blocked = World("exhausted", False, "pwdarm002")
     engine = blocked.root / ".claude" / "workflows" / "engine.js"
     engine.parent.mkdir(parents=True)
     engine.write_bytes(b"// READONLY-FANOUT-ENGINE\r\nconst x = 1;\r\n")
     proc = blocked.run(blocked.payload(tool_input={"scriptPath": str(engine), "args": {}}))
-    check("a denied engine dispatch arms no marker, since no lens will run", classify(proc) == "deny"
-          and not blocked.marker().exists(), (proc.stdout[:300], blocked.marker()))
     check("a denied engine dispatch still gets its CRLF normalized (the permission handler reads it)",
           b"\r" not in engine.read_bytes(), engine.read_bytes())
 
@@ -229,7 +203,10 @@ def jobs_file_cases():
     # A kind row names user-level servers the fresh HOME does not register, so the proof plants them.
     (world.home / ".claude.json").write_text(json.dumps({"mcpServers": {
         "semantic-search": {"command": "planted"}, "ai-worker": {"command": "planted"}}}), encoding="utf-8")
-    scratch = REPO / ".claude" / "scratch" / ("pwd_jobsfile_%d" % os.getpid())
+    from _checkout_root import session_checkout
+    # The hook resolves the path under the checkout its cwd lies in (the repository's top level), which is not REPO
+    # where this tree is a subfolder of a repository.
+    scratch = Path(session_checkout({"cwd": str(REPO)}) or REPO) / ".claude" / "scratch" / ("pwd_jobsfile_%d" % os.getpid())
     scratch.mkdir(parents=True)
     brief = scratch / "a.md"
     brief.write_text("Read one file.\n", encoding="utf-8")
@@ -347,14 +324,6 @@ def in_process_cases():
     check("a role deny ends the chain: the delegate cannot meet the orchestrator's preconditions",
           not ran and out["permissionDecisionReason"] == "orchestrator-only", (ran, out))
 
-    ran = []
-    _, out, _ = run_chain([member("dispatch_mechanism_guard", deny("doctrine")),
-                           member("readonly_marker_arm", seen=ran)])
-    check("readonly_marker_arm does not run on a denied call", not ran, ran)
-    ran = []
-    run_chain([member("dispatch_mechanism_guard"), member("readonly_marker_arm", seen=ran)])
-    check("readonly_marker_arm runs on an allowed call", len(ran) == 1, ran)
-
     boom = RuntimeError("planted crash")
     code, out, err = run_chain([member("workflow_script_lf_guard", raises=boom),
                                 member("workflow_provider_guard", deny("capacity"))])
@@ -362,15 +331,6 @@ def in_process_cases():
           code == 0 and "workflow_script_lf_guard" in out.get("additionalContext", "")
           and "Repair .claude/hooks/workflow_script_lf_guard.py" in out.get("additionalContext", "")
           and out.get("permissionDecisionReason") == "capacity" and "planted crash" in err, (out, err[-200:]))
-
-    code, out, _ = run_chain([member("dispatch_mechanism_guard", raises=boom)])
-    check("a doctrine-guard crash on a Workflow call denies: a paid run must not start on an unchecked pin",
-          out.get("permissionDecision") == "deny" and "planted crash" in out.get("permissionDecisionReason", "")
-          and "dispatch_mechanism_guard" in out.get("permissionDecisionReason", ""), out)
-    stub = pwd._failed_import("dispatch_mechanism_guard", ModuleNotFoundError("No module named 'gone'"))
-    _, out, _ = run_chain([stub])
-    check("a doctrine-guard import fault denies a Workflow call and names the module",
-          out.get("permissionDecision") == "deny" and "gone" in out.get("permissionDecisionReason", ""), out)
 
     code, out, _ = run_chain([member("workflow_provider_guard", raises=boom)])
     check("a provider-guard crash on a Workflow call denies: no args.__transport means the engine cannot run",
@@ -417,9 +377,9 @@ def in_process_cases():
           out.get("permissionDecision") is None and "workflow_script_lf_guard" in out.get("additionalContext", ""), out)
 
     names = [getattr(m, "__name__", "") for m, _ in pwd.HOOKS]
-    check("the seven Workflow|Agent members are wired, the args-file expander first and the marker arm last",
+    check("the five Workflow|Agent members are wired, the args-file expander first and the provider guard last",
           names == ["expand_args_file", "fill_efforts", "subagent_dispatch_guard", "workflow_script_lf_guard",
-                    "dispatch_mechanism_guard", "workflow_provider_guard", "readonly_marker_arm"], names)
+                    "workflow_provider_guard"], names)
 
 
 def args_file_cases():
@@ -458,6 +418,14 @@ def args_file_cases():
     got = expands(".claude/scratch/run/args.json", checkout / "sub" / "dir")
     check("argsFile: a session whose shell sits in a subdirectory resolves against its checkout",
           got and (got.get("updatedInput") or {}).get("args") == {"agents": []}, got)
+    (checkout / ".claude" / "scratch" / "run" / "jobs.json").write_text(json.dumps({"jobs": [{"label": "a"}]}),
+                                                                        encoding="utf-8")
+    refusal, expanded = pwd._jobs_file(payload({"jobsFile": ".claude/scratch/run/jobs.json"}, checkout / "sub"))
+    check("jobsFile: a session in another checkout (a worktree) reads its own scratch's jobs file",
+          refusal is None and (expanded or {}).get("jobs") == [{"label": "a"}], (refusal, expanded))
+    refusal, _ = pwd._jobs_file(payload({"jobsFile": str(other / ".claude" / "scratch" / "run" / "args.json")}, checkout))
+    check("jobsFile: a file in a checkout the session does not run in is denied",
+          refusal is not None and ".claude/scratch/" in refusal, refusal)
     check("argsFile: a call with no argsFile is untouched", pwd.expand_args_file(payload({"agents": []})) is None)
     check("argsFile: a JSON-string args carrying only argsFile expands the same way",
           (pwd.expand_args_file({"tool_name": "Workflow", "cwd": str(root),

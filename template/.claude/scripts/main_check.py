@@ -56,6 +56,7 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "hooks"))
 from _bounded_run import ProcessTree  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "tools"))
 import adaptation  # noqa: E402
@@ -114,27 +115,25 @@ def platform_name():
 
 
 def git_try(repo, *args, input=None):
-    """The CompletedProcess of a git call, text decoded. `input` goes in as bytes: a text-mode pipe would turn its
-    newlines into CRLF on Windows, which `git mktree` reads as part of the file name."""
-    result = subprocess.run(["git", "-C", repo, *args], input=None if input is None else input.encode("utf-8"),
-                            capture_output=True, stdin=None if input is not None else subprocess.DEVNULL)
-    return subprocess.CompletedProcess(result.args, result.returncode, result.stdout.decode("utf-8", "replace"),
-                                       result.stderr.decode("utf-8", "replace"))
+    """The GitResult of a git call. `input` goes in as bytes: a text-mode pipe would turn its newlines into CRLF
+    on Windows, which `git mktree` reads as part of the file name. No fixed cap: this check fetches, checks out the
+    landed tree and updates submodules, and each cost grows with the repository."""
+    return git_run(args, cwd=str(repo), input=b"" if input is None else input.encode("utf-8"), timeout=None)
 
 
 def git(repo, *args, input=None):
     """The stdout of a git call that must succeed; GitError names the call and its stderr otherwise."""
     result = git_try(repo, *args, input=input)
     if result.returncode != 0:
-        raise GitError("git %s failed (%d): %s" % (args[0], result.returncode, (result.stderr or result.stdout).strip()))
-    return result.stdout.strip()
+        raise GitError("git %s failed (%d): %s" % (args[0], result.returncode, (result.err_text or result.text).strip()))
+    return result.text.strip()
 
 
 def remote_git(repo, *args, tries=3):
     """A call that reaches the remote: a dropped connection (exit 128) is retried; a rejection (exit 1) is returned."""
     for attempt in range(1, tries + 1):
         result = git_try(repo, *args)
-        text = result.stderr + result.stdout
+        text = result.err_text + result.text
         gone = "couldn't find remote ref" in text or "did not contain" in text
         if result.returncode in (0, 1) or attempt == tries or gone:
             return result
@@ -252,7 +251,7 @@ def parse_job_minutes(text):
 
 
 def job_minutes(repo, tip):
-    return parse_job_minutes(git_try(repo, "show", "%s:%s" % (tip, WORKFLOW)).stdout)
+    return parse_job_minutes(git_try(repo, "show", "%s:%s" % (tip, WORKFLOW)).text)
 
 
 # ---- the gate-owed predicate (ported from the old land runner's `LAND stage=gate` branch) --------------------------
@@ -311,7 +310,7 @@ def non_harness_commit(repo, range_start, tip):
     """The range's one commit that owes the gate, else None."""
     owing = []
     for commit in git(repo, "rev-list", "--first-parent", "%s..%s" % (range_start, tip)).split():
-        parent = git_try(repo, "rev-parse", commit + "^1").stdout.strip()
+        parent = git_try(repo, "rev-parse", commit + "^1").text.strip()
         if parent and diff_owes_gate(repo, parent, commit):
             owing.append(commit)
     return owing[0] if len(owing) == 1 else None
@@ -320,7 +319,7 @@ def non_harness_commit(repo, range_start, tip):
 def session_of(repo, commit):
     if not commit:
         return None
-    out = git_try(repo, "show", "-s", "--format=%(trailers:key=Claude-Session,valueonly)", commit).stdout
+    out = git_try(repo, "show", "-s", "--format=%(trailers:key=Claude-Session,valueonly)", commit).text
     return next((line.strip() for line in out.splitlines() if line.strip()), None)
 
 
@@ -331,9 +330,9 @@ def fetch_branch(repo, branch):
     result = remote_git(repo, "fetch", "-q", REMOTE, "+refs/heads/%s:refs/remotes/%s/%s" % (branch, REMOTE, branch))
     if result.returncode == 0:
         return git(repo, "rev-parse", "refs/remotes/%s/%s" % (REMOTE, branch))
-    if "couldn't find remote ref" in result.stderr:
+    if "couldn't find remote ref" in result.err_text:
         return None
-    raise GitError("git fetch %s failed: %s" % (branch, result.stderr.strip()))
+    raise GitError("git fetch %s failed: %s" % (branch, result.err_text.strip()))
 
 
 def parse_state(text):
@@ -368,7 +367,7 @@ def update_state(repo, mutate):
                             "%s:refs/heads/%s" % (commit, STATE_BRANCH))
         if result.returncode == 0:
             return new
-        say("state push rejected (try %d of 2): %s" % (attempt, " ".join(result.stderr.split())[-200:]))
+        say("state push rejected (try %d of 2): %s" % (attempt, " ".join(result.err_text.split())[-200:]))
     raise StateError("the state push lost its lease twice")
 
 
@@ -385,10 +384,9 @@ def has_open_row(rows, name, platform, first_line=None):
 # ---- stage close -------------------------------------------------------------------------------------------------
 
 def tracked_proofs(repo, tip):
-    found = {}
-    for path in git(repo, "ls-tree", "-r", "--name-only", tip, "--", ".claude/tests").splitlines():
-        found.setdefault(path.rsplit("/", 1)[-1], path)
-    return found
+    from _proof_runner.catalog import Catalog, View
+
+    return {os.path.basename(path): path for path in Catalog.open(View.revision(repo, tip)).proofs}
 
 
 def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
@@ -396,7 +394,7 @@ def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
     sweep_run_dirs(repo, run_id)
     fetch = remote_git(repo, "fetch", "-q", REMOTE, "+refs/heads/main:refs/remotes/%s/main" % REMOTE)
     if fetch.returncode != 0:
-        say("git fetch of main failed: " + fetch.stderr.strip())
+        say("git fetch of main failed: " + fetch.err_text.strip())
         return 1
     tip = git(repo, "rev-parse", "refs/remotes/%s/main" % REMOTE)
     try:
@@ -420,7 +418,7 @@ def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
         git(repo, "checkout", "-q", "--force", "--detach", tip)
         result = remote_git(repo, "submodule", "update", "-q", "--init", "--recursive")
         if result.returncode != 0:
-            problem = "submodule: git submodule update failed: " + (result.stderr or result.stdout).strip()
+            problem = "submodule: git submodule update failed: " + (result.err_text or result.text).strip()
         elif git_try(repo, "merge-base", "--is-ancestor", range_start, tip).returncode != 0:
             problem = "checkedTo %s is not an ancestor of origin/main %s" % (range_start[:12], tip[:12])
     except GitError as exc:
@@ -493,7 +491,7 @@ def run_gate(repo, run_id, cap_minutes=DEFAULT_CAP_MINUTES):
     skip = None
     if problem:
         skip = problem
-    elif not closed or closed.get("error") or git_try(repo, "rev-parse", "HEAD").stdout.strip() != start["tip"]:
+    elif not closed or closed.get("error") or git_try(repo, "rev-parse", "HEAD").text.strip() != start["tip"]:
         skip = "the close stage left no checkout at the tip"
     if skip:
         put_record(repo, run_id, "gate", {"owed": True, "reason": reason, "skipped": skip, "wall": None})
@@ -607,7 +605,7 @@ def read_baseline_source(repo, tip):
         source.update(status="none", reason="no baseline.lock.json at the tip")
         return source, []
     try:
-        lock = json.loads(shown.stdout)
+        lock = json.loads(shown.text)
     except ValueError:
         return unreadable("baseline.lock.json is not JSON")
     sha, slug = lock.get("synced_commit"), repo_slug(lock.get("baseline_repo"))
@@ -820,7 +818,7 @@ def print_rows(repo, session):
               file=sys.stderr)
         return 2
     try:
-        doc = parse_state(shown.stdout)
+        doc = parse_state(shown.text)
     except StateError as exc:
         print("main_check: %s: %s" % (STATE_BRANCH, exc), file=sys.stderr)
         return 2
@@ -841,14 +839,14 @@ def _unchecked(repo, checked):
     """(commits on origin/main past `checked`, the committer time of the oldest one). Either is None when git cannot
     read the range, which the health line counts as overdue."""
     counted = git_try(repo, "rev-list", "--count", "%s..%s" % (checked, ORIGIN_MAIN))
-    if counted.returncode != 0 or not counted.stdout.strip().isdigit():
+    if counted.returncode != 0 or not counted.text.strip().isdigit():
         return None, None
-    count = int(counted.stdout)
+    count = int(counted.text)
     if count == 0:
         return 0, None
     listed = git_try(repo, "rev-list", "%s..%s" % (checked, ORIGIN_MAIN))
-    oldest = listed.stdout.split()[-1] if listed.returncode == 0 and listed.stdout.split() else None
-    when = git_try(repo, "show", "-s", "--format=%ct", oldest).stdout.strip() if oldest else ""
+    oldest = listed.text.split()[-1] if listed.returncode == 0 and listed.text.split() else None
+    when = git_try(repo, "show", "-s", "--format=%ct", oldest).text.strip() if oldest else ""
     return count, int(when) if when.isdigit() else None
 
 
@@ -868,7 +866,7 @@ def status(repo, now=None):
     if shown.returncode != 0:
         return "main: never checked"
     try:
-        doc = parse_state(shown.stdout)
+        doc = parse_state(shown.text)
     except StateError as exc:
         return "main: check state unreadable (%s)" % str(exc).replace("unreadable: ", "", 1)
     run = doc.get("run") or {}

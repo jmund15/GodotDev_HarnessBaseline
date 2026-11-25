@@ -59,6 +59,13 @@ def hso(proc):
     return parsed.get("hookSpecificOutput", {}) if isinstance(parsed, dict) else {}
 
 
+def said(proc):
+    """(blocked, the reason) on either deny channel: exit 2 with stderr, or a JSON deny (the floor's git and delete
+    checks answer on the JSON one)."""
+    reason = hso(proc).get("permissionDecisionReason", "")
+    return proc.returncode == 2 or hso(proc).get("permissionDecision") == "deny", proc.stderr + reason
+
+
 def standalone_verdict(payload_text, env):
     """Native aggregation over the twelve standalone runs."""
     blocked, decision, contexts = False, None, []
@@ -171,16 +178,16 @@ def test_a_router_line_dropped_by_a_block_is_told_again(monkeypatch, tmp_path):
     assert code == 0 and 'router line' in out
 
 
-def test_a_json_deny_keeps_the_lines_it_carries(monkeypatch, tmp_path):
-    """A JSON deny still carries the earlier contexts, so their keys stay spent."""
+def test_a_json_deny_carries_no_earlier_line_and_gives_its_key_back(monkeypatch, tmp_path):
+    """A JSON deny carries no earlier member's line, so the spender's key is given back and the line fires again."""
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
     monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
     call = payload('Bash', 'git status --short')
     deny = json.dumps({'hookSpecificOutput': {'permissionDecision': 'deny', 'permissionDecisionReason': 'no'}})
     code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k3'), ()), (_late(0, deny), ())))
-    assert 'advisory line' in out
+    assert 'advisory line' not in out and '"permissionDecision": "deny"' in out
     code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k3'), ()),))
-    assert 'advisory line' not in out
+    assert 'advisory line' in out
 
 
 import pytest
@@ -213,7 +220,7 @@ def test_actual_advisory_import_fault_cannot_hide_floor(tmp_path):
         "import sys, runpy\n"
         "class Broken:\n"
         "    def find_spec(self, name, path=None, target=None):\n"
-        "        if name in ('hand_pricing_advisory', 'dangerous_shell_guard'):\n"
+        "        if name in ('bash_length_guard', 'dangerous_shell_guard'):\n"
         "            raise RuntimeError('planted import fault: ' + name)\n"
         "sys.meta_path.insert(0, Broken())\n"
         f"runpy.run_path({DISPATCH!r}, run_name='__main__')\n")
@@ -245,7 +252,8 @@ def test_each_actual_advisory_import_fault_preserves_git_floor(tmp_path):
             f"runpy.run_path({DISPATCH!r}, run_name='__main__')\n")
         proc = run([sys.executable, '-c', script], payload('Bash', 'git checkout -- file', str(tmp_path)),
                    dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / name)), cwd=str(tmp_path))
-        assert proc.returncode == 2 and 'checkout' in proc.stderr, (name, proc.stderr)
+        blocked, reason = said(proc)
+        assert blocked and 'checkout' in reason, (name, proc.stdout, proc.stderr)
         assert 'Traceback' not in proc.stderr, (name, proc.stderr)
         proc = run([sys.executable, '-c', script], payload('Bash', 'git status --short', str(tmp_path)),
                    dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / (name + '-read'))), cwd=str(tmp_path))
@@ -304,9 +312,10 @@ def test_pure_profile_denies_recursive_delete_without_godot_members(tmp_path):
     assert not any((root / '.claude' / 'hooks' / (name + '.py')).exists() for name in GODOT_MEMBERS)
     def one(command):
         proc = pure_dispatch(root, command, tmp_path)
-        assert proc.returncode == 2, (command, proc.stdout, proc.stderr)
-        assert 'failed to import' not in proc.stderr and 'Traceback' not in proc.stderr, (command, proc.stderr)
-        assert 'Dangerous recursive' in proc.stderr or 'Format drive' in proc.stderr, (command, proc.stderr)
+        blocked, reason = said(proc)
+        assert blocked, (command, proc.stdout, proc.stderr)
+        assert 'failed to import' not in reason and 'Traceback' not in proc.stderr, (command, reason)
+        assert 'Dangerous recursive' in reason or 'Format drive' in reason, (command, reason)
 
     pmap(one, ('rm -rf /', 'rm -rf ~/peer', 'rm -r /usr/peer', 'rm -f a && rm -rf /usr/peer',
                'Remove-Item -Recurse -Force ~/peer', 'format C:'))
@@ -354,15 +363,15 @@ def test_actual_advisory_runtime_fault_preserves_git_floor(monkeypatch, tmp_path
     def boom():
         raise RuntimeError('planted actual adviser fault')
     order = [module for module, _argv in pre_bash_dispatch.HOOKS]
-    floor = order.index(pre_bash_dispatch.git_guardrails)
+    floor = order.index(pre_bash_dispatch.dangerous_shell_guard)
     # Any installed adviser ahead of the floor serves; godot-layer members are absent in a pure profile.
     adviser = next(module for module in order[:floor]
                    if os.path.basename(module.__file__)[:-3] not in pre_bash_dispatch._FLOOR_MEMBERS)
     monkeypatch.setattr(adviser, 'main', boom)
     # Even a broken normalizer cannot skip the later floor member.
-    monkeypatch.setattr(pre_bash_dispatch.git_guardrails, 'main', lambda: 2)
+    monkeypatch.setattr(pre_bash_dispatch.dangerous_shell_guard, 'main', lambda: 2)
     code, out, err = pre_bash_dispatch.dispatch(payload('Bash', 'git checkout -- file'))
-    assert code == 2 and out == '' and 'git_guardrails' in err
+    assert code == 2 and out == '' and 'dangerous_shell_guard' in err, (code, out, err)
 
 
 def test_shared_must_allow_cases(tmp_path):
@@ -402,9 +411,8 @@ def test_router_fault_reaches_model(monkeypatch):
 
 def test_launcher_commit_reaches_each_guard(monkeypatch, tmp_path):
     import shlex
-    names = ('baseline_classification_guard', 'duplicate_commit_check', 'prototype_containment_guard',
-             'provisional_totality_guard', 'rule_number_guard', 'tres_nullstrip_guard',
-             'tres_script_strip_guard', 'triage_commit_check')
+    names = ('baseline_classification_guard', 'prototype_containment_guard',
+             'provisional_totality_guard', 'tres_nullstrip_guard', 'tres_script_strip_guard')
     names = [name for name in names if name not in GODOT_MEMBERS or getattr(pre_bash_dispatch, name) is not None]
     monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
     original = pre_bash_dispatch._git_commit.commit_invocations
@@ -433,22 +441,23 @@ def test_launcher_commit_reaches_each_guard(monkeypatch, tmp_path):
 
 def test_git_import_fallback_sees_launcher_bodies():
     for launcher in ('bash -c', 'sh -c', 'bash -lc', 'bash -o pipefail -c', 'eval'):
-        stub = pre_bash_dispatch._floor_stub('git_guardrails', 'planted fault', pre_bash_dispatch._runs_git, 'git call')
-        code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launcher + " 'git status --short'"), ((stub, ()),))
-        assert code == 2 and 'git_guardrails' in err, (launcher, code, out, err)
-        code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launcher + " 'printf git'"), ((stub, ()),))
+        stub = pre_bash_dispatch._floor_stub('baseline_classification_guard', 'planted fault',
+                                             pre_bash_dispatch._commits, 'git commit')
+        code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launcher + " 'git commit -m x'"), ((stub, ()),))
+        assert code == 2 and 'baseline_classification_guard' in err, (launcher, code, out, err)
+        code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launcher + " 'printf git commit'"), ((stub, ()),))
         assert code == 0, (launcher, code, out, err)
 
 
-def test_git_guardrails_judges_launcher_commit(monkeypatch):
-    member = pre_bash_dispatch.git_guardrails
+def test_the_floor_git_check_judges_launcher_commit(monkeypatch):
+    member = pre_bash_dispatch.dangerous_shell_guard
     argv = ()
-    monkeypatch.setattr(member, 'base_verdict', lambda *_: 'planted commit floor verdict')
+    monkeypatch.setattr(member, 'commit_verdict', lambda *_a, **_k: 'planted commit floor verdict')
     for launcher in ('bash -c', 'sh -c', 'bash -lc', 'bash -o pipefail -c', 'eval'):
         code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launcher + " 'git commit -m x'"), ((member, argv),))
-        assert code == 2 and 'planted commit floor verdict' in err, (launcher, code, out, err)
+        assert 'planted commit floor verdict' in out + err and '"deny"' in out, (launcher, code, out, err)
         code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launcher + " 'git status --short'"), ((member, argv),))
-        assert code == 0, (launcher, code, out, err)
+        assert code == 0 and '"deny"' not in out, (launcher, code, out, err)
 
 
 def main():
@@ -463,7 +472,7 @@ def main():
             failures.append(label + (": " + detail[:300] if detail else ""))
 
     # A broken import would otherwise register a stub silently and this generic parity harness
-    # would never notice. Hook order is pinned in test_git_guardrails_index_fold.
+    # would never notice. Hook order is pinned in tests/floor/test_floor_index_fold.py.
     check("baseline_classification_guard import did not fall back to the stub",
           getattr(pre_bash_dispatch, "_BASELINE_GUARD_IMPORT_ERROR", "unset") is None)
     check("approving_gates import did not fall back to its stub",
@@ -475,33 +484,19 @@ def main():
           stub_code == 1 and stub_out == "" and "approving_gates" in stub_err and "planted" in stub_err,
           repr((stub_code, stub_out, stub_err)))
 
-    # Job A: duplicate_commit_check is an advisory sub-hook, registered directly after
-    # triage_commit_check. SUB_HOOKS above derives from HOOKS, so the parity cases below already run
-    # it standalone; these two cases pin the registration and its import posture.
     names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
-    check("duplicate_commit_check.py and triage_commit_check.py are both registered",
-          "triage_commit_check.py" in names and "duplicate_commit_check.py" in names, repr(names))
     check("bash_backslash_fidelity.py stays last: it rewrites the command, so every deny must win first",
           names[-1] == "bash_backslash_fidelity.py", repr(names))
-    check("its import did not fall back to the stub",
-          getattr(pre_bash_dispatch, "_DUPLICATE_CHECK_IMPORT_ERROR", "unset") is None)
-    dup_code, dup_out, dup_err = pre_bash_dispatch.run_hook(
-        pre_bash_dispatch._advisory_stub("duplicate_commit_check", "ImportError: planted",
-                                         "no commit duplicate advisory is printed"), (), "{}")
-    check("a failed duplicate-check import reports on user stderr and advises nothing",
-          dup_code == 1 and dup_out == "" and "duplicate_commit_check" in dup_err and "planted" in dup_err,
-          repr((dup_code, dup_out, dup_err)))
 
     # A floor guard that cannot import must block the action it guards, never crash the dispatcher with a
     # non-2 exit, and never block a command that only names its noun. The rows run in an empty planted
-    # repo: in the live checkout a staged harness path makes git_guardrails' stamp check deny first.
+    # repo, so no state of the live checkout decides a row first. The floor's git check judges every shell call.
     floor_repo = os.path.join(tmp, "floor_repo")
     os.makedirs(floor_repo)
     subprocess.run(["git", "init", "-q"], cwd=floor_repo, check=True, capture_output=True)
     floor_rows = {
-        "git_guardrails": (("a git command", "git status --short", True),
-                           ("a command that only names a git path", "ls .gitignore", False),
-                           ("a command that never names git", "echo hello", False)),
+        "dangerous_shell_guard": (("a git command", "git status --short", True),
+                                  ("a command that never names git", "echo hello", True)),
         "baseline_classification_guard": (("a commit", "git commit -m x", True),
                                           ("a command that only names a commit", "echo commit", False)),
     }
@@ -521,13 +516,6 @@ def main():
                       guard, "denies" if should_block else "does not block", label),
                   (proc.returncode == 2) == should_block and (not should_block or guard in proc.stderr),
                   "exit %s: %s" % (proc.returncode, proc.stderr[-400:]))
-    # rule_number_guard is an advisory: its import failure reaches the user's stderr and blocks nothing.
-    break_advisory = break_floor.replace(repr(guard), repr("rule_number_guard"), 1)
-    proc = run([sys.executable, "-c", break_advisory], payload("Bash", "git commit -m x", floor_repo), env, cwd=floor_repo)
-    check("a rule_number_guard import failure reports on stderr and does not block a commit",
-          proc.returncode == 0 and "rule_number_guard" in proc.stderr,
-          "exit %s: %s" % (proc.returncode, proc.stderr[-400:]))
-
     def planted_deny_main():
         sys.stdout.write(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -615,8 +603,8 @@ def main():
           repr(floor_result)[:300])
     check("a sub-hook without FAIL_CLOSED that raises is reported on stderr and the call proceeds",
           advisory_result[0] == 0 and "planted crash" in advisory_result[2], repr(advisory_result)[:300])
-    check("git_guardrails and baseline_classification_guard are FAIL_CLOSED",
-          getattr(pre_bash_dispatch.git_guardrails, "FAIL_CLOSED", False) is True
+    check("a fault in the floor's git check denies every shell call, and baseline_classification_guard is FAIL_CLOSED",
+          pre_bash_dispatch._FLOOR_MEMBERS["dangerous_shell_guard"][0]("echo hello", ".") is True
           and getattr(pre_bash_dispatch.baseline_classification_guard, "FAIL_CLOSED", False) is True)
 
     cases = [
@@ -646,10 +634,9 @@ def main():
     # The delete's target is the call's own cwd-relative path: the repo may sit under the system temp, which
     # the guard exempts, so the planted call runs from the filesystem root, never from where the proof lives.
     d_blocked, _, _, proc = dispatcher_verdict(payload("Bash", "rm -rf build_out", os.path.abspath(os.sep)), env)
-    check("rm -rf is blocked through the dispatcher (exit 2, stderr names it)",
-          proc.returncode == 2 and "rm" in proc.stderr, proc.stderr)
-    check("an exit-2 block carries only the guard's own text",
-          "guard's purpose" not in proc.stderr, proc.stderr[-300:])
+    said = proc.stderr + hso(proc).get("permissionDecisionReason", "")
+    check("rm -rf is blocked through the dispatcher (a deny naming it)", d_blocked and "rm" in said, said)
+    check("a block carries only the guard's own text", "guard's purpose" not in said, said[-300:])
 
     p = run([sys.executable, DISPATCH], "not json", env)
     check("malformed payload exits 0 silent", p.returncode == 0 and not p.stdout.strip(), p.stderr)
@@ -672,24 +659,26 @@ def parts_present():
         assert os.path.isfile(part), "missing part file " + os.path.basename(part)
 
 
-if __name__ == "__main__":
-    from _case_pool import run_sharded
-    parts_present()
-    main()
-    sys.exit(run_sharded(__file__, 0, PARTS, jobs=1))
-
-
-def test_sidecar_doctrine_fault_denies_only_a_launch(monkeypatch):
-    # The sidecar gate stands in front of paid spend: its fault denies a launch, never an unrelated command.
+def test_sidecar_doctrine_fault_denies_any_call_and_its_failed_import_only_a_launch(monkeypatch):
+    # The sidecar gate stands in front of paid spend. A loaded gate that raises denies whatever the call: the crash left
+    # it unjudged. Its failed import denies only a launch, the one command its matcher selects.
     monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
     def boom():
         raise ModuleNotFoundError("No module named 'planted_gone'")
     member = SimpleNamespace(__name__='sidecar_dispatch_context', __file__='sidecar_dispatch_context.py', main=boom)
     launch = 'bash .claude/scripts/codex_sidecar.sh -m sol "do x"'
-    code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launch), ((member, ()),))
-    assert code == 2 and 'planted_gone' in err, (code, out, err)
-    code, out, err = pre_bash_dispatch.dispatch(payload('Bash', 'git status --short'), ((member, ()),))
-    assert code == 0 and 'planted_gone' in json.loads(out)['hookSpecificOutput']['additionalContext'], (code, out, err)
+    for command in (launch, 'git status --short'):
+        code, out, err = pre_bash_dispatch.dispatch(payload('Bash', command), ((member, ()),))
+        assert code == 2 and 'planted_gone' in err, (command, code, out, err)
     stub = pre_bash_dispatch._failed_import('sidecar_dispatch_context', ImportError('planted import'))
     code, _, err = pre_bash_dispatch.dispatch(payload('Bash', launch), ((stub, ()),))
     assert code == 2 and 'planted import' in err, (code, err)
+    code, out, err = pre_bash_dispatch.dispatch(payload('Bash', 'git status --short'), ((stub, ()),))
+    assert code == 0, (code, out, err)
+
+
+if __name__ == "__main__":
+    from _case_pool import run_sharded
+    parts_present()
+    main()
+    sys.exit(run_sharded(__file__, 0, PARTS, jobs=1))

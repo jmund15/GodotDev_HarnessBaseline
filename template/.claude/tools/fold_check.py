@@ -87,10 +87,12 @@ import sys
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import finding_bar  # noqa: E402
+import review_snapshot  # noqa: E402
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
 
 import adaptation  # noqa: E402
 import verify_claims  # noqa: E402
+from _git_run import run as _run_git  # noqa: E402
 
 _LINE = re.compile(r":[1-9]\d*(?:-[1-9]\d*)?$")
 from typing import Literal
@@ -266,7 +268,7 @@ def _validated(rows, path):
 
 def _git(root, *args):
     try:
-        return subprocess.run(["git", "-C", str(root), *args], capture_output=True)
+        return _run_git(list(args), cwd=str(root), input=b"")
     except OSError as exc:
         raise Unusable(f"git unavailable: {exc}") from None
 
@@ -363,6 +365,7 @@ class Subject:
             held = snapshot.get("files")
             if not isinstance(held, dict):
                 raise Unusable(f"blob snapshot lists no files: {manifest_path}")
+            held = {rel_path(item, self.root) for item in held}
             missing = [item for item in self.files if item not in held and item not in self.new_paths]
             if missing:
                 raise Unusable(f"snapshot {manifest_path} holds no entry for {', '.join(missing)}")
@@ -613,18 +616,33 @@ def _sources(row):
     return [row["id"]]
 
 
+def cited(row, subjects):
+    """`row` with its `file` resolved to a subject's repo-relative path when the citation omits the prefix.
+
+    A single-file review leaves no ambiguity: `plan.md` can only be the one reviewed file, and resolving it there
+    keeps a seat's bare citation from holding its own finding out of the subject. With more than one file the
+    citation is left as written, so a bare name never becomes a guess."""
+    files = [item for subject in subjects for item in subject.files]
+    if len(files) != 1 or not isinstance(row.get("file"), str):
+        return row
+    owner = next(subject for subject in subjects if subject.files == files)
+    resolved = review_snapshot.resolve_citation(owner.root, row["file"], files)
+    return dict(row, file=resolved) if resolved else row
+
+
 def route(rows, subjects):
     """-> {id: subject index} plus unrouted and ambiguous ids. A finding goes to the one subject whose `files`
     holds its cited file; a finding citing no file goes to the sole subject when there is exactly one."""
     routed, unrouted, ambiguous = {}, [], []
     for row in rows:
-        if not row.get("file"):
+        cited_file = cited(row, subjects).get("file")
+        if not cited_file:
             if len(subjects) == 1:
                 routed[row["id"]] = 0
             else:
                 unrouted.append(row["id"])
             continue
-        found = [subject.exact_hits(row["file"]) for subject in subjects]
+        found = [subject.exact_hits(cited_file) for subject in subjects]
         hits = [i for i, files in enumerate(found) if files]
         if len(hits) == 1 and len(found[hits[0]]) == 1:
             routed[row["id"]] = hits[0]
@@ -978,6 +996,7 @@ def run(findings, jobs, out, *, independent=None, original=None, root=None):
              _validated([row for job in jobs for row in job['rows']], 'fold prompts'))
     grouped = any(_sources(row) != [row['id']] for row in views)
     rows = original if original is not None else original_rows(findings) if findings is not None and grouped else views
+    rows = [cited(row, subjects) for row in rows]
     by_source = {}
     failures = []
     known = {row['id'] for row in rows}

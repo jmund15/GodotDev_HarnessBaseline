@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 import types
+from pathlib import Path
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.normpath(os.path.join(HERE, "..", "hooks"))
@@ -88,6 +90,18 @@ def stop(process):
     process.communicate(timeout=10)
 
 
+def content_cases(file_lock, root, create_path):
+    for label, kwargs, expected in (
+        ("default pid", {}, str(os.getpid()).encode("ascii")),
+        ("text", {"content": "worker café"}, b"worker caf\xc3\xa9"),
+        ("bytes", {"content": b"\x00\xff\r\n"}, b"\x00\xff\r\n"),
+    ):
+        path = Path(root) / f"{create_path}-{label}.lock"
+        with file_lock.locked(str(path), 1.0, **kwargs):
+            actual = path.read_bytes()
+        yield f"{create_path}: the lock file says {label}", actual == expected and not path.exists()
+
+
 def main():
     cases = []
     root = tempfile.mkdtemp(prefix="filelock_")
@@ -99,6 +113,49 @@ def main():
         file_lock = None
 
     if file_lock is not None:
+        with tempfile.TemporaryDirectory(dir=root) as content_root:
+            real_open = os.open
+            for content in (object(), 3, "\ud800"):
+                lock_path = Path(content_root) / type(content).__name__ / "invalid.lock"
+                opened = []
+
+                def track_open(*args, **kwargs):
+                    fd = real_open(*args, **kwargs)
+                    opened.append(fd)
+                    return fd
+
+                with patch.object(os, "open", side_effect=track_open):
+                    try:
+                        handle = file_lock.acquire(str(lock_path), 0, content=content)
+                    except (TypeError, UnicodeError):
+                        refused = False
+                    else:
+                        refused = handle is None
+                        file_lock.release(handle)
+                cases.append((f"invalid {type(content).__name__} content returns None before creating anything",
+                              refused and not opened and not lock_path.parent.exists()))
+                for fd in opened:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+        if os.name == "nt":
+            cases.extend(content_cases(file_lock, root, "Windows in-place create"))
+        else:
+            real_link = os.link
+            linked = []
+
+            def track_link(src, dst):
+                real_link(src, dst)
+                linked.append(dst)
+
+            with patch.object(os, "link", side_effect=track_link):
+                cases.extend(content_cases(file_lock, root, "POSIX flock and link"))
+            cases.append(("POSIX content cases linked each staged file", len(linked) == 3))
+            with patch.object(os, "link", side_effect=OSError("hard links unavailable")):
+                cases.extend(content_cases(file_lock, root, "POSIX in-place fallback"))
+
         # A live holder whose lock is ancient keeps it; probing it never ends the holder.
         live = os.path.join(root, "owner-probe.lock")
         holder, ready = start_holder(FILE_LOCK_PATH, "file_lock", live)

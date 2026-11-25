@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _git_run  # noqa: E402
 from harness_growth_guard import added_lines, pre_edit_text
 
 OUTCOMES = {"clean", "correction", "failure"}
@@ -234,8 +235,7 @@ def shas_in(strings, session_ids):
 
 def _is_commit(root, sha):
     try:
-        result = subprocess.run(["git", "-C", root, "cat-file", "-e", sha + "^{commit}"],
-                                capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        result = _git_run.run(["-C", root, "cat-file", "-e", sha + "^{commit}"], input=b"")
     except OSError:
         return False
     return result.returncode == 0

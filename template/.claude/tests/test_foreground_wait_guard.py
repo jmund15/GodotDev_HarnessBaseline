@@ -159,15 +159,65 @@ check("a print-mode child's command inside the cache bound passes untouched",
       rc == 0 and updated is None and verdict is None, detail)
 
 rc, updated, verdict, detail = rewrite(timed(RENDER, 600000), "cli")
-check("the interactive orchestrator's raised timeout is still backgrounded, not clamped",
-      rc == 0 and updated is not None and updated.get("run_in_background") is True
-      and updated.get("command") == RENDER, detail)
+check("the interactive orchestrator's raised timeout is clamped to the default in the foreground, never to the cache bound",
+      rc == 0 and updated is not None and not updated.get("run_in_background")
+      and updated.get("timeout") == 120000 and updated.get("command") == RENDER, detail)
 
 LOOP = "for i in $(seq 1 40); do grep -q 'facts in' a2.log && break; sleep 20; done"
 rc, updated, verdict, detail = rewrite(timed(LOOP, 600000), "sdk-cli")
 check("a for-loop wait is a wait loop: clamped, with no EXIT line added",
       rc == 0 and updated is not None and updated.get("timeout") == SUBAGENT_WAIT_MS
       and updated.get("command") == LOOP, detail)
+
+# A raised foreground timeout keeps the call in the foreground at the default timeout: a job that ends in time returns
+# this turn with no wake. Only the interactive orchestrator is rewritten.
+import tempfile
+import uuid
+
+BASH_DEFAULT_MS = 120000
+STATE_DIR = tempfile.mkdtemp(prefix="fwg-state-")
+
+
+def raised(command, timeout_ms, extra=None, env=None):
+    payload = {"session_id": "%s-fwg" % uuid.uuid4().hex, "hook_event_name": "PreToolUse",
+               "tool_name": "Bash", "tool_input": {"command": command, "timeout": timeout_ms}}
+    payload.update(extra or {})
+    merged = dict(os.environ)
+    merged.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    merged["HARNESS_HOOK_STATE_DIR"] = STATE_DIR
+    merged.update(env or {})
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True, text=True,
+                       encoding="utf-8", timeout=30, env=merged)
+    hso = json.loads(r.stdout).get("hookSpecificOutput", {}) if r.stdout.strip() else {}
+    return r.returncode, hso, r.stdout + r.stderr
+
+
+rc, hso, detail = raised("python3 sidecar_fanout.py --detach", 600000)
+updated = hso.get("updatedInput") or {}
+note = hso.get("additionalContext", "")
+check("a raised timeout stays in the foreground", rc == 0 and bool(updated) and not updated.get("run_in_background"), detail)
+check("a raised timeout is clamped to the default", updated.get("timeout") == BASH_DEFAULT_MS, detail)
+check("the raised-timeout note cites the rule and promises no wake",
+      "Shell Discipline" in note and "one wake" not in note, detail)
+
+rc, hso, detail = raised("python3 x.py", BASH_DEFAULT_MS)
+check("a timeout at the default is left alone", rc == 0 and not hso.get("updatedInput"), detail)
+
+rc, hso, detail = raised("python3 x.py", 600000, {"agent_id": "a1", "agent_type": "general-purpose"},
+                         {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})
+check("a delegate's raised timeout is clamped to the cache bound, not kept",
+      rc == 0 and (hso.get("updatedInput") or {}).get("timeout") == SUBAGENT_WAIT_MS, detail)
+
+with tempfile.TemporaryDirectory() as tmp:
+    with open(os.path.join(tmp, "harness_proof_durations.json"), "w", encoding="utf-8") as fh:
+        json.dump({"test_timed_fit_probe.py": 200}, fh)
+    env = {"HARNESS_TEST_STAMP": os.path.join(tmp, "stamp.json")}
+    rc, hso, detail = raised("python3 .claude/tests/test_timed_fit_probe.py", 300000, None, env)
+    check("a proof batch whose recorded time fits the raise keeps its raise",
+          rc == 0 and not hso.get("updatedInput"), detail)
+    rc, hso, detail = raised("python3 .claude/tests/test_timed_fit_probe.py", 150000, None, env)
+    check("a proof batch whose recorded time exceeds the raise is clamped",
+          rc == 0 and (hso.get("updatedInput") or {}).get("timeout") == BASH_DEFAULT_MS, detail)
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

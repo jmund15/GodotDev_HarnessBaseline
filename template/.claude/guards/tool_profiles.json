@@ -70,6 +70,7 @@
       "routes": ["launcher", "fanout", "engine", "agent"]
     },
     "arm": {
+      "plugin": "bench",
       "builtins": null,
       "mcpServers": ["semantic-search"],
       "disclosure": null,
@@ -81,6 +82,7 @@
       "routes": ["launcher", "fanout"]
     },
     "bench-score": {
+      "plugin": "bench",
       "builtins": ["Workflow", "Read", "Glob", "Grep"],
       "mcpServers": [],
       "disclosure": "pointer",
@@ -102,6 +104,7 @@
       "routes": ["engine"]
     },
     "bench-review": {
+      "plugin": "bench",
       "builtins": ["Read", "Glob", "Grep"],
       "mcpServers": ["semantic-search", "ai-worker"],
       "denyTools": ["mcp__ai-worker__write_doc"],

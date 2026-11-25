@@ -262,7 +262,7 @@ if [ -n "$SC_PROMPT_FILE" ]; then
   command -v cygpath >/dev/null 2>&1 && SC_PROMPT_FILE_ABS="$(cygpath -m "$SC_PROMPT_FILE_ABS")"
   SC_SETTINGS_JSON="$(python3 -c 'import json,sys; print(json.dumps({"hooks":{"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"python3 \"%s\"" % sys.argv[1],"timeout":15}]}]}}))' "$SC_ROOT/hooks/sidecar_recompact_reprompt.py")"
 fi
-SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "${SC_SETTINGS_JSON:-}")"
+SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "${SC_SETTINGS_JSON:-}")" || exit $?
 [ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env

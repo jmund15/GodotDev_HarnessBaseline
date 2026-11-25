@@ -26,7 +26,9 @@ def run(repo, *args):
 def contract(temp_root):
     repo = Path(temp_root) / "repo"
     (repo / ".claude" / "scripts").mkdir(parents=True)
+    (repo / ".claude" / "hooks").mkdir()
     shutil.copyfile(SCRIPT, repo / ".claude" / "scripts" / "doc_diff_check.py")
+    shutil.copyfile(ROOT / ".claude" / "hooks" / "_git_run.py", repo / ".claude" / "hooks" / "_git_run.py")
     git(repo, "init", "-q")
     source = repo / "Planted.cs"
     source.write_text("// first note\nclass Planted { int Value() { return 1; } }\n", encoding="utf-8", newline="\n")

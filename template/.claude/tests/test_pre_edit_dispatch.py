@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Re-runnable proof for hooks/pre_edit_dispatch.py — the PreToolUse Write|Edit chain.
 
-Four separate settings.json commands became one dispatcher. Consolidation is only safe if
-every sub-hook keeps the channel it had: pattern_enforcer blocks with exit 2 + stderr,
-harness_edit_skill_reminder advises through additionalContext, readonly_lens_write_guard
-writes an audit note to stderr without blocking, and running_script_edit_guard advises
-through additionalContext. Each case below feeds a real PreToolUse payload by subprocess
-and asserts on the emitted channel.
+Separate settings.json commands became one dispatcher. Consolidation is only safe if
+every sub-hook keeps the channel it had: pattern_enforcer blocks with exit 2 + stderr, and
+running_script_edit_guard advises through additionalContext. Each case below feeds a real
+PreToolUse payload by subprocess and asserts on the emitted channel.
 
 Five contract cases run the dispatcher in-process against a synthetic chain, because the
 real chain cannot express them: a hard block positioned AFTER a non-blocking sub-hook, and
@@ -46,8 +44,7 @@ ENFORCER = _optional_hooks.present("pattern_enforcer")
 DISPATCH = os.path.join(HOOKS, "pre_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
-SUBHOOKS = ("pattern_enforcer", "harness_edit_skill_reminder",
-            "readonly_lens_write_guard", "running_script_edit_guard")
+SUBHOOKS = ("pattern_enforcer", "running_script_edit_guard")
 
 # Assembled, never spelled: pattern_enforcer denies any Write whose content carries it.
 EXPORT_NULL_VIOLATION = "[Export] public Node Thing = " + "null" + "!;"
@@ -229,31 +226,6 @@ def main():
                       rc == 2 and "BLOCKED" in err))
         cases.append(("a blocked call emits no advisory on stdout", out in ("", "{}")))
 
-    # --- harness_edit_skill_reminder: deny, then advisory ------------------
-    harness_md = os.path.join(CLAUDE, "commands", "explore.md")
-    rc, out, err = run(edit(harness_md, "text", session="predeny1"), env)
-    decision, ctx = hook_output(out)
-    cases.append(("harness_edit_skill_reminder denies a harness edit while the skill is not in context",
-                  rc == 0 and decision == "deny" and "instruction_quality" in out))
-
-    subprocess.run([sys.executable, os.path.join(HOOKS, "skill_load_marker.py")],
-                   input=json.dumps({"tool_name": "Skill", "session_id": "preload1",
-                                     "tool_input": {"skill": "instruction_quality"}}),
-                   capture_output=True, text=True, timeout=60, env=env)
-    rc, out, err = run(edit(harness_md, "text", session="preload1"), env)
-    decision, ctx = hook_output(out)
-    cases.append(("with the skill loaded the reminder advises instead of denying",
-                  rc == 0 and decision is None and "instruction_quality" in ctx))
-
-    # --- readonly_lens_write_guard: non-blocking stderr note ---------------
-    marker = os.path.join(state_dir, "readonly-prelens1.json")
-    with open(marker, "w", encoding="utf-8") as fh:
-        json.dump({"expires_at": time.time() + 600,
-                   "allow_prefixes": [os.path.join(tmp, "allowed")]}, fh)
-    rc, out, err = run(edit(game_cs, "var x = 1;", session="prelens1", agent_id="agent-42"), env)
-    cases.append(("readonly_lens_write_guard still reports on stderr without blocking",
-                  rc == 0 and "[readonly-lens-write]" in err))
-
     # --- running_script_edit_guard: additionalContext advisory -------------
     script, proc = live_script_instance(tmp)
     if proc is None:
@@ -273,8 +245,6 @@ def main():
     cases.append(("a malformed payload exits 0 with no output", rc == 0 and out in ("", "{}")))
 
     # --- dispatcher contract, synthetic chain ------------------------------
-    cases.append(("E4: an advisory import fault cannot prevent the dispatcher from loading",
-                  load_dispatch_module("readonly_lens_write_guard") is not None))
     cases.append(("E4: an enforcement import fault cannot prevent the dispatcher from loading",
                   load_dispatch_module("pattern_enforcer") is not None))
     module = load_dispatch_module()
@@ -403,12 +373,6 @@ def main():
                   rc == 0 and "advisory-from-noisy" in (ctx or "")
                   and "running_script_edit_guard" in err))
 
-    cases.append(("S7: the harness skill reminder has advisory fault posture",
-                  dict(module.CHAIN)["harness_edit_skill_reminder"] == "advisory"))
-    rc, out, err = module.dispatch(payload, chain=(("harness_edit_skill_reminder", boom), noisy))
-    decision, ctx = hook_output(out)
-    cases.append(("S7: a reminder fault does not deny the edit",
-                  decision is None and "advisory-from-noisy" in ctx))
     rewritten = dict(payload["tool_input"], new_string="fixed")
     seen = []
     rc, out, err = module.dispatch(payload, chain=(

@@ -384,8 +384,7 @@ def vault_texts(vault):
 
 def generated_jsonl(path):
     return path in {".claude/orchestration_metrics.jsonl", ".claude/autolearn_outcomes.jsonl",
-                    ".claude/self_evaluate_archive.jsonl"} or (
-        path.startswith(".claude/scripts/benchmark_campaign/") and path.endswith(".stream.jsonl"))
+                    ".claude/self_evaluate_archive.jsonl"}
 
 
 def jsonl_inventory(repo):
@@ -395,10 +394,8 @@ def jsonl_inventory(repo):
         raise RuntimeError(f"JSONL inventory failed: {err.strip()}")
     paths = sorted(set(p for p in out.split("\0") if p))
     generated = sum(generated_jsonl(p) for p in paths)
-    streams = sum(generated_jsonl(p) and p.endswith(".stream.jsonl") for p in paths)
     return {"method": "git ls-files -co --exclude-standard -- '.claude/*.jsonl' '.claude/**/*.jsonl'; deduplicate; classify enumerated writer/consumer log classes",
-            "classes": {"appendOnlyLog": generated - streams, "benchmarkProgressStream": streams,
-                        "eligible": len(paths) - generated}}
+            "classes": {"appendOnlyLog": generated, "eligible": len(paths) - generated}}
 
 
 def find_citers(matcher, repo, ignored, vault, plan=None, excluded=None):

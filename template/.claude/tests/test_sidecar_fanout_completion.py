@@ -129,6 +129,24 @@ class FanoutCompletion(unittest.TestCase):
                              [('a#1', 'UNVERIFIED'), ('z#1', 'VERIFIED')])
             self.assertTrue((root / 'post_check_claims.json').is_file())
 
+    def test_claims_resolve_against_the_jobs_workdir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launch, work = root / 'launch', root / 'work'
+            (work / 'repo').mkdir(parents=True)
+            launch.mkdir()
+            (work / 'repo' / 'cited.txt').write_text('genuine source')
+            for label in ('inside', 'plain'):
+                (root / (label + '.out.json')).write_text('{}')
+                (root / (label + '.md')).write_text(json.dumps({'claims': [
+                    {'id': 'C1', 'evidence': [{'file': 'repo/cited.txt', 'quote': 'genuine source'}]}]}))
+            records = {label: {'record': str(root / (label + '.record.json'))} for label in ('inside', 'plain')}
+            records['inside']['workdir'] = str(work)
+            self.assertEqual(sf.close_claims(SimpleNamespace(root=str(launch)), root, results=records), 1)
+            payload = json.loads((root / 'claims.json').read_text())
+            verdicts = {c['lens']: c['verdict'] for c in payload['claims']}
+            self.assertEqual(verdicts, {'inside': 'VERIFIED', 'plain': 'UNVERIFIED'})
+
     def test_unchecked_subset_does_not_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

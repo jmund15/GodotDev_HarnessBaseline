@@ -41,6 +41,12 @@ class SubjectPath(unittest.TestCase):
             subject = fold_check.load_subject(tmp, str(snap), ['plan.md'])
             self.assertEqual(Path(subject.describe()['snapshot']), snap)
 
+    def test_snapshot_keys_match_files_in_any_spelling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            written = ['a/plan.md\n', '.\\a\\b.py']
+            subject = fold_check.Subject(tmp, written, {'kind': 'blobs', 'files': dict.fromkeys(written)})
+            self.assertEqual(subject.files, ['a/plan.md', 'a/b.py'])
+
 
 if __name__ == '__main__':
     unittest.main()

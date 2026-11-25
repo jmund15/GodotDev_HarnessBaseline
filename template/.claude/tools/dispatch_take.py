@@ -21,7 +21,7 @@ the rating and whether to retire stay the session's judgment (`instruction_quali
     PROOF        each changed proof file; `not-run`, or PASS/FAIL/TIMEOUT with `--run-proofs` (run in the worktree)
     RUNNING      jobs of the same out dir that have not ended, and WATCHER: whether this session's watcher is armed
                  (with the re-arm call when it is not and a job runs)
-    RETIRE       the delete guard's verdict for the worktree (`hooks/_regenerable_clone.py --retire-check`), asked once
+    RETIRE       the delete guard's verdict for the worktree (`hooks/_delete_rule.py` `is_retired_worktree`), asked once
                  every commit is on --base; before that, how many are not
 
 EXIT 0 facts printed; 1 a removed assert is MISSING, a proof failed or timed out, or the worktree holds
@@ -264,9 +264,9 @@ def take(source, label, root, base_ref="main", workdir=None, run_proofs=False,
         out.append(f"RETIRE not yet: {unlanded} commit(s) are not on {base_ref}; take again after they land")
     elif unlanded == 0:
         # The delete guard's own walk of the worktree, about ten seconds: asked only when it can answer yes.
-        from _regenerable_clone import is_retired_worktree
+        from _delete_rule import is_retired_worktree
         reasons = []
-        retired = is_retired_worktree(str(work), os.getcwd(), str(root), allow_ignored=created, reasons=reasons)
+        retired = is_retired_worktree(str(work), os.getcwd(), str(root), reasons=reasons, own=created)
         why = "; ".join(reasons)
         out.append(f"RETIRE {work}: " + ("retired: safe to delete" if retired else
                                          "blocked: " + (why if len(why) <= RETIRE_CHARS else why[:RETIRE_CHARS] + " ...")))

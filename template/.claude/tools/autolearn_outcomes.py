@@ -10,9 +10,9 @@ Usage:
     autolearn_outcomes.py history --target T [--target T ...] [--file PATH]
 
 `record` validates the row shape, appends it and keeps only the newest `--cap` rows (default 500).
-`recorded` counts a slip that landed nothing. A `recorded` row whose target shares a path with earlier `recorded`
-rows that no later `applied` row on that path has closed prints those rows (date, session, signal) after the
-confirmation: the record call is where a repeat is noticed, so it names the open rows there. `--fix` names what a landing changed: text, reach,
+`recorded` counts a slip that landed nothing. A `recorded` row whose target shares a path with a `recorded` row from the
+last 30 days prints every such row plus every `applied` row on that path since (date, outcome, session, signal) after
+the confirmation, so the agent judges whether the slip is the same choice; an `applied` row closes nothing. `--fix` names what a landing changed: text, reach,
 tool, hook, remove (a deletion or narrowing), or none. `metric` is the dashboard metric key the fix is meant to move.
 `lookup` prints, as JSON lines, the declined rows whose target equals T, so the re-proposal check
 is a deterministic read: a decline whose reason still holds is not proposed again.
@@ -20,6 +20,7 @@ is a deterministic read: a decline whose reason still holds is not proposed agai
 several joined by `;`, with a `#anchor`, or followed by a section name), so /codify Step 0 reads which fixes a rule's homes already had.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -37,6 +38,7 @@ LOCK_TIMEOUT = 5.0
 
 DEFAULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "autolearn_outcomes.jsonl")
 DEFAULT_CAP = 500
+REPEAT_WINDOW_DAYS = 30
 OUTCOMES = ("applied", "declined", "recorded")
 FIXES = ("text", "reach", "tool", "hook", "remove", "none")
 REQUIRED = ("date", "session", "target", "signal", "recommended", "outcome", "reason")
@@ -96,30 +98,41 @@ def _targets(row):
     return out
 
 
-def open_recorded(rows, target):
-    """The `recorded` rows naming a path of `target` that no later `applied` row on one of its paths has closed."""
+def open_recorded(rows, target, today):
+    """The earlier rows on a path of `target` the agent judges for a repeat: every `recorded` row from the 30 days
+    before `today`, plus every `applied` row dated on or after the oldest of those. An `applied` row closes nothing."""
     paths = _targets({"target": target})
-    open_rows = []
-    for r in rows:
-        if not paths & _targets(r):
-            continue
-        if r.get("outcome") == "applied":
-            open_rows = []
-        elif r.get("outcome") == "recorded":
-            open_rows.append(r)
-    return open_rows
+    start = _day(today)
+    if start is None:
+        return []
+    start = start - datetime.timedelta(days=REPEAT_WINDOW_DAYS)
+    recorded = [r for r in rows if paths & _targets(r) and r.get("outcome") == "recorded"
+                and (_day(r.get("date")) or start) >= start]
+    if not recorded:
+        return []
+    oldest = min(str(r.get("date")) for r in recorded)
+    applied = [r for r in rows if paths & _targets(r) and r.get("outcome") == "applied" and str(r.get("date")) >= oldest]
+    return sorted(recorded + applied, key=lambda r: str(r.get("date")))
+
+
+def _day(text):
+    try:
+        return datetime.date.fromisoformat(str(text))
+    except ValueError:
+        return None
 
 
 def repeat_lines(rows, row):
-    """Facts for a `recorded` row that repeats an open choice: each earlier row's date, session and signal."""
+    """Facts for a `recorded` row on a path with earlier rows: each row's date, outcome, session and signal."""
     if row["outcome"] != "recorded":
         return []
-    earlier = open_recorded(rows, row["target"])
-    if not earlier:
+    earlier = open_recorded(rows, row["target"], row["date"])
+    if not any(r.get("outcome") == "recorded" for r in earlier):
         return []
-    return (["autolearn_outcomes: repeat: %d earlier recorded row(s) name %s with no applied row since:"
-             % (len(earlier), row["target"])]
-            + ["  %s %s %s" % (r.get("date"), str(r.get("session"))[:8], str(r.get("signal"))[:140]) for r in earlier])
+    return (["autolearn_outcomes: repeat: %d earlier row(s) name %s in the last %d days; judge whether this slip is the same choice:"
+             % (len(earlier), row["target"], REPEAT_WINDOW_DAYS)]
+            + ["  %s %s %s %s" % (r.get("date"), r.get("outcome"), str(r.get("session"))[:8], str(r.get("signal"))[:140])
+               for r in earlier])
 
 
 def cmd_record(args):

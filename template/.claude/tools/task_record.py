@@ -21,9 +21,9 @@ board is only the owner's view of them.
 
 `triage` records the six work-triage fields (values and litmus: `tools/triage.py --help`). Reach and oracle are
 derived from `--paths` through the tag registry (required) and may not sit below that derived floor; a second call is a re-triage that
-needs `--reason` and logs one decision per changed field. Every call binds the record to the caller's session
-(`CLAUDE_CODE_SESSION_ID`), so a drive resumed in a new session re-triages to reclaim it; the commit check reads the
-result through `triage_for_session`.
+needs `--reason` and logs one decision per changed field; the commit check reads the result through
+`triage_for_session`. Every write binds the record to the writer's session (`CLAUDE_CODE_SESSION_ID`): the session
+writing a record is driving it, so a drive picked up by a new session is re-injected at that session's compactions.
 
 `add ... decision --evidence-item '<json>'` checks each repeatable four-kind item through
 `verify_claims.check_claims` and refuses anything not VERIFIED. Items retain their add-time root and
@@ -53,6 +53,10 @@ triage in one transaction; the spec's keys are `session`, `title`, `requirements
 `scope{owner,files[]}` and `triage{fields,paths[],outward[]}`. The same spec on an existing record is a no-op; a
 different spec is refused (edit through `add`/`triage`). A bare `open` on an existing record needs `--reset`.
 
+`task_for` and `acceptance_text` are the brief-building default: `lens_briefs` and `sidecar_fanout` write the session's
+record's requirements and exclusions into every brief they build, unless the caller passes `task: false` (or `--no-task`)
+or an explicit id.
+
 `condition` records an owner deadline or an owner request to add or drop process. The tool finds the last
 owner turn of the caller's session (`CLAUDE_CODE_SESSION_ID`) whose text contains `--quote`, using
 `_owner_text`'s classifier and prompt/answer projections plus typed command arguments. It stores that
@@ -67,6 +71,7 @@ import copy
 import functools
 import hashlib
 import json
+import ntpath
 import os
 import sys
 import time
@@ -78,7 +83,9 @@ for _d in (os.path.join(HERE, "..", "hooks"), HERE):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 import _hook_state  # noqa: E402
+import review_snapshot  # noqa: E402
 from _checkout_root import linked_main_root  # noqa: E402
+from _git_run import run as _run_git  # noqa: E402
 
 # The per-turn cost is bounded by BLOCK_BYTES (the injected block), never by the file: the file is read
 # whole only by `show` and the digest. MAX_BYTES therefore guards against a dump, not context. Measured
@@ -112,6 +119,10 @@ class ConditionRefused(Exception):
 
 
 class EvidenceRefused(Exception):
+    pass
+
+
+class RecordMissing(Exception):
     pass
 
 
@@ -247,11 +258,15 @@ def _mutate(task_id, mutation):
 
     def updater(state):
         working = copy.deepcopy(state)
+        bound = working.get("session_id")
         try:
             result = mutation(working)
         except (KeyError, TriageRefused, OpenRefused) as exc:
             caught["exc"] = exc
             raise
+        writer = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        if writer and working.get("session_id") == bound:
+            working["session_id"] = writer
         working["updated"] = now()
         _spill_closed(task_id, working)
         raw = json.dumps(working, ensure_ascii=True)
@@ -558,43 +573,50 @@ def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, b
     """
     if role is not None and role not in JOB_ROLES:
         raise KeyError("unknown job role %r" % role)
-    import review_ledger
     import model_registry
+    import review_ledger
+    import review_snapshot
     repo = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     files = bases = None
+
+    def hashes(source, paths):
+        result = review_snapshot.open(repo, source).blobs(paths)
+        return {path: value.sha if isinstance(value, review_snapshot.Blob) else None
+                for path, value in result.items()}
+
     if subject is not None:
-        ctx = review_ledger.Ctx(repo, "HEAD")
-        paths = review_ledger.normalize_files(ctx.toplevel, subject)
+        top = review_snapshot.open(repo).toplevel
+        paths = review_snapshot.normalize_files(top, subject)
         if any(Path(p).is_absolute() or ".." in Path(p).parts for p in paths):
             raise KeyError("job subjects must be inside the repository")
-        head = review_ledger.Ctx(repo, "HEAD", snapshot="HEAD").hash_files(paths)
-        files = ctx.hash_files(paths)
+        head = hashes(review_snapshot.Commit("HEAD"), paths)
+        files = hashes(review_snapshot.Disk(), paths)
         for path in paths:
             if files[path] is None and head[path] is None:
-                staged = review_ledger.Ctx(repo, "HEAD", snapshot="INDEX").hash(path)
+                staged = hashes(review_snapshot.Index(), [path])[path]
                 if staged is None:
                     raise KeyError("subject %s is neither present nor tracked" % path)
         bases = head if state == "accepted" else dict(files)
         if state == "accepted":
-            result = review_ledger._git(repo, ["diff", "--cached", "--name-only", "-z", "--", *paths])
+            result = _run_git(["diff", "--cached", "--name-only", "-z", "--", *paths], cwd=str(repo))
             if result.returncode:
                 raise KeyError("cannot read staged subject paths")
             staged = [p for p in result.stdout.decode("utf-8").split("\0") if p]
-            files.update(review_ledger.Ctx(repo, "HEAD", snapshot="INDEX").hash_files(staged))
+            files.update(hashes(review_snapshot.Index(), staged))
     input_files = None
     if inputs is not None:
-        ctx = review_ledger.Ctx(repo, "HEAD")
-        paths = review_ledger.normalize_files(ctx.toplevel, inputs)
+        top = review_snapshot.open(repo).toplevel
+        paths = review_snapshot.normalize_files(top, inputs)
         if any(Path(p).is_absolute() or ".." in Path(p).parts for p in paths):
             raise KeyError("job inputs must be inside the repository")
-        input_files = ctx.hash_files(paths)
+        input_files = hashes(review_snapshot.Disk(), paths)
         if any(blob is None for blob in input_files.values()):
             raise KeyError("job inputs must name readable files")
     if base_files is not None:
         if role != "fold" or state != "accepted" or files is None or set(base_files) != set(files):
             raise KeyError("reviewed bases require an accepted fold and exactly its subject paths")
         if any(blob is not None and (not isinstance(blob, str) or
-                review_ledger._git(repo, ["cat-file", "-e", blob + "^{blob}"]).returncode)
+                _run_git(["cat-file", "-e", blob + "^{blob}"], cwd=str(repo)).returncode)
                 for blob in base_files.values()):
             raise KeyError("reviewed fold bases must be repository blobs or null")
         bases = dict(base_files)
@@ -743,6 +765,33 @@ def triage_for_session(session_id):
     return (rec.get("triage") or {}).get("fields") if rec else None
 
 
+def task_for(explicit, session=None):
+    """The task a brief-building tool judges against: an explicit id wins, an explicit False opts out, and
+    otherwise the session's newest record (`session`, else CLAUDE_CODE_SESSION_ID) names it, or None."""
+    if explicit is False:
+        return None
+    if explicit:
+        return str(explicit)
+    rec = active(session or os.environ.get("CLAUDE_CODE_SESSION_ID") or "")
+    return rec.get("task_id") if rec else None
+
+
+def acceptance_text(task_id):
+    """The record's requirements and exclusions as a brief's acceptance test, under the heading every brief-building
+    tool writes (`lens_briefs`, `sidecar_fanout`). Raises RecordMissing when the record does not exist."""
+    rec = load(task_id)
+    if not rec:
+        raise RecordMissing("no task record %s under %s" % (task_id, record_dir()))
+    lines = ["", "## Acceptance test (task %s)" % task_id,
+             "Judge the subject against each item below as well as your mandate. A subject that passes your checks "
+             "but misses one of these has a finding."]
+    lines += ["- Requirement: %s" % item for item in rec.get("requirements") or []]
+    lines += ["- Exclusion: %s" % item for item in rec.get("exclusions") or []]
+    if len(lines) == 3:
+        lines.append("- The record holds no requirement or exclusion yet.")
+    return "\n".join(lines) + "\n"
+
+
 def _claude_dir():
     root = os.environ.get("CLAUDE_PROJECT_DIR")
     return os.path.join(root, ".claude") if root else os.path.normpath(os.path.join(HERE, ".."))
@@ -833,6 +882,19 @@ def _session_transcript(session_id):
                / (session_id + ".jsonl"))
 
 
+def _msys_restored(quote):
+    """Git Bash rewrites an argv value starting with `/` (an owner's `/command`) into `<Git root>/...` before
+    Python reads it; undo exactly that prefix, and only under MSYS, whose root is EXEPATH's parent. EXEPATH is a
+    Windows path wherever it is read, so it is split as one."""
+    exepath = os.environ.get("EXEPATH")
+    if not os.environ.get("MSYSTEM") or not exepath:
+        return quote
+    root = ntpath.dirname(exepath.rstrip("\\/")).replace("\\", "/").rstrip("/") + "/"
+    if quote.lower().startswith(root.lower()):
+        return "/" + quote[len(root):]
+    return quote
+
+
 def record_condition(task_id, kind, quote, effect, session_id=None, transcript=None, until=None):
     """Store a run condition against the owner turn that holds `quote`. Refuses an unknown kind, an empty
     quote, an unreadable transcript, or a quote no owner turn of the session holds. A delegate
@@ -850,7 +912,7 @@ def record_condition(task_id, kind, quote, effect, session_id=None, transcript=N
             raise ConditionRefused("a spend condition needs --until: an ISO time with a zone")
         if until_epoch(until) is None:
             raise ConditionRefused("--until must be an ISO time with a zone, e.g. 2031-01-01T00:00:00Z")
-    quote = (quote or "").strip()
+    quote = _msys_restored((quote or "").strip())
     if not quote:
         raise ConditionRefused("condition needs the owner's words in --quote")
     session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""

@@ -40,6 +40,9 @@ A header line `citers: plan` declares that the lens judges a plan's changed surf
 for it and `""` otherwise, and `lens_briefs.py` runs `citers.py` over each meta subject plan's `surfaces` block and
 embeds the result as `INBOUND_REFS` in that lens's brief.
 
+A header line `fixes: plan` declares that the lens reads each subject plan's touched code files' fix history.
+`Lens.fixes` is `"plan"` for it and `""` otherwise, and `lens_briefs.py` embeds the counts as `FIX_HISTORY`.
+
 Each lens carries the tier its seat reviews at: a header line `tier: <tier>` (`Lens.tier`), else its registry's
 `REGISTRY_TIERS` value. A plan or design review is architect work, a review of code or concrete
 artifacts executor work, an anchored check fanout work. `seat_tier` is the one reader: the provider
@@ -127,6 +130,7 @@ TIER_RE = re.compile(r"^tier:\s*(\S+)\s*$")
 READING_RE = re.compile(r"^reading:\s*(\S+)\s*$")
 KFM_RE = re.compile(r"^kfm:\s*index\s*$")
 CITERS_RE = re.compile(r"^citers:\s*plan\s*$")
+FIXES_RE = re.compile(r"^fixes:\s*plan\s*$")
 ADMISSION_RE = re.compile(r"^admission:\s*(.+?)\s*$")
 
 
@@ -190,13 +194,18 @@ class Lens:
         return "plan" if any(CITERS_RE.match(line) for line in self.lines[:self._header_len()]) else ""
 
     @property
+    def fixes(self) -> str:
+        return "plan" if any(FIXES_RE.match(line) for line in self.lines[:self._header_len()]) else ""
+
+    @property
     def size(self) -> int:
         return sum(len(l.encode("utf-8")) for l in self.lines) + len(doctrine([self]).encode("utf-8"))
 
     def body(self) -> str:
         cut = self._header_len()
         kept = [l for l in self.lines[:cut] if not (PRELOAD_RE.match(l) or MANDATES_RE.match(l) or KFM_RE.match(l)
-                                                   or CITERS_RE.match(l) or TIER_RE.match(l) or READING_RE.match(l)
+                                                   or CITERS_RE.match(l) or FIXES_RE.match(l) or TIER_RE.match(l)
+                                                   or READING_RE.match(l)
                                                    or ADMISSION_RE.match(l))] + self.lines[cut:]
         return f"### {self.key} {self.descriptor}\n" + "".join(kept).rstrip() + "\n"
 

@@ -117,10 +117,23 @@ def case_a_proof_corpus_outside_claude_is_checked_out():
         harness_tests.PROOF_CORPUS.update(saved)
 
 
+def case_a_branch_checked_out_elsewhere_is_a_valid_revision():
+    repo = make_repo()
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    tip = git(repo, "rev-parse", "HEAD").strip()
+    try:
+        with harness_tests._revision_checkout(repo, branch) as snap:
+            at = git(snap, "rev-parse", "HEAD").strip()
+            check("a branch another worktree holds checks out at its tip", at == tip, "at=%s tip=%s" % (at, tip))
+    except RuntimeError as exc:
+        check("a branch another worktree holds checks out at its tip", False, str(exc))
+
+
 def main():
     case_a_killed_close_checkout_is_removed_by_the_next()
     case_a_checkout_with_no_lock_file_is_left_alone()
     case_a_proof_corpus_outside_claude_is_checked_out()
+    case_a_branch_checked_out_elsewhere_is_a_valid_revision()
     print()
     if FAILURES:
         for f in FAILURES:

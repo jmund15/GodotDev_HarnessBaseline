@@ -29,7 +29,8 @@ Deliberately NOT resumable — each would loop or re-buy, so they exit silent:
 
 The same module owns the live stream-event classification the launcher watchdog and
 `sidecar_fanout.py --status` share: which events are work, which are retries, and which result is a
-provider usage limit.
+provider usage limit. It reads both result shapes: Claude's `type: result` and the Antigravity CLI's
+`event: result` with the provider payload nested under `result`.
 
 Usage:  sidecar_resume_check.py < stream.jsonl   (or a path as argv[1])
         sidecar_resume_check.py --watch <path|-> <offset> <run> <limit>
@@ -43,6 +44,8 @@ import json
 import os
 import re
 import sys
+import time
+from datetime import datetime, timezone
 
 from stream_events import iter_stream_events
 
@@ -75,7 +78,12 @@ NEVER_RESUME = re.compile(
 )
 
 USAGE_LIMIT = re.compile(r"(?:usage|weekly|session)[ _-]?limit", re.I)
+AGY_QUOTA = re.compile(r"third-party quota|quota reached", re.I)
 USAGE_LIMIT_REASON = "provider-usage-limit"
+# The Antigravity CLI's refusal names its reset as a duration ("Resets in 95h34m36s"), not an epoch:
+# the wait is added to the event's own stamped time. Its result event is `event: result` with the
+# provider payload nested under `result`, so it is not a Claude `type: result` event.
+AGY_RESET = re.compile(r"resets? in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
 # A 429 the server words as its own overload ("[overloaded] ... retry shortly") spends no allowance:
 # it is a transient fault that resumes, never a usage limit that stops the run and marks the plan.
 OVERLOADED = re.compile(r"\boverloaded\b|retry shortly", re.I)
@@ -104,7 +112,7 @@ def _blocks(d):
 def event_kind(d):
     """-> result | retry | system | work. Only work and results count as progress."""
     t = d.get("type")
-    if t == "result":
+    if t == "result" or d.get("event") == "result":
         return "result"
     if t == "system":
         return "retry" if d.get("subtype") == "api_retry" else "system"
@@ -113,7 +121,20 @@ def event_kind(d):
     return "work"
 
 
+def _agy_result(d):
+    """The provider payload of an Antigravity CLI result event, or None for any other event."""
+    if d.get("event") != "result":
+        return None
+    result = d.get("result")
+    return result if isinstance(result, dict) else None
+
+
 def is_usage_limit_result(d):
+    agy = _agy_result(d)
+    if agy is not None:
+        text = agy.get("error")
+        return (agy.get("status") != "SUCCESS" and isinstance(text, str)
+                and bool(AGY_QUOTA.search(text)) and not _overload_only(text))
     if d.get("type") != "result":
         return False
     if d.get("terminal_reason") == USAGE_LIMIT_REASON:
@@ -138,8 +159,28 @@ def is_usage_limit_event(d):
         for window in (info.get("unifiedWindows") or {}).values())
 
 
+def _agy_reset_epoch(d):
+    """Epoch seconds an agy refusal names, from its `Resets in <N>h<N>m<N>s` prose and stamped time."""
+    agy = _agy_result(d)
+    if agy is None:
+        return None
+    match = AGY_RESET.search(str(agy.get("error") or ""))
+    if not match or not any(match.groups()):
+        return None
+    hours, minutes, seconds = (int(part) if part else 0 for part in match.groups())
+    try:
+        base = datetime.strptime(str(d.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S") \
+            .replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        base = time.time()
+    return int(base + hours * 3600 + minutes * 60 + seconds)
+
+
 def reset_epoch(d):
     """Epoch seconds a rejected rate-limit window resets at, when a rate_limit_event names one."""
+    agy = _agy_reset_epoch(d)
+    if agy is not None:
+        return agy
     info = d.get("rate_limit_info") if d.get("type") == "rate_limit_event" else None
     if not isinstance(info, dict):
         return None

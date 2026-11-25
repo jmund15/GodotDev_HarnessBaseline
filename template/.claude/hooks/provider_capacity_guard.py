@@ -23,36 +23,40 @@ def _binding_window(quota):
     return " (%s at %s%% used, resets %s local)" % (name, window.get("usedPercent"), when)
 
 
-def refusal(transport, *, data=None, reader=None):
-    """Return a denial reason, or None when normalized capacity permits native work."""
+def _unreadable_warning(transport, value):
+    failure = value.get("error") or value.get("liveFailure") or {}
+    reason = " ".join(str(failure.get("message") or "").split()) if isinstance(failure, dict) else ""
+    return "Provider capacity for %s is unreadable (%s): %s; native dispatch proceeds on a warning" % (
+        transport, value.get("status"),
+        reason or provider_capacity.reason_text(value) or "the reader gave no reason")
+
+
+def assess(transport, *, data=None, reader=None):
+    """Return `(refusal, warning)`: a denial reason when the reading shows no room, else None, beside
+    the warning an unreadable meter contributes to the launch that proceeds anyway (orchestration §5b).
+    """
     reader = reader or provider_capacity.reading
     try:
         value = reader(transport, data=data)
     except Exception as exc:
-        return "Provider capacity unavailable for %s: %s" % (transport, str(exc)[:300])
+        return "Provider capacity unavailable for %s: %s" % (transport, str(exc)[:300]), None
     if not isinstance(value, dict):
-        return "Provider capacity unknown for %s: normalized result is missing" % transport
+        return "Provider capacity unknown for %s: normalized result is missing" % transport, None
     status = value.get("status")
     source = value.get("sourceKind")
     if status == "available":
-        return None
+        return None, None
     if status == "unsupported" and source == "unsupported":
-        return None
+        return None, None
     if status == "dispatch-floor":
-        return provider_capacity.floor_refusal(value) + "; native dispatch is blocked until reset"
+        return provider_capacity.floor_refusal(value) + "; native dispatch is blocked until reset", None
     if status == "exhausted":
         return "Provider capacity exhausted for %s%s; native Workflow/Agent dispatch is blocked" % (
-            transport, _binding_window(value.get("quota")))
+            transport, _binding_window(value.get("quota"))), None
     if status == "insufficient":
-        return "Provider balance insufficient for %s; native Workflow/Agent dispatch is blocked" % transport
+        return "Provider balance insufficient for %s; native Workflow/Agent dispatch is blocked" % transport, None
     if status == "auth-error":
-        return "Provider authentication failed for %s; re-login before native dispatch" % transport
-    if status == "network-error":
-        failure = value.get("error") or value.get("liveFailure") or {}
-        if failure.get("kind") == "rate-limit":
-            return "Provider usage endpoint for %s is rate limited: %s; native dispatch is blocked" % (
-                transport, str(failure.get("message"))[:200])
-        return "Provider network capacity check failed for %s with no valid fallback" % transport
-    if status == "malformed":
-        return "Provider capacity response malformed for %s; native dispatch is blocked" % transport
-    return "Provider capacity status unknown for %s: %r" % (transport, status)
+        return "Provider authentication failed for %s; re-login before native dispatch" % transport, None
+    if status in provider_capacity.UNREADABLE:
+        return None, _unreadable_warning(transport, value)
+    return "Provider capacity status unknown for %s: %r" % (transport, status), None

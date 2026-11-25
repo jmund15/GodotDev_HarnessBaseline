@@ -42,17 +42,27 @@ Definitions:
   Hooks run with `CLAUDE_PROJECT_DIR` set and session id `census-probe`.
 - deny: a tool result in a transcript whose text is hook output (`PreToolUse`, `PostToolUse`, `PermissionDenied`, or
   `[command hook`) and contains `DENIED` or `BLOCKED`. Attributed to the hook named by `hooks/<name>.py` in the text.
+- size by area: code lines are the `CODE_EXT` files under `.claude/` at `--ref` outside `.claude/tests/`; test lines are
+  those under `.claude/tests/`. A file takes the `areas` row (`adaptation.json`, read through `adaptation.get`) whose
+  prefix is longest among those that start its path; a file no row matches is `unassigned`. `size.areas[name].change`
+  is the delta against the newest row of `census_readings.jsonl` (`--readings`), or null with no such row.
+- reading: one row per census (`date`, `ref`, `head`, `windowDays`, `totals`, per-area `code` and `tests`).
+  `--record <census.json>` appends it to the readings file, or prints `already recorded` when a row has the same
+  head and date.
 
-Freshness: `--line [census.json]` prints the `/session_end` census line: `census stale (<date>)` when `generatedAt`
-is older than 32 days, else `census: N items changed since their last ruling` when N > 0, else nothing. A
-`main_check.json` (`--main-check`, else `origin/main-check-state:main_check.json`) adds the last finished run's wall
-to that line, `run.wall`'s close + gate + finalize seconds; an absent, unreadable or unfinished state adds nothing.
-With no census path, the census is read from `origin/main-check-state:mechanism_census.json`.
+Freshness: `--line [census.json]` prints the `/session_end` census line, one fact line. It starts with `census stale
+(<date>)` when `generatedAt` is older than 32 days, else `census: N items changed since their last ruling` when N > 0.
+A fresh census adds the code and test lines and their change from the newest reading. Then each suite's newest wall
+(`last_walls`): the main check (`run.wall`'s close + gate + finalize, from `--main-check`, else
+`origin/main-check-state:main_check.json`), harness proofs, publish and the C# gate, each `<suite>: no record` when it
+has none. Nothing known prints nothing. With no census path, the census is read from
+`origin/main-check-state:mechanism_census.json`.
 
 Usage:
     python3 .claude/tools/mechanism_census.py --out <census.json> [--table proofs|hooks|tools --sort <column>]
         [--checkout DIR]... [--transcripts DIR]... [--main-check FILE] [--rulings FILE] [--ref main] [--days 30]
-        [--now ISO] [--time-hooks] [--repo DIR]
+        [--now ISO] [--time-hooks] [--repo DIR] [--readings FILE]
+    python3 .claude/tools/mechanism_census.py --record <census.json> [--readings FILE] [--repo DIR]
     python3 .claude/tools/mechanism_census.py --line [census.json] [--main-check FILE] [--repo DIR] [--now ISO]
 """
 import argparse
@@ -60,12 +70,19 @@ import collections
 import datetime
 import glob
 import json
+import math
 import os
 import re
 import statistics
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+import adaptation  # noqa: E402
+import _file_lock  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 
 STALE_DAYS = 32
 CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs")
@@ -76,6 +93,9 @@ CLEARING_KINDS = ("proof-only", "other-only", "both", "same-head", "unpaired")
 HOOK_PAYLOAD = {"session_id": "census-probe", "hook_event_name": "PreToolUse", "tool_name": "Bash",
                 "tool_input": {"command": "git status"}}
 DENY_RE = re.compile(r"(PreToolUse|PostToolUse|PermissionDenied|\[command hook)")
+CITE_RE = re.compile(r"\[[a-z][a-z0-9-]* [A-Z0-9][A-Za-z0-9]*\]")
+TRAILER_RE = re.compile(r"^(Redesigns|Plan):[ \t]*(\S+)[ \t]*$", re.M)
+TOP_SHARE = 0.05
 
 
 def _now(args=None):
@@ -95,9 +115,8 @@ def _parse_ts(text):
 
 
 def git(repo, *args):
-    out = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True, encoding="utf-8",
-                         errors="replace")
-    return out.stdout if out.returncode == 0 else ""
+    out = git_run(args, cwd=repo)
+    return out.text if out.returncode == 0 else ""
 
 
 def worktrees(repo):
@@ -144,6 +163,12 @@ def load_ledger(paths):
                 continue
             seen.setdefault(r.get("id") or p, r)
     return list(seen.values())
+
+
+def gate_ledger_dirs(repo, roots):
+    common = git(repo, "rev-parse", "--git-common-dir").strip()
+    dirs = [os.path.join(os.path.abspath(os.path.join(repo, common)), "harness", "gate_ledger")]
+    return dirs + [os.path.join(r, ".claude", "scratch", "gate_ledger") for r in roots]
 
 
 def clearing_kind(proof, head, next_head, files):
@@ -306,6 +331,210 @@ def line_count(repo, path):
         return 0
 
 
+def area_rows(repo):
+    """This project's `[area, prefix]` rows from `adaptation.json` `areas`; a row that is not two non-empty strings
+    is skipped."""
+    rows = []
+    for row in adaptation.get(os.path.join(repo, ".claude"), "areas") or []:
+        if isinstance(row, list) and len(row) == 2 and all(isinstance(x, str) and x for x in row):
+            rows.append((row[0], row[1]))
+    return rows
+
+
+def assign_area(path, rows):
+    """The area of the row whose prefix is longest among those that start `path`; None when no row matches."""
+    best = None
+    for name, prefix in rows:
+        if path.startswith(prefix) and (best is None or len(prefix) > len(best[1])):
+            best = (name, prefix)
+    return best[0] if best else None
+
+
+def load_readings(path):
+    """Parsed rows of a readings file in file order; [] when the file is absent."""
+    rows = []
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return rows
+    with fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict):
+                rows.append(r)
+    return rows
+
+
+def latest_reading(root):
+    """The newest reading row under `<root>/.claude/census_readings.jsonl`, or None."""
+    rows = load_readings(os.path.join(root, ".claude", "census_readings.jsonl"))
+    return rows[-1] if rows else None
+
+
+def _exists_at(repo, rev, path):
+    return git_run(["cat-file", "-e", "%s:%s" % (rev, path)], cwd=repo).returncode == 0
+
+
+def _log_commits(repo, ref, since):
+    """Commits on `ref` since a git --since value, newest first, touching `.claude` or `.github`: sha, date, subject,
+    full message and the paths they touch. Merges excluded."""
+    raw = git(repo, "log", ref, "--no-merges", "--since=" + since, "--date=short",
+              "--format=%x1e%H%x09%ad%x1f%B%x1d", "--name-only", "--", ".claude", ".github")
+    commits = []
+    for block in raw.split("\x1e")[1:]:
+        meta, _, files = block.partition("\x1d")
+        head, _, message = meta.partition("\x1f")
+        sha, _, date = head.partition("\t")
+        message = message.strip()
+        commits.append({"sha": sha, "date": date, "subject": message.split("\n", 1)[0], "message": message,
+                        "files": [f.strip() for f in files.splitlines() if f.strip()]})
+    return commits
+
+
+def counted_fixes(repo, ref, since):
+    """Counted fix commits per path since a git --since value, newest first, and each restarted path's redesign date.
+    A fix commit scoped to review, audit or fold is not counted (C53). A redesign commit carrying `Redesigns: <path>`
+    and a `Plan:` trailer whose file exists at that commit restarts the path: only fix commits newer than it count
+    (D3). A `Redesigns:` with no valid `Plan:` restarts nothing."""
+    commits = _log_commits(repo, ref, since)
+    restart = {}
+    for i, c in enumerate(commits):
+        trailers = TRAILER_RE.findall(c["message"])
+        redesigns = [v for k, v in trailers if k == "Redesigns"]
+        plans = [v for k, v in trailers if k == "Plan"]
+        if redesigns and plans and _exists_at(repo, c["sha"], plans[0]):
+            for path in redesigns:
+                restart.setdefault(path, i)
+    fixes = {}
+    for i, c in enumerate(commits):
+        if not FIX_RE.match(c["subject"]):
+            continue
+        scope = re.match(r"^fix\(([^)]*)\)", c["subject"])
+        if scope and EXCLUDED_SCOPE_RE.search(scope.group(1)):
+            continue
+        entry = {"sha": c["sha"][:9], "date": c["date"], "subject": c["subject"],
+                 "citesPlan": bool(CITE_RE.search(c["subject"]))}
+        for path in c["files"]:
+            if path in restart and i >= restart[path]:
+                continue
+            fixes.setdefault(path, []).append(entry)
+    return fixes, {path: commits[i]["date"] for path, i in restart.items()}
+
+
+def fix_history(repo, paths, ref, days, reading, date=None):
+    """Per path: `count` (counted fixes in the window), `listed` (the reading lists it; None with no reading), and for a listed path its
+    `listedSince` and `sinceListing` ({fixes, cited}) counted from that date, past the window. The listing date is the
+    reading row's `listedSince` when no redesign is newer than it, else the reading's date (`date` when given). A path
+    that does not resolve at `ref` is {"unresolved": true}, never a count."""
+    fixes, redesigned = counted_fixes(repo, ref, "%d.days" % days)
+    listed = {r.get("path"): r for r in (reading or {}).get("mostFixed") or [] if isinstance(r, dict)}
+    fallback = date or (reading or {}).get("date")
+    since_cache = {}
+    out = {}
+    for path in paths:
+        if not _exists_at(repo, ref, path):
+            out[path] = {"unresolved": True}
+            continue
+        row = {"count": len(fixes.get(path, [])), "listed": None if reading is None else path in listed,
+               "sinceListing": None,
+               "fixes": fixes.get(path, [])}
+        if path in listed:
+            stamp = listed[path].get("listedSince")
+            redo = redesigned.get(path)
+            since = stamp if stamp and (redo is None or stamp > redo) else fallback
+            if since not in since_cache:
+                since_cache[since] = counted_fixes(repo, ref, since)[0]
+            mine = since_cache[since].get(path, [])
+            row["listedSince"] = since
+            row["sinceListing"] = {"fixes": len(mine), "cited": sum(1 for f in mine if f["citesPlan"])}
+        out[path] = row
+    return out
+
+
+def most_fixed(repo, ref, days, prior, today):
+    """The top `ceil(TOP_SHARE x population)` of the code files with counted fixes, among files with two or more, ties
+    at the cut included. Population: code files outside tests/ and scratch/ with at least one counted fix."""
+    fixes, _ = counted_fixes(repo, ref, "%d.days" % days)
+    counts = {p: len(v) for p, v in fixes.items() if p.endswith(CODE_EXT) and not re.search(r"/(tests|scratch)/", p)}
+    cut = math.ceil(TOP_SHARE * len(counts))
+    eligible = sorted((p for p in counts if counts[p] >= 2), key=lambda p: -counts[p])
+    if not eligible or cut == 0:
+        return []
+    cutoff = counts[eligible[min(cut, len(eligible)) - 1]]
+    top = sorted((p for p in eligible if counts[p] >= cutoff), key=lambda p: (-counts[p], p))
+    hist = fix_history(repo, top, ref, days, prior, date=today)
+    return [{"path": p, "fixes": counts[p], "listedSince": hist[p].get("listedSince") or today,
+             "sinceListing": hist[p].get("sinceListing") or {"fixes": 0, "cited": 0}} for p in top]
+
+
+def size_block(repo, ref, rows, prior):
+    """Code and test lines per area and the `unassigned` row, over the `ref` tree's `CODE_EXT` files under `.claude/`
+    (scratch excluded). `change` is each row's delta against `prior` (a reading row), or None when there is no prior
+    row or it has no such row."""
+    buckets = collections.OrderedDict((name, {"code": 0, "tests": 0}) for name, _ in rows)
+    unassigned = {"code": 0, "tests": 0, "files": []}
+    totals = {"code": 0, "tests": 0, "codeFiles": 0, "testsFiles": 0}
+    for path in list_items(repo, ref, ".claude", re.compile(r"\.(py|ps1|sh|js|mjs)$")):
+        if path.startswith(".claude/scratch/"):
+            continue
+        kind = "tests" if path.startswith(".claude/tests/") else "code"
+        lines = line_count(repo, path)
+        totals[kind] += lines
+        totals[kind + "Files"] += 1
+        area = assign_area(path, rows)
+        if area is None:
+            unassigned[kind] += lines
+            unassigned["files"].append(path)
+        else:
+            buckets.setdefault(area, {"code": 0, "tests": 0})[kind] += lines
+    prior_areas = prior.get("areas") if isinstance(prior, dict) else None
+
+    def change(name, cur):
+        old = prior_areas.get(name) if isinstance(prior_areas, dict) else None
+        if not isinstance(old, dict):
+            return None
+        return {k: cur[k] - int(old.get(k) or 0) for k in ("code", "tests")}
+
+    areas = {name: dict(cur, change=change(name, cur)) for name, cur in buckets.items()}
+    unassigned["change"] = change("unassigned", unassigned)
+    return {"totals": totals, "areas": areas, "unassigned": unassigned}
+
+
+def reading_row(now, args, head, size):
+    """The census's reading: one row per census for `--record`, with per-area code and test lines."""
+    areas = {name: {"code": a["code"], "tests": a["tests"]} for name, a in size["areas"].items()}
+    areas["unassigned"] = {"code": size["unassigned"]["code"], "tests": size["unassigned"]["tests"]}
+    return {"date": now.strftime("%Y-%m-%d"), "ref": args.ref, "head": head, "windowDays": args.days,
+            "totals": {"code": size["totals"]["code"], "tests": size["totals"]["tests"]}, "areas": areas}
+
+
+def record(census_path, readings_path):
+    """Append the census's `reading` as one row, or print `already recorded` when a row with its head and date exists."""
+    try:
+        with open(census_path, encoding="utf-8") as fh:
+            row = json.load(fh).get("reading")
+    except (OSError, ValueError, AttributeError):
+        row = None
+    if not isinstance(row, dict):
+        print("census has no reading: %s" % census_path, file=sys.stderr)
+        return 1
+    os.makedirs(os.path.dirname(os.path.abspath(readings_path)), exist_ok=True)
+    line = json.dumps(row, sort_keys=True)
+    with _file_lock.locked(readings_path + ".lock", 30):
+        for old in load_readings(readings_path):
+            if old.get("head") == row.get("head") and old.get("date") == row.get("date"):
+                print("already recorded")
+                return 0
+        # bare-append: runs inside the readings lock with its duplicate check, so one writer is here at a time.
+        with open(readings_path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line + "\n")
+    print(line)
+    return 0
+
+
 def build(args):
     repo = os.path.abspath(args.repo)
     now = _now(args)
@@ -355,9 +584,8 @@ def build(args):
             if nxt and head and nxt[1] and nxt[1][:12] != head[:12]:
                 key = (head, nxt[1])
                 if key not in diff_cache:
-                    out = subprocess.run(["git", "-C", repo, "diff", "--name-only", head, nxt[1]], capture_output=True,
-                                         text=True)
-                    diff_cache[key] = out.stdout.split() if out.returncode == 0 else None
+                    out = git_run(["diff", "--name-only", head, nxt[1]], cwd=repo)
+                    diff_cache[key] = out.text.split() if out.returncode == 0 else None
                 files = diff_cache[key]
             clearing[name][clearing_kind(name, head, nxt[1] if nxt else None, files)] += 1
 
@@ -369,10 +597,7 @@ def build(args):
             flaky[r.get("proof")] += 1
             flaky_by_checkout[r.get("proof")][os.path.basename(root)] += 1
             flaky_rows.append(r)
-    common = git(repo, "rev-parse", "--git-common-dir").strip()
-    ledger_dirs = [os.path.join(os.path.abspath(os.path.join(repo, common)), "harness", "gate_ledger")]
-    ledger_dirs += [os.path.join(r, ".claude", "scratch", "gate_ledger") for r in roots]
-    ledger = load_ledger(ledger_dirs)
+    ledger = load_ledger(gate_ledger_dirs(repo, roots))
 
     # Git history.
     fixes = fix_index(repo, args.ref, args.days)
@@ -459,10 +684,18 @@ def build(args):
             index[f].append({"sha": c["sha"], "date": c["date"], "subject": c["subject"], "files": len(c["files"])})
     sample = sample_fix_commits(index)
 
+    head = git(repo, "rev-parse", args.ref).strip()
+    readings_path = args.readings or os.path.join(repo, ".claude", "census_readings.jsonl")
+    prior = (load_readings(readings_path) or [None])[-1]
+    size = size_block(repo, args.ref, area_rows(repo), prior)
+    reading = reading_row(now, args, head, size)
+    reading["mostFixed"] = most_fixed(repo, args.ref, args.days, prior, now.strftime("%Y-%m-%d"))
+
     return {
         "generatedAt": now.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
         "windowDays": args.days, "ref": args.ref, "checkoutsRead": checkouts_read,
         "transcriptFiles": len(tpaths), "totals": totals, "proofs": proof_rows, "hooks": hook_rows, "tools": tool_rows,
+        "size": size, "reading": reading,
         "mainCheck": main_check, "changedSinceRuling": changed,
         "fixSampling": {"rule": "module docstring §fix-commit sampling rule", "count": len(sample), "commits": sample},
         "sources": {"runRecords": run_records, "flakyRows": len(flaky_rows), "gateLedgerRecords": len(ledger)},
@@ -693,18 +926,84 @@ def last_finished_wall(repo, path=None):
     return sum(parts) if parts else None
 
 
-def census_line(census, now, wall=None):
+def _span(start, end):
+    """(end time, seconds) of a record's start and end stamps; None when either is absent or unparseable."""
+    a, b = _parse_ts(start), _parse_ts(end)
+    return (b, (b - a).total_seconds()) if a and b else None
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def last_walls(repo, main_check_path=None):
+    """The newest wall of each suite, in line order: `(suite, seconds | None, label | None)`. The label is the record's
+    mode. Harness proofs read the newest close or all row that ran proofs; publish reads the newest finished non-dry
+    journal; the C# gate reads the newest non-reused ledger record. Records come from every checkout."""
+    roots = worktrees(repo)
+    runs = [r for root in roots
+            for r in load_json_rows(os.path.join(root, ".claude", "logs", "harness_runs.json")) or []
+            if r.get("mode") in ("close", "all") and r.get("proofs") and isinstance(r.get("wall_s"), (int, float))]
+    run = max(runs, key=lambda r: float(r.get("ts") or 0), default=None)
+    journals = []
+    for root in roots:
+        for path in glob.glob(os.path.join(root, ".claude", ".cache", "baseline-publish", "*.json")):
+            j = _read_json(path)
+            span = _span(j.get("started_at"), j.get("finished_at")) if isinstance(j, dict) and not j.get("dry_run") else None
+            if span:
+                journals.append(span)
+    gates = []
+    for r in load_ledger(gate_ledger_dirs(repo, roots)):
+        span = _span(r.get("startedAt"), r.get("finishedAt")) if not r.get("reusedFrom") else None
+        if span:
+            gates.append((span, r.get("mode")))
+    publish = max(journals, key=lambda s: s[0], default=None)
+    gate = max(gates, key=lambda g: g[0][0], default=None)
+    return [("main check", last_finished_wall(repo, main_check_path), None),
+            ("harness proofs", float(run["wall_s"]) if run else None, run.get("mode") if run else None),
+            ("publish", publish[1] if publish else None, None),
+            ("C# gate", gate[0][1] if gate else None, gate[1] if gate else None)]
+
+
+def _size_text(size):
+    """`code N lines (+d), tests M lines (+e)` from the census's `size` block; a delta is omitted when any area has
+    no prior reading."""
+    totals = size.get("totals") or {}
+    parts = [size.get("unassigned") or {}] + list((size.get("areas") or {}).values())
+    out = []
+    for kind in ("code", "tests"):
+        changes = [p.get("change") for p in parts]
+        delta = ""
+        if all(isinstance(c, dict) for c in changes):
+            delta = " (%+d)" % sum(c.get(kind, 0) for c in changes)
+        out.append("%s %s lines%s" % (kind, format(int(totals.get(kind) or 0), ","), delta))
+    return ", ".join(out)
+
+
+def census_line(census, now, walls):
     gen = _parse_ts(census.get("generatedAt"))
-    if gen is None or (now - gen).total_seconds() > STALE_DAYS * 86400:
-        line = "census stale (%s)" % (gen.date().isoformat() if gen else "unknown")
+    stale = gen is None or (now - gen).total_seconds() > STALE_DAYS * 86400
+    parts = []
+    if stale:
+        parts.append("census stale (%s)" % (gen.date().isoformat() if gen else "unknown"))
     else:
         n = len(census.get("changedSinceRuling") or [])
-        if not n:
-            return ""
-        line = "census: %d item%s changed since their last ruling" % (n, "" if n == 1 else "s")
-    if wall is not None:
-        line += "; main check wall %.1f min" % (wall / 60.0)
-    return line
+        if n:
+            parts.append("census: %d item%s changed since their last ruling" % (n, "" if n == 1 else "s"))
+        if isinstance(census.get("size"), dict):
+            parts.append(_size_text(census["size"]))
+    for suite, seconds, label in walls:
+        if seconds is None:
+            parts.append("%s: no record" % suite)
+        else:
+            parts.append("%s wall %.1f min%s" % (suite, seconds / 60.0, " (%s)" % label if label else ""))
+    if gen is None and all(seconds is None for _, seconds, _ in walls):
+        return ""
+    return "; ".join(parts)
 
 
 TABLE_COLUMNS = {
@@ -749,11 +1048,17 @@ def main(argv=None):
     p.add_argument("--rulings", default=None)
     p.add_argument("--time-hooks", dest="time_hooks", action="store_true")
     p.add_argument("--out", default=None)
+    p.add_argument("--readings", default=None, help="readings file (default: .claude/census_readings.jsonl under --repo)")
+    p.add_argument("--record", default=None, metavar="CENSUS_JSON",
+                   help="append the census's reading to the readings file and exit")
     p.add_argument("--table", choices=sorted(TABLE_COLUMNS), default=None)
     p.add_argument("--sort", default="runs")
     p.add_argument("--line", nargs="?", const="", default=None,
                    help="print the /session_end census line for this census file; with no value, read the state ref")
     args = p.parse_args(argv)
+    if args.record:
+        readings = args.readings or os.path.join(os.path.abspath(args.repo), ".claude", "census_readings.jsonl")
+        return record(args.record, readings)
     if args.line is not None:
         repo = os.path.abspath(args.repo)
         if args.line:
@@ -768,7 +1073,7 @@ def main(argv=None):
                 census = json.loads(text) if text else {}
             except ValueError:
                 census = {}
-        line = census_line(census, _now(args), last_finished_wall(repo, args.main_check))
+        line = census_line(census, _now(args), last_walls(repo, args.main_check))
         if line:
             print(line)
         return 0

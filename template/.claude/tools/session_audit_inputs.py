@@ -38,9 +38,13 @@ import tempfile
 from pathlib import Path
 
 import review_ledger as ledger
+import review_snapshot
 import task_record
 from _checkout_root import linked_main_root
 from cli_usage import usage
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+from _git_run import run as _git_run  # noqa: E402
 
 # Which mandates need a file's whole frozen source as a must-read input. The instruction-quality
 # mandate judges the hunk and opens a file only to test consistency, so its diff carries the
@@ -54,7 +58,12 @@ def source_required(mandate: str) -> bool:
 
 
 def git(root, *args, optional=False, stdin=None):
-    result = subprocess.run(["git", "-C", str(root), *args], input=stdin, capture_output=True)
+    try:
+        result = _git_run(args, cwd=str(root), input=stdin)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if optional:
+            return None
+        raise ledger.ToolError(str(exc)) from exc
     if result.returncode:
         if optional:
             return None
@@ -64,7 +73,7 @@ def git(root, *args, optional=False, stdin=None):
 
 def doctrine_commits(root, base, head):
     commits = [dict(commit, files=[path for path in commit["files"] if ledger.is_doctrine_path(path)])
-               for commit in ledger.range_commits(root, base, head)]
+               for commit in review_snapshot.range_commits(root, base, head)]
     return [commit for commit in commits if commit["files"]]
 
 
@@ -74,7 +83,10 @@ PATHSPEC_CHARS = frozenset("*?[]\\\"")
 
 
 def git_bytes(root, args, stdin=None):
-    result = subprocess.run(["git", "-C", str(root), *args], input=stdin, capture_output=True)
+    try:
+        result = _git_run(args, cwd=str(root), input=stdin)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ledger.ToolError(str(exc)) from exc
     if result.returncode:
         raise ledger.ToolError(result.stderr.decode("utf-8", errors="replace").strip())
     return result.stdout
@@ -124,14 +136,10 @@ def hash_paths(root, paths, write=False):
     """`git hash-object` id of each worktree file in one call; `write` stores the blobs as well as hashing them."""
     if not paths:
         return {}
-    stdin = ("\n".join(paths) + "\n").encode("utf-8")
-    if write:
-        ids = git(root, "hash-object", "-w", "--stdin-paths", stdin=stdin).split()
-    else:
-        ids = git(root, "hash-object", "--stdin-paths", stdin=stdin).split()
-    if len(ids) != len(paths):
-        raise ledger.ToolError(f"hash-object gave {len(ids)} ids for {len(paths)} files")
-    return dict(zip(paths, ids))
+    try:
+        return review_snapshot.hash_objects(root, paths, write=write)
+    except OSError as exc:
+        raise ledger.ToolError(str(exc)) from exc
 
 
 def tracked_entries(root):
@@ -279,28 +287,18 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
     catalog = ledger.load_catalog()
     roster = ledger._load_roster(roster, catalog)
     ctx = ledger.Ctx(root, base_ref, snapshot=head)
-    blobs = {}
+    blobs, deleted = {}, {}
     committed_only = set(ledger.normalize_files(root, list(committed_only or [])))
     committed_objs = committed_objects(root, head, [path for path in files if path in committed_only])
     # -w stores the frozen bytes: the recorder resolves this id after later edits move the file on.
     stored = hash_paths(root, [path for path in files if path not in committed_only and (root / path).is_file()],
                         write=True)
     for path in files:
-        if path in committed_only:
-            if path in committed_objs:
-                blobs[path] = committed_objs[path][0]
-                ctx.overrides[path] = committed_objs[path][0]
-            else:
-                state = ctx.deleted_hash(path)
-                if state:
-                    ctx.overrides[path] = state
-        elif path in stored:
-            blobs[path] = stored[path]
-            ctx.overrides[path] = stored[path]
-        else:
-            state = ctx.deleted_hash(path)
-            if state:
-                ctx.overrides[path] = state
+        blob = committed_objs.get(path, (None,))[0] if path in committed_only else stored.get(path)
+        if blob:
+            blobs[path] = blob
+        elif state := ctx.deleted_hash(path):
+            deleted[path] = state
     rows, _, problem = ledger.read_rows(ledger.ledger_path(root))
     if problem and ledger.ledger_path(root).exists():
         raise ledger.LedgerUnreadable(problem)
@@ -308,7 +306,8 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
     if problem:
         raise ledger.LedgerUnreadable(problem)
     cover = ledger.Cover(ctx, catalog, rows, escapes, "session")
-    text = ledger.uncovered_pairs(cover, files, ["harness-quality"], roster)
+    text = ledger.query(cover, files=files, mandates=["harness-quality"], roster=roster,
+                        mode=ledger.Mode(overrides=blobs | deleted)).uncovered()
     decisions = session_decisions(root, session, task)
     record = None
     if task:
@@ -419,7 +418,8 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
         if pair[0] not in admitted[pair[1]]:
             admitted[pair[1]].append(pair[0])
     # A view exists only for the harness mandate and mandates the packet admitted files for: a code seat
-    # with no admitted pair keeps its own file list (lens_briefs._must_read_for reads any view first).
+    # with no admitted pair reads the packet's frozen diff of each of its files (lens_briefs._must_read_for
+    # reads any view first).
     mandates = ["harness-quality"] + [mandate for mandate in admitted if mandate != "harness-quality"]
     shared = [doctrine_artifact, decisions_artifact, groups_artifact] + commit_artifacts + extras
     views = {}

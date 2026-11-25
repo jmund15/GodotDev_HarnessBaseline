@@ -7,6 +7,7 @@
 //
 // Usage:  node .claude/scripts/schema_parity.js <script.js> <schema.json>
 //         node .claude/scripts/schema_parity.js            # checks every pair in .claude/workflows/
+//         node .claude/scripts/schema_parity.js <dir>...   # also checks fenced engine blocks in outside workflow dirs
 //
 // With no arguments, every .claude/workflows/<name>.js carrying the marker pairs with
 // <name>.schema.json beside it.
@@ -74,19 +75,22 @@ function diff(a, b, at, out) {
   }
 }
 
+const isDir = a => { const s = fs.statSync(a, { throwIfNoEntry: false }); return !!s && s.isDirectory() }
 const flags = process.argv.slice(2).filter(a => a.startsWith('--'))
-const argPair = process.argv.slice(2).filter(a => !a.startsWith('--'))
+const positional = process.argv.slice(2).filter(a => !a.startsWith('--'))
+const extraDirs = positional.filter(isDir).map(d => path.resolve(d))
+const argPair = positional.filter(a => !isDir(a))
 const pairs = argPair.length === 2 ? [argPair] : workflowPairs()
 if ((argPair.length !== 0 && argPair.length !== 2) || flags.some(f => f !== '--write' && f !== '--check')) {
-  console.error('usage: node schema_parity.js [--write|--check] [<script.js> <schema.json>]')
+  console.error('usage: node schema_parity.js [--write|--check] [<dir>...] [<script.js> <schema.json>]')
   process.exit(2)
 }
 
 const ENGINE_DIR = path.join(ROOT, '.claude', 'workflows')
-// The engines carrying shared blocks differ per project: a project may add one (key_reachability) or
-// omit one, and an absent workflow has no blocks to check.
+// The engines carrying shared blocks differ per project: a project may omit one, and an absent
+// workflow has no blocks to check. A plugin's engines are checked through the directory arguments.
 const BLOCK_ENGINES = ['dispatch', 'dispatch_chains', 'review_fanout', 'idea_fanout',
-  'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
+  'doc_architecture_audit', 'worklog_relevance']
   .filter(e => fs.existsSync(path.join(ENGINE_DIR, e + '.js')))
 const ENGINE_SOURCE = path.join(ROOT, '.claude', 'scripts', 'engine_src', 'common.js')
 const BLOCK_BEGIN = '// ENGINE-BLOCK-BEGIN '
@@ -131,11 +135,12 @@ function fenceAt(lines, name) {
 // Comments and blank lines are not drift: a helper's behavior is its code.
 const codeOf = lines => lines.filter(l => l.trim() !== '' && !/^\s*\/\//.test(l)).map(l => l.trimEnd()).join('\n')
 
-function blockPass(write) {
+// An outside directory (fencedOnly) is checked for its fenced copies alone: an unfenced helper there is its own code.
+function blockPass(write, dir, files, fencedOnly) {
   const source = sourceBlocks()
   const problems = []
-  for (const file of BLOCK_ENGINES.map(e => e + '.js')) {
-    const abs = path.join(ENGINE_DIR, file)
+  for (const file of files) {
+    const abs = path.join(dir, file)
     let lines = fs.readFileSync(abs, 'utf8').split('\n')
     let touched = false
     for (const [name, text] of source) {
@@ -145,11 +150,14 @@ function blockPass(write) {
         if (write) {
           lines = [...lines.slice(0, fence.begin + 1), ...text, ...lines.slice(fence.end)]
           touched = true
+        } else if (fencedOnly) {
+          problems.push('DIVERGED block ' + name + ' in ' + abs + ': re-copy it from .claude/scripts/engine_src/common.js')
         } else {
           problems.push('DIVERGED block ' + name + ' in ' + file + ': edit .claude/scripts/engine_src/common.js, then run schema_parity.js --write')
         }
         continue
       }
+      if (fencedOnly) continue
       const decl = declaredAt(lines, name)
       if (!decl) continue
       if (write) {
@@ -165,8 +173,12 @@ function blockPass(write) {
 }
 
 let failed = 0
-if (flags.includes('--write')) blockPass(true)
-const blockProblems = blockPass(false)
+const coreFiles = BLOCK_ENGINES.map(e => e + '.js')
+if (flags.includes('--write')) blockPass(true, ENGINE_DIR, coreFiles, false)
+const blockProblems = [
+  ...blockPass(false, ENGINE_DIR, coreFiles, false),
+  ...extraDirs.flatMap(dir => blockPass(false, dir, fs.readdirSync(dir).filter(f => f.endsWith('.js')).sort(), true)),
+]
 if (blockProblems.length) {
   console.error(blockProblems.join('\n'))
   failed = 1

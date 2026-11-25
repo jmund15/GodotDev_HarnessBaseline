@@ -19,9 +19,11 @@ import tempfile
 import _platform_skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 HOOKS = os.path.join(HERE, "..", "hooks")
 HOOK = os.environ.get("USG_HOOK") or os.path.join(HOOKS, "unbounded_scan_guard.py")
-PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
+COMPACT_START = os.path.join(HOOKS, "subagent_compaction_rail.py")
 
 SID = "usg00001"
 UNBOUNDED = 'rg -n "SpawnImpact" Jmodot/'          # volume axis only (rg is gitignore-aware)
@@ -193,8 +195,7 @@ def main():
     cases.append(("both axes are short on the repeat",
                   0 < len(out) < len(full_both) and "-path ./.claude -prune" in out and "--max-count" in out))
 
-    run(PRECOMPACT, {"session_id": SID, "trigger": "auto"},
-        dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+    _hook_call.compact_start(COMPACT_START, env, SID)
     out = scan(UNBOUNDED, env)
     cases.append(("a compaction re-arms the full advisory", out == full))
 

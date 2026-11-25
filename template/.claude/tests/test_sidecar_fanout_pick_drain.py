@@ -195,22 +195,23 @@ def rest_lists_only_plans_that_hold_the_job():
     return got in (PA, PC) and rest == [({PA, PC} - {got}).pop()]
 
 
-def the_pick_line_prints_the_drain_beside_the_headroom():
+def the_pick_line_prints_the_jobs_draw_against_the_windows_room():
     plant(PA, PB)
     _, err = run_pick([PA, PB], {PA: reading(PA, 96), PB: reading(PB, 3)})
-    return "[fanout] j: plan %s" % PB in err and "headroom 97" in err and "drain %.1f" % DRAIN in err and "measured" in err
+    return ("[fanout] j: plan %s" % PB in err and "5h 97% left" in err
+            and "this job takes about %.0f%%" % DRAIN in err)
 
 
-def the_pick_line_says_when_the_drain_is_the_default():
+def the_pick_line_says_when_the_draw_is_the_default():
     plant(PA, PB, history=False)
     _, err = run_pick([PA, PB], {PA: reading(PA, 20), PB: reading(PB, 30)})
-    return "drain %.1f" % pb.JOB_DRAIN_PCT in err and "default" in err
+    return ("this job takes about %.0f%% (a default, not measured)" % pb.JOB_DRAIN_PCT in err)
 
 
 def a_one_plan_route_with_room_launches_on_it():
     plant(PA)
     got, err = run_pick([PA], {PA: reading(PA, 20)})
-    return got == PA and "drain" in err
+    return got == PA and "this job takes about" in err
 
 
 def a_one_plan_route_with_an_unreadable_reading_keeps_the_launchers_gate():
@@ -842,13 +843,13 @@ def a_plan_does_not_hold_a_job_when_any_window_cannot_though_another_has_fewer_p
     load = {PB: [SIG, SIG]}
     placed = sf.place_job([PB], route(PB), reader({PB: reading(PB, 83, seven=85)}), NOW, load, SIG)
     ok, drain, _ = placed.held[PB]
-    return not ok and drain.get("window") == "five_hour" and PB in placed.unfit and "five_hour" in placed.unfit[PB]
+    return not ok and drain.get("window") == "five_hour" and PB in placed.unfit and "5h" in placed.unfit[PB]
 
 
-def the_pick_line_names_the_window_whose_headroom_and_drain_it_prints():
+def the_pick_line_names_the_window_whose_room_and_draw_it_prints():
     plant(PB)
     _, err = run_pick([PB], {PB: reading(PB, 4, seven=28)})
-    return "headroom 96" in err and "five_hour" in err and "drain %.1f" % DRAIN in err
+    return "5h 96% left" in err and "this job takes about %.0f%%" % DRAIN in err
 
 
 def a_plan_whose_summed_forecast_fits_is_still_paced_and_the_observed_draw_holds_the_fifth_job():
@@ -1041,8 +1042,8 @@ def the_wave_side_channel_and_the_private_epoch_helper_are_gone():
 for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_with_four_points_left,
            the_second_job_of_the_incident_is_admitted_over_forecast,
            a_plan_admits_beyond_the_summed_forecast, no_forecast_fit_picks_the_most_headroom,
-           rest_lists_only_plans_that_hold_the_job, the_pick_line_prints_the_drain_beside_the_headroom,
-           the_pick_line_says_when_the_drain_is_the_default, a_one_plan_route_with_room_launches_on_it,
+           rest_lists_only_plans_that_hold_the_job, the_pick_line_prints_the_jobs_draw_against_the_windows_room,
+           the_pick_line_says_when_the_draw_is_the_default, a_one_plan_route_with_room_launches_on_it,
            a_one_plan_route_with_an_unreadable_reading_keeps_the_launchers_gate,
            admission_admits_a_one_plan_job_over_forecast,
            admission_admits_a_one_plan_job_that_fits_and_one_it_cannot_read,
@@ -1083,7 +1084,7 @@ for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_w
            a_stopped_chain_head_gives_its_successors_the_same_not_run_error,
            a_window_is_priced_by_its_own_history_not_the_one_with_fewest_points_left,
            a_plan_does_not_hold_a_job_when_any_window_cannot_though_another_has_fewer_points,
-           the_pick_line_names_the_window_whose_headroom_and_drain_it_prints,
+           the_pick_line_names_the_window_whose_room_and_draw_it_prints,
            six_jobs_with_room_run_at_once_with_no_flag,
            a_plan_with_room_for_two_runs_six_jobs_two_at_a_time_with_no_flag,
            an_explicit_flag_still_caps_six_jobs_with_room,

@@ -1,6 +1,7 @@
 """The shared work budget: admission, loans, dead owners and caller wiring."""
 import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,17 @@ class MachineSlots(unittest.TestCase):
         for name in ('HARNESS_SLOT_BUDGET', 'HARNESS_MACHINE_ROOT'):
             old = os.environ.pop(name, None)
             self.addCleanup(lambda n=name, v=old: os.environ.__setitem__(n, v) if v is not None else os.environ.pop(n, None))
+
+    def test_a_take_survives_an_unavailable_checkout(self):
+        with patch.object(slots.os, 'getcwd', side_effect=FileNotFoundError):
+            held = slots.take()
+        try:
+            self.assertEqual(len(held), 1)
+            note = json.loads(Path(held[0].path).read_text(encoding='utf-8'))
+            self.assertEqual(note['pid'], os.getpid())
+            self.assertEqual(note['checkout'], '')
+        finally:
+            slots.release_all(held)
 
     def test_a_lane_gets_its_share_of_the_cores(self):
         with patch.object(slots.os, 'cpu_count', return_value=24):
@@ -65,6 +77,74 @@ class MachineSlots(unittest.TestCase):
             self.assertEqual(self._run_cores(), max(1, cores // 2), 'beside one held lane, it gets half')
         finally:
             slots.release_all(other)
+
+    def _wait_for_lock(self, deadline=10):
+        """The first lane lock a spawned holder writes, as (path, its parsed note)."""
+        end = time.time() + deadline
+        while time.time() < end:
+            for entry in sorted(os.listdir(self.folder)) if os.path.isdir(self.folder) else []:
+                if entry.startswith('slot-') and entry.endswith('.lock'):
+                    path = Path(self.folder) / entry
+                    try:
+                        text = path.read_text(encoding='utf-8')
+                        return path, json.loads(text)
+                    except (OSError, ValueError):
+                        continue
+            time.sleep(.05)
+        self.fail('a holder never wrote its lane')
+
+    def test_a_held_lane_names_its_holder_and_the_queued_notice_repeats_it(self):
+        # A queued proof used to read a bare pid, which named nothing once the holder was gone.
+        env = dict(os.environ, HARNESS_SLOT_DIR=self.folder, HARNESS_MACHINE_SLOTS='2')
+        child = subprocess.Popen([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--',
+                                  sys.executable, '-c', 'import time; time.sleep(10)'],
+                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            _path, note = self._wait_for_lock()
+            self.assertEqual(note['pid'], child.pid)
+            self.assertIn('machine_slots.py', note['command'])
+            self.assertTrue(note['checkout'])
+            named = slots._holders(self.folder, [])
+            self.assertIn('held by pid %d' % child.pid, named)
+            self.assertIn('machine_slots.py', named)
+        finally:
+            child.terminate()
+            child.wait(timeout=15)
+
+    def test_a_brokered_lane_names_the_work_it_holds_for(self):
+        # The Windows broker wrote its own command, so a C# or WSL lane's lock named `machine_slots.py broker`,
+        # never the work: the notice could not say what held the machine.
+        env = dict(os.environ, HARNESS_SLOT_DIR=self.folder, HARNESS_MACHINE_SLOTS='1')
+        note = json.dumps({'pid': 999999, 'command': 'RuntimeSlots gate -Repo ExampleRepo',
+                           'checkout': 'C:/repo'})
+        broker = subprocess.Popen([sys.executable, str(TOOLS / 'machine_slots.py'), 'broker', '--folder',
+                                   self.folder, '--width', '1', '--count', '1', '--holder', note],
+                                  env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(json.loads(broker.stdout.readline()).get('held'), 1)
+            written = json.loads((Path(self.folder) / 'slot-0.lock').read_text(encoding='utf-8'))
+            self.assertEqual(written['command'], 'RuntimeSlots gate -Repo ExampleRepo')
+            self.assertEqual(written['checkout'], 'C:/repo')
+            self.assertEqual(str(written['pid']), str(broker.pid), 'the lane belongs to the broker process')
+            self.assertEqual(written.get('caller_pid'), '999999')
+            notice = io.StringIO()
+            with patch.object(slots, 'NOTICE_AFTER', 0.2), contextlib.redirect_stderr(notice), \
+                    patch.dict(os.environ, {'HARNESS_SLOT_DIR': self.folder, 'HARNESS_MACHINE_SLOTS': '1'}):
+                self.assertIsNone(slots.take(notice=True, deadline=time.time() + 0.6))
+            self.assertIn('held by pid %d' % broker.pid, notice.getvalue())
+            self.assertIn('RuntimeSlots gate -Repo ExampleRepo', notice.getvalue())
+        finally:
+            broker.stdin.close()
+            broker.wait(timeout=15)
+            broker.stdout.close()
+            broker.stderr.close()
+
+    def test_a_lock_a_bare_pid_wrote_still_names_its_holder(self):
+        # A lock an older runner holds carries the pid alone; the notice still prints it.
+        os.makedirs(self.folder, exist_ok=True)
+        (Path(self.folder) / 'slot-1.lock').write_text('424242', encoding='ascii')
+        self.assertEqual(slots._holders(self.folder, []), '; held by pid 424242 (1)')
 
     def test_run_passes_a_proof_runner_through_without_a_lane(self):
         # A wrapped runner held one lane for its whole batch and ran every proof serially inside it, so an
@@ -366,6 +446,24 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(holder)
 
+    def test_a_guard_says_it_queued_only_when_asked(self):
+        import io
+        os.environ['HARNESS_MACHINE_SLOTS'] = '1'
+        os.environ['HARNESS_DEADLINE'] = str(time.time() + .3)
+        self.addCleanup(os.environ.pop, 'HARNESS_DEADLINE', None)
+        holder = slots.take(False)
+        try:
+            with patch.object(slots, 'NOTICE_AFTER', 0), patch.object(sys, 'stderr', io.StringIO()) as err:
+                with self.assertRaises(slots.SlotStoreError), slots.guard(notice=True):
+                    pass
+                self.assertIn('queued', err.getvalue())
+                err.truncate(0)
+                with self.assertRaises(slots.SlotStoreError), slots.guard():
+                    pass
+                self.assertEqual(err.getvalue(), '')
+        finally:
+            slots.release_all(holder)
+
     def test_a_dead_waiters_ticket_does_not_block_the_line(self):
         os.environ['HARNESS_MACHINE_SLOTS'] = '1'
         crash = subprocess.run([sys.executable, '-c',
@@ -421,6 +519,28 @@ class MachineSlots(unittest.TestCase):
             os.environ.pop('HARNESS_SLOT_DIR')
             with self.assertRaisesRegex(slots.SlotStoreError, 'no bridge'):
                 slots.take(False)
+
+    def test_wsl_broker_receives_the_callers_holder_as_one_argument(self):
+        folder = r'C:\pool\slots'
+        bridge = ['windows-python', 'machine_slots.py']
+        with patch.object(slots, 'is_wsl', return_value=True), \
+                patch.object(slots, '_windows_bridge', return_value=bridge), \
+                patch.object(slots.subprocess, 'Popen') as popen, \
+                patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR_LABEL': 'caller with spaces'}):
+            proc = popen.return_value
+            proc.stdin.closed = False
+            proc.stdout.readline.return_value = '{"held": 1}\n'
+            held = slots.take(folder=folder, width=1)
+        try:
+            argv = popen.call_args.args[0]
+            self.assertEqual(argv[:-2], bridge + ['broker', '--folder', folder, '--width', '1', '--count', '1'])
+            self.assertEqual(argv[-2], '--holder')
+            note = json.loads(argv[-1])
+            self.assertEqual(note['pid'], os.getpid())
+            self.assertEqual(note['label'], 'caller with spaces')
+        finally:
+            slots.release_all(held)
+        proc.stdin.close.assert_called_once()
 
     def test_busy_count_takes_a_broker_held_lane_that_has_no_path(self):
         # A WSL caller holds its lane through the Windows broker: the handle is a _Proxy with no slot path.
@@ -496,35 +616,6 @@ class MachineSlots(unittest.TestCase):
         self.assertIn('HARNESS_WINDOWS_SLOT_SCRIPT', script)
         self.assertLess(script.index('HARNESS_WINDOWS_SLOT_SCRIPT'), script.index('HOME="$D/a.home"'))
 
-    def test_delegate_shell_and_powershell_proofs_queue(self):
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        shell = Path(self.tmp.name) / 'test_probe.sh'
-        shell.write_text('printf "%s\\n" "${HARNESS_SLOT_BUDGET:-missing}"\n', encoding='utf-8')
-        command = [bash_exe(), str(shell)]
-        self._queued_script(command, slots.proof_environment(os.environ))
-        import shutil
-        if shutil.which('pwsh'):
-            proof = Path(self.tmp.name) / 'test_probe.ps1'
-            proof.write_text('[Console]::WriteLine($env:HARNESS_SLOT_BUDGET)\n', encoding='utf-8')
-            text = 'pwsh -NoProfile -File "' + proof.as_posix() + '"'
-            self._queued_script([bash_exe(), '-c', text], slots.proof_environment(os.environ))
-
-    def test_a_shell_whose_bash_env_is_another_checkouts_bootstrap_still_queues(self):
-        """The publish battery runs proofs in a second checkout under its own bootstrap: chaining that copy as the
-        previous BASH_ENV made it source itself until the shell crashed (0xC0000005, no output)."""
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        import shutil
-        foreign = Path(self.tmp.name) / 'other_checkout' / 'bash_slots.sh'
-        foreign.parent.mkdir()
-        shutil.copy(ROOT / '.claude/scripts/_slot_bootstrap/bash_slots.sh', foreign)
-        shell = Path(self.tmp.name) / 'test_probe.sh'
-        shell.write_text('printf "%s\\n" "${HARNESS_SLOT_BUDGET:-missing}"\n', encoding='utf-8')
-        with patch.dict(os.environ, {'BASH_ENV': foreign.as_posix()}):
-            env = slots.proof_environment(os.environ)
-        self._queued_script([bash_exe(), str(shell)], env)
-
     def test_delegate_shell_charges_the_script_it_runs_not_a_test_file_it_names(self):
         """`harness_tests.py --proofs-for tests/test_x.py` is a coordinator, not a proof: a lane would serialize it."""
         sys.path.insert(0, str(ROOT / '.claude/tests'))
@@ -547,37 +638,6 @@ class MachineSlots(unittest.TestCase):
             child.stdout.close()
             thread.join(15)
 
-    def test_a_function_the_caller_exports_keeps_its_name_in_a_child_shell(self):
-        """A proof fakes a missing interpreter with `python3() { return 127; }; export -f python3`; the bootstrap
-        redefined python3 in every child shell, so under a fan-out the child ran the real Python."""
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        env = slots.proof_environment(os.environ)
-        planted = "python3() { return 127; }; export -f python3; bash -c 'python3 -c pass; echo rc=$?'"
-        r = subprocess.run([bash_exe(), '-c', planted], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.strip(), 'rc=127', r.stdout + r.stderr)
-        r = subprocess.run([bash_exe(), '-c', "bash -c 'type -t python3; python3 -c pass; echo rc=$?'"], env=env,
-                           capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.split(), ['function', 'rc=0'], r.stdout + r.stderr)
-
-    def test_delegate_node_proof_queues(self):
-        import shutil
-        node = shutil.which('node')
-        if not node:
-            self.skipTest('Node unavailable')
-        proof = Path(self.tmp.name) / 'probe_test.js'
-        proof.write_text('console.log(process.env.HARNESS_SLOT_BUDGET || "missing");\n', encoding='utf-8')
-        self._queued_script([node, str(proof)], slots.proof_environment(os.environ))
-
-    def test_bootstrap_preserves_existing_python_startup(self):
-        prior = Path(self.tmp.name) / 'prior'
-        prior.mkdir()
-        (prior / 'sitecustomize.py').write_text('import os;os.environ["PRIOR_STARTUP"]="seen"\n', encoding='utf-8')
-        proof = Path(self.tmp.name) / 'test_startup.py'
-        proof.write_text('import os;print(os.environ.get("HARNESS_SLOT_BUDGET", "missing")+":"+os.environ.get("PRIOR_STARTUP","missing"),flush=True)\n', encoding='utf-8')
-        env = slots.proof_environment(dict(os.environ, PYTHONPATH=str(prior)))
-        self._queued_script([sys.executable, str(proof)], env, '1:seen\n')
-
     def test_bootstrap_and_read_recorder_start_in_either_order(self):
         """A runner started inside an admitted shell hands each proof the recorder first and the inherited bootstrap
         after it (`run_proof`); the fan-out puts the bootstrap first. Each shadows the other's sitecustomize, so
@@ -592,7 +652,8 @@ class MachineSlots(unittest.TestCase):
             with self.subTest(order=[Path(p).name for p in order]):
                 log = Path(self.tmp.name) / ('reads_' + Path(order[0]).name)
                 env = dict(os.environ, PYTHONPATH=os.pathsep.join(order), HARNESS_READ_LOG=str(log),
-                           HARNESS_READ_RECORDER=recorder, **held)
+                           HARNESS_READ_RECORDER=recorder, CLAUDE_CODE_SIDECAR='1',
+                           CLAUDE_CODE_SIDECAR_KIND='review', **held)
                 done = subprocess.run([sys.executable, str(proof)], env=env, capture_output=True, text=True, timeout=60)
                 self.assertEqual((done.returncode, done.stdout, done.stderr), (0, 'started:1\n', ''))
                 self.assertIn(str(proof).lower(), ''.join(p.read_text(encoding='utf-8') for p in log.glob('*.jsonl')).lower().replace('\\\\', '\\'))
@@ -634,30 +695,6 @@ class MachineSlots(unittest.TestCase):
             child.wait(timeout=15)
             child.stdout.close()
             thread.join(15)
-
-    def test_fanout_bootstrap_charges_a_direct_proof(self):
-        proof = Path(self.tmp.name) / 'test_probe.py'
-        proof.write_text("import os;print(os.environ.get('HARNESS_SLOT_BUDGET','missing'),flush=True)\n", encoding='utf-8')
-        env = slots.proof_environment(dict(os.environ))
-        env['HARNESS_MACHINE_SLOTS'] = '1'
-        held = slots.take(True)
-        child = subprocess.Popen([sys.executable, str(proof)], env=env, stdout=subprocess.PIPE, text=True)
-        ready, lines = threading.Event(), []
-        thread = threading.Thread(target=lambda: (lines.append(child.stdout.readline()), ready.set()))
-        thread.start()
-        try:
-            self.assertFalse(ready.wait(.15))
-            slots.release_all(held)
-            held = []
-            self.assertTrue(ready.wait(10))
-            self.assertEqual(lines, ['1\n'])
-            self.assertEqual(child.wait(timeout=10), 0)
-        finally:
-            slots.release_all(held)
-            child.wait(timeout=10)
-            child.stdout.close()
-            thread.join(10)
-
 
 if __name__ == '__main__':
     unittest.main()

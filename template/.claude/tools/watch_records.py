@@ -31,7 +31,7 @@ Bash/PowerShell background tasks (a main-session launch row with no `<task-notif
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
 in `DONE_STATES`, or a run dir under `<session>/subagents/workflows/` with no entry, no host record and a write
 within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
-a run's end wakes nobody, and a session watcher with nothing live stays armed. It ends only when nothing can receive its wake: the shell that carries its output (its parent) or the session host that owns that shell is gone (`HOST GONE: <reason>`, read from the client's session registry; `WATCH_RECORDS_HOST_SEC` sets the check interval), which also ends a duplicate still waiting to take over. A running
+a run's end wakes nobody. A session watcher exits `NONE` once nothing it watches is live: it has no work left, and an idle one still ends at its Bash timeout, waking a cold cache. It also ends when nothing can receive its wake: the shell that carries its output (its parent) or the session host that owns that shell is gone (`HOST GONE: <reason>`, read from the client's session registry; `WATCH_RECORDS_HOST_SEC` sets the check interval), which also ends a duplicate still waiting to take over. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
 re-reading a file it had read before the previous compaction, with no file written since that compaction (the cycle: a seat
@@ -42,7 +42,7 @@ its findings before compacting lost nothing, so its compaction stays a check-in 
 client's request for that seat never returned, and no engine watchdog ends it. A `--session --wake` call made while
 another live session-wide watcher is registered waits to take over without exiting. A bare `--await-launch`
 (or `--await-launch=<seconds>`) makes an explicit record watch that finds nothing running wait that long
-before it exits `NONE`; the bare form waits `dispatch_table.launch_grace()`. Session watches stay armed without it.
+before it exits `NONE`; the bare form waits `dispatch_table.launch_grace()`, which a session watch waits by default, since it is armed in the same message as its launch.
 A child no call of this session issued (a scoring daemon, a study's ruler, a delegate's own test launch: no `call` or `issued_at` on its entry, no fan-out, no bench campaign) ending cleanly wakes nobody: its parent reports its own end, and a failed child still wakes, except a memory-admission refusal (exit 12), a re-pay refusal (exit 15) and a plan-capacity stop (exit 10), which its caller retries or holds.
 A zero-cost end before a result written while its transport's usage-limit marker was live (`refused_while_exhausted`) prints
 as context and wakes nobody: the job that hit the limit spent and woke, and the unit's end still wakes.
@@ -50,11 +50,9 @@ A wake prints, under each ended job's `DONE`/`DONE workflow` line, the lines of 
 verification status with its counts and the report path of a sidecar, fan-out job or Workflow run. A background shell
 that ended since the transcript byte offset saved in session hook state (`sidecar_wake_shell_offset`; a session with none starts at the transcript's end) arrives as
 `SHELL <id> <status> exit=<n>` with its output path, failure-marker lines and tail; a shell that ran this watcher is skipped.
-A shell end whose task-notification already appears as a delivered main-session attachment is omitted. If that
-leaves no work or unreported event, the armed watcher stays idle: exiting it would send a duplicate notification.
+A shell end whose task-notification already appears as a delivered main-session attachment is omitted.
 Ended Workflow runs and undelivered shells never trigger a decision wake: they print with the next wake, once. A running shell is live
-work, so it earns the check-in and keeps the watcher registered; its end is the client's own notification, and the watcher that
-stays armed with nothing live exits only on `HOST GONE`. The Stop hook blocks on a running shell with no live session watcher
+work, so it earns the check-in and keeps the watcher registered; its end is the client's own notification, which arrives with the watcher's `NONE` exit when it was the last live work. The Stop hook blocks on a running shell with no live session watcher
 by the same test (`session_running_shells`: the Stop payload's running task ids, kept to those `wake_digest.running_shells` names). A session watcher that exits with work still live records an in-flight wake in session hook state (`sidecar_wake_inflight`), so the Stop at the end of that turn is covered until the wake is delivered. The last lines before `STILL RUNNING`
 or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispatches.
 Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
@@ -79,7 +77,7 @@ ends on `GRID COMPLETE|PAUSED|HALTED|LOCKED|ABORT` or a dead grid pid; a failed 
 wake at once. A roster of several campaigns is one unit per campaign. A bench process tree registers none of
 its seats (`SIDECAR_DISPATCH_OWNER=bench`), so `--session` also watches each live roster whose worker process
 carries this session's `CLAUDE_CODE_SESSION_ID`: one `roster` unit per roster, live while its log is open, waking
-on `ROSTER <state> <name>: <last line>` when it ends, except a clean end (`DONE`) while another roster of this session is live, which prints at the next wake (a roster not live at arm is `bench.py wait`'s). A detached bench job the session launched (`DETACHED <kind> pid=<n> log=<path>`: succession, probes, score) is a roster-shaped unit too: its launch writes `<logs>/detached/<pid>.json` with the launcher's `CLAUDE_CODE_SESSION_ID`, it is live while its pid lives, and it wakes on its log's `END` line, its pid's death with none (`DEAD`) or a park line as the log's last line (`HELD`). Its launch prints no `WAIT-CMD`, so this watcher owns its wait and check-in. An event already present
+on `ROSTER <state> <name>: <last line>` when it ends, except a clean end (`DONE`) while another roster of this session is live, which prints at the next wake (a roster not live at arm is `bench.py wait`'s). A detached bench job the session launched (`DETACHED <kind> pid=<n> log=<path>`: succession, probes, score) is a roster-shaped unit too: its launch writes `<logs>/detached/<pid>.json` with the launcher's `CLAUDE_CODE_SESSION_ID`, it is live while its pid lives, and it wakes on its log's `END` line or its pid's death with none (`DEAD`); a `WAIT ...` last line resumes by itself, so it reads live and shows as context. Its launch prints no `WAIT-CMD`, so this watcher owns its wait and check-in. An event already present
 at arm prints once; only an event acknowledged in session hook state suppresses the exit. A wake acknowledges
 the decision events it reports, so a watcher armed in any later turn does not exit on them (it still prints
 them as context), and every clean `DONE <label> exit=0` line it prints, which a later watcher omits.
@@ -114,10 +112,12 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+CLAUDE_DIR = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import _hook_state  # noqa: E402
+import adaptation  # noqa: E402
 import exhausted_marker  # noqa: E402
 import spend_ledger  # noqa: E402
 
@@ -1321,68 +1321,32 @@ def workflow_line(entry, now):
     return " ".join(parts) + "".join("; " + clause for clause in clauses)
 
 
-# A benchmark cell is a direct launch labelled `<campaign>-<date>:<task>:<model>:r<n>`; its campaign's grid
-# (`<logs>/<campaign>/grid.log`, `grid.pid`) launches the campaign's cells one after another.
-BENCH_LABEL = re.compile(r"^(?P<campaign>[^:\s]+):[^:\s]+:[^:\s]+:r\d+$")
-GRID_TERMINAL = re.compile(r"^GRID (COMPLETE|PAUSED|HALTED|LOCKED|ABORT)\b")
+def _bench():
+    """The bench plugin's entry module, or None when no bench plugin is configured. An unreadable plugin raises
+    `adaptation.PluginUnreadable`."""
+    return adaptation.plugin_entry(CLAUDE_DIR, "bench")
 
 
 def bench_campaign(entry):
-    """The campaign a benchmark cell's label names, or None for any other launch."""
+    """The campaign a benchmark cell's label names (the bench entry's `campaign_of`), or None for any other launch
+    and whenever the plugin is absent or unreadable."""
     if entry.get("fanout_dir"):
         return None
-    found = BENCH_LABEL.match(str((entry.get("jobs") or [{}])[0].get("label") or ""))
-    return found["campaign"] if found else None
-
-
-GRID_RECHECK_S = 15.0
-_GRID_SEEN = {}  # grid.log path -> (log stat, cells pending, pid, pid alive, monotonic probe time)
+    try:
+        bench = _bench()
+    except adaptation.PluginUnreadable:
+        return None
+    return bench.campaign_of(str((entry.get("jobs") or [{}])[0].get("label") or "")) if bench else None
 
 
 def bench_grid_running(campaign):
-    """True while the campaign's grid has cells to run: grid.log has a CELL line after its last terminal
-    `GRID` line and the grid.pid process is alive. A missing log, a dead pid, a pid no probe has seen
-    alive, or any error reads False, so the unit ends and wakes. A probe that cannot answer (`ps` timing
-    out on a loaded machine) keeps the pid's last answer and retries next window. The watcher polls this at POLL_SECONDS, so the log is
-    parsed only when its size or mtime changes and the pid is probed at most once per GRID_RECHECK_S."""
+    """True while the campaign's grid has cells to run (the bench entry's `grid_running`). An absent or unreadable
+    plugin and any error read False, so the unit ends and wakes."""
     try:
-        scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
-        if scripts not in sys.path:
-            sys.path.insert(0, scripts)
-        import bench_lib
-        logs = bench_lib.roots.logs_dir()
-        for tag in dict.fromkeys([campaign, re.sub(r"-\d{4}-\d{2}-\d{2}$", "", campaign)]):
-            folder = os.path.join(logs, tag)
-            log = os.path.join(folder, "grid.log")
-            if not os.path.isfile(log):
-                continue
-            stat = os.stat(log)
-            stamp = (stat.st_size, stat.st_mtime_ns)
-            seen = _GRID_SEEN.get(log)
-            if seen and seen[0] == stamp:
-                pending, pid = seen[1], seen[2]
-            else:
-                with open(log, encoding="utf-8", errors="replace") as fh:
-                    lines = fh.read().splitlines()
-                last_cell = max((i for i, text in enumerate(lines) if text.startswith("CELL ")), default=-1)
-                last_end = max((i for i, text in enumerate(lines) if GRID_TERMINAL.match(text)), default=-1)
-                pending, pid, seen = last_cell > last_end, bench_lib._roster_pid(os.path.join(folder, "grid.pid")), None
-            if not (pending and pid):
-                _GRID_SEEN[log] = (stamp, pending, pid, False, time.monotonic())
-                return False
-            if seen and seen[2] == pid and time.monotonic() - seen[4] < GRID_RECHECK_S:
-                alive, probed = seen[3], seen[4]
-            else:
-                answer, last = bench_lib._pid_alive(pid), _GRID_SEEN.get(log)
-                if answer is None and last and last[2] == pid:
-                    alive, probed = last[3], last[4]
-                else:
-                    alive, probed = answer is True, time.monotonic()
-            _GRID_SEEN[log] = (stamp, pending, pid, alive, probed)
-            return alive
+        bench = _bench()
+        return bool(bench and bench.grid_running(campaign))
     except Exception:
-        pass
-    return False
+        return False
 
 
 ROSTER_RECHECK_S = float(os.environ.get("WATCH_RECORDS_ROSTER_RECHECK_SEC", "15"))
@@ -1414,106 +1378,9 @@ def process_session(pid):
     return None
 
 
-DETACHED_PARK_RE = re.compile(r"^(?:\[[^\]]*\]\s+)?WAIT (?!ING)\S")
-# A dead job's registry row outlives every watcher that could still report its end: a session that resumes after
-# a week reads the job's log, not its row.
-DETACHED_KEEP_S = 7 * 86400
-
-
-def _still_for(path, seconds):
-    """True when the file at `path` is missing or unmodified for `seconds`."""
-    try:
-        return time.time() - os.path.getmtime(path) >= seconds
-    except (OSError, TypeError):
-        return True
-
-
-def _bench_lib():
-    """The project's bench library, or None where the checkout carries no benchmark campaign."""
-    scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
-    try:
-        import bench_lib
-    except ImportError:
-        return None
-    return bench_lib
-
-
-def detached_row(entry, alive):
-    """The roster-shaped row (`name`, `state`, `last`) of one detached bench job's registry entry, or None when its
-    log is missing. The run is the log's current `START` run: it ends on that name's `END ok|halt|failed`
-    (DONE or HALTED), else on the worker's death (DEAD) or a park line as the last line (HELD, the same stop
-    `bench wait` exits 3 on). Otherwise it is LIVE."""
-    try:
-        with open(entry["log"], encoding="utf-8", errors="replace") as fh:
-            lines = [ln.strip() for ln in fh if ln.strip()]
-    except OSError:
-        return None
-    _owner, _at, end = _bench_lib().run_bounds(lines)
-    last = lines[-1][:120] if lines else "-"
-    if end:
-        state = "DONE" if end["status"] == "ok" else "HALTED"
-        last = end.group(0)
-    elif alive is False:
-        state = "DEAD"
-    elif DETACHED_PARK_RE.match(lines[-1] if lines else ""):
-        state = "HELD"
-    else:
-        state = "LIVE"
-    return {"name": "%s-%s" % (entry["kind"], entry["pid"]), "state": state, "last": last, "age": 0,
-            "terminal_status": end["status"] if end else None, "terminal_line": end.group(0) if end else None}
-
-
-def session_detached(session_id, bench_lib, pid_alive=None):
-    """`{"roster:<kind>-<pid>": unit}` for each detached bench job (succession, probes, score) this session launched.
-
-    The launch (`bench_lib.announce_detached`) writes `<logs>/detached/<pid>.json` with the launching session's
-    `CLAUDE_CODE_SESSION_ID`; a row of another session is not this one's. A job is one roster-shaped unit, so it
-    renders, stays live and wakes as a roster does. A row of any session whose worker is dead and whose log has
-    been still for `DETACHED_KEEP_S` is deleted here, so the registry stays bounded. A shared log (the probes log,
-    a campaign's score log, a resumed study's run log) holds only its latest launch's run, so a row whose log a
-    later-started row also names is superseded whatever its pid answers (Windows reuses pids): it prints nothing,
-    as a fan-out's dead entry does once a later launch of its label runs."""
-    try:
-        import daemon_lib
-    except ImportError:
-        return {}
-    probe = pid_alive or daemon_lib.native_pid_alive
-    entries = []
-    for path in glob.glob(os.path.join(bench_lib.detached_registry(), "*.json")):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                entry = json.load(fh)
-            alive = probe(int(entry["pid"]))
-            if alive is False and _still_for(entry.get("log"), DETACHED_KEEP_S):
-                os.remove(path)
-                continue
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        entries.append((entry, alive))
-    latest = {}
-    for entry, _alive in entries:
-        key = os.path.normcase(os.path.abspath(str(entry.get("log"))))
-        latest[key] = max(latest.get(key, float("-inf")), float(entry.get("started") or 0))
-    units = {}
-    for entry, alive in entries:
-        if entry.get("session") != session_id:
-            continue
-        key = os.path.normcase(os.path.abspath(str(entry.get("log"))))
-        if float(entry.get("started") or 0) < latest[key]:
-            continue
-        try:
-            row = detached_row(entry, alive)
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if row:
-            units["roster:" + row["name"]] = {"roster": row, "records": [], "cells": []}
-    return units
-
-
 def session_rosters(session_id, pid_alive=None, verdicts=None):
-    """A poll function returning `{"roster:<name>": unit}` for each bench roster this session started.
+    """A poll function returning `{"roster:<name>": unit}` for each bench roster this session started (the bench
+    entry's `rosters`, `detached_units` and `running_cells`).
 
     A roster belongs to the session whose id its worker process (`<logs>/<name>.pid`) carries; the
     environment is read once per name and pid. A roster found live stays listed after it ends, so its end
@@ -1528,17 +1395,16 @@ def session_rosters(session_id, pid_alive=None, verdicts=None):
         if last[0] is not None and now - last[0] < ROSTER_RECHECK_S:
             return last[1]
         try:
-            bench_lib = _bench_lib()
-            if bench_lib is None:
+            bench = _bench()
+            if bench is None:
                 last[:] = [now, {}]
                 return last[1]
-            logs = bench_lib.roots.logs_dir()
-            rows = bench_lib.roster_states(logs, pid_alive=pid_alive)
-            units = session_detached(session_id, bench_lib, pid_alive)
+            rows = bench.rosters(pid_alive)
+            units = bench.detached_units(session_id, pid_alive)
             for row in rows:
                 name = row["name"]
                 if name not in owned and row["state"] == "LIVE":
-                    pid = bench_lib._roster_pid(os.path.join(logs, name + ".pid"))
+                    pid = row["pid"]
                     key = "%s:%s" % (name, pid)
                     if pid is not None and key not in checked:
                         owner = process_session(pid)
@@ -1550,7 +1416,7 @@ def session_rosters(session_id, pid_alive=None, verdicts=None):
                 if name in owned:
                     live = row["state"] in ROSTER_LIVE_STATES
                     units["roster:" + name] = {"roster": row, "records": [],
-                                               "cells": bench_lib.roster_running_cells(logs, name) if live else []}
+                                               "cells": bench.running_cells(name) if live else []}
             last[:] = [now, units]
         except Exception:
             last[0] = now
@@ -1960,7 +1826,7 @@ def _wake(grouped, now=None):
                 lines.append(("end", ("end", _workflow_host(entry) or str(entry.get("run_dir"))),
                               workflow_end_text(entry), False))
             continue
-        if unit.get("running_shell"):
+        if unit.get("running_shell") or unit.get("pending_call"):
             live += 1
             continue
         if unit.get("shell"):
@@ -2092,6 +1958,8 @@ def checkin_lines(grouped, now=None):
     for unit in grouped.values():
         if unit.get("running_shell"):
             out.append("RUNNING shell %s" % unit["running_shell"])
+            continue
+        if unit.get("pending_call"):
             continue
         if unit.get("workflow"):
             if workflow_running(unit["workflow"]):
@@ -2373,11 +2241,6 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
                     say(kind, identity, text, triggers)
                 else:
                     deferred.append((kind, identity, text, triggers))
-        if not live and not woke and getattr(source, "shells", None) is not None:
-            # A session watch exits only with a decision event; an idle exit is itself a paid notification.
-            first = False
-            time.sleep(POLL_SECONDS)
-            continue
         if first and not woke and live == 0 and polled - armed < await_launch:
             pass  # a poll that began inside the grace re-polls, so a launch landing during a slow poll is still seen
         elif first and not woke:
@@ -2419,7 +2282,7 @@ class ShellEnds:
     ended between two watchers arrives with the next wake. A session with no saved offset starts at the
     transcript's end: shells that ended before the first arm reached the orchestrator through their own
     notification. Delivered ends are removed even when delivery follows an earlier poll; `delivered` records
-    that an idle exit would duplicate the client's notification. `wake_digest` reads each appended byte once."""
+    that a wake line would duplicate the client's notification. `wake_digest` reads each appended byte once."""
 
     def __init__(self, session_id, state_path):
         self.session_id, self.state_path = session_id, state_path
@@ -2447,6 +2310,11 @@ class ShellEnds:
         if self.path is None:
             self.path = _transcript_path(self.session_id)
         return _digest().running_shells(self.path, self.scan) if self.path else set()
+
+    def pending(self):
+        if self.path is None:
+            self.path = _transcript_path(self.session_id)
+        return _digest().pending_calls(self.path, self.scan) if self.path else set()
 
     def persist(self):
         if self.state_path and self.offset is not None:
@@ -2513,6 +2381,8 @@ def _session_source(session_id, state_path=None):
                         for task_id, notice in shells.poll().items()})
         grouped.update({"running-shell:%s" % task_id: {"running_shell": task_id, "records": [], "fanout_dir": None}
                         for task_id in shells.running()})
+        grouped.update({"pending-call:%s" % use: {"pending_call": use, "records": [], "fanout_dir": None}
+                        for use in shells.pending()})
         return grouped
     source.shells = shells
     return source
@@ -2659,7 +2529,7 @@ def main(args=None):
               " | --digest <record|stream|transcript> (unknown: %s)" % " ".join(unknown), file=sys.stderr)
         return 2
     session_wide, wake = "--session" in argv, "--wake" in argv
-    await_launch = 0.0
+    await_launch = None
     for flag in (a for a in argv if a == "--await-launch" or a.startswith("--await-launch=")):
         try:
             await_launch = launch_grace() if flag == "--await-launch" else float(flag.split("=", 1)[1])
@@ -2697,6 +2567,9 @@ def main(args=None):
     try:
         source = _session_source(session_id, path) if session_wide else _records_source(pending)
         closing = session_closing(session_id) if session_wide else None
+        if await_launch is None:
+            # A session watch is armed in the same message as its launch, so it waits for the launch entry by default.
+            await_launch = launch_grace() if session_wide else 0.0
         return wake_loop(source, ack_path=path, await_launch=await_launch, closing=closing,
                          unregister=lambda: deregister(path, identity), lifetime=lifetime,
                          inflight=(lambda: mark_inflight(path, identity)) if session_wide else None) \

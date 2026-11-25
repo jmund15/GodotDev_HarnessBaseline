@@ -18,6 +18,8 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import _git_commit  # noqa: E402
+import _git_run  # noqa: E402
+import _push_range  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
 try:
@@ -165,11 +167,8 @@ def _project_path(root, value, kind=None):
 def _tracked_file(root, path):
     try:
         rel = path.relative_to(root).as_posix()
-        result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", rel],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.returncode == 0 and bool(result.stdout.strip())
+        result = _git_run.run(["-C", str(root), "ls-files", "--error-unmatch", "--", rel], timeout=10)
+        return result.returncode == 0 and bool(result.text.strip())
     except Exception:
         return False
 
@@ -417,11 +416,10 @@ def _merged_pr_head(branch):
 
 def _remote_tip(branch):
     try:
-        out = subprocess.run(["git", "ls-remote", "--heads", "origin", "refs/heads/" + branch],
-                             capture_output=True, text=True, timeout=20)
+        out = _git_run.run(["ls-remote", "--heads", "origin", "refs/heads/" + branch], timeout=20)
     except (OSError, subprocess.SubprocessError):
         return None
-    fields = out.stdout.split() if out.returncode == 0 else []
+    fields = out.text.split() if out.returncode == 0 else []
     return fields[0] if fields else None
 
 
@@ -450,23 +448,15 @@ _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 def _green_close_head(root):
     """The commit the stored close proved green with no reds, else None."""
-    from _hook_state import read_json_salvage
-    path = os.environ.get("HARNESS_TEST_STAMP") or os.path.join(str(root), ".claude", "logs",
-                                                               "harness_tests_stamp.json")
-    try:
-        close = (read_json_salvage(path) or {}).get("close")
-    except Exception:
-        return None
-    if not isinstance(close, dict) or close.get("verdict") != "green" or close.get("red"):
-        return None
-    head = close.get("head")
+    close = _push_range.green_close(root)
+    head = close.get("head") if close else None
     return head if isinstance(head, str) and _FULL_SHA.fullmatch(head) else None
 
 
 def _proved_push_shape(argv, root):
     """`git push [-u] [--recurse-submodules=check] origin <full sha>:<branch>` where the sha is the commit the
     stored green close proved.
-    git_guardrails still checks that close's base and paths against the outgoing range."""
+    dangerous_shell_guard.harness_push_verdict still checks that close's base and paths against the outgoing range."""
     if argv[:2] != ["git", "push"]:
         return False, "the command is not `git push`"
     rest = argv[2:]

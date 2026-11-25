@@ -10,10 +10,19 @@ mkdir -p "$ROOT/tools"
 cat > "$ROOT/tools/provider_capacity.py" <<'PY'
 import os,sys
 mode=os.environ.get("CAP_MODE", "available")
+if sys.argv[1:] == ["unknown"]: sys.exit(2)  # the real reader refuses a transport it does not know
 if mode == "invalid": print("not-json"); sys.exit(0)
 if mode == "runner-fail": sys.exit(2)
 print(os.environ["CAP_JSON"])
 PY
+
+# The calling session's seat resolver: a working one answers a plan name, an empty answer is a session
+# with no plan, and a nonzero exit is the resolver itself failing.
+plant_resolver() { # <exit> [seat]
+  mkdir -p "$ROOT/hooks"
+  printf 'import sys\n%s\nsys.exit(%s)\n' "${2:+print(\"$2\")}" "$1" > "$ROOT/hooks/_session_transport.py"
+}
+plant_resolver 0 anthropic
 
 PASS=0; FAIL=0
 ok() { echo "OK   $1"; PASS=$((PASS+1)); }
@@ -29,8 +38,8 @@ if status in ("available","exhausted"):
  quota={"windows":[{"name":"seven_day","usedPercent":100 if status=="exhausted" else 50,"resetsAt":1800000000,"windowDurationMins":10080,"pressure":1.0,"band":band}],"dispatchBand":band,"routingBand":band,"bindingWindow":"seven_day","credits":{"enabled":False,"available":False,"balance":None}}
 if status == "insufficient": balance={"amount":0.0,"currency":"USD"}
 error=None
-if status in ("auth-error","network-error","malformed"):
- error={"kind":{"auth-error":"auth","network-error":"network","malformed":"malformed"}[status],"message":status}
+if status in ("auth-error","network-error","malformed","rate-limited","unknown"):
+ error={"kind":{"auth-error":"auth","network-error":"network","malformed":"malformed","rate-limited":"rate-limit","unknown":"unknown"}[status],"message":status}
 print(json.dumps({"schemaVersion":1,"transport":"fake","costModel":"plan-quota","sourceKind":source,"observedAt":"2027-01-15T08:00:00Z","status":status,"error":error,"liveFailure":None,"quota":quota,"balance":balance}))
 PY
 }
@@ -64,7 +73,7 @@ host_gate() { # <status> <band> <floor> [authorized] [mode]
     set -u
     SC_ROOT="$ROOT"; SC_TRANSPORT=deepseek; SC_ALIAS=fake; SC_MODEL=fake-model
     SC_COST_MODEL=marginal-usd; SC_MIN_BAND="$floor"
-    SC_MIN_BALANCE=0; SC_AUTHORIZED="$authorized"; SC_CREDENTIAL=""
+    SC_MIN_BALANCE=0; SC_AUTHORIZED="$authorized"; SC_CREDENTIAL=""; SC_SEAT_PLAN="${HOST_SEAT-fake}"
     CLAUDE_CODE_TRANSPORT=fake CAP_JSON="$payload" CAP_MODE="$mode" sc_gate_band
   ) >"$dir/out" 2>"$err"
   rc=$?
@@ -78,16 +87,27 @@ expect_rc "exhausted quota refuses with 10" 10 exhausted Exhausted live plan-quo
 expect_rc "-A cannot override exhaustion" 10 exhausted Exhausted live plan-quota 0 1
 expect_rc "insufficient balance refuses with 6" 6 insufficient "On pace" live marginal-usd 1
 expect_rc "auth failure refuses with 3" 3 auth-error "On pace" live plan-quota 0
-expect_rc "network failure refuses with 8" 8 network-error "On pace" live plan-quota 0
-expect_rc "malformed provider result refuses with 8" 8 malformed "On pace" live plan-quota 0
+# A meter that cannot be read is unknown, never exhaustion: the dispatch launches with a warning,
+# unless a reading states the plan exhausted (above). Every route behaves this way.
+expect_rc "a rate-limited meter launches with a warning" 0 rate-limited "" live plan-quota 0
+expect_rc "a network failure launches with a warning" 0 network-error "On pace" live plan-quota 0
+expect_rc "a malformed provider result launches with a warning" 0 malformed "On pace" live plan-quota 0
+expect_rc "a stated unknown launches with a warning" 0 unknown "" live plan-quota 0
+expect_rc "a status outside provider_capacity's set refuses with 8" 8 mystery "" live plan-quota 0
 expect_rc "unsupported amount passes at zero floor" 0 unsupported "On pace" unsupported marginal-usd 0
 expect_rc "unsupported amount refuses at positive floor" 8 unsupported "On pace" unsupported marginal-usd 1
+# An unmetered plan: a plan-quota transport whose capacity is `unsupported` spends an allowance no
+# reader can measure. It is admitted, and the launcher's own eligibility decides.
+expect_rc "an unmetered plan passes" 0 unsupported "" unsupported plan-quota 0
+expect_rc "an unmetered plan with a balance floor refuses with 8" 8 unsupported "" unsupported plan-quota 1
+got="$(gate unsupported "" unsupported plan-quota 0)"
+case "$got" in *"unmetered plan"*) ok "the unmetered admission names itself" ;; *) bad "the unmetered admission names itself" "$got" ;; esac
 # One plan-quota rule for every window: exhausted (10) or an unreadable band (8), never a per-row
 # band ceiling. A Hot codex window is the case the retired ceiling refused while the native route
 # kept taking work at the same pressure.
 expect_rc "a Hot plan-quota band passes: no per-row ceiling" 0 available Hot live plan-quota 0
 expect_rc "...with or without -A: the ceiling it overrode is gone" 0 available Hot live plan-quota 0 1
-expect_rc "a plan-quota window with no readable band refuses with 8" 8 available "" live plan-quota 0
+expect_rc "a plan-quota window with no readable band launches with a warning" 0 available "" live plan-quota 0
 expect_rc "runner failure refuses with 8" 8 available "On pace" live plan-quota 0 0 runner-fail
 expect_rc "invalid JSON refuses with 8" 8 available "On pace" live plan-quota 0 0 invalid
 
@@ -121,9 +141,15 @@ expect_check_rc "...and -A does not lift exhaustion either" 10 exhausted Exhaust
 expect_host_rc "live host Hot band satisfies a paid floor" 0 available Hot "On pace"
 expect_host_rc "live host Surplus band refuses a paid floor" 5 available Surplus "On pace"
 expect_host_rc "an exhausted host plan authorizes off-quota work" 0 exhausted Exhausted "On pace"
-expect_host_rc "unsupported host amount refuses a paid floor" 5 unsupported Surplus "On pace"
+expect_host_rc "an unreadable host band launches with a warning" 0 network-error "" "On pace"
+expect_host_rc "unsupported host amount launches with a warning" 0 unsupported Surplus "On pace"
 expect_host_rc "-A overrides an unsupported host amount deliberately" 0 unsupported Surplus "On pace" 1
 expect_host_rc "host capacity runner failure refuses" 5 available Hot "On pace" 0 runner-fail
+plant_resolver 0 ""
+HOST_SEAT="" expect_host_rc "a session with no plan is an unreadable band: it launches with a warning" 0 available Hot "On pace"
+plant_resolver 1 ""
+HOST_SEAT="" expect_host_rc "a crashed seat resolver refuses with 5 instead of launching blind" 5 available Hot "On pace"
+plant_resolver 0 anthropic
 
 mv "$ROOT/tools/provider_capacity.py" "$ROOT/tools/provider_capacity.py.off"
 expect_rc "missing capacity runner refuses with 8" 8 available "On pace" live plan-quota 0

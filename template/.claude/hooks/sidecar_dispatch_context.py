@@ -485,7 +485,8 @@ def fanout_contract(fanout, root):
         return []
     try:
         args, path, data, jobs, spill = _read_fanout(fanout, root)
-        directory = sidecar_argv.fanout_out_dir(str(path), args.out_dir, spill, str(sidecar_fanout.REPO))
+        directory = sidecar_argv.fanout_out_dir(str(path), args.out_dir, spill,
+                                                sidecar_argv.fanout_repo(root, str(sidecar_fanout.REPO)))
         directory = Path(directory)
         directory = directory if directory.is_absolute() else Path(root) / directory
         if getattr(args, "refold", False):

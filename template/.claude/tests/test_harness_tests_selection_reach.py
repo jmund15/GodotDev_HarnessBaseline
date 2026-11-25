@@ -55,6 +55,69 @@ def _git(root, *args):
     subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
 
 
+def case_selection_writes_nothing(root):
+    store = root / "legacy.json"
+    store.write_bytes(b'{".claude/tests/test_imports.py": []}\n')
+    before = store.read_bytes(), store.stat().st_mtime_ns
+    layout = root / "per-proof"
+    from unittest.mock import patch
+    with patch.object(ht, "passes_path", return_value=str(store)), patch.object(
+        ht, "pass_store_dir", return_value=str(layout)
+    ), patch.object(ht, "case_passes_path", return_value=str(root / "no-cases.json")):
+        selected = ht.select_for(str(root), [TARGET])
+    return ("test_imports.py" in {Path(p).name for p in selected} and store.exists()
+            and before == (store.read_bytes(), store.stat().st_mtime_ns) and not layout.exists())
+
+
+def case_catalog_views(root):
+    from _proof_runner.catalog import Catalog, View
+
+    tool = ".claude/tools/sensor.py"
+    named = ".claude/tests/test_sensor.py"
+    importer = ".claude/tests/test_adapter.py"
+    mentioned = ".claude/tests/test_weak.py"
+    part = ".claude/tests/test_weak_part2.py"
+    declared = ".claude/tests/test_declared.py"
+    corpus = ".claude/tests/test_scan.py"
+    missing = ".claude/tests/test_missing.py"
+    excluded = ".claude/tests/test_excluded.py"
+    policy = ".claude/skills/project_subsystems/adaptation.json"
+    files = {
+        tool: "sensor = True\n",
+        ".claude/tools/adapter.py": "import sensor\n",
+        named: "", importer: "", mentioned: "INPUT = 'sensor.py'\n", part: "",
+        declared: "", corpus: "", excluded: "",
+        policy: ('{"proof_bindings": {".claude/data/options.json": ["test_declared.py", "test_missing.py"]},'
+                 ' "proof_corpus": {"test_scan.py": [".claude/data"]},'
+                 ' "proof_excluded": {"test_excluded.py": "fixture"}}'),
+        **{f".claude/tests/test_ext.{ext}": "" for ext in ("py", "js", "mjs", "sh", "ps1")},
+    }
+    for rel, text in files.items():
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "policy")
+    (root / policy).write_text("{}", encoding="utf-8")
+    (root / named).unlink()
+    history = Catalog.open(View.revision(str(root), "HEAD"))
+    index = Catalog.open(View.index(str(root)))
+    local = Catalog.open(View.worktree(str(root)))
+    return {
+        "all five interpreter suffixes": set(history.proofs) & {p for p in files if '/test_ext.' in p}
+        == {p for p in files if '/test_ext.' in p},
+        "weak mentions select and inherit but do not ship": {named, mentioned, part} <= set(history.select([tool]).proofs)
+        and set(history.shipped_for(tool)) == {named, importer},
+        "revision and index use their own policy and bytes": history.select([".claude/data/options.json"]).proofs
+        == index.select([".claude/data/options.json"]).proofs == [declared, corpus]
+        and not local.select([".claude/data/options.json"]).proofs and named in history.proofs and named not in local.proofs,
+        "candidate states distinguish exclusion, missing declaration and unavailable checkout bytes":
+        {c.proof_id: c.state for c in history.candidates([".claude/data/options.json", excluded])}
+        == {declared: "usable", corpus: "usable", missing: "missing", excluded: "excluded"}
+        and {c.proof_id: c.state for c in local.candidates([named])}.get(named) == "unavailable",
+    }
+
+
 def main() -> int:
     failures = 0
     with tempfile.TemporaryDirectory(dir=os.environ.get("TMP")) as tmp:
@@ -79,6 +142,7 @@ def main() -> int:
             return name in got[t]
 
         cases = [
+            ("case_selection_writes_nothing", case_selection_writes_nothing(root)),
             ("an import selects the module it imports", selects(TARGET, "test_imports.py")),
             ("a function-local `from` import selects its module", selects(TARGET, "test_from_import.py")),
             ("a path the proof runs selects the script", selects(TARGET, "test_runs.py")),
@@ -100,6 +164,16 @@ def main() -> int:
         ]
         for label, ok in cases:
             print(("ok   " if ok else "FAIL ") + label + ("" if ok else "   bound=%s" % got))
+            failures += not ok
+    with tempfile.TemporaryDirectory(dir=os.environ.get("TMP")) as tmp:
+        root = Path(tmp)
+        _git(root, "init", "-q")
+        try:
+            decisions = case_catalog_views(root)
+        except ModuleNotFoundError as exc:
+            decisions = {f"catalog views: {exc}": False}
+        for label, ok in decisions.items():
+            print(("ok   " if ok else "FAIL ") + label)
             failures += not ok
     print("%d failure(s)" % failures if failures else "all cases pass")
     return 1 if failures else 0

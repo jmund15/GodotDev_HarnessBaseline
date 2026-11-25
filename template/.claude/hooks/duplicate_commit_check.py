@@ -43,9 +43,9 @@ for _d in (HERE, TOOLS):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 
-from _commit_scope import authored_paths, publishes_index  # noqa: E402
-from _git_commit import (commit_invocations, commit_source, git_environ, in_project, resolve_index,  # noqa: E402
-                         run_git, staged_paths)
+from _commit_scope import publication, publishes_index  # noqa: E402
+from _git_commit import commit_invocations, in_project, run_git  # noqa: E402
+from _git_run import git_environ  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
 import extract_numbers as en  # noqa: E402
 
@@ -209,19 +209,20 @@ def _adds_sentence(root, paths, staged, git_env):
 
 def _check(invocation, root):
     """The advisory block for one commit, or None when nothing it publishes is near-duplicated."""
-    paths, failed = staged_paths(invocation.rest, invocation.cwd, invocation.git_env)
+    published = publication(invocation.sub, invocation.rest, invocation.cwd, invocation.git_env)
+    paths, failed = published.selection
     if paths is None:
         raise _ReadError("cannot read the content this commit publishes (%s)" % failed)
-    paths = sorted(authored_paths(sorted(paths), invocation.cwd, invocation.git_env))
+    paths = sorted(published.authored(sorted(paths)))
     if not paths:
         return None
     root = (run_git(["rev-parse", "--show-toplevel"], invocation.cwd, invocation.git_env) or "").strip() or root
     covered = _covered(root, paths)
-    env, problem = resolve_index(invocation.git_env, invocation.cwd)
+    env, problem = published.target
     if problem:
         raise _ReadError(problem)
-    source = commit_source(invocation.rest, invocation.cwd, invocation.git_env)
-    if source is None:
+    source = published.mode
+    if source == "unknown":
         raise _ReadError("this -i commit stages paths outside its pathspec that differ from their working copies")
     staged = source == "index"
     sha = (run_git(["rev-parse", "HEAD"], invocation.cwd, invocation.git_env) or "").strip() or "HEAD"

@@ -28,10 +28,19 @@ MERGE = '. "$CLAUDE_DIR/scripts/lib/sidecar_common.sh" >/dev/null 2>&1; SC_ROOT=
 
 
 def bare_root(tmp):
-    hooks = Path(tmp, 'bare', 'hooks')
+    # The merge imports adaptation and tool_profiles from <root>/tools, so the planted root carries them and their
+    # table; skill data stays absent, which is what this fixture is for (no adaptation.json).
+    bare = Path(tmp, 'bare')
+    hooks, tools = bare / 'hooks', bare / 'tools'
     hooks.mkdir(parents=True)
-    (hooks / '_checkout_root.py').write_bytes((CLAUDE / 'hooks' / '_checkout_root.py').read_bytes())
-    return hooks.parent.as_posix()
+    for name in ('_checkout_root.py', '_git_run.py'):
+        (hooks / name).write_bytes((CLAUDE / 'hooks' / name).read_bytes())
+    tools.mkdir()
+    for name in ('adaptation.py', 'tool_profiles.py', 'plugin_registry.py'):
+        (tools / name).write_bytes((CLAUDE / 'tools' / name).read_bytes())
+    (bare / 'guards').mkdir()
+    (bare / 'guards' / 'tool_profiles.json').write_bytes((CLAUDE / 'guards' / 'tool_profiles.json').read_bytes())
+    return bare.as_posix()
 GUARD = CLAUDE / 'hooks' / 'sidecar_workdir_guard.py'
 FAILS = []
 

@@ -20,7 +20,7 @@ file whose repo-relative or absolute path appears in backticks (an optional `:li
 job's prompt, `promptPath` / `promptFile`, `contextFiles` or the shared context, once per job and once per
 file in the total, unless the job already lists that path. Two or more jobs naming one file are its
 `read by` group. The scan is one level deep: a named file's own names are not followed, and a text file
-over MAX_SCAN_BYTES is not scanned.
+over MAX_SCAN_BYTES is not scanned, and is sized by its byte count without being read.
 
 A job's reading also gets its fit: tokens from UTF-8 decoded characters (replacement on invalid
 bytes) at CHARS_PER_TOKEN (the measured rate: a median of 2.50 characters per token over 43 large tool results,
@@ -34,6 +34,7 @@ decided from facts in the job and its brief:
   named spans   a named file inside the `writeSet`, or cited with a line suffix; the job reads ranges of it.
 A named file whose own tokens exceed the job's point cannot be read whole, and a named file the job's own
 `searchSources` list holds is only searched: each counts 0 and is a `searchSources` entry. `lowerTokens` is listed + inputs (`readingTokens` and `tokens` equal it); `upperTokens` adds the spans.
+`residentTokens` is the listed bucket alone and `residentOver` the tokens of it past the point: the refusal's measure.
 The line prints the heaviest job's lower share and the point it used, and the count of backticked path-shaped names
 that are no file (a vault path spelled through an alias such as `V/...`), counted 0. A job is over its point when
 `lowerTokens` is; when only `upperTokens` is, the fit line says `ceiling over`. A pin the registry does not resolve
@@ -64,12 +65,18 @@ root when it gives none). A hit names its anchor: `against project root` or `aga
 `dispatch_size(jobs)` takes the jobs list or the whole jobs file / Workflow args object, is pure, and raises
 only on a spec that holds no job list. `line(spec, root)` is its one-line form, None when the spec holds no
 job or cannot be sized. `/delegate` runs it on the jobs file before launch. The tool itself blocks nothing; the
-fan-out refuses a job whose reading is past its window (`over_window_lines`, the `over` that
-`lens_briefs.seat_overage` refuses a review seat on). `preflight_lines(spec)` prints every unmet launch precondition
-as a fact: each job the fan-out would refuse by `kind` (in the fan-out's own text), each job it would refuse for
-reading past its window, each pinned tier with no ladder slice in this context, and each governing
+fan-out refuses a resident seat whose certain reading is past its window (`over_window_lines`, the `residentOver` that
+`lens_briefs.seat_overage` refuses a review seat on). Certain reading is the brief's text, the listed bucket (a brief
+file, `contextFiles`, `mustRead`, the shared context) and nothing a brief only names: naming a file points at it, and the
+brief decides what is read, so named files stay a fact on `fit_lines`. `preflight_lines(spec)` prints every unmet launch precondition
+as a fact: each file the launcher opens (a job's brief, schema or context file, the shared `contextPath`) that does not
+resolve under the launching checkout, each job the fan-out would refuse by `kind` (in the fan-out's own text) or by a `pick`/`spec` outside its enum, each resident seat whose certain reading (not its named files) is past its window, each pinned tier with no ladder slice in this context, and each governing
 skill the briefs need that is not in context. Each names its load step and never the ladder itself; a check that
-cannot run prints `preflight: not checked`, and one `preflight: clean` line is the launch's go.
+cannot run prints `preflight: not checked`, and one `preflight: clean` line is the launch's go. The CLI exits 1
+when any `preflight: unmet:` line printed and 0 otherwise (2 is a usage or unreadable-spec error), so a caller
+that chains the fan-out behind it (`dispatch_size.py <file> && sidecar_fanout.py <file> --detach`) stops before a
+call the fan-out would refuse. `/delegate` runs the two as separate calls and reads the lines, so there the exit
+code refuses nothing on its own; a `preflight: not checked` line is no unmet precondition and refuses nothing.
 
 `attribution_lines(spec)` prints after the preflight, as `advisory:` lines that never refuse and never change the go: one per
 job whose brief holds a sentence that names a decision as the owners' ("the owners' ... rule/pick/choice, "owners' call/lock", "owners
@@ -148,8 +155,12 @@ def _paths_of(job: dict, keys=("contextFiles", "mustRead")) -> list:
 
 def _size(path: str, root: Path):
     candidate = Path(path)
+    target = candidate if candidate.is_absolute() else root / candidate
     try:
-        data = (candidate if candidate.is_absolute() else root / candidate).read_bytes()
+        size = target.stat().st_size
+        if size > MAX_SCAN_BYTES:
+            return size, size
+        data = target.read_bytes()
         if candidate.suffix.lower() in IMAGE_SUFFIXES:
             return len(data), math.ceil(IMAGE_TOKENS * CHARS_PER_TOKEN)
         return len(data), len(data.decode("utf-8", errors="replace"))
@@ -395,11 +406,14 @@ def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
 
 
 def _effort_that_runs(alias, explicit, job, data=None):
-    """The effort the launch runs `alias` at: the same `pin_effort` decision the fan-out makes before placement."""
+    """The effort the launch runs `alias` at: the same `pin_effort` decision the fan-out makes before placement.
+
+    A `spec` that is not one of its enum's strings names no reading here; `_pin_basis_unmet` refuses it first."""
     if model_registry is None:
         return explicit
+    reading = job.get("spec") if isinstance(job.get("spec"), str) else None
     try:
-        effort, _status = model_registry.pin_effort(alias, job.get("kind"), job.get("spec"), explicit,
+        effort, _status = model_registry.pin_effort(alias, job.get("kind"), reading, explicit,
                                                     job.get("pick") == "owner", False, data)
     except model_registry.UnknownModel:
         return explicit
@@ -421,7 +435,8 @@ def _pin_of(job, data=None):
 
 
 def dispatch_size(jobs, root=None, data=None) -> dict:
-    """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, pointSource, over, fitError, unresolved,
+    """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, pointSource, over, residentTokens,
+    residentOver, fitError, unresolved,
     lowerTokens, upperTokens, ceilingOver, searchSources, largest: [{path, tokens}]}],
     duplicated: [{path, kb, readBy}], duplicatedKb, totalKb, unreadable, named: [{path, kb, namedBy}], namedKb,
     unresolved: [name], settingsErrors: [name]}` for one dispatch; a job's `denied` is `[{path, workdir, tool, rule, note}]`; a job's `tokens` and `readingTokens` are its `lowerTokens` and `upperTokens`
@@ -485,12 +500,14 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
                           for key in [*paths, *inputs, *spans] if characters[key]),
                          key=lambda item: -item["tokens"])
         fit = window_fit(model, lower_characters, data, job)
+        resident = window_fit(model, total_characters, data, job)
         upper = _tokens_of(upper_characters)
         per_job.append({"label": job.get("label") or job.get("key") or "job%d" % (index + 1),
                         "model": model, "effort": effort, "kb": round(total / KB),
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
                         "pointSource": fit["source"], "over": fit["over"], "fitError": fit["error"],
+                        "residentTokens": resident["tokens"], "residentOver": resident["over"],
                         "kind": job.get("kind"), "window": job.get("window"),
                         "unresolved": len(missing), "lowerTokens": fit["tokens"], "upperTokens": upper,
                         "ceilingOver": bool(fit["usable"]) and not fit["over"] and upper > fit["usable"],
@@ -611,13 +628,15 @@ RESIDENT_KINDS = ("lens", "reviewer")  # a seat that must keep one subject resid
 
 
 def over_window_lines(size: dict) -> list:
-    """One line per job the launch refuses for reading past the point it compacts at: a resident seat (`RESIDENT_KINDS`)
-    not sized `window: "full"`. The measure is `perJob[].over`, the number `lens_briefs.seat_overage` refuses a review
-    seat on, so the fan-out's launch refusal and the panel's agree. Other over-window jobs are facts on `fit_lines`.
+    """One line per job the launch refuses for certain reading past the point it compacts at: a resident seat
+    (`RESIDENT_KINDS`) not sized `window: "full"`. Certain reading is the brief's text and the listed bucket; a file the
+    brief only names is a pointer, never counted here. The measure is `perJob[].residentOver`, the number
+    `lens_briefs.seat_overage` refuses a review seat on, so the fan-out's launch refusal and the panel's agree. Other
+    over-window jobs, and every named file, are facts on `fit_lines`.
     A job whose pin cannot be sized is not named here (`fit_lines` says so)."""
     return ["`%s` (%s): reading %d tokens, past its usable window of %d tokens (%s); over by %d"
-            % (job["label"], job["model"], job["tokens"], job["usable"], job["pointSource"], job["over"])
-            for job in size["perJob"] if job["model"] and job["usable"] and job["over"] > 0
+            % (job["label"], job["model"], job["residentTokens"], job["usable"], job["pointSource"], job["residentOver"])
+            for job in size["perJob"] if job["model"] and job["usable"] and job["residentOver"] > 0
             and job.get("kind") in RESIDENT_KINDS and job.get("window") != "full"]
 
 
@@ -648,14 +667,45 @@ def _kind_refusals(jobs: list) -> list:
     return refusals
 
 
+def _pin_basis_unmet(jobs: list) -> list:
+    """One unmet line per job whose `pick`/`spec` is not one of the strings `slice_pins.md` names: the fan-out
+    refuses it at launch, and a non-string once reached the effort reading as an unhashable key."""
+    try:
+        import sidecar_fanout
+    except Exception as exc:
+        return ["preflight: not checked: pin basis (the fan-out reader did not import: %s)" % exc]
+    out = []
+    for index, job in enumerate(jobs):
+        label = job.get("label") or "job%d" % (index + 1)
+        for field, accepted in (("pick", sidecar_fanout.PIN_PICKS), ("spec", sidecar_fanout.PIN_SPECS)):
+            value = job.get(field)
+            if value is None or (isinstance(value, str) and value in accepted):
+                continue
+            shown = repr(value) if isinstance(value, str) else "a " + type(value).__name__
+            out.append("preflight: unmet: job %s: `%s` is %s; it takes one of %s"
+                       % (label, field, shown, "|".join(accepted)))
+    return out
+
+
+def _input_unmet(spec, jobs: list, root: Path) -> list:
+    """One unmet line per file the launcher opens (a job's brief, schema, context files and the shared
+    `contextPath`) that does not resolve under `root`: `sidecar_argv.unresolved_inputs` is the fan-out's own check."""
+    try:
+        import sidecar_argv
+    except Exception as exc:
+        return ["preflight: not checked: launcher input paths (sidecar_argv did not import: %s)" % exc]
+    shared = spec.get("contextPath") if isinstance(spec, dict) else None
+    return ["preflight: unmet: " + text for text in sidecar_argv.unresolved_inputs(jobs, shared, root)]
+
+
 def _over_window_unmet(spec, root: Path) -> list:
-    """One unmet line per job the fan-out refuses for reading past its window (`over_window_lines`), so a clean
+    """One unmet line per resident seat the fan-out refuses for certain reading past its window (`over_window_lines`), so a clean
     preflight is never printed over a job the launch will refuse. A spec that cannot be sized is `not checked`."""
     try:
         lines = over_window_lines(dispatch_size(spec, root))
     except Exception as exc:
         return ["preflight: not checked: job reading against its window (%s)" % exc]
-    return ["preflight: unmet: job %s; the launch refuses it (split its reading across jobs)" % line
+    return ["preflight: unmet: job %s; the launch refuses it (split its brief, context and must-read files across jobs)" % line
             for line in lines]
 
 
@@ -771,10 +821,10 @@ def ui_round_lines(jobs, root: Path) -> list:
 
 def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> list:
     """Every unmet launch precondition, as facts, in the output `/delegate` already reads before a launch: each
-    job the fan-out would refuse by `kind`, each brief that orders a wide test run, each job whose `codify_*`
-    prompt differs from its render, each UI-round job `ui_round.jobs_refusal` refuses, each job whose reading
-    passes its window, each pinned tier with no ladder slice in this context, and the orchestration skill when
-    it is not in context. One `preflight: clean: ...` line means every check
+    job the fan-out would refuse by `kind` or by a `pick`/`spec` outside its enum, each brief that orders a wide
+    test run, each job whose `codify_*` prompt differs from its render, each UI-round job `ui_round.jobs_refusal`
+    refuses, each job whose reading passes its window, each pinned tier with no ladder slice in this context, and
+    the orchestration skill when it is not in context. One `preflight: clean: ...` line means every check
     ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
     checked: ...`, never a pass. Facts only; no check denies on these lines."""
     root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
@@ -782,8 +832,8 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
         jobs = _jobs_of(spec)
     except ValueError:
         return ["preflight: not checked: launch preconditions (the spec holds no job list)"]
-    out = (_kind_refusals(jobs) + codify_prompt_lines(spec) + wide_run_lines(spec, root)
-           + ui_round_lines(jobs, root) + _over_window_unmet(spec, root))
+    out = (_input_unmet(spec, jobs, root) + _kind_refusals(jobs) + _pin_basis_unmet(jobs) + codify_prompt_lines(spec)
+           + wide_run_lines(spec, root) + ui_round_lines(jobs, root) + _over_window_unmet(spec, root))
     session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return out + ["preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"]
@@ -975,14 +1025,15 @@ def main(argv=None) -> int:
             print(fact)
         for fact in fact_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
             print(fact)
-        for fact in preflight_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
+        preflight = preflight_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+        for fact in preflight:
             print(fact)
         for fact in attribution_lines(spec):
             print(fact)
     except (OSError, ValueError) as exc:
         print("dispatch_size: %s" % exc, file=sys.stderr)
         return 2
-    return 0
+    return 1 if any(fact.startswith("preflight: unmet:") for fact in preflight) else 0
 
 
 if __name__ == "__main__":

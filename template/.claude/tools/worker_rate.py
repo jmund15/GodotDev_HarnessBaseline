@@ -147,6 +147,9 @@ def load_joined(since=None):
         if since and (row.get("ts") or "") < since:
             continue
         hit = rated.get((row.get("ts"), row.get("tool")))
+        # The ledger's own `outcome` (served, failed, skipped) is a different field from the rating verdict
+        # that takes its name below; keep it so a skipped call, which sent nothing, can be told apart.
+        row["call_outcome"] = row.get("outcome")
         row["outcome"] = hit.get("outcome") if hit else None
         row["note"] = hit.get("note") if hit else None
         # Rated coordinate, merged like the verdict. Older ratings predate the axis and
@@ -254,7 +257,7 @@ def cmd_rate(args):
     else:
         # Newest call, optionally of one tool. Rating happens right after consuming a result,
         # so "the last one" is the overwhelmingly common case and is worth not having to name.
-        cands = [r for r in rows if not args.tool or r.get("tool") == args.tool]
+        cands = [r for r in calls(rows) if not args.tool or r.get("tool") == args.tool]
         target = cands[-1] if cands else None
     if target is None:
         print("no matching ledger row", file=sys.stderr)
@@ -284,8 +287,13 @@ def cmd_rate(args):
     return 0
 
 
+def calls(rows):
+    """The rows that sent a request: a skipped row (`call_outcome` "skipped") produced no output to count or rate."""
+    return [r for r in rows if r.get("call_outcome") != "skipped"]
+
+
 def cmd_report(args):
-    rows = collapse_repeats(filter_server_sha(load_joined(args.since), args.server_sha))
+    rows = calls(collapse_repeats(filter_server_sha(load_joined(args.since), args.server_sha)))
     if not rows:
         print("no calls in range")
         return 0

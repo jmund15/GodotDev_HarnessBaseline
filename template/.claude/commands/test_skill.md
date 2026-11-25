@@ -86,7 +86,7 @@ If `mode == "B"`, prefix the report with: `NOTE: Skill has no explicit rationali
 
 ## Notes
 
-- **Cost:** ~1 synthesize + N Sonnet dispatch + N score + (COMPLIES-count) validators per run. Roughly $0.10–0.30 on a typical skill.
+- **Cost:** ~1 synthesize + N Sonnet dispatch + N score + (COMPLIES-count) validators per run. Roughly USD 0.10–0.30 on a typical skill.
 - **No `--all` mode in v1** — running against all skills would exceed the 15-prompt fan-out budget. Re-evaluate if the project adopts a quarterly harness-audit cadence.
 - **Manual invocation only** — not auto-run from the regression gate. Validates *harness correctness* (skill quality), not *production correctness*.
 - **No file modifications** — read-only. No single-flight exposure (subagents reason over the injected skill text; no test runner, no LSP).

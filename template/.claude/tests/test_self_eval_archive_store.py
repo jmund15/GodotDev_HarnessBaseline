@@ -237,7 +237,7 @@ def main():
 
     bad_path = os.path.join(root, "bad.json")
     with open(bad_path, "w", encoding="utf-8") as handle:
-        json.dump(entry("bad", "bad", outcome="success"), handle)
+        json.dump(entry("no-such-session-id-6a1", "bad", outcome="success"), handle)
     run = subprocess.run(
         [sys.executable, STORE_PATH, "--archive", archive, "--upsert", bad_path],
         capture_output=True, text=True, timeout=60,

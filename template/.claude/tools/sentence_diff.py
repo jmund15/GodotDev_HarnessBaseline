@@ -12,9 +12,8 @@ MIN_SENTENCE_WORDS = 3
 FRAGMENT_WORDS = 8
 WORD_EDGE = ".,;:!?()[]{}`'\"*_"
 # plans/ and generated/ are execution/derived docs, not loaded doctrine — density rules don't bind them.
-# `rubrics`: benchmark judge rubrics are sealed instrument text a judge reads, pinned by sha256.
-EXCLUDED = ("auto-memory", "scratch", "tests", "worktrees", "__pycache__", "cache", ".cache", "benchmark_runs",
-            "plans", "generated", "rubrics")
+EXCLUDED = ("auto-memory", "scratch", "tests", "worktrees", "__pycache__", "cache", ".cache",
+            "plans", "generated")
 
 
 def in_doctrine_scope(rel):

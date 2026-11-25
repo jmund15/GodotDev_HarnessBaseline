@@ -167,13 +167,13 @@ def case_opt_outs():
     check("HARNESS_NO_PASS_CACHE=1 runs a cached proof", runs(counter) == 2, "runs=%d" % runs(counter))
     scanner_counter = counter + ".scan"
     scanner = write(repo, ".claude/tests/test_uncorpused_scan.py", proof_text(scanner_counter, 0))
-    saved = harness_tests._DIR_SCANNING
-    harness_tests._DIR_SCANNING = saved + ("test_uncorpused_scan.py",)
+    saved = harness_tests._catalog.ALWAYS
+    harness_tests._catalog.ALWAYS = saved + ("test_uncorpused_scan.py",)
     try:
         run(repo, [scanner])
         run(repo, [scanner])
     finally:
-        harness_tests._DIR_SCANNING = saved
+        harness_tests._catalog.ALWAYS = saved
     check("a dir-scanning proof with no corpus entry is never reused", runs(scanner_counter) == 2,
           "runs=%d" % runs(scanner_counter))
     os.environ["HARNESS_SLOT_DIR"] = os.path.join(repo, "slots")
@@ -563,13 +563,15 @@ def case_a_missing_recorder_records_no_observed_key():
     events; a manifest built from nothing would reuse the pass forever, so none is recorded."""
     repo, proof, counter = make_repo()
     saved = harness_tests._RECORDER_DIR
-    harness_tests._RECORDER_DIR = os.path.join(repo, "no_such_recorder")
+    saved_attempt = harness_tests._attempt._RECORDER_DIR
+    harness_tests._RECORDER_DIR = harness_tests._attempt._RECORDER_DIR = os.path.join(repo, "no_such_recorder")
     try:
         # Inside a close this proof itself runs under the recorder; an inherited PYTHONPATH would load it, and the
         # recorder and log it names would be the nested run's own.
         run(repo, [proof], {"PYTHONPATH": "", "HARNESS_READ_LOG": "", "HARNESS_READ_RECORDER": ""})
     finally:
         harness_tests._RECORDER_DIR = saved
+        harness_tests._attempt._RECORDER_DIR = saved_attempt
     row = (harness_tests._pass_cache(repo, [proof]).variants(os.path.join(repo, ".claude/tests/test_alpha.py")) or [{}])[0]
     check("a run whose recorder never loaded records no observed key", "okey" not in row and row.get("key"),
           "row=%s" % sorted(row))
@@ -580,11 +582,13 @@ def case_a_pass_with_no_observed_reach_never_reuses():
     what the pass read, so the next run, with the recorder back, must rerun it."""
     repo, proof, counter = make_repo()
     saved = harness_tests._RECORDER_DIR
-    harness_tests._RECORDER_DIR = os.path.join(repo, "no_such_recorder")
+    saved_attempt = harness_tests._attempt._RECORDER_DIR
+    harness_tests._RECORDER_DIR = harness_tests._attempt._RECORDER_DIR = os.path.join(repo, "no_such_recorder")
     try:
         run(repo, [proof], {"PYTHONPATH": ""})
     finally:
         harness_tests._RECORDER_DIR = saved
+        harness_tests._attempt._RECORDER_DIR = saved_attempt
     run(repo, [proof])
     check("a pass that recorded no manifest reruns on the next run", runs(counter) == 2,
           "runs=%d" % runs(counter))
@@ -821,8 +825,9 @@ def case_a_record_writes_only_its_own_proof_file():
 
 
 def case_a_legacy_store_migrates_into_the_proof_files():
-    """The store was one file for every proof, and one for every pooled case. The first cache opened over such a
-    store moves its rows into the proof files and removes it; a row already in a proof file keeps its newer pass."""
+    """The store was one file for every proof, and one for every pooled case. Opening the cache moves nothing; the
+    first read against a store moves its rows into the proof files and removes it, so the pass and case stores
+    migrate separately; a row already in a proof file keeps its newer pass."""
     repo, proof, counter = make_repo()
     parent, saved = with_private_store()
     try:
@@ -839,15 +844,21 @@ def case_a_legacy_store_migrates_into_the_proof_files():
         with open(harness_tests.case_passes_path(), "w", encoding="utf-8") as fh:
             json.dump({rel + "::one": [case_row]}, fh)
         cache = harness_tests._PassCache(repo)
+        check("opening the cache moves no legacy row",
+              not os.path.exists(store_file(rel)) and not os.path.exists(store_file(rel, cases=True))
+              and os.path.isfile(harness_tests.passes_path()) and os.path.isfile(harness_tests.case_passes_path()))
         check("a legacy row migrates and still hits", cache.hit(proof, "legacy") and cache.hit(proof, "elsewhere"),
               str([r.get("key") for r in cache.variants(proof)]))
-        check("another proof's legacy row lands in its own file", os.path.isfile(store_file(".claude/tests/test_other.py")))
+        check("the pass read migrates every proof's legacy rows and leaves the case store",
+              os.path.isfile(store_file(".claude/tests/test_other.py"))
+              and not os.path.exists(harness_tests.passes_path())
+              and os.path.isfile(harness_tests.case_passes_path()))
+        cache.reusable_cases(proof)
         with open(store_file(rel, cases=True), encoding="utf-8") as fh:
             cases = json.load(fh)
         check("a legacy case row lands in its proof's case file", [r["okey"] for r in cases[rel + "::one"]] == ["case-key"],
               str(cases))
-        check("the legacy files are gone once migrated",
-              not os.path.exists(harness_tests.passes_path()) and not os.path.exists(harness_tests.case_passes_path()))
+        check("the legacy files are gone once migrated", not os.path.exists(harness_tests.case_passes_path()))
         cache.record(proof, key="new")
         with open(harness_tests.passes_path(), "w", encoding="utf-8") as fh:
             json.dump({rel: [dict(old, key="stale-again", ts=now - 5)]}, fh)
@@ -933,7 +944,7 @@ def case_a_quoted_shell_script_spawn_splits_as_its_child_reads_it():
              "except OSError:\n    pass\n" % script)
     subprocess.run([sys.executable, "-c", spawn], cwd=repo, check=True,
                    env=dict(os.environ, HARNESS_READ_LOG=log, PYTHONPATH=harness_tests._RECORDER_DIR))
-    events = harness_tests._read_events(log)
+    events = harness_tests._attempt._read_events(log)
     manifest = cache.manifest(proof, {"events": events, "temp": log})
     check("a recorded spawn of a quoted shell script is captured", any(e[0] == "s" for e in events or []),
           str(events))
@@ -980,7 +991,7 @@ def case_the_recorder_runs_the_sitecustomize_it_shadows():
     result = _recorded_python("open(%r).read()" % data, [harness_tests._RECORDER_DIR, own], log, root)
     check("a shadowed sitecustomize still runs under the recorder", os.path.exists(marker),
           result.stdout + result.stderr)
-    reads = [e[1] for e in harness_tests._read_events(log) or [] if e[0] == "r"]
+    reads = [e[1] for e in harness_tests._attempt._read_events(log) or [] if e[0] == "r"]
     check("a child whose own sitecustomize the recorder chains is still recorded",
           any(os.path.normcase(r) == os.path.normcase(os.path.abspath(data)) for r in reads), str(reads)[:300])
 
@@ -994,7 +1005,7 @@ def case_a_file_copied_with_copy2_is_a_read():
     gamma = os.path.join(repo, ".claude", "tools", "gamma.py")
     result = _recorded_python("import shutil, sys\nshutil.copy2(%r, %r)\n" % (gamma, os.path.join(root, "gamma.py")),
                               [harness_tests._RECORDER_DIR], log, root)
-    manifest = harness_tests._pass_cache(repo, [proof]).manifest(proof, {"events": harness_tests._read_events(log),
+    manifest = harness_tests._pass_cache(repo, [proof]).manifest(proof, {"events": harness_tests._attempt._read_events(log),
                                                                          "temp": root})
     check("a file copied with shutil.copy2 joins the observed reads",
           isinstance(manifest, dict) and ".claude/tools/gamma.py" in manifest.get("files", []),
@@ -1011,10 +1022,10 @@ def case_a_child_whose_first_sitecustomize_is_another_is_not_recorded():
     spawn = ("import os, subprocess, sys\nenv = dict(os.environ, PYTHONPATH=os.pathsep.join([%r, %r]))\n"
              "subprocess.run([sys.executable, '-c', 'pass'], env=env)\n" % (own, harness_tests._RECORDER_DIR))
     _recorded_python(spawn, [harness_tests._RECORDER_DIR], log, repo)
-    spawns = [e[1] for e in harness_tests._read_events(log) or [] if e[0] == "s"]
+    spawns = [e[1] for e in harness_tests._attempt._read_events(log) or [] if e[0] == "s"]
     check("a spawn whose first sitecustomize is not the recorder is not marked recorded",
           spawns and not any(s.get("recorded") for s in spawns), str(spawns)[:300])
-    manifest = harness_tests._pass_cache(repo, [proof]).manifest(proof, {"events": harness_tests._read_events(log),
+    manifest = harness_tests._pass_cache(repo, [proof]).manifest(proof, {"events": harness_tests._attempt._read_events(log),
                                                                          "temp": root})
     check("that unrecorded inline child makes the manifest opaque",
           isinstance(manifest, dict) and manifest.get("opaque") is True, str(manifest))
@@ -1033,7 +1044,7 @@ def case_a_child_behind_the_slot_bootstrap_is_recorded():
              "subprocess.run([sys.executable, %r, %r], env=env, check=True)\n"
              % (os.path.join(_SCRIPTS_DIR, "_slot_bootstrap"), harness_tests._RECORDER_DIR, child, data))
     _recorded_python(spawn, [harness_tests._RECORDER_DIR], log, repo)
-    events = harness_tests._read_events(log)
+    events = harness_tests._attempt._read_events(log)
     spawns = [e[1] for e in events if e[0] == "s"]
     check("a spawn behind the slot bootstrap is marked recorded", spawns and all(s.get("recorded") for s in spawns),
           str(spawns)[:300])
@@ -1050,7 +1061,7 @@ def case_a_child_behind_the_slot_bootstrap_is_recorded():
     _recorded_python(spawn, [harness_tests._RECORDER_DIR], plain, repo)
     # The sitecustomize the recorder shadows runs by design (a system Python ships one), so only the recorder's own counts.
     recorder = os.path.normcase(os.path.abspath(harness_tests._RECORDER_DIR))
-    opened = [e[1] for e in harness_tests._read_events(plain) if e[0] == "r" and e[1].endswith("sitecustomize.py")
+    opened = [e[1] for e in harness_tests._attempt._read_events(plain) if e[0] == "r" and e[1].endswith("sitecustomize.py")
               and os.path.normcase(os.path.dirname(os.path.abspath(e[1]))) == recorder]
     check("a spawn whose path starts with the recorder reads no sitecustomize", not opened, str(opened))
 
@@ -1081,6 +1092,26 @@ def case_a_node_proofs_reads_key_its_manifest():
           isinstance(manifest, dict) and manifest.get("static") == [], str(manifest))
 
 
+def case_an_mjs_proofs_reads_key_its_manifest():
+    """`node --test` runs an ESM proof through the same node runner, so an `.mjs` proof gets the recorder too:
+    its read keys the pass instead of leaving an `observed: False` row that reruns on every close."""
+    repo, proof, _counter = make_repo()
+    write(repo, ".claude/tools/data.txt", "x\n")
+    mjs = write(repo, ".claude/tests/tables_test.mjs",
+                "import fs from 'node:fs';\n"
+                "import path from 'node:path';\n"
+                "import test from 'node:test';\n"
+                "import { fileURLToPath } from 'node:url';\n"
+                "const here = path.dirname(fileURLToPath(import.meta.url));\n"
+                "test('reads', () => { fs.readFileSync(path.join(here, '..', 'tools', 'data.txt')); });\n")
+    sink = {}
+    status = harness_tests.run_proof(mjs, root=repo, reads_sink=sink)[0]
+    manifest = harness_tests._pass_cache(repo, [mjs]).manifest(mjs, sink) if sink.get("events") else None
+    check("a recorded mjs proof passes", status == "pass", status)
+    check("an mjs proof's read joins the observed files",
+          isinstance(manifest, dict) and ".claude/tools/data.txt" in manifest.get("files", []), str(manifest))
+
+
 def case_a_node_recorder_in_a_spaced_path_still_records():
     """--require <path> splits at a space; the path is quoted on both sides, so a checkout path with a space
     still starts node and the node child is recorded."""
@@ -1097,11 +1128,13 @@ def case_a_node_recorder_in_a_spaced_path_still_records():
                "cp.execFileSync('node', [path.join(tools, 'child.js'), path.join(tools, 'data.txt')]);\n")
     sink = {}
     saved = harness_tests._NODE_RECORDER
-    harness_tests._NODE_RECORDER = recorder
+    saved_attempt = harness_tests._attempt._NODE_RECORDER
+    harness_tests._NODE_RECORDER = harness_tests._attempt._NODE_RECORDER = recorder
     try:
         status = harness_tests.run_proof(js, root=repo, reads_sink=sink)[0]
     finally:
         harness_tests._NODE_RECORDER = saved
+        harness_tests._attempt._NODE_RECORDER = saved_attempt
     manifest = harness_tests._pass_cache(repo, [js]).manifest(js, sink) if sink.get("events") else None
     check("a JS proof passes with the recorder in a spaced path", status == "pass", status)
     check("the node child's read is still recorded",
@@ -1391,10 +1424,13 @@ def case_a_nested_runner_keeps_the_outer_recorder_on_its_child():
     outer pass, so an edit to it reruns the proof and an edit to anything else does not. A close runs the outer
     runner from one checkout and the proof's runner from its private checkout, so the two recorders sit in different
     folders: the outer runner here records from a copy."""
-    saved = (harness_tests._RECORDER_DIR, harness_tests._NODE_RECORDER)
+    saved = (harness_tests._RECORDER_DIR, harness_tests._NODE_RECORDER,
+             harness_tests._attempt._RECORDER_DIR, harness_tests._attempt._NODE_RECORDER)
     copy = os.path.join(tempfile.mkdtemp(prefix="harnesspassrecorder_"), "_read_recorder")
     shutil.copytree(saved[0], copy, ignore=shutil.ignore_patterns("__pycache__"))
     harness_tests._RECORDER_DIR, harness_tests._NODE_RECORDER = copy, os.path.join(copy, "node_recorder.js")
+    harness_tests._attempt._RECORDER_DIR = copy
+    harness_tests._attempt._NODE_RECORDER = os.path.join(copy, "node_recorder.js")
     try:
         for label, rel, reruns in (("a file the nested child read", ".claude/tools/gamma.py", True),
                                    ("a file it never read", ".claude/tools/unrelated.py", False)):
@@ -1411,7 +1447,8 @@ def case_a_nested_runner_keeps_the_outer_recorder_on_its_child():
                   % (label, "reruns" if reruns else "keeps"),
                   (before, after) == (1, 2 if reruns else 1), "runs %d -> %d" % (before, after))
     finally:
-        harness_tests._RECORDER_DIR, harness_tests._NODE_RECORDER = saved
+        (harness_tests._RECORDER_DIR, harness_tests._NODE_RECORDER,
+         harness_tests._attempt._RECORDER_DIR, harness_tests._attempt._NODE_RECORDER) = saved
 
 
 def case_a_manifest_names_the_first_event_behind_each_scope():
@@ -1442,7 +1479,8 @@ def case_a_manifest_names_the_first_event_behind_each_scope():
           and cache._combine(with_why) == cache._combine(without), "%s vs %s" % (with_why, without))
     merged = harness_tests._merge_manifests([plain, manifest])
     check("a merged manifest keeps the first manifest's cause per scope",
-          merged.get("why", {}).get("repo") == ["s", ["git", "log", "-1"]]
+          merged.get("why", {}).get("head") == ["s", ["git", "log", "-1"]]
+          and merged.get("why", {}).get("repo") == probe
           and merged["why"].get("opaque") == written, str(merged.get("why")))
     clean = cache.manifest(proof, {"events": [["r", proof]], "temp": None})
     check("a manifest with no scope and no opaque read names no cause", clean.get("why") == {}, str(clean))
@@ -1608,6 +1646,202 @@ def case_a_git_in_another_worktree_of_the_repository_is_never_reused():
     run(repo, [proof])
     check("a git run in a sibling worktree reruns: its state is not in this checkout's key", runs(counter) == 2,
           "runs=%d" % runs(counter))
+
+
+def sibling_worktree(repo, branch="sib"):
+    """A second worktree of `repo` on `branch`: its commits move one ref and nothing in `repo`."""
+    path = os.path.join(tempfile.mkdtemp(prefix="harnesspasssibling_"), "sib")
+    git(repo, "worktree", "add", "-q", "-b", branch, path)
+    return path
+
+
+def commit_during_run(sibling, marker, message="moved"):
+    """A thread that lands an empty commit in `sibling` once the check's proof has started (`marker` exists). A
+    proof writes the marker first, so the run's git snapshot is already taken when the ref moves."""
+    def commit():
+        for _ in range(500):
+            if os.path.exists(marker):
+                break
+            time.sleep(0.01)
+        subprocess.run(["git", "-C", sibling, "commit", "-q", "--allow-empty", "-m", message],
+                       check=True, capture_output=True)
+    thread = threading.Thread(target=commit, daemon=True)
+    thread.start()
+    return thread
+
+
+def case_a_commit_in_another_worktree_keeps_a_proof_that_reads_only_this_checkout():
+    """Proof reuse is the main lever on land time. A proof whose git prints only this checkout's HEAD cannot
+    observe another worktree's commit, so the key holds the git parts it can print and not every ref."""
+    repo, proof, counter = make_repo()
+    sibling = sibling_worktree(repo)
+    marker = os.path.join(tempfile.mkdtemp(prefix="harnesspassstarted_"), "started")
+    child_proof(repo, counter, "import time\nopen(%r, 'w').close()\n"
+                               "subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=%r, capture_output=True)\n"
+                               "time.sleep(1.0)\n" % (marker, repo))
+    thread = commit_during_run(sibling, marker)
+    run(repo, [proof])
+    thread.join()
+    first = _recorded_row(repo, proof)
+    run(repo, [proof])
+    check("a commit in another worktree during the run keeps the key of a proof that read only this checkout",
+          runs(counter) == 1 and bool(first.get("okey")),
+          "runs=%d okey=%s why=%r" % (runs(counter), bool(first.get("okey")), (first.get("why") or "")[:120]))
+
+
+def case_a_ref_the_proof_read_still_drops_its_key_when_another_worktree_moves_it():
+    """The other side of the split: a proof that printed a ref another worktree moves observed a state its row
+    cannot name, so its pass is not recorded under either side of the move."""
+    repo, proof, counter = make_repo()
+    sibling = sibling_worktree(repo, "sib")
+    marker = os.path.join(tempfile.mkdtemp(prefix="harnesspassstarted_"), "started")
+    child_proof(repo, counter, "import time\nopen(%r, 'w').close()\n"
+                               "subprocess.run(['git', 'rev-parse', 'sib'], cwd=%r, capture_output=True)\n"
+                               "time.sleep(1.0)\n" % (marker, repo))
+    thread = commit_during_run(sibling, marker)
+    run(repo, [proof])
+    thread.join()
+    first = _recorded_row(repo, proof)
+    run(repo, [proof])
+    check("a ref the proof read still drops its key when another worktree moves it",
+          runs(counter) == 2 and not first.get("okey"),
+          "runs=%d okey=%s" % (runs(counter), bool(first.get("okey"))))
+    check("the row names the part that moved", "refs" in (first.get("why") or ""), "why=%r" % (first.get("why") or ""))
+
+
+def case_a_commit_in_another_worktree_keeps_the_key_of_a_status_proof():
+    """`git status` prints the branch's upstream divergence, not other branches: a sibling worktree's commit moves
+    none of what it printed, so the key holds."""
+    repo, proof, counter = make_repo()
+    sibling = sibling_worktree(repo, "sib")
+    git_proof(repo, counter, [["status", "--porcelain"]])
+    before, after = reruns_once_after(repo, proof, counter, lambda: subprocess.run(
+        ["git", "-C", sibling, "commit", "-q", "--allow-empty", "-m", "moved"],
+        check=True, capture_output=True))
+    check("a commit in another worktree keeps the key of a status proof",
+          (before, after) == (1, 1), "runs %d -> %d" % (before, after))
+
+
+def case_a_moved_upstream_ref_still_drops_a_status_proofs_key():
+    """The other side: status prints the divergence from the ref the branch tracks (`branch.<name>.merge`), so that
+    ref's movement must rerun it even when HEAD does not move."""
+    repo, proof, counter = make_repo()
+    git(repo, "branch", "tracked_base")
+    git(repo, "branch", "--set-upstream-to=tracked_base")
+    git_proof(repo, counter, [["status", "--porcelain"]])
+
+    def move_upstream():
+        sha = subprocess.run(["git", "commit-tree", "HEAD^{tree}", "-m", "base moved"], cwd=repo,
+                             capture_output=True, text=True, check=True).stdout.strip()
+        git(repo, "branch", "-f", "tracked_base", sha)
+    before, after = reruns_once_after(repo, proof, counter, move_upstream)
+    check("a moved upstream ref reruns the status proof that printed its divergence",
+          (before, after) == (1, 2), "runs %d -> %d" % (before, after))
+
+
+def case_the_runners_own_state_under_the_git_dir_keys_its_bytes():
+    """The runner keeps its pass store and durations under the repository's git dir. That is the runner's state,
+    not git state: a commit elsewhere moves no byte of it, and an edit to it reruns the proof that read it."""
+    repo, proof, counter = make_repo()
+    shared = write(repo, ".git/harness/fixture_state.json", '{"v": 1}\n')
+    write(repo, ".claude/tests/test_alpha.py", proof_text(
+        counter, 0, "open(%r, encoding='utf-8').read()\n" % shared))
+    commit_all(repo, "proof reads the runner's state")
+    run(repo, [proof])
+    run(repo, [proof])
+    check("a proof that reads the runner's state under the git dir is reused while the bytes hold",
+          runs(counter) == 1, "runs=%d" % runs(counter))
+    git(repo, "branch", "side")
+    run(repo, [proof])
+    check("a new ref does not move the key of a proof that read only the runner's state",
+          runs(counter) == 1, "runs=%d" % runs(counter))
+    write(repo, ".git/harness/fixture_state.json", '{"v": 2}\n')
+    run(repo, [proof])
+    check("an edit to the runner's state the proof read reruns it", runs(counter) == 2, "runs=%d" % runs(counter))
+
+
+def case_the_runners_own_state_read_from_a_linked_worktree_keys_its_bytes():
+    """A linked worktree's git dir lies outside the checkout, where every touch used to be repository state. The
+    runner's own folder there is its state: a new ref moves no byte of it."""
+    repo, proof, counter = make_repo()
+    shared = write(repo, ".git/harness/fixture_state.json", '{"v": 1}\n')
+    write(repo, ".claude/tests/test_alpha.py", proof_text(
+        counter, 0, "open(%r, encoding='utf-8').read()\n" % shared))
+    commit_all(repo, "proof reads the runner's state")
+    twin = sibling_worktree(repo, "twin")
+    twin_proof = os.path.join(twin, ".claude", "tests", "test_alpha.py")
+    run(twin, [twin_proof])
+    run(twin, [twin_proof])
+    check("a linked worktree reuses a pass over the runner's state while the bytes hold",
+          runs(counter) == 1, "runs=%d" % runs(counter))
+    git(repo, "branch", "side")
+    run(twin, [twin_proof])
+    check("a new ref does not move a linked worktree's key over the runner's state",
+          runs(counter) == 1, "runs=%d" % runs(counter))
+
+
+def case_a_global_config_read_keys_no_repository_state():
+    """`git config --global` in the checkout reads the user's config, which a proof cannot see (its environment
+    pins GIT_CONFIG_GLOBAL to the null device). The repository's config is not a state it observed."""
+    repo, proof, counter = make_repo()
+    child_proof(repo, counter, "subprocess.run(['git', 'config', '--global', '--list'], cwd=%r, "
+                               "capture_output=True)\n" % repo)
+    before, after = reruns_once_after(repo, proof, counter, lambda: git(repo, "config", "demo.key", "v"))
+    check("a proof that read only the global config keeps its key when the repository config changes",
+          (before, after) == (1, 1), "runs %d -> %d" % (before, after))
+
+
+def case_a_worktree_config_edit_reruns_a_config_reader():
+    """With `extensions.worktreeConfig`, a proof's `git config --list` reads the repository's config and the
+    worktree's own; the key must hold the same two files a proof reads."""
+    repo, proof, counter = make_repo()
+    git(repo, "config", "extensions.worktreeConfig", "true")
+    git_proof(repo, counter, [["config", "--list"]])
+    before, after = reruns_once_after(repo, proof, counter, lambda: subprocess.run(
+        ["git", "config", "--worktree", "demo.wt", "v"], cwd=repo, check=True, capture_output=True))
+    check("a proof that read the config reruns when the worktree config changes",
+          (before, after) == (1, 2), "runs %d -> %d" % (before, after))
+
+
+def case_git_that_lists_untracked_names_keys_the_names_not_the_whole_state():
+    """`ls-files -o --exclude-standard` prints the untracked names; it cannot print a ref or a commit. A commit
+    in another worktree moves neither the tracked names nor the untracked ones, and a new untracked file does."""
+    repo, proof, counter = make_repo()
+    sibling = sibling_worktree(repo, "sib")
+    git_proof(repo, counter, [["ls-files", "-zo", "--exclude-standard", "--", ".claude"]])
+    outside = tempfile.mkdtemp(prefix="harnesspassout_")
+    harness_tests.STAMP_PATH = os.path.join(outside, "stamp.json")
+    env = {"HARNESS_SLOT_DIR": os.path.join(outside, "slots")}
+    run(repo, [proof], env)
+    run(repo, [proof], env)
+    before = runs(counter)
+    subprocess.run(["git", "-C", sibling, "commit", "-q", "--allow-empty", "-m", "moved"],
+                   check=True, capture_output=True)
+    run(repo, [proof], env)
+    check("a commit in another worktree keeps the pass of a proof that listed untracked names",
+          (before, runs(counter)) == (1, 1), "runs %d -> %d" % (before, runs(counter)))
+    write(repo, ".claude/tools/fresh.py", "F = 1\n")
+    run(repo, [proof], env)
+    check("a new untracked file the proof listed reruns it", runs(counter) == 2, "runs=%d" % runs(counter))
+
+
+def case_a_git_text_merge_on_temp_files_reads_no_checkout_state():
+    """`git merge-file` merges the three files its arguments name; run on files under the temp root it reads nothing
+    of the checkout, so a commit must keep the pass."""
+    repo, proof, counter = make_repo()
+    elsewhere = tempfile.mkdtemp(prefix="harnesspassmerge_")
+    ours = write(elsewhere, "ours.txt", "a\nb\n")
+    base = write(elsewhere, "base.txt", "a\n")
+    theirs = write(elsewhere, "theirs.txt", "a\nc\n")
+    child_proof(repo, counter, "subprocess.run(['git', 'merge-file', '-p', %r, %r, %r], cwd=%r, "
+                               "capture_output=True)\n" % (ours, base, theirs, repo))
+
+    def commit():
+        write(repo, ".claude/tools/gamma.py", "G = 9\n")
+        commit_all(repo, "edit an unread file", [".claude/tools/gamma.py"])
+    before, after = reruns_once_after(repo, proof, counter, commit)
+    check("a commit keeps the pass of a proof that merged files under the temp root",
+          (before, after) == (1, 1), "runs %d -> %d" % (before, after))
 
 
 def case_a_git_read_of_a_full_object_id_is_keyed_by_the_object_not_the_worktree():
@@ -1835,6 +2069,116 @@ def case_a_miss_names_the_input_files_that_moved():
           line)
 
 
+def case_a_lookup_matches_once():
+    """A reuse check asks the row matcher once: the receipts travel with the match, so a hit is not looked up
+    twice. The pass cache's `hit` and `observations` each called `_matched` on HEAD."""
+    repo, proof, _counter = make_repo()
+    parent, saved = with_private_store()
+    try:
+        from _proof_runner import evidence
+        cache = harness_tests._PassCache(repo)
+        cache.record(proof, key="k")
+        calls, real = [], cache._matched
+        cache._matched = lambda p, k: (calls.append(p), real(p, k))[1]
+        hit = evidence.lookup(cache, proof, "k")
+        after_hit = len(calls)
+        missed = evidence.lookup(cache, proof, "other")
+        check("a lookup answers a Hit carrying the receipts from one match",
+              isinstance(hit, evidence.Hit) and hit.receipts == () and after_hit == 1,
+              "%r, %d match(es)" % (hit, after_hit))
+        check("a lookup that misses is a typed Miss naming the part, still from one match",
+              isinstance(missed, evidence.Miss) and missed.reasons == ("static",) and len(calls) == after_hit + 1,
+              "%r, %d match(es)" % (missed, len(calls) - after_hit))
+    finally:
+        harness_tests.PASSES_PATH = saved
+
+
+def case_a_miss_is_typed_with_its_reason():
+    """Every way a recorded pass stops holding is a typed Miss naming why: a read file moves, a listed
+    directory gains an entry, and a run whose recorder never loaded leaves no reusable pass. None is a stale
+    hit."""
+    repo, proof, counter = make_repo()
+    folder = os.path.join(repo, ".claude", "tools")
+    parent, saved = with_private_store()
+    try:
+        from _proof_runner import evidence
+        write(repo, ".claude/tests/test_alpha.py", proof_text(counter, 0, "os.listdir(%r)\n" % folder))
+        commit_all(repo, "proof reads the tools folder")
+        run(repo, [proof])
+        cache = harness_tests._PassCache(repo)
+        key = cache.key(proof)
+        held = evidence.lookup(cache, proof, key)
+        write(repo, ".claude/tools/table.json", '{"moved": 1}\n')
+        moved = evidence.lookup(harness_tests._PassCache(repo), proof, key)
+        check("a moved read is a typed Miss naming the files part",
+              isinstance(held, evidence.Hit) and isinstance(moved, evidence.Miss) and "files" in moved.reasons,
+              "%r -> %r" % (held, moved))
+        write(repo, ".claude/tools/new_entry.txt", "x\n")
+        listed = evidence.lookup(harness_tests._PassCache(repo), proof, key)
+        check("a listed directory that gained an entry names the dirs part",
+              isinstance(listed, evidence.Miss) and "dirs" in listed.reasons, repr(listed))
+        cache = harness_tests._PassCache(repo)
+        cache.record(proof, key="unobserved", observable=True)
+        blind = evidence.lookup(cache, proof, "unobserved")
+        check("a run whose recorder never loaded is a typed Miss, never a stale hit",
+              isinstance(blind, evidence.Miss) and blind.reasons == ("unobserved",), repr(blind))
+    finally:
+        harness_tests.PASSES_PATH = saved
+
+
+def _store_rows(store, limit=40):
+    """The rows `store` already held, read as text: a row written by this checkout's earlier codec."""
+    rows = []
+    try:
+        names = sorted(os.listdir(store))[:limit]
+    except OSError:
+        return rows
+    for name in names:
+        try:
+            with open(os.path.join(store, name), encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        for entry in (doc.values() if isinstance(doc, dict) else []):
+            for row in (entry if isinstance(entry, list) else [entry]):
+                if isinstance(row, dict) and isinstance(row.get("zm"), str):
+                    rows.append(row)
+    return rows
+
+
+def case_whole_and_case_rows_round_trip_through_one_codec():
+    """One codec packs and decodes both a whole-run row and a case row, and a row the shared store already
+    held (written by HEAD's codec) still decodes and re-packs to its bytes."""
+    real_rows = _store_rows(harness_tests.pass_store_dir())
+    repo, proof, _counter = make_repo()
+    parent, saved = with_private_store()
+    try:
+        from _proof_runner import evidence
+        manifest = {"files": [".claude/tools/beta.py"], "probes": [], "dirs": [], "static": [], "git": False,
+                    "opaque": False}
+        cache = harness_tests._PassCache(repo)
+        cache.record(proof, key="k", manifest=manifest,
+                     observations=[{"proof": "p", "caseId": "c", "inputKey": "i", "status": "pass"}])
+        cache.record_cases(proof, {"one": manifest})
+        rel = os.path.relpath(proof, repo).replace(os.sep, "/")
+        with open(store_file(rel), encoding="utf-8") as fh:
+            row = json.load(fh)[rel][0]
+        hit = evidence.lookup(cache, proof, "k")
+        cases = evidence.lookup_cases(cache, proof)
+        decoded = evidence.unpack_manifest(row)
+        check("a whole row and a case row decode through the one codec",
+              isinstance(decoded, dict) and decoded.get("files") == manifest["files"]
+              and isinstance(hit, evidence.Hit) and hit.receipts == ({"proof": "p", "caseId": "c",
+                                                                     "inputKey": "i", "status": "pass"},)
+              and isinstance(cases, evidence.CaseReuse) and sorted(cases.held) == ["one"],
+              "row=%r hit=%r cases=%r" % (decoded, hit, cases))
+        check("a stored row re-packs to its bytes through the codec",
+              all(evidence.pack_manifest(evidence.unpack_manifest(r)) == r["zm"] for r in real_rows),
+              "%d stored rows" % len(real_rows))
+    finally:
+        harness_tests.PASSES_PATH = saved
+
+
 def case_qualified_and_relative_imports_join_the_reach():
     repo, proof, counter = make_repo()
     write(repo, ".claude/tools/alpha.py", "import beta\nfrom pkg.sub import X\nfrom zeta.zorn import Z\nTABLE = 'table.json'\n")
@@ -2006,7 +2350,7 @@ def case_an_unusable_slot_store_is_reported_not_waited_on():
 
 def case_a_corpus_scanning_proof_is_keyed_by_the_corpus_it_scans():
     """A proof that lists a tracked directory reads files its text never names; the key covers them."""
-    table = getattr(harness_tests, "_CORPUS_SCANNING", {})
+    table = harness_tests._catalog.CORPUS
     check("the corpus-scanning table names the proofs that read a whole directory",
           {"test_claudemd_citations.py", "test_guard_text.py"} <= set(table),
           "table=%s" % sorted(table))
@@ -2030,17 +2374,17 @@ def case_a_dir_scanning_proof_is_reused_only_with_a_corpus_entry():
     """test_hook_state.py is selected by every scoped run and lists .claude/hooks; keyed over that corpus it
     is reused while the hooks are unchanged, and a dir-scanning proof with no corpus entry is never reused."""
     check("test_hook_state.py is keyed over the hooks directory it lists",
-          getattr(harness_tests, "_CORPUS_SCANNING", {}).get("test_hook_state.py") == (".claude/hooks",),
-          "table=%s" % sorted(getattr(harness_tests, "_CORPUS_SCANNING", {})))
+          harness_tests._catalog.CORPUS.get("test_hook_state.py") == (".claude/hooks",),
+          "table=%s" % sorted(harness_tests._catalog.CORPUS))
     repo, keyed, counter = make_repo()
     bare = write(repo, ".claude/tests/test_bare.py", proof_text(counter, 0))
     scanner = write(repo, ".claude/tests/test_scanner.py",
                     proof_text(counter, 0, walk_text(os.path.join(repo, ".claude", "hooks"))))
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "scanners")
-    saved = (harness_tests._DIR_SCANNING, dict(harness_tests._CORPUS_SCANNING))
-    harness_tests._DIR_SCANNING = ("test_bare.py", "test_scanner.py")
-    harness_tests._CORPUS_SCANNING["test_scanner.py"] = (".claude/hooks",)
+    saved = (harness_tests._catalog.ALWAYS, dict(harness_tests._catalog.CORPUS))
+    harness_tests._catalog.ALWAYS = ("test_bare.py", "test_scanner.py")
+    harness_tests._catalog.CORPUS["test_scanner.py"] = (".claude/hooks",)
     try:
         write(repo, ".claude/hooks/member.py", "M = 1\n")
         run(repo, [scanner])
@@ -2057,7 +2401,7 @@ def case_a_dir_scanning_proof_is_reused_only_with_a_corpus_entry():
         check("a dir-scanning proof with no corpus entry is never reused",
               runs(counter) == before + 2, "runs %d -> %d" % (before, runs(counter)))
     finally:
-        harness_tests._DIR_SCANNING, harness_tests._CORPUS_SCANNING = saved[0], saved[1]
+        harness_tests._catalog.ALWAYS, harness_tests._catalog.CORPUS = saved[0], saved[1]
 
 
 def case_a_head_comparison_takes_a_slot_and_honours_the_deadline():
@@ -2186,6 +2530,76 @@ def case_the_pool_width_defaults_to_the_machines_recorded_slots():
           "not the hard-coded 4 every recorded close ran at",
           adopted == 5, "pool width %r" % adopted)
     check("an explicit HARNESS_TEST_JOBS still wins", explicit == 3, "pool width %r" % explicit)
+
+
+def _recorded_row(repo, proof):
+    return (harness_tests._pass_cache(repo, [proof]).variants(os.path.join(repo, ".claude/tests/test_alpha.py")) or [{}])[0]
+
+
+def case_a_zero_event_pass_keeps_the_evidence_that_names_it():
+    """The close's 92 permanently rerun passes: an observable run whose recorder never loaded records no
+    observed key, and the row must carry why it did not, so the next close names the trigger instead of
+    rerunning the proof forever in silence."""
+    repo, proof, counter = make_repo()
+    broken = os.path.join(repo, ".claude", "bad_recorder")
+    write(repo, ".claude/bad_recorder/sitecustomize.py", "raise ImportError('planted recorder fault')\n")
+    saved = harness_tests._RECORDER_DIR, harness_tests._attempt._RECORDER_DIR
+    harness_tests._RECORDER_DIR = harness_tests._attempt._RECORDER_DIR = broken
+    out = io.StringIO()
+    saved_env = dict(os.environ)
+    try:
+        os.environ.update({"PYTHONPATH": "", "HARNESS_READ_LOG": "", "HARNESS_READ_RECORDER": ""})
+        os.environ.setdefault("HARNESS_SLOT_DIR", os.path.join(repo, "slots"))
+        with redirect_stdout(out):
+            harness_tests._run_selected([proof], False, {}, None,
+                                        harness_tests.RunOptions(harness_tests._pass_cache(repo, [proof])))
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
+        harness_tests._RECORDER_DIR, harness_tests._attempt._RECORDER_DIR = saved
+    row = _recorded_row(repo, proof)
+    why = row.get("why") or ""
+    check("a zero-event pass records why it kept no observed key",
+          bool(why) and not row.get("observed"), "row=%r" % row)
+    check("the kept reason names the recorder fault the child printed",
+          "sitecustomize" in why and "planted recorder fault" in why, "why=%r" % why[:300])
+    check("the close log names the unobserved proof",
+          "UNOBSERVED test_alpha.py" in out.getvalue(),
+          out.getvalue()[-400:])
+
+
+def case_a_recorder_beacon_is_not_an_event():
+    """A beacon file says the recorder loaded; a run that keeps zero events can then be told apart from one
+    whose recorder never started. It is a marker, never a read event."""
+    log = tempfile.mkdtemp(prefix="harnessbeacon_")
+    write(log, "123.beacon", '{"recorder": "python"}\n')
+    write(log, "456.jsonl", '["r", "C:/x/y.py"]\n')
+    events = harness_tests._attempt._read_events(log)
+    check("a recorder beacon is not a read event", events == [["r", "C:/x/y.py"]], repr(events))
+    check("the launcher counts beacons apart from event files",
+          harness_tests._attempt._log_files(log, ".beacon") == 1
+          and harness_tests._attempt._log_files(log, ".jsonl") == 1)
+
+
+def case_a_manifest_fault_is_named_in_the_row():
+    """The other cause of a permanently rerun pass: the recorder worked, but building the manifest raised.
+    The row keeps the fault, so a swallowed exception is never an anonymous rerun."""
+    repo, proof, counter = make_repo()
+    saved = harness_tests._PassCache.manifest
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("planted manifest fault")
+
+    harness_tests._PassCache.manifest = boom
+    try:
+        run(repo, [proof])
+    finally:
+        harness_tests._PassCache.manifest = saved
+    row = _recorded_row(repo, proof)
+    why = row.get("why") or ""
+    check("a manifest fault is kept in the row",
+          bool(why) and "RuntimeError: planted manifest fault" in why and not row.get("observed"),
+          "row=%r" % row)
 
 
 class PoolCase:

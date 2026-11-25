@@ -179,7 +179,7 @@ def later_round_case():
     if proc.returncode != 0:
         return
     reads = f.must_read()
-    diffs = [p for p in reads if p.startswith(".claude/scratch/run/out/")]
+    diffs = [p for p in reads if p.startswith(".claude/scratch/run/out/delta/")]
     check("later round: the whole plan is not a must-read", SUBJECT not in reads, reads)
     check("later round: the seat must-reads the citer of the changed plan", CITER in reads, reads)
     check("later round: the seat must-reads one change file in its run dir", len(diffs) == 1, reads)
@@ -237,7 +237,75 @@ def explicit_must_read_case():
               f.must_read())
 
 
-CASES = (later_round_case, first_round_case, uncovered_mandate_case, ignore_ledger_case, explicit_must_read_case)
+def seat_reads(f, mandate):
+    """One prepared seat's must-read paths, found by the mandate it carries."""
+    for agent in json.loads((f.out / "args.json").read_text(encoding="utf-8"))["agents"]:
+        if mandate in (agent.get("mandates") or []):
+            reads = []
+            for entry in agent["mustRead"]:
+                path = Path(entry["path"])
+                reads.append(path.resolve().relative_to(f.root).as_posix() if path.is_absolute() else path.as_posix())
+            return reads
+    return None
+
+
+def one_diff_per_pair_case():
+    """Two seats over one changed pair materialize one diff and one artifact, and the artifact records the pair."""
+    f = Fixture()
+    f.record(MANDATE)
+    f.record(MANDATE_B)
+    f.write(SUBJECT, PLAN_V2)
+    roster = [{"key": MANDATE, "effort": EFFORT}, {"key": MANDATE_B, "effort": EFFORT}]
+    proc = f.prepare(MANDATE, roster=roster)
+    check("one diff: prepare exits 0", proc.returncode == 0, detail(proc))
+    if proc.returncode != 0:
+        return
+    diffs = sorted((f.out / "delta").glob("*.diff")) if (f.out / "delta").is_dir() else []
+    check("one diff: the pair materializes one diff for both seats", len(diffs) == 1, [p.name for p in diffs])
+    artifact = f.out / "delta.json"
+    check("one diff: prepare writes the delta artifact", artifact.is_file())
+    for mandate in (MANDATE, MANDATE_B):
+        reads = seat_reads(f, mandate) or []
+        check("one diff: seat %s must-reads the shared diff" % mandate,
+              any(path.startswith(".claude/scratch/run/out/delta/") for path in reads), reads)
+    if not artifact.is_file():
+        return
+    data = json.loads(artifact.read_text(encoding="utf-8"))
+    hunks = data.get(SUBJECT, {}).get("hunks") or []
+    recorded = subprocess.run(
+        [sys.executable, str(TOOLS / "review_ledger.py"), "record", "--stage", "plan-check",
+         "--subject", "plan:" + SUBJECT, "--inline", "proof", "--mandate", MANDATE, "--outcome", "clean",
+         "--delta", str(artifact), "--accounted", *[hunk["id"] for hunk in hunks]],
+        capture_output=True, text=True, encoding="utf-8", cwd=str(f.root), env=f.env, timeout=180)
+    check("one diff: the artifact records a delta row", recorded.returncode == 0, recorded.stderr[-400:])
+    ledger = f.root / ".claude" / "logs" / "review_ledger.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()] \
+        if ledger.is_file() else []
+    delta_rows = [row for row in rows if row.get("delta")]
+    check("one diff: the row stores base and accounted hunks",
+          bool(delta_rows) and delta_rows[-1]["delta"][SUBJECT]["base"] == data[SUBJECT]["base"]
+          and delta_rows[-1]["from"] == {SUBJECT: data[SUBJECT]["base"]},
+          delta_rows[-1:] or rows[-1:])
+
+
+def mixed_seats_case():
+    """A seat with a base reads the delta; a seat whose mandate was never covered reads the whole plan."""
+    f = Fixture()
+    f.record(MANDATE)
+    f.write(SUBJECT, PLAN_V2)
+    roster = [{"key": MANDATE, "effort": EFFORT}, {"key": MANDATE_B, "effort": EFFORT}]
+    proc = f.prepare(MANDATE, roster=roster)
+    check("mixed seats: prepare exits 0", proc.returncode == 0, detail(proc))
+    if proc.returncode != 0:
+        return
+    covered = seat_reads(f, MANDATE) or []
+    check("mixed seats: the covered mandate reads the delta", SUBJECT not in covered and len(covered) > 1, covered)
+    fresh = seat_reads(f, MANDATE_B) or []
+    check("mixed seats: the never-covered mandate reads the whole plan", fresh == [SUBJECT], fresh)
+
+
+CASES = (later_round_case, first_round_case, uncovered_mandate_case, ignore_ledger_case, explicit_must_read_case,
+         one_diff_per_pair_case, mixed_seats_case)
 
 
 def main():
