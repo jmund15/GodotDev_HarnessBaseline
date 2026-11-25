@@ -65,6 +65,7 @@
       "disclosure": "full",
       "guard": "gate",
       "agentType": "lane-gate",
+      "cacheTtl": "1h",
       "tier": "fanout",
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]

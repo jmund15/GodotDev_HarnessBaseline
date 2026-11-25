@@ -456,7 +456,7 @@ def add_git_config(env, pairs):
     env["GIT_CONFIG_COUNT"] = str(count)
 
 
-def proof_env(temp_root, timeout, root=None, reuse_cases=None):
+def proof_env(temp_root, timeout, root=None, reuse_cases=None, *, pytest_lane=False):
     """The environment a proof runs in: the caller's, with the local git state (a private index, `GIT_DIR`) and the
     caller's run and identity variables removed, every temp and home variable pointed into `temp_root` (the folder
     the caller made and removes), no global or system git config, and the `CLAUDE_*` variables a clean runner has.
@@ -485,9 +485,17 @@ def proof_env(temp_root, timeout, root=None, reuse_cases=None):
     env.update({name: temp_root for name in _TEMP_ENV})
     if "PATH" in env:
         env["PATH"] = _land_path(env["PATH"])
+    sandbox_slots = os.path.join(temp_root, "slots")
+    env["HARNESS_SLOT_DIR"] = sandbox_slots
+    # A lane is loaned to the proof: the code it exercises (RuntimeSlots.ps1, a case pool) takes none of its own.
     env["HARNESS_SLOT_BUDGET"] = "1"
-    env.setdefault("HARNESS_MACHINE_ROOT", _slot_root())
-    env["HARNESS_SLOT_DIR"] = os.path.join(temp_root, "slots")
+    if pytest_lane:
+        # A pytest run holds no lane at all (`machine_slots.py run` passes it through), so the loan is empty and a case
+        # pool borrows extras from a private folder, never from the live pool, whatever the caller's shell held.
+        env["HARNESS_MACHINE_ROOT"] = sandbox_slots
+        env.pop("HARNESS_LANE_CORES", None)
+    else:
+        env.setdefault("HARNESS_MACHINE_ROOT", _slot_root())
     for name in _CALLER_RUN_ENV:
         env.pop(name, None)
     for name in _CALLER_IDENTITY_ENV:
@@ -516,7 +524,7 @@ def proof_env(temp_root, timeout, root=None, reuse_cases=None):
 
 
 def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sink=None, reads_sink=None,
-              reuse_cases=None, stretch=None, typed=False):
+              reuse_cases=None, stretch=None, typed=False, pytest_lane=False):
     """(status, seconds, detail) — status is "pass", "cannot-run", "platform-skip" or "fail"; `typed=True`
     returns the same answer as an `AttemptResult` carrying the runner's own timeout as a field.
 
@@ -545,7 +553,7 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
     temp_root = tempfile.mkdtemp(prefix="harness_proof_")
-    env = proof_env(temp_root, timeout, root, reuse_cases)
+    env = proof_env(temp_root, timeout, root, reuse_cases, pytest_lane=pytest_lane)
     log_dir = None
     if reads_sink is not None and path.endswith(RECORDABLE):
         log_dir, recorder = _nested_log(temp_root)

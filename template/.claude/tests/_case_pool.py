@@ -11,8 +11,9 @@ not depend on each other's order or leftovers, and must not assert wall-clock de
 `run_sections` is the same for a proof whose cases share one script's setup: the proof re-runs itself once
 per section (`--section K`), each child ends with `emit_section(cases)`, and the parent merges the results.
 
-`HARNESS_CASE_JOBS` requests a width (default 4; the runner requests 2). The pool
-uses its parent's lane and borrows free machine slots, or takes a base lane when run directly.
+`HARNESS_CASE_JOBS` requests a width (default 4; proof environments request 2). The pool uses its parent's lane and
+borrows free machine slots, or takes a base lane when run directly; under pytest the proof environment points the
+pool at a private folder that is never full, so the width is the request.
 
 Under the harness runner's read recorder, each `run_cases` case logs its reads to its own folder (`case_log_dir`),
 so the runner records a pass per case and later skips a case whose recorded pass still holds

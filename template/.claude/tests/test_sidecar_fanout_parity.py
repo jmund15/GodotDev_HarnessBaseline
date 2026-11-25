@@ -55,6 +55,7 @@ with open(FAKE, "w", encoding="utf-8", newline="\n") as fh:
         "\"{\\\"type\\\":\\\"result\\\",\\\"subtype\\\":\\\"success\\\",\\\"result\\\":\\\"deliverable of $label\\\\nsecond line\\\"}\" > \"${record}.out\"\n"
         "fi\n"
         "echo \"${SIDECAR_FULL_WINDOW:-}\" > \"${record}.fw\"\n"
+        "echo \"${SIDECAR_CACHE_TTL:-}\" > \"${record}.ttl\"\n"
         "echo 0 > \"${record}.exit\"\n"
     )
 
@@ -213,6 +214,24 @@ case("a job with window full launches with SIDECAR_FULL_WINDOW=1; the default jo
 case("a window value other than full is refused before launch",
      lambda: refuses({"label": "fw3", "alias": "fakem", "effort": "high", "kind": "scout", "promptFile": PROMPT, "window": "huge"},
                      "`window`"))
+
+_ttl_code, _ttl_out = run_main({"jobs": [
+    {"label": "ct1", "alias": "fakem", "effort": "high", "kind": "author", "promptFile": PROMPT, "cacheTtl": "1h"},
+    {"label": "ct2", "alias": "fakem", "effort": "high", "kind": "author", "promptFile": PROMPT2}]}, "cachettl", "--max-parallel", "1")
+
+
+def _ttl(label):
+    try:
+        return open(os.path.join(_ttl_out, label + ".record.json.ttl"), encoding="utf-8").read().strip()
+    except OSError:
+        return None
+
+
+case("an author job with cacheTtl 1h launches with SIDECAR_CACHE_TTL=1h; a job without the field leaves it to the launcher",
+     lambda: _ttl_code == 0 and _ttl("ct1") == "1h" and _ttl("ct2") == "")
+case("a cacheTtl other than 5m or 1h is refused before launch",
+     lambda: refuses({"label": "ct3", "alias": "fakem", "effort": "high", "kind": "author", "promptFile": PROMPT, "cacheTtl": "2h"},
+                     "`cacheTtl`"))
 
 
 def main():

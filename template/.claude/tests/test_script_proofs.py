@@ -221,7 +221,7 @@ def test_the_conftest_appends_to_the_callers_git_config(tmp_path):
 
 def test_a_native_case_that_hangs_ends_the_run_at_its_files_cap(tmp_path):
     """A pytest file ran under `run_proof`'s timeout; collected in process, a hang has no one to end it. The case gets
-    its file's `proof_timeouts` cap (default 300 s) and a hang names the case and ends the process, which under xdist is
+    its file's `proof_timeouts` cap (default 120 s) and a hang names the case and ends the process, which under xdist is
     one worker that the controller reports as crashed."""
     hang = "import time\n\n\ndef test_hangs():\n    time.sleep(30)\n"
     tests = plant(tmp_path, {"test_hang.py": hang}, {"proof_timeouts": {"test_hang.py": 2}})
@@ -231,6 +231,41 @@ def test_a_native_case_that_hangs_ends_the_run_at_its_files_cap(tmp_path):
         code, out = run_pytest(tests, *args)
         assert code != 0 and named in out, out
         assert time.monotonic() - started < 25, out
+
+
+def test_a_quarantined_proof_still_runs_and_reports_but_its_failure_is_no_red(tmp_path):
+    """`proof_quarantine` names a seen-flaky proof and its cause: it runs as xfail(strict=False), so a failure passes the
+    run and shows as xfailed with the cause, and a proof beside it still fails the run."""
+    native = "def test_a():\n    assert False\n"
+    quarantine = {"proof_quarantine": {"test_flaky.py": "races its own fixture", "test_native.py": "order dependent"}}
+    tests = plant(tmp_path / "quarantined", {"test_flaky.py": SCRIPT_BAD, "test_native.py": native}, quarantine)
+    code, out = run_pytest(tests, "-p", "no:xdist")
+    assert "test_flaky.py::proof XFAIL" in out and "quarantined: races its own fixture" in out, out
+    assert "test_native.py::test_a XFAIL" in out and code == 0, out
+    tests = plant(tmp_path / "beside", {"test_flaky.py": SCRIPT_BAD, "test_steady.py": SCRIPT_BAD}, quarantine)
+    code, out = run_pytest(tests, "-p", "no:xdist")
+    assert "test_steady.py::proof FAILED" in out and code == 1, out
+
+
+def test_a_proof_with_a_longer_bound_starts_before_the_short_ones(tmp_path):
+    """Under `-n` the workers take cases in collection order, so a long proof collected late (`test_r...`) sets the run's
+    tail. The `proof_timeouts` rows name the long proofs, so their order is the start order: longest bound first."""
+    tests = plant(tmp_path, {"test_a_short.py": SCRIPT_OK, "test_b_short.py": SCRIPT_OK, "test_z_long.py": SCRIPT_OK,
+                             "test_m_longer.py": SCRIPT_OK},
+                  {"proof_timeouts": {"test_z_long.py": 300, "test_m_longer.py": 600}})
+    code, out = run_pytest(tests, "-p", "no:xdist", "--collect-only", "-q")
+    order = re.findall(r"<ProofFile (test_\w+\.py)>", out)
+    assert code == 0 and order == ["test_m_longer.py", "test_z_long.py", "test_a_short.py", "test_b_short.py"], out
+
+
+def test_a_script_proof_that_outruns_its_bound_is_a_named_red(tmp_path):
+    """The bound is the file's `proof_timeouts` entry, else 120 s; the red names the proof and the expiry."""
+    slow = "import time\n\nif __name__ == '__main__':\n    time.sleep(30)\n"
+    tests = plant(tmp_path, {"test_slow.py": slow}, {"proof_timeouts": {"test_slow.py": 2}})
+    started = time.monotonic()
+    code, out = run_pytest(tests, "-p", "no:xdist")
+    assert code == 1 and "test_slow.py: fail" in out and re.search(r"TIMEOUT after [23]s", out), out
+    assert time.monotonic() - started < 25, out
 
 
 MARK = "open(os.path.join(os.environ['PLANT_MARKS'], %r), 'a').write('x\\n')"
@@ -311,6 +346,44 @@ def test_a_part_file_run_directly_shards_its_main_under_the_bridge_conftest(tmp_
                           errors="replace", cwd=str(tests), env=env, timeout=240)
     out = done.stdout + done.stderr
     assert done.returncode == 0 and "names no case" not in out and "1 cases in 1 shards" in out, out
+
+
+def test_pytest_proofs_take_no_lane_and_never_borrow_the_live_pool(tmp_path):
+    # A malformed pool path makes any attempt to take or borrow a lane observable without taking a live lane.
+    blocker = tmp_path / "not-a-pool"
+    blocker.write_text("not a directory")
+    check = """
+import os
+from _case_pool import _budget
+
+def check():
+    # A pytest run holds no lane and the code a proof exercises must take none (RuntimeSlots.ps1 queues for one when the
+    # budget is not '1'), so the proof's environment says a lane is loaned, whatever the caller held.
+    assert os.environ['HARNESS_SLOT_BUDGET'] == '1'
+    assert 'HARNESS_LANE_CORES' not in os.environ
+    assert os.environ['HARNESS_MACHINE_ROOT'] != os.environ['PLANT_LIVE_POOL']
+    with _budget(2) as width:
+        assert width == 2
+
+"""
+    tests = plant(tmp_path, {"test_native.py": check + "def test_slots():\n    check()\n",
+                            "test_script.py": check + "if __name__ == '__main__':\n    check()\n"})
+    shutil.copy(HERE / "_case_pool.py", tests / "_case_pool.py")
+    code, out = run_pytest(tests, "-p", "no:xdist", env={
+        "HARNESS_MACHINE_ROOT": str(blocker), "HARNESS_SLOT_DIR": str(blocker),
+        "HARNESS_SLOT_BUDGET": None, "HARNESS_LANE_CORES": "1", "PLANT_LIVE_POOL": str(blocker),
+    })
+    assert code == 0 and "2 passed" in out, out
+
+
+def test_pytest_default_bound_uses_the_120_second_proof_limit(bridge):
+    assert bridge._timeout(Path("test_no_override.py")) == 120
+
+
+def test_serial_pass_rejects_xdist_instead_of_reporting_an_empty_green(tmp_path):
+    tests = plant(tmp_path, {"test_alone.py": SCRIPT_OK}, {"proof_serial": {"test_alone.py": "exclusive fixture"}})
+    code, out = run_pytest(tests, "-n", "2", "--harness-serial")
+    assert code == pytest.ExitCode.USAGE_ERROR and "--harness-serial" in out, out
 
 
 def test_a_proof_never_waits_on_this_machines_free_memory(tmp_path):

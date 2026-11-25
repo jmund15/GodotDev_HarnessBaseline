@@ -26,8 +26,8 @@ a caller should use depends on whether a backgrounded job wakes it:
    run's END line (or ROSTER DONE/HALT) in one bench roster or run log is rewritten to the bench suite's `wait <log>` subcommand, which owns
    the check-in deadline (`_bench_wait`); any doubt (a second test, an unresolvable path, a log outside bench's roots)
    leaves the command as it was. A subagent's timeout is clamped to
-   SUBAGENT_WAIT_MS (under its 5-minute prompt cache), and so is a print-mode child's: the sidecar
-   launchers set its cache to 5 minutes. Neither is backgrounded: guards/common.md owns its bounded foreground wait.
+   SUBAGENT_WAIT_MS (under its 5-minute prompt cache), and so is a print-mode child's unless its launcher put it on the
+   1-hour cache (`CLAUDE_CODE_PROMPT_CACHE_TTL=1h`, `wait_clamp_ms`): that child's clamp is the Bash ceiling. Neither is backgrounded: guards/common.md owns its bounded foreground wait.
 2. A never-woken caller's `run_in_background` call that holds no wait loop draws an advisory naming the missing wake
    (one that holds a wait loop is item 11's deny).
 3. Repeated status poll. A status-only command (every segment a read: date, tail, wc, ls, grep,
@@ -38,7 +38,8 @@ a caller should use depends on whether a backgrounded job wakes it:
    poll. Any other command, a wait loop included, resets the count, and so does a non-Bash tool call (an LSP or
    MCP lookup) the transcript shows between two reads. The deny names that caller's wait.
 4. Foreground proof batch (advisory only, woken callers only). A segment that executes the runner
-   `harness_tests.py` in `--close`, `--all` or no mode, or that executes proofs under a `tests/` directory directly,
+   `harness_tests.py` in `--close`, `--all` or no mode, runs pytest naming no single test file (the whole battery),
+   or executes proofs under a `tests/` directory directly,
    draws one `additionalContext` line when its expected time exceeds the call's own timeout (BASH_DEFAULT_MS when it
    sets none): always for the three runner modes, else the summed recorded seconds (`harness_proof_durations.json` beside
    HARNESS_TEST_STAMP, else `.claude/logs/`) of the proofs a `--for`/`--proofs-for` run selects or
@@ -49,8 +50,9 @@ a caller should use depends on whether a backgrounded job wakes it:
    note: a job that ends in time returns this turn with no wake, and one that runs over moves to the background by
    itself and wakes once, while a longer block holds every other wake. The one exception is a proof batch whose every proof has a
    recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A subagent's
-   or print-mode child's timeout above SUBAGENT_WAIT_MS is clamped to it instead (rewrite): a longer call returns to
-   an expired 5-minute prompt cache and rewrites the whole context. The client moves a command still running at the
+   or print-mode child's timeout above its clamp (`wait_clamp_ms`: SUBAGENT_WAIT_MS, or the Bash ceiling on a 1-hour cache) is clamped
+   to it instead (rewrite): a longer call returns to
+   an expired prompt cache and rewrites the whole context. The client moves a command still running at the
    clamp to the background and names its output file; a Bash command gets `echo "EXIT $?"` appended, so that file
    carries the caller's done-test (`EXIT_LINE`).
 5. Blind pipe (background calls only). A `run_in_background` pipeline whose producer stage (a script, a runner, any
@@ -135,6 +137,7 @@ HANDBACK_MS = 1800000  # wait_log.py HANDBACK_S: the break-even past which the p
 HANDBACK_KEY = "wait_loops"
 SUBAGENT_WAIT_MS = _hook_state.SUBAGENT_CACHE_WARM_SECONDS * 1000
 BASH_DEFAULT_MS = 120000
+BASH_CEILING_MS = 600000  # the Bash tool's own timeout ceiling
 TIMEOUT_BIN = "/usr/bin/timeout"  # Git Bash's coreutils; a bare `timeout` can resolve to Windows' timeout.exe (a pause)
 _DEADLINE = re.compile(r"^\s*(?:/usr/bin/)?timeout\s+\d")
 ORCHESTRATOR_WAIT_MS = int(_hook_state.ORCHESTRATOR_CHECKIN_SECONDS * 1000)  # the watcher's check-in
@@ -219,8 +222,8 @@ RAISED_NOTE = (
 )
 EXIT_LINE = 'echo "EXIT $?"'
 CLAMP_NOTE = (
-    "[wait] Clamped this foreground call's timeout from %d to %d ms: a longer call returns to an expired 5-minute "
-    "prompt cache and rewrites your whole context (guards/common.md)."
+    "[wait] Clamped this foreground call's timeout from %d to %d ms: a longer call returns to an expired "
+    "prompt cache (5 minutes; 1 hour for a child its job put on one) and rewrites your whole context (guards/common.md)."
 )
 CLAMP_WAIT = (
     " If it is still running then, the client moves it to the background and names its output file; this call now "
@@ -323,6 +326,13 @@ def _agent_tool_subagent(payload):
         return False
     meta = os.path.join(transcript[:-len(".jsonl")], "subagents", "agent-%s.meta.json" % _caller(payload))
     return os.path.isfile(meta)
+
+
+def wait_clamp_ms():
+    """The longest foreground wait a never-woken caller may hold: its child's prompt-cache lifetime. A child the
+    launcher started on a 1-hour cache (`CLAUDE_CODE_PROMPT_CACHE_TTL=1h`) waits to the Bash ceiling; a 5-minute or
+    unknown one keeps SUBAGENT_WAIT_MS, failing toward the short cache."""
+    return BASH_CEILING_MS if os.environ.get("CLAUDE_CODE_PROMPT_CACHE_TTL") == "1h" else SUBAGENT_WAIT_MS
 
 
 def never_woken(payload):
@@ -468,6 +478,32 @@ def _runner_args(words):
     return None
 
 
+_TEST_FILE_ARG = re.compile(r"(?:^|/)test_[\w.-]+\.py(?:::|$)")
+
+
+def _pytest_args(words):
+    """The arguments of a pytest run (`pytest ...`, `python -m pytest ...`), else None."""
+    if not words:
+        return None
+    program = words[0].strip("'\"").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    if program in ("pytest", "py.test"):
+        return words[1:]
+    if _PYTHON.match(words[0]):
+        rest = words[1:]
+        while rest and rest[0].startswith("-") and rest[0] != "-m":
+            rest = rest[1:]
+        if rest[:2] == ["-m", "pytest"]:
+            return rest[2:]
+    return None
+
+
+def _wide_pytest(words):
+    """True for a pytest run that names no single test file: the whole battery, minutes long."""
+    args = _pytest_args(words)
+    return args is not None and not {"--help", "--collect-only"} & set(args) and not any(
+        _TEST_FILE_ARG.search(arg.strip("'\"").replace("\\", "/")) for arg in args)
+
+
 def _proof_names(words):
     """Basenames of the `.claude/tests/` proofs `words` executes directly, else []."""
     program = words[0] if words else ""
@@ -576,6 +612,8 @@ def _batch_estimate(command):
                 direct += _selected_proofs(parsed)
             else:
                 always = True
+        elif _wide_pytest(words):
+            always = True
         else:
             direct += _proof_names(words)
     if not always and not direct:
@@ -838,6 +876,8 @@ def _producer(words):
     args = _runner_args(words)
     if args is not None:
         return "harness_tests.py run" if (not args or "--close" in args or "--all" in args) else None
+    if _wide_pytest(words):
+        return "pytest run"
     script = _invoked_script(words)
     if not script:
         return None
@@ -1008,6 +1048,7 @@ def main():
     if not (unwoken or _caller(payload)) and runs_watch_records(command):
         return _deny(WATCH_REASON % (_watch_records().ARM_COMMAND, _watch_records().ARM_CALL))
     advice = None if unwoken else _batch_advice(command, tool_input.get("timeout"))
+    clamp = wait_clamp_ms()
     if _LOOP_SLEEP.search(shell_code(command)):
         try:
             budget = int(tool_input.get("timeout") or BASH_DEFAULT_MS)
@@ -1015,13 +1056,13 @@ def main():
             budget = BASH_DEFAULT_MS
         updated, note = None, None
         if unwoken:
-            spent = _wait_total_ms(payload, min(budget, SUBAGENT_WAIT_MS))
+            spent = _wait_total_ms(payload, min(budget, clamp))
             if spent > HANDBACK_MS:
                 return _deny(HANDBACK_REASON % (spent // 60000, HANDBACK_MS // 60000))
         if _caller(payload) or unwoken:
-            if budget > SUBAGENT_WAIT_MS:
-                updated = dict(tool_input, timeout=SUBAGENT_WAIT_MS)
-                note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/common.md).' % (budget, SUBAGENT_WAIT_MS)
+            if budget > clamp:
+                updated = dict(tool_input, timeout=clamp)
+                note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/common.md).' % (budget, clamp)
         elif budget > SUBAGENT_WAIT_MS:
             writer = _live_writer(payload, command)
             notes = ['[wait] Backgrounded the long foreground wait; act on its one wake (`CLAUDE.interactive.md` §Waits and wakes).']
@@ -1052,13 +1093,13 @@ def main():
             budget = int(tool_input.get("timeout") or BASH_DEFAULT_MS)
         except (TypeError, ValueError):
             budget = BASH_DEFAULT_MS
-        if budget > SUBAGENT_WAIT_MS:
+        if budget > clamp:
             bash_tool = payload.get("tool_name") == "Bash"
-            updated = dict(tool_input, timeout=SUBAGENT_WAIT_MS,
+            updated = dict(tool_input, timeout=clamp,
                            command=command.rstrip() + "\n" + EXIT_LINE if bash_tool else command)
             _count_poll(payload, command)
             print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'updatedInput': updated,
-                  'additionalContext': CLAMP_NOTE % (budget, SUBAGENT_WAIT_MS) + (CLAMP_WAIT if bash_tool else "")}}))
+                  'additionalContext': CLAMP_NOTE % (budget, clamp) + (CLAMP_WAIT if bash_tool else "")}}))
             return 0
     count = _count_poll(payload, command)
     if count >= POLL_LIMIT:

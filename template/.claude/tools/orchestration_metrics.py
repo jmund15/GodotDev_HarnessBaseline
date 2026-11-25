@@ -69,7 +69,7 @@ Usage:
                                                 price the whole session: orchestrator O, every dispatch attempt D<n>,
                                                 proofs P, totals T, waste X; never archive
 """
-import argparse, glob, itertools, json, os, re, sys, time, zlib
+import argparse, glob, hashlib, itertools, json, os, re, sys, time, zlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -201,6 +201,7 @@ LEGACY_VERDICTS = {'right-sized': 'clean', 'overshoot': 'clean',
 # SIDECAR_LEDGER_PATH is the one override shared by the sidecar writer and metrics reader.
 # Provider capacity is account-wide and deliberately uses its own normalized cache.
 SIDECAR_LEDGER = transcript_usage.sidecar_ledger_path()
+AI_WORKER_LEDGER = os.path.expanduser('~/.claude/ai_worker_calls.jsonl')
 # Derived over-pin candidates (recomputed on every --archive-summary run). The
 # dispatch-time surface (report()) reads it so the pin decision sees the queue.
 CANDIDATES_FILE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_candidates.json')
@@ -2764,6 +2765,66 @@ def collect_session_sidecar(session, diagnostics=None, priced=True):
                 or recorded_at.replace(microsecond=0) < launched_at.replace(microsecond=0)):
             continue
         rows.append(row)
+    return rows + collect_session_ai_worker(session, diagnostics)
+
+
+def ai_worker_call_id(row):
+    """The call's own id: the ledger's `call_id`. A row the server wrote before it has none, so a hash of
+    its stamp, tool and caller names it the same on every read."""
+    if row.get('call_id'):
+        return str(row['call_id'])
+    stamp = '|'.join(str(row.get(key) or '') for key in ('ts', 'tool', 'caller_session'))
+    return hashlib.sha1(stamp.encode('utf-8')).hexdigest()[:16]
+
+
+def _ai_worker_session_lines(path, needle):
+    """Lines of one ledger file that name the session. The ledger is machine-global, up to 4 MB, and read on
+    every pending check, so a line of another session is dropped before it is parsed. A missing file is no calls."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if needle in line:
+                    yield line
+    except FileNotFoundError:
+        return
+
+
+def collect_session_ai_worker(session, diagnostics=None):
+    """Rows for the ai-worker server's calls this session made, read from its call ledger and that
+    ledger's one rotation. A row is a dispatch the rating reads like a sidecar dispatch (`source` 'sidecar',
+    rated by --rate under `ai-worker-<call id>:<call id>`). A skipped call sent nothing and is no dispatch.
+    The session is the server's start environment (`caller_session`). An unreadable ledger raises, so the
+    caller reports the debt as unknown."""
+    parent = _session_parent(session)
+    needle = '"caller_session": ' + json.dumps(parent)
+    rows = []
+    for path in (AI_WORKER_LEDGER + '.1', AI_WORKER_LEDGER):
+        for line in _ai_worker_session_lines(path, needle):
+            try:
+                rec = json.loads(line)
+            except (json.JSONDecodeError, TypeError) as exc:
+                _input_diagnostic(diagnostics, 'ai-worker-ledger', path, 'malformed', str(exc))
+                continue
+            if not isinstance(rec, dict) or rec.get('caller_session') != parent or rec.get('outcome') == 'skipped':
+                continue
+            call = ai_worker_call_id(rec)
+            stamp = rec.get('ts') or '?'
+            tokens, prompt = _optional_number(rec.get('tokens')), _optional_number(rec.get('prompt_tokens'))
+            total_ms = _optional_number(rec.get('total_latency_ms'))
+            effort = rec.get('effort') or '?'
+            rows.append(dict(
+                source='sidecar', label=call, task_id=None, run='ai-worker-' + call,
+                timestamp=stamp, run_date=run_date_of(stamp), workflow='ai-worker', phase='', agent_id='',
+                model=str(rec.get('model') or '?'), model_observed=bool(rec.get('model')),
+                identity_basis='ai-worker-ledger', effort=effort, requested_effort=effort, effort_requested=effort,
+                observed_effort=None,
+                state='completed' if rec.get('outcome') == 'served' else 'failed',
+                transport=rec.get('backend'), currency=None, record_path=None, cost=None,
+                tier_basis='untiered', price_multiplier=1.0, cost_usd=_optional_number(rec.get('cost')),
+                list_usd=None, cost_basis='',
+                inp=prompt, out=tokens - prompt if tokens is not None and prompt is not None else None,
+                cw=None, cr=None, recs=None, turns=_optional_number(rec.get('attempts')), tools=None,
+                secs=total_ms / 1000.0 if total_ms is not None else None))
     return rows
 
 

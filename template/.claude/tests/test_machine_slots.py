@@ -161,6 +161,21 @@ class MachineSlots(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(out.stdout.strip(), 'None', 'the runner admits itself per proof, never in an inherited lane')
 
+    def test_run_does_not_take_a_machine_lane_for_pytest(self):
+        # The wrapper must not sit on a lane for the entire pytest coordinator run.
+        proof = Path(self.tmp.name) / 'test_no_lane.py'
+        proof.write_text('import os\n\ndef test_no_lane():\n    assert not os.environ.get("HARNESS_SLOT_BUDGET")\n',
+                         encoding='utf-8')
+        held = slots.take(True)
+        try:
+            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline',
+                                  str(time.time() + 1), '--', sys.executable, '-m', 'pytest', '-p', 'no:cacheprovider',
+                                  '--rootdir', self.tmp.name, str(proof)],
+                                 capture_output=True, text=True, timeout=60, cwd=self.tmp.name)
+        finally:
+            slots.release_all(held)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
     def test_run_still_queues_a_proof_that_names_the_runner_as_an_argument(self):
         held = slots.take(True)
         try:

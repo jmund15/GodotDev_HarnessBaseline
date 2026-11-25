@@ -104,21 +104,21 @@ class HarnessIntegrityTests(unittest.TestCase):
             self.assertEqual(process.call_args.args[2], 10)
 
     def test_recorded_duration_sets_a_proof_timeout_red(self):
-        # Real input: test_baseline_publish.py, which carried a hand-set 720 s built-in cap.
-        name = 'test_baseline_publish.py'
+        # A proof with no `proof_timeouts` row: its time comes from the recorded duration alone.
+        name = 'test_with_no_row.py'
         self.assertEqual(runner._timeout_for(name, {name: 300}), 900)
         self.assertEqual(runner._timeout_for(name, {name: 100}), 300)
         self.assertEqual(runner._timeout_for(name, {}), 120)
 
     def test_cold_timed_out_proof_reruns_alone_at_three_times_the_default_red(self):
-        # Real input: a checkout with no durations record, publish times out at its first attempt.
+        # A checkout with no durations record, a proof with no `proof_timeouts` row times out at its first attempt.
         seen = []
         def proof(_path, _timeout=None, _root=None, **_):
             seen.append(_timeout)
             if len(seen) == 1:
                 return 'fail', 0.0, 'TIMEOUT after %ss' % _timeout
             return 'pass', 0.0, ''
-        self.run_pool(proof, ['test_baseline_publish.py'], jobs=1)
+        self.run_pool(proof, ['test_with_no_row.py'], jobs=1)
         self.assertEqual(seen, [120, 360])
 
     def run_pool(self, proof, names, serial=(), jobs=2, durations=None, with_timing=False, flaky_seed=None):

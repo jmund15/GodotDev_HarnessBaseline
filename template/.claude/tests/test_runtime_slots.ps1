@@ -307,7 +307,9 @@ function Read-JsonFile {
 
 # A deadline in this proof only catches a hung child. A fresh pwsh takes seconds to start on a loaded host (the Linux
 # file-lock type compiles once per process), so a short one fails a healthy run; timing claims read the lease's own WaitMs.
-$HangGuardSeconds = 60
+# It scales with the bound the runner enforces on this proof (`HARNESS_PROOF_TIMEOUT_S`, a third of it): a bound raised for
+# a loaded host raises the guard with it, so a slow start fails as the runner's named expiry, not as this guard's.
+$HangGuardSeconds = [Math]::Max(60, [int]([double]($env:HARNESS_PROOF_TIMEOUT_S) / 3))
 $HangMs = $HangGuardSeconds * 1000
 
 function Wait-Entering {

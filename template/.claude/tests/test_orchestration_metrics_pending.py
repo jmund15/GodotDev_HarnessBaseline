@@ -146,6 +146,65 @@ def real_session_cases(cases):
                   "exec-gatefix" not in side_rows(session)))
 
 
+AI_WORKER_SESSION = "aiw-session-0001"
+
+
+def ai_worker_row(**fields):
+    """A row of the ai-worker server's call ledger, cut from a live row (`~/.claude/ai_worker_calls.jsonl`,
+    a read_files call served by llama_server) and trimmed; the session id is a placeholder."""
+    row = {"ts": "2026-11-24T17:06:14.392953+00:00", "tool": "read_files",
+           "model": "llama_server/inkling-2-mini-ud-q3_k_xl", "tokens": 7866, "prompt_tokens": 4690,
+           "output_cap": 8192, "cap_source": "max_completion_tokens", "latency_ms": 135752,
+           "attempts": 1, "total_latency_ms": 135752, "cost": 0.0, "under_floor": False,
+           "truncated": False, "degenerate": False, "chars": 3475, "error": None, "outcome": "served",
+           "skip_reason": None, "backend": "llama_server", "reasoning_chars": 5441,
+           "caller_session": AI_WORKER_SESSION, "caller_source": "env@start", "caller_label": "fold-engine",
+           "call_key": "902c57a9d191", "paths_requested": 4, "paths_covered": 4,
+           "artifact": "2026-11-24T170614392953_0000-read_files.json"}
+    row.update(fields)
+    return row
+
+
+def ai_worker_cases(cases):
+    """The ai-worker server's calls join the session's dispatches: a served call is pending debt, rated by
+    --rate under its own key; a skipped call (sent nothing) and another session's call are not this session's."""
+    root = tempfile.mkdtemp(prefix="ommpending_aiw_")
+    session = os.path.join(root, AI_WORKER_SESSION)
+    os.makedirs(session)
+    ledger = os.path.join(root, "ai_worker_calls.jsonl")
+    real_ledger = om.AI_WORKER_LEDGER
+    real_verdicts = om.PENDING_VERDICTS
+    om.AI_WORKER_LEDGER = ledger
+    om.PENDING_VERDICTS = os.path.join(root, "orchestration_verdicts.json")
+    write_verdicts(om.PENDING_VERDICTS, {})
+    try:
+        rows = [ai_worker_row(),
+                ai_worker_row(call_id="a1b2c3d4e5f60718", ts="2026-11-24T17:20:00.000000+00:00",
+                              tool="write_doc", model="ollama_chat/qwen", effort="high"),
+                ai_worker_row(outcome="skipped", skip_reason="under_floor", model=None, backend=None),
+                ai_worker_row(caller_session="someone-elses-session")]
+        with open(ledger, "w", encoding="utf-8") as fh:
+            fh.write("".join(json.dumps(r) + "\n" for r in rows))
+        pairs = om.pending_labels(session)
+        served = [(run, lab) for run, lab in pairs if run.startswith("ai-worker-")]
+        cases.append(("a served ai-worker call of this session is pending debt",
+                      len(served) == 2 and ("ai-worker-a1b2c3d4e5f60718", "a1b2c3d4e5f60718") in served))
+        cases.append(("a call is keyed by its own id, a row without one by a stable id of its own",
+                      len(served) == 2 and all(run == "ai-worker-" + lab for run, lab in served)
+                      and len({lab for _, lab in served}) == 2))
+        cases.append(("a skipped call and another session's call are not pending",
+                      len(pairs) == 2))
+        done = om.rate(session, "a1b2c3d4e5f60718", "clean")
+        cases.append(("--rate rates the ai-worker call by its id", done == 0))
+        left = om.pending_labels(session)
+        cases.append(("the rated call leaves pending, the other stays",
+                      [lab for _, lab in left if lab == "a1b2c3d4e5f60718"] == []
+                      and len(left) == 1))
+    finally:
+        om.AI_WORKER_LEDGER = real_ledger
+        om.PENDING_VERDICTS = real_verdicts
+
+
 def main():
     cases = []
     root = tempfile.mkdtemp(prefix="ommpending_")
@@ -654,6 +713,7 @@ def main():
         om.load_record_ledger = real_ledger
 
     real_session_cases(cases)
+    ai_worker_cases(cases)
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
