@@ -483,12 +483,12 @@ def _main(tmp):
         import _hook_state
         tag = getattr(module, "NOTICE_TAG", "[dispatch-prep]")
 
-        def notice(sid, met_skill, met_ladder, delegate=False):
+        def notice(sid, met_skill, met_ladder, delegate=False, ladder_digest=None):
             _hook_state.clear_compaction_keys(sid)
             if met_skill:
                 _hook_state.mark_skill_in_context(sid, "orchestration")
             if met_ladder:
-                _hook_state.mark_ladder_slice(sid, ["executor"])
+                _hook_state.mark_ladder_slice(sid, ["executor"], digest=ladder_digest)
             with planted_env(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
                              CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache,
                              **({"CLAUDE_CODE_SIDECAR": "anthropic"} if delegate else {})), no_probe_spy([]):
@@ -498,18 +498,22 @@ def _main(tmp):
 
         first, second = notice("prep-none", False, False)
         line = next((l for l in first.splitlines() if l.startswith(tag)), "")
-        case("the first dispatch-prep brief of a window announces both loads and that a launch is denied",
-             'Skill(skill="orchestration")' in line and "for-role" in line)
+        case("the first dispatch-prep brief of a window announces both loads, each with both routes, and that a launch is denied",
+             'Skill(skill="orchestration")' in line and "SKILL.md" in line and "for-role" in line)
         case("the second brief of the same window stays silent", tag not in second)
         both, _ = notice("prep-both", True, True)
         case("no notice when the skill and the ladder are both in context", tag not in both)
+        stale, _ = notice("prep-stale", True, True, ladder_digest="older-ladder-text")
+        case("a slice of ladder text the file has since left behind counts as no ladder: the notice names for-role",
+             tag in stale and "for-role" in stale)
         skill_only, _ = notice("prep-skill", True, False)
         case("the notice names only the missing requirement when the skill is loaded",
              tag in skill_only and "for-role" in skill_only and 'Skill(skill="orchestration")' not in skill_only)
         delegate_first, _ = notice("prep-deleg", False, False, delegate=True)
         delegate_line = next((l for l in delegate_first.splitlines() if l.startswith(tag)), "")
-        case("a delegate's notice names the SKILL.md Read it can perform, not the Skill call it lacks",
-             "Skill(skill=" not in delegate_line and "SKILL.md" in delegate_line and "for-role" in delegate_line)
+        case("a delegate's notice names the same two routes, so the SKILL.md Read it can perform is among them",
+             'Skill(skill="orchestration")' in delegate_line and "SKILL.md" in delegate_line
+             and "for-role" in delegate_line)
         ladder_only, _ = notice("prep-ladder", False, True)
         case("the notice names only the missing requirement when the ladder is credited",
              tag in ladder_only and 'Skill(skill="orchestration")' in ladder_only and "for-role" not in ladder_only)

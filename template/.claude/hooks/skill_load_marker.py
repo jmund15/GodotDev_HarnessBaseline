@@ -10,8 +10,9 @@ Read records nothing. The ladder note fires once per compaction.
 Each load also sets the compaction-scoped `skill_in_context:<name>` key, which a compaction clears. A subagent
 shares its parent's session_id, so its load (payload `agent_id`) sets `skill_in_context:<name>@<agent_id>` and
 leaves `skills_loaded` and the ladder note to the parent: one agent's load never puts a skill in another's context.
-After a compaction, a skill the client re-attached whole counts as loaded again only while that copy's body
-still matches the skill's `SKILL.md` (`_hook_state.skill_in_context`).
+A load records the `SKILL.md` body it delivered: a session holding a copy the file has since left behind is not
+in context until it reloads, as a skill re-attached whole after a compaction counts only while its body still
+matches the file (`_hook_state.skill_in_context`).
 Consumers: harness_edit_skill_reminder.py denies harness-file edits until `skill_in_context` holds for
 "instruction_quality"; workflow_provider_guard.py skips its ladder fallback once "orchestration" is in
 `skills_loaded`, which survives compaction (keyed by session_id, which persists across /compact).
@@ -87,12 +88,24 @@ def process(input_data):
 
     if not agent_id:
         update_json_locked(state_path(session_id), record)
-    mark_skill_in_context(session_id, bare, agent_id)
+    mark_skill_in_context(session_id, bare, agent_id, digest=_loaded_digest(bare, input_data))
     if bare == "orchestration" and not agent_id and fire_once_since_compaction(session_id, "skill_load_marker:ladder"):
         return ladder_note()
     if bare == "workflow-authoring" and not agent_id and fire_once_since_compaction(session_id, "skill_load_marker:dispatch"):
         return DISPATCH_NOTE
     return ""
+
+
+def _loaded_digest(name, payload):
+    """The `SKILL.md` body now on disk for skill `name`, which the load just delivered: kept with the record so a
+    session holding it is denied once the file changes (`_hook_state.skill_in_context`). None when it cannot be read."""
+    try:
+        import _compaction_record
+        import _win_path
+        root = _win_path.native_path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
+        return _compaction_record.skill_file_digest(name, root)
+    except Exception:
+        return None
 
 
 def read_skill_name(payload):

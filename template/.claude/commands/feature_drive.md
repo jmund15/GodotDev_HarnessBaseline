@@ -1,5 +1,5 @@
 ---
-allowed-tools: Workflow, Agent
+allowed-tools: Workflow, Agent, Skill, Read
 description: Ship one-plan work with no roadmap Part, its design settled or open on technical choices, or on taste where the project's UI skill supplies the candidates; use /part_drive for a Part, /design_drive for multi-Part design
 ---
 

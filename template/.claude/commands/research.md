@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(bash:*), Bash(node:*), Bash(.claude/scripts/fetch_source.sh:*), Bash(python:*), Glob, Grep, Read, Write, Workflow, WebFetch, mcp__ai-worker__read_web, mcp__plugin_context7_context7__resolve-library-id, mcp__plugin_context7_context7__query-docs
+allowed-tools: Bash(bash:*), Bash(node:*), Bash(.claude/scripts/fetch_source.sh:*), Bash(python:*), Glob, Grep, Read, Write, Workflow, Skill, WebFetch, mcp__ai-worker__read_web, mcp__plugin_context7_context7__resolve-library-id, mcp__plugin_context7_context7__query-docs
 disable-model-invocation: true
 description: Answer listed external-fact questions with tiered citations and a version-keyed vault artifact.
 ---

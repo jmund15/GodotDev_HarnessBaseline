@@ -1,5 +1,5 @@
 ---
-allowed-tools: Workflow, Agent
+allowed-tools: Workflow, Agent, Skill, Read
 description: Drive multi-Part design work to shipped code or design-only
 ---
 

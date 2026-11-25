@@ -18,7 +18,10 @@ Members, in order (each keeps its own `main()` and CLI contract, so its own proo
   1. subagent_dispatch_guard   a delegate or sidecar child may not dispatch. A deny here ends the chain: the
                                orchestrator's preconditions below are not the delegate's to meet.
   2. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it.
-  3. workflow_provider_guard   tool profile, vocabulary, provider capacity, tier, five-hour width; its
+  3. dispatch_mechanism_guard  nested fan-out in a brief; a script typing its own `evidence`; the dispatch doctrine
+                               (orchestration skill and ladder) not in context, each unmet load named with both
+                               its routes (D27: the owner approved both halves).
+  4. workflow_provider_guard   tool profile, vocabulary, provider capacity, tier, five-hour width; its
                                `updatedInput` injects `args.__transport` and the rails.
 
 Merge:
@@ -33,8 +36,9 @@ Merge:
 
 Fail posture: a member exception, import fault or exit outside {0, 2} is reported on stderr and in
 `additionalContext`, naming the lost check and repair; the next member runs. The exceptions, on a Workflow
-call, are `_FAIL_CLOSED_ON_WORKFLOW`: `workflow_provider_guard`, without whose `args.__transport` every engine
-refuses to run. Its fault denies with the error. An Agent call keeps the advisory. A fault reaches the model as the traceback's exception line
+call, are `_FAIL_CLOSED_ON_WORKFLOW`: `dispatch_mechanism_guard`, whose doctrine check stands in front of paid
+spend, and `workflow_provider_guard`, without whose `args.__transport` every engine refuses to run. Their fault
+denies with the error. An Agent call keeps the advisory. A fault reaches the model as the traceback's exception line
 and innermost frame (`_fault`); the whole traceback goes to stderr. A member's exit 2 joins the deny with its stderr as
 the reason.
 
@@ -53,9 +57,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _inprocess_hook import hook_output, run_hook  # noqa: E402
 
 _ROLE_GATE = "subagent_dispatch_guard"
-# Members whose fault denies a Workflow call (instruction_quality section 16): the provider guard injects the
-# vocabulary every engine needs. Names, so an import stub keeps it.
+# Members whose fault denies a Workflow call (instruction_quality section 16): the doctrine check stands in front of
+# paid spend, and the provider guard injects the vocabulary every engine needs. Names, so an import stub keeps it.
 _FAIL_CLOSED_ON_WORKFLOW = {
+    "dispatch_mechanism_guard": "it checks the dispatch doctrine and pins before a paid run starts",
     "workflow_provider_guard": "it could not inject `args.__transport`, the model vocabulary every engine refuses "
                                "to run without",
 }
@@ -242,6 +247,7 @@ def _load(name):
 # Import with the real stdout bound; some members reconfigure it on import.
 subagent_dispatch_guard = _load("subagent_dispatch_guard")
 workflow_script_lf_guard = _load("workflow_script_lf_guard")
+dispatch_mechanism_guard = _load("dispatch_mechanism_guard")
 workflow_provider_guard = _load("workflow_provider_guard")
 
 HOOKS = (
@@ -249,13 +255,13 @@ HOOKS = (
     (FILL_EFFORTS_MEMBER, ()),
     (subagent_dispatch_guard, ()),
     (workflow_script_lf_guard, ()),
+    (dispatch_mechanism_guard, ()),
     (workflow_provider_guard, ()),
 )
 
 # Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
 # keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
 UNWIRED = (
-    "dispatch_mechanism_guard",
     "readonly_marker_arm",
 )
 

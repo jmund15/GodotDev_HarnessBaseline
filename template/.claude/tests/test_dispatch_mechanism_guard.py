@@ -10,6 +10,7 @@ and model_ladder_gate record counts.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -151,7 +152,7 @@ def test_unloaded_orchestration_denies_and_compaction_reasks():
     with patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE):
         _hook_state.clear_compaction_keys(sid)
     decision, reason = run(payload, skill=False)
-    assert decision == DENY and 'Skill(skill="orchestration")' in reason and "SKILL.md" not in reason, reason
+    assert decision == DENY and 'Skill(skill="orchestration")' in reason and "SKILL.md" in reason, reason
     assert "orchestration §0" in reason and "re-issue" in reason and "unchanged" not in reason, reason
     assert "model_ladder_evidence" not in reason, 'a read ladder was named as unmet: ' + reason
     assert run(payload)[0] == ALLOW
@@ -224,6 +225,43 @@ def test_inline_script_with_its_own_evidence_schema_denies():
     assert not bad, bad
 
 
+def grant_tokens(text):
+    """The tool names a command's frontmatter `allowed-tools` grants, patterns dropped (`Skill(x)` is `Skill`)."""
+    head = text.split("\n---\n", 1)[0]
+    line = next((l for l in head.splitlines() if l.startswith("allowed-tools:")), "")
+    return {tok.strip().split("(")[0] for tok in re.split(r",(?![^(]*\))", line.partition(":")[2]) if tok.strip()}
+
+
+def test_every_workflow_granting_command_can_load_the_doctrine(commands_dir=None):
+    """The gate denies a dispatch until the skill and ladder are loaded, so a command that dispatches must grant a
+    load route: the Skill call, or the Read a full SKILL.md or ladder Read is (D27). Static; the live run of each
+    command is the owner-quota step."""
+    commands_dir = commands_dir or os.path.join(HERE, "..", "commands")
+    stuck = []
+    for name in sorted(os.listdir(commands_dir)):
+        if not name.endswith(".md"):
+            continue
+        with open(os.path.join(commands_dir, name), encoding="utf-8") as fh:
+            granted = grant_tokens(fh.read())
+        if "Workflow" in granted and not granted & {"Skill", "Read"}:
+            stuck.append(name)
+    assert not stuck, "Workflow-granting commands that grant neither Skill nor Read: %s" % stuck
+
+
+def test_a_workflow_granting_command_without_skill_or_read_is_found():
+    planted = tempfile.mkdtemp(prefix="dmg_cmds_")
+    for name, grant in (("a.md", "Workflow"), ("b.md", "Bash(x:*), Workflow, Read"), ("c.md", "Workflow, Skill(orchestration)"),
+                        ("d.md", "Bash(git grep:*)")):
+        with open(os.path.join(planted, name), "w", encoding="utf-8") as fh:
+            fh.write("---\nallowed-tools: %s\n---\nbody\n" % grant)
+    try:
+        test_every_workflow_granting_command_can_load_the_doctrine(planted)
+    except AssertionError as exc:
+        assert "['a.md']" in str(exc), exc
+    else:
+        raise AssertionError("a Workflow grant with neither Skill nor Read passed")
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="dispatchguard_")
     failures = []
@@ -233,7 +271,9 @@ def main():
                   test_unloaded_orchestration_denies_and_compaction_reasks,
                   test_unread_ladder_denies_every_dispatch_until_read,
                   test_s14_sibling_precondition_is_retired,
-                  test_inline_script_with_its_own_evidence_schema_denies)
+                  test_inline_script_with_its_own_evidence_schema_denies,
+                  test_every_workflow_granting_command_can_load_the_doctrine,
+                  test_a_workflow_granting_command_without_skill_or_read_is_found)
     for proof in s13_proofs:
         try:
             proof()

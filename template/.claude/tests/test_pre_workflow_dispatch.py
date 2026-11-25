@@ -152,8 +152,28 @@ def real_payload_cases():
 
     no_doctrine = World("available", False, "pwddoc01")
     proc = no_doctrine.run()
-    check("an unloaded dispatch doctrine denies nothing at the dispatcher",
-          classify(proc) == "allow", (proc.stdout[:300], proc.stderr[-300:]))
+    reason = reason_of(proc)
+    check("a Workflow call without the doctrine loaded is denied naming both skill routes and the ladder Read",
+          classify(proc) == "deny" and 'Skill(skill="orchestration")' in reason and "SKILL.md" in reason
+          and "no offset or limit" in reason and "model_ladder_evidence.md" in reason,
+          (proc.stdout[:400], proc.stderr[-300:]))
+    # The two loads the deny names: a full SKILL.md Read, and a full ladder Read, each recorded as the hooks record it.
+    import model_ladder_gate
+    import skill_load_marker
+    skill = str(REPO / ".claude" / "skills" / "orchestration" / "SKILL.md")
+    with patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=no_doctrine.state, CLAUDE_PROJECT_DIR=str(REPO)):
+        skill_load_marker.process({"tool_name": "Read", "session_id": "pwddoc01", "tool_input": {"file_path": skill},
+                                   "tool_response": {"file": {"startLine": 1, "numLines": 9, "totalLines": 9}}})
+        proc = no_doctrine.run()
+        check("after a full SKILL.md Read the deny no longer asks for the skill but still asks for the ladder",
+              classify(proc) == "deny" and 'Skill(skill=' not in reason_of(proc)
+              and "model_ladder_evidence.md" in reason_of(proc), proc.stdout[:400])
+        model_ladder_gate.mark_loaded({"tool_name": "Read", "session_id": "pwddoc01", "tool_input": {
+            "file_path": model_ladder_gate.expected_path({})}, "tool_response": {
+            "file": {"startLine": 1, "numLines": 9, "totalLines": 9}}})
+        proc = no_doctrine.run()
+        check("a full SKILL.md Read and a full ladder Read admit the call",
+              classify(proc) == "allow", (proc.stdout[:400], proc.stderr[-300:]))
 
     clean = World("available", True, "pwdclean")
     proc = clean.run()
@@ -376,10 +396,20 @@ def in_process_cases():
     check("an import fault in an advisory member names the lost check without denying",
           out.get("permissionDecision") is None and "workflow_script_lf_guard" in out.get("additionalContext", ""), out)
 
+    stub = pwd._failed_import("dispatch_mechanism_guard", ImportError("planted"))
+    _, out, _ = run_chain([stub])
+    check("an import fault in the doctrine guard denies a Workflow call: no unchecked dispatch reaches paid spend",
+          out.get("permissionDecision") == "deny" and "dispatch_mechanism_guard" in out.get("permissionDecisionReason", ""),
+          out)
+    _, out, _ = run_chain([stub], tool="Agent")
+    check("the same fault on an Agent call stays an advisory",
+          out.get("permissionDecision") is None and "dispatch_mechanism_guard" in out.get("additionalContext", ""), out)
+
     names = [getattr(m, "__name__", "") for m, _ in pwd.HOOKS]
-    check("the five Workflow|Agent members are wired, the args-file expander first and the provider guard last",
+    check("the six Workflow|Agent members are wired, the args-file expander first and the provider guard last",
           names == ["expand_args_file", "fill_efforts", "subagent_dispatch_guard", "workflow_script_lf_guard",
-                    "workflow_provider_guard"], names)
+                    "dispatch_mechanism_guard", "workflow_provider_guard"], names)
+    check("no hook is left unwired but the read-only marker", pwd.UNWIRED == ("readonly_marker_arm",), pwd.UNWIRED)
 
 
 def args_file_cases():

@@ -1,7 +1,7 @@
 ---
 description: Audit the documentation landscape and produce a prioritized report in Obsidian.
 disable-model-invocation: true
-allowed-tools: Bash(python3 .claude/tools/model_registry.py:*), Workflow
+allowed-tools: Bash(python3 .claude/tools/model_registry.py:*), Workflow, Skill, Read
 ---
 
 Audit the documentation landscape — produces a prioritized report in Obsidian.
