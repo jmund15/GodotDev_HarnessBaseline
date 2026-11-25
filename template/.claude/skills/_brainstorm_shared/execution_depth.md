@@ -1,8 +1,9 @@
 # Work triage
 
-Triage every piece of work before choosing its path. Triage records the observable fields below, and the admission table
-below turns them into the process the work gets. It is the only owner of process depth: a command keeps its mandate
-catalog (what each lens checks), and this file decides which elements and conditional mandates run.
+Triage every piece of work before choosing its path. Triage records the observable fields below, and the rows under
+§What each element weighs say what each one costs. The sizing decides process depth (`drive_spine.md` §Sizing): a
+command keeps its mandate catalog (what each lens checks), and this file says what each element and conditional
+mandate weighs.
 
 ## Fields
 
@@ -83,14 +84,13 @@ a delegate recorded.
 
 ## Admission
 
-### Admission table
+### What each element weighs
 
-Each element runs when its row admits it, and only then. The owner column names the command that runs it today.
+Each element's depth is the sizing's call (`drive_spine.md` §Sizing); each row below says what to weigh. The owner column names the command that runs it today.
 
-| Element | Admitted when | Owner |
+| Element | Weigh when | Owner |
 |---|---|---|
 | Task record | size ≥ milestones, a background job, oracle = owner, owner away, reach ≥ shared, or a run condition to record (§Conditions) | `task_record.py`, `orchestration` reference `checkpointing.md` |
-| Simpler-path probe | design = open and an architect pass runs; never for PROBE or PROVISIONAL items | §Simpler-path probe (the architect pass's first question) |
 | Grounding | grounding = assumed; reach ≥ shared and one search cannot enumerate the consumers; the work adds an authored or shared configuration surface whose owning family has not been inventoried this session; or the work has no nameable oracle | `/explore` |
 | Spike | a load-bearing fact is empirical (engine behaviour, cost, feel viability) and cheaper to measure than to reason about; retire the spike when first-party sources settle the uncertainty | the prototype route, PROBE or PROVISIONAL |
 | Design | design = open, and the item is not PROBE or PROVISIONAL | `/feature_drive`'s Design capture below size = parts, `/design_drive` at size = parts, or the brainstorm skills, per §Entry routing |
@@ -126,19 +126,6 @@ Settled, mechanical or cheaply reversible work goes straight to execution. An ad
 
 `triage.admits("candidate-lenses", ...)` returns the width. Admission is policy: a scope of harness paths (`.claude/**`, `CLAUDE.md`, `MEMORY.md`) none of which runs gets `none` below thorough, since prose and tool-written ledgers have no code subject; a changed script, proof, hook, settings file or data a tool reads (`_claude_scope.is_executable_harness_path`) or any production path keeps the sizing below, and the review ledger owes the same scope no candidate pair. A mechanical change under a green gate whose size is one-context or reach is local gets `none`, no candidate review, below thorough; gate unknown counts as not green. Thorough gets `all`, the command's full roster with its conditional mandates admitted below. Every other change gets `sized`: it carries `sa-architecture-sweep` (plan conformance and executor design), and the session adds each of `sa-design-semantics`, `sa-robustness-performance` and `sa-intuitiveness-testability` whose risk the change carries, against the rigor bar in `orchestration` reference `review_width.md`'s size rule, and reports the lenses and why.
 
-### Simpler-path probe
-
-The simpler-path probe is the first required output section of the architect pass: the simplest change that meets
-the requirements, and why the chosen design is or is not it. It runs only when design is open and a design stage
-dispatches an architect pass, with no brief or pin of its own. The pass reads the `/explore` dossier when grounding
-ran, and the repo otherwise, at its own pin (the architect cell of `reference/model_ladder_evidence.md` §Role
-guidance). Grounding never waits on it.
-- When the session verifies that the answer meets the oracle through a pattern the codebase already uses, design is
-  settled: re-triage with `--reason "simpler-path probe"` and take the path the new fields admit.
-- Otherwise the Design artifact names the answer as a candidate and why it was not taken.
-
-Done when the task record or the Design artifact holds the architect's simplest-change answer and its disposition.
-
 ### Mandate admission
 
 A conditional mandate runs only when the change holds the input it reads: a data-integrity mandate needs a changed
@@ -172,7 +159,7 @@ inside the chosen route (the Owner design decision row), never a reason to chang
 | the owner asks to design in dialogue | `architecture_brainstorm`, optionally `--red_team` |
 | size = parts with an approved design doc | the Decomposition row, then `/part_drive` per Part |
 | size = parts | `/design_drive`: one design doc, its design challenge and roadmap, then a plan and plan check per Part |
-| size below parts | `/feature_drive`: `/explore`, an architect pass when design = open, then one plan and its plan check when admitted |
+| size below parts | `/feature_drive`: the stages at the depths its sizing states (`drive_spine.md` §Sizing) |
 
 A worklog item's `scope:` value maps to the fields and never sets depth by itself. Scope 1 and 2 read as one-context
 with design = settled. Scope 3 reads as one-context or milestones, with design = open until its cross-file trade-off
@@ -182,7 +169,7 @@ Triage the item's other fields from its own facts.
 ## Paths are outputs
 
 The fast path is local, clean, settled, verified, one context, with a gate or new-test oracle: failing test, fix,
-gate, commit with its trailer, in session. The standard, designed and Parts paths follow from the admission table.
+gate, commit with its trailer, in session. The standard, designed and Parts paths follow from the sizing.
 Each milestone of a plan is triaged again, and the drive reports to the owner at each milestone boundary, not per task, and continues.
 
 ## Re-triage
@@ -234,6 +221,6 @@ Record each deadline and request with `python3 .claude/tools/task_record.py cond
 
 - Commands keep their mandate catalogs; this file admits elements and conditional mandates, never rewrites a
   mandate. `orchestration` §2 seats one per admitted mandate and narrows only by its size rule, §Conditions Room, the review ledger's coverage and, for a later round, *Later rounds* (`orchestration` §2).
-- Triage decides whether grounding runs. Lens selection and evidence reuse follow [`explore_agents.md`](../../commands/agents/explore_agents.md) §Lens Roster & Trigger Rules.
+- The sizing sets how deep grounding runs (`drive_spine.md` §Stages Ground). Lens selection and evidence reuse follow [`explore_agents.md`](../../commands/agents/explore_agents.md) §Lens Roster & Trigger Rules.
 - The quality floor never scales: peer work, owner authority for irreversible or published actions, RED-first for Logic code (`CLAUDE.md` §Hybrid TDD), and the project's regression gate (`change_control` §Gate cadence names it), including its new-red release block. A blocking guard that protects this floor binds at every triage; a process guard binds per its admission.
 - A stronger or cheaper model changes the pins on the admitted elements, never the fields; the review it gets changes only through §Conditions Models.

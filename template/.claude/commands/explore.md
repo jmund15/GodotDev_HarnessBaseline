@@ -9,7 +9,7 @@ Establish what exists before proposing a design. Return evidence-backed claims, 
 
 ## When to invoke
 
-Run when grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admission table). Revisit only changed or uncovered dimensions.
+Run when a design's questions need a survey (`_brainstorm_shared/drive_spine.md` §Stages Ground). Revisit only changed or uncovered dimensions.
 
 `/explore <topic>` uses the trigger-selected lenses. `--make-this-easy <specific change>` adds the change-friction lens; a vague topic is not enough.
 
@@ -19,13 +19,13 @@ Run when grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admiss
 Name the capability/files and intended change; a breadth map with no design question is a `/delegate` scout (`CLAUDE.interactive.md` §When work becomes a job); a design question too vague to set coverage gets a clarifying question. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
 
 ### 1b. Select resources
-Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate and never merges (`orchestration` §2 *Sizing the width*), because `explore_result.py` stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
+Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per job: `/explore` sizes the jobs from the work (`orchestration` §0), and a job carrying several lenses stamps each claim with its lens key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
 
 ### 1c. Infer domains
 Use actual scope and `reference/memory_domains.md`; meta work does not need gameplay domains. Search memory by separate relevant facets, not one broad union query.
 
 ### 1d. Select lenses
-Run `python3 .claude/tools/lens.py shared explore` for selection and evidence-reuse rules, then `get <keys>` for selected mandates. Keep every independently needed dimension its trigger table admits. `--make-this-easy` adds `exp-change-ease`, never replaces another lens. Record why each lens ran or was omitted. Resolve current pins through orchestration/registry, not historical vendor examples in a catalog.
+Run `python3 .claude/tools/lens.py shared explore` for selection and evidence-reuse rules, then `get <keys>` for selected mandates. Cover every lens the trigger table admits: answer its questions or mark them not applicable with why. `--make-this-easy` adds `exp-change-ease`, never replaces another lens. Record why each lens ran or was omitted. Resolve current pins through orchestration/registry, not historical vendor examples in a catalog.
 
 ### 1e. Assemble context
 Put topic, questions, domains, exclusions, evidence handles and starting paths in one run-specific scratch file. Push orientation, not conclusions. A seed is not a search boundary. Do not inline whole source sets or unrelated skills. `prepare` (Phase 2) writes every `kfm: index` seat's run snapshot and names its index in that seat's brief.
@@ -34,7 +34,11 @@ Map each question to the selected lens whose mandate owns it, and write the map 
 
 ## Phase 2: Dispatch
 
-Invoking `/explore` is this fan-out's authorization (`orchestration` §0). Every lens is a pinned job, so `tools/sidecar_fanout.py` places it: each lens runs on the plan the ladder's selection line picks, as a native `dispatch.js` agent when that is the session's own plan and as a sidecar otherwise. `prepare` never picks the plan. One `prepare` call writes the briefs, the context and the fan-out's jobs file and prints the next calls. Write `<run dir>/spec.json`:
+Invoking `/explore` is this fan-out's authorization (`orchestration` §0). Every lens job is pinned, so `tools/sidecar_fanout.py` places it: each job runs on the plan the ladder's selection line picks, as a native `dispatch.js` agent when that is the session's own plan and as a sidecar otherwise. `prepare` never picks the plan.
+
+**In a drive with a design job to follow,** a spec that names a `designJob` writes a chains file that runs the design job in the same dispatch: the lenses run first, `explore_result.py`'s consolidation runs as a step inside that dispatch, and the design job receives the checked dossier path with its coverage status, with no session step between (the engine hand-off contract). That join runs only where every lens and the design job are native and the dispatch fits the session's width. When any of them needs a sidecar, or the join does not fit, run the lens-only fan-out below, close it with `explore_result.py`, and launch the design job with the dossier path and status once it passes the gate; the session reads, copies and judges none of it between the two. The fallback costs one launch step. Say at route selection which of the two applies, because a refusal at launch costs more than the sentence.
+
+One `prepare` call (a standalone `/explore`, and the lens-only fallback) writes the briefs, the context and the fan-out's jobs file and prints the next calls. Write `<run dir>/spec.json`:
 
 ```json
 {
@@ -42,7 +46,7 @@ Invoking `/explore` is this fan-out's authorization (`orchestration` §0). Every
   "prefix": "explore",
   "topic": "<topic>",
   "questions": {"<seat key>": ["<question it owns>"]},
-  "seats": [{"key": "<lens key>", "rows": {"<row>": "<rung>"}}],
+  "seats": [{"key": "<lens key, or several joined with +>", "rows": {"<row>": "<rung>"}}],
   "subjectFiles": ["<evidence handles the lens reads>"],
   "context": "<absolute context.md from 1e>"
 }
@@ -72,7 +76,7 @@ Every claim has a subject, polarity, bearing, source/quote and verification stat
 ## Phase 3: Consolidate & Report
 
 - Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; recover from the lens's `<label>.md`, stream and record in the fan-out out dir first.
-- Account for every context question: name the claims that answer it. A question with none is UNCOVERED, like a lens that did not run.
+- Account for every context question: name the claims that answer it, or mark it not applicable with why. A question with none is UNCOVERED, like a lens that did not run.
 - For an `absent` claim a design or plan decision will rest on, its `{command, output: ""}` evidence is rerun in-run (`reference/evidence_contract.md`); per protocol Step 1.5, rerun first-party only when the claim is not VERIFIED.
 - Verify premise contradictions first-party. Reconcile conflicting claims against evidence, never sort order or vote count.
 - Preserve every material claim/provenance when grouping. Report uncovered scope before any clean-sounding summary.

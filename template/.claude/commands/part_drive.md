@@ -26,7 +26,7 @@ Run [`/plan_part <part>`](plan_part.md)'s briefing procedure; its HARD-STOPs and
 
 ## Plan
 
-The plan file lands at `.claude/plans/<slug>.md` with the header `**Roadmap:** <path> — Part **<ID>**`, which drives `/session_end` drift detection. Its sections and admission follow [`plan_file_format.md`](../skills/_brainstorm_shared/plan_file_format.md) and `execution_depth.md` §Admission table.
+The plan file lands at `.claude/plans/<slug>.md` with the header `**Roadmap:** <path> — Part **<ID>**`, which drives `/session_end` drift detection. Its sections follow [`plan_file_format.md`](../skills/_brainstorm_shared/plan_file_format.md), and its depth the sizing (`drive_spine.md` §Sizing).
 
 Who drafts the plan (an architect-tier arm or this session), at what effort and through which brief follows `orchestration` reference `drive_dispatch.md` *Plan drafts*.
 

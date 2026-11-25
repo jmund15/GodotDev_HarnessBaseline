@@ -4,8 +4,8 @@ What rigor changes at each stage this layer adds, beyond every panel's rule in `
 
 | Stage | Owner file | What rigor changes |
 |---|---|---|
-| Admission rows | `skills/_brainstorm_shared/execution_depth.md` §Admission table | Which stages run follows the work's fields, so a risky change never skips its review at light. Two rows size the candidate review's panel by rigor: candidate width (`execution_depth.md` §Candidate width) and the harness-quality seat. |
-| Premises block, Instruction-quality load | `skills/_brainstorm_shared/execution_depth.md` §Admission table | Nothing: both are floors, with the same admission at every level. |
+| Admission rows | `skills/_brainstorm_shared/execution_depth.md` §What each element weighs | Which stages run follows the work's fields, so a risky change never skips its review at light. Two rows size the candidate review's panel by rigor: candidate width (`execution_depth.md` §Candidate width) and the harness-quality seat. |
+| Premises block, Instruction-quality load | `skills/_brainstorm_shared/execution_depth.md` §What each element weighs | Nothing: both are floors, with the same admission at every level. |
 | `/explore`, `explore_result.py` | `commands/explore.md`, `commands/agents/explore_agents.md` | Nothing. Claims carry `bearing` (relevance to the planner), not weight, and a missed premise costs rework at every level. |
 | `/idea_brainstorm_fanout` | `commands/idea_brainstorm_fanout.md` | Nothing. Generators return candidates, not findings, and nothing converges. |
 | `/architecture_brainstorm_redteam` | `commands/architecture_brainstorm_redteam.md` | The five-lens floor stays. APPROVE needs zero counting design-holes, zero dead-ends and every lens returned; `--auto` stops on a round with no new counting design-hole. A dead-end halts and a taste-fork counts at every level. |

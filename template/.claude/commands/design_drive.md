@@ -7,7 +7,7 @@ description: Drive multi-Part design work to shipped code or design-only
 
 **Input:** a design topic: free text, an `arch-pending` / `arch-rework` Part name (resolved on the nearest-ancestor `roadmap.md`), an MVP checkpoint (`MVP-N` in that roadmap's `## MVP Checkpoints`: its unchecked Required Parts, in Pos order, are the topic), an `ideation-complete` idea-bank doc or cluster, or a user-authored design doc.
 **Enters at:** ground, then design.
-**Owner stop:** design-lock (`design_contract.md` clause 8); the spine's halts apply.
+**Owner stop:** design-lock (`design_contract.md` clause 8), with an earlier owner read when a direction fork would make the challenge review an assumption (`drive_spine.md` §After each stage); the spine's halts apply.
 
 Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what a design topic adds.
 
@@ -53,7 +53,7 @@ N batched taste-forks are a SUCCESS state, not a halt ([`appetite_invariant.md`]
 
 ## Size at entry
 
-This command runs only for size = parts (`execution_depth.md` §Entry routing). Read size against the Size litmus as the first output after the `/explore` floor, before any design work, and state it in the design-lock report. A size below parts stops here and hands the dossier to `/feature_drive`, which reuses it.
+This command runs only for size = parts (`execution_depth.md` §Entry routing). State the sizing (`drive_spine.md` §Sizing) as the first output, before the `/explore` floor, which stays because the owner ruled that drive depth never narrows `/explore`'s coverage (2026-09-28, vault `Drive-Workflow-Redesign.md:297`); once the dossier returns, read size against the Size litmus before any design work, and state it in the design-lock report. A size below parts stops here and hands the dossier to `/feature_drive`, which reuses it.
 
 ## After design-lock approval
 

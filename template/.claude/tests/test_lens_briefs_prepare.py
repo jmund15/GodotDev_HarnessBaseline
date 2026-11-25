@@ -350,6 +350,24 @@ def plan_check_roster():
             {"key": "plc-memory-alignment", "effort": EFFORT}]
 
 
+def explore_merged_seat():
+    f = Fixture()
+    seat = "exp-prior-art+exp-integration-surface"
+    proc = f.prepare(mode="explore", seats=[{"key": seat, "rows": {PANEL: EFFORT}}],
+                     spillDir=str(f.scratch("run", "spill")))
+    good, detail = ok(proc)
+    jobs_path = f.out / "jobs_p.json"
+    document = json.loads(jobs_path.read_text(encoding="utf-8")) if jobs_path.exists() else {}
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    check("explore: a seat carrying two lenses prepares as one job", good and isinstance(jobs, list)
+          and len(jobs) == 1 and jobs[0].get("seat") == seat, detail)
+    brief = Path(jobs[0]["promptFile"]).read_text(encoding="utf-8") if jobs else ""
+    check("explore: a merged seat's brief tells it to tag each claim with its lens",
+          "Set each claim's `lens`" in brief, brief[-900:])
+    check("explore: a merged seat's brief asks for no review mandate map",
+          "checked.mandates" not in brief and "Set each finding's `agent`" not in brief, brief[-900:])
+
+
 def mode_plan_check():
     f = Fixture()
     proc = f.prepare(mode="plan-check", roster=plan_check_roster(),
@@ -1076,7 +1094,7 @@ def printed_tiers_are_the_guards():
 
 def main():
     check("test_lens_briefs_prepare.py finds the tool it proves", (TOOLS / "lens_briefs.py").is_file())
-    for case in (mode_explore, explore_manual_seat, mode_plan_check, owner_pick_survives_the_ledger_plan, mode_pr_review, mode_design_redteam, mode_pr_ready,
+    for case in (mode_explore, explore_merged_seat, explore_manual_seat, mode_plan_check, owner_pick_survives_the_ledger_plan, mode_pr_review, mode_design_redteam, mode_pr_ready,
                  mode_session_audit, over_window_refusal, refusals_state_their_shape, sidecar_target, stale_kfm_snapshot,
                  task_text_not_backticked, task_default_checks, plan_check_default_carry,
                  later_round_diff, base_sizes_past_a_command_line,

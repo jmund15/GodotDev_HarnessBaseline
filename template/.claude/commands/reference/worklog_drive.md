@@ -22,7 +22,7 @@ The agentic prioritization-and-execution op: read the worklog, select logged ite
 
 **`--plan-only`** (any mode with a selection): stop after 4e's drafted plan and any surfaced pre-execution gate, before 4f logs a `tackle` event. A plan that did not run has nothing to log. `drive 3 --plan-only` is the single-session plan-to-approval default.
 
-Each selected item is driven at the depth [`_brainstorm_shared/execution_depth.md`](../../skills/_brainstorm_shared/execution_depth.md) §Admission table assigns.
+Each selected item is driven at the depth its sizing states ([`_brainstorm_shared/drive_spine.md`](../../skills/_brainstorm_shared/drive_spine.md) §Sizing).
 
 **Scope-4: never selected, never driven.** Surface scope-4 work separately from the ready fill-set and route it to `/design_drive` (no design doc yet), `/part_drive` (roadmap Part exists) or `/feature_drive` (design settled, no Part admitted), against the item's linked Plan doc. Named-items mode applies the same redirect to an explicitly named scope-4 item.
 
@@ -110,7 +110,7 @@ Big-ticket (excluded): <title> — scope 4, see [[Plan doc]]. Route to /design_d
 
 Read each fill-set item's full `Context` / `Where` / `Source` block from `Worklog.md` before scoping it — never the mirror line (`feedback_plan_worklog_items_from_source_not_mirror`).
 
-Apply `execution_depth.md` §Admission table's fast-path outline when no Plan stage is admitted. Use the body below only for an admitted Plan stage. Under `--plan-only` the requested plan body is always written out — it is the deliverable.
+Apply `execution_depth.md` §What each element weighs's fast-path outline when no Plan stage is admitted. Use the body below only for an admitted Plan stage. Under `--plan-only` the requested plan body is always written out — it is the deliverable.
 ```
 ## Plan: <title-or-fill-set-name>
 
@@ -150,13 +150,13 @@ After landing: `/worklog complete <title>` (commit hash <pending>).
 
 #### 4e — Conditional `/plan_check`
 
-Decide plan-check admission for **each** drafted plan per `execution_depth.md` §Admission table — a shape partition produced two plans, each judged on its own. Nothing auto-invokes it; this step does.
+Decide plan check for **each** drafted plan from the sizing (`drive_spine.md` §Sizing) — a shape partition produced two plans, each judged on its own. Nothing auto-invokes it; this step does.
 
 - **Admitted → run `/plan_check <plan-file>` now** on every admitted plan, lens set by that plan's own shape, and converge before executing; seat width follows `orchestration` §2.
 - **`--plan-only` → surface it instead of running it**, so the user approves plan and check together:
   ```
   ---
-  **Pre-execution gate:** Plan check is admitted for this plan (`execution_depth.md` §Admission table: <fact that holds>). Recommend `/plan_check <this-plan>` before approval.
+  **Pre-execution gate:** Plan check runs for this plan (`drive_spine.md` §Sizing: <fact that holds>). Recommend `/plan_check <this-plan>` before approval.
   ```
 - **Not admitted → omit the block and proceed.**
 

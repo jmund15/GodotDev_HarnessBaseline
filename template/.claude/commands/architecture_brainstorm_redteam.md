@@ -23,7 +23,7 @@ Both modes **augment** the Socratic dialogue — they never replace it (`feedbac
 - **Mode B — interleaved:** the per-step adversarial pass during the `architecture_brainstorm` skill's Socratic-and-approaches Steps 2 and 4 and its Part-authoring Step 5 procedure. Its taste-forks become Socratic seeds for the user; its design-holes feed back into the live design before the next question or commitment review.
 - **Mode A — standalone:** the full-doc hardening pass at the `architecture_brainstorm` skill's Doc-and-review Step 7 self-review checklist, before the design hardens into roadmap Parts. This is also the independent adversarial pass the self-review procedure invokes.
 
-Whether the design challenge is admitted follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Admission table, Design challenge row.
+Whether the design challenge runs follows the sizing and [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §What each element weighs, its Design challenge row.
 
 ## Step 0: Gather the input (mode-dependent, Claude-side — push-don't-pull)
 

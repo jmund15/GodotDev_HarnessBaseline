@@ -6,8 +6,8 @@ Report keyword-matched domains and their memory, skill and rule associations.
 Why:
 - CLAUDE.md mandates "search auto-memory and load relevant Skills before planning"
   but enforcement is self-discipline. The /plan_check command covers high-stakes
-  plans; this hook covers the routine plans where plan check is not admitted
-  (execution_depth.md §Admission table).
+  plans; this hook covers the routine plans where the sizing gives no plan check
+  (drive_spine.md §Sizing).
 - The plan FILE is the one artifact every planning path produces, so it is the
   only reliable trigger. (Plan Mode is retired — see
   feedback_plan_mode_retired_from_planning_flow — so the former ExitPlanMode

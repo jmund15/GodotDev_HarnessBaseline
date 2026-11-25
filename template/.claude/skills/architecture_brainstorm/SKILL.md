@@ -42,7 +42,7 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 - [ ] Task is not in the SKIP categories below.
 - [ ] Candidate ideas EXIST — either from `/idea_brainstorm` (read its idea-bank doc), from a mature domain with canonical patterns, or from the user's own framing. If not, route to `/idea_brainstorm` first.
 
-Whether this skill runs follows [`execution_depth.md`](../_brainstorm_shared/execution_depth.md) §Admission table, Design row.
+Whether this skill runs follows the sizing and [`execution_depth.md`](../_brainstorm_shared/execution_depth.md) §What each element weighs, its Design row.
 
 **Autonomous alternative — [`/design_drive`](../../commands/design_drive.md):** satisfies the [design contract](../_brainstorm_shared/design_contract.md) through its required artifact gates with free-form process and taste batched to one design-lock gate. Use this skill when the user's taste enters continuously.
 

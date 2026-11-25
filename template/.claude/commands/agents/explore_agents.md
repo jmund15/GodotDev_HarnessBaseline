@@ -29,18 +29,18 @@ Every lens ends its reply with the claims object as one ```` ```json ```` fence,
 
 ## Lens Roster & Trigger Rules
 
-Select each independently needed dimension by the table. Reuse a dimension only when existing evidence answers the current topic's questions and its relevant sources remain verified and unchanged; cite that evidence when omitting its lens. A dispatched lens whose precondition turns out not to hold returns zero claims with `stoppedAt: "trigger-not-met"`; that is a legitimate empty and the engine reports it as such.
+Every lens whose trigger holds names the questions it covers, and the dossier answers each or marks it not applicable with why. Answer a question one read or script settles before dispatch (§1e). Size the jobs from the work: a small topic carries several lenses' questions in one job, and a large lens splits (`orchestration` §0: a command's mandates are a coverage floor, not a seat count). Reuse a dimension only when existing evidence answers the current topic's questions and its relevant sources remain verified and unchanged; cite that evidence when omitting its lens. A dispatched lens whose precondition turns out not to hold returns zero claims with `stoppedAt: "trigger-not-met"`; that is a legitimate empty and the engine reports it as such.
 
-| Lens | Trigger |
-|---|---|
-| `exp-memory` | relevant memory constraints and gotchas remain unverified |
-| `exp-prior-art` | relevant existing owners or families remain unverified |
-| `exp-integration-surface` | topic names an existing type, file, scene, global singleton, or blackboard key |
-| `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula; Harness/Meta process and tooling topics never trigger `exp-design-source` |
-| `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command |
-| `exp-external-truth` | the topic's correctness depends on engine/library behavior (engine, library, test framework, runtime) |
-| `exp-empirical-state` | topic touches Logic-domain code with tests, or authored data files |
-| `exp-change-ease` | `/explore --make-this-easy "<change>"` was invoked |
+| Lens | Trigger | Questions it covers |
+|---|---|---|
+| `exp-memory` | relevant memory constraints and gotchas remain unverified | which memorialized gotchas, failure modes and cross-cutting rules bear on the topic |
+| `exp-prior-art` | relevant existing owners or families remain unverified | what already owns the concern; why each piece the change edits or removes exists |
+| `exp-integration-surface` | topic names an existing type, file, scene, global singleton, or blackboard key | who consumes what would change; where else the touched surface runs |
+| `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula; a harness topic triggers it too, since the approved harness designs live in the vault's `Claude/Meta/` | what the vault, roadmap, and the owner's words and rulings already say about the subject |
+| `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command | which rule, skill, command, gate or hook already governs the work; whether a target is baseline-tracked |
+| `exp-external-truth` | the topic's correctness depends on engine/library behavior (engine, library, test framework, runtime) | what the engine, library or runtime actually does at the pinned version; deprecations and changes |
+| `exp-empirical-state` | topic touches Logic-domain code with tests, or authored data files | what the tests and authored data show now; defects in the touched code |
+| `exp-change-ease` | `/explore --make-this-easy "<change>"` was invoked | what makes the named change hard today, and what must not move |
 
 `exp-change-ease` runs only in that mode and is additive to whatever the trigger table already selected — the friction survey is worthless without the prior-art and blast-radius claims it reads against.
 
@@ -97,6 +97,7 @@ Enumerate every capability, type, configuration surface, or authored value the t
 3. **Owner and consumers** — record the candidate owner's actual implementers, authored slots and consumers. Report an existing owner whenever the proposed concern fits it, even when its family has a single implementer. A count is evidence, not permission to ignore an owner.
 4. **Authored surfaces, not just types** — an existing authored field (an export, config key or schema field), parameter, or authored data file field already carrying the value is the same finding as an existing class. Grep the authored data files for a field already authoring it.
 5. **Name collision** — types registered globally by simple name (e.g. Godot `[GlobalClass]` Resources) collide regardless of namespace. Check the simple name repo-wide.
+6. **Why it exists** — for each existing piece the topic edits, replaces or removes: its origin commit (`git log --follow --diff-filter=A -- <path>`), the owner words, plan or vault design its commits cite, and its fix history (`git log --oneline -- <path>`). A reason that lives only in a plan or design doc names that source. Report the reason as found; never judge whether it still holds.
 
 ## What each finding becomes
 - An existing family/type/field that owns the concern → `bearing: "reuse-candidate"`, evidence = the declaration line plus the sibling list.
@@ -116,7 +117,7 @@ Enumerate every capability, type, configuration surface, or authored value the t
 ### exp-integration-surface (who consumes what this topic would change?) — triggered
 
 ```
-You are exp-integration-surface. You establish the blast radius: what already depends on the code, scenes, and data the topic would touch. Prior art asks "does this exist?"; you ask "who breaks?"
+You are exp-integration-surface. You establish the blast radius: what already depends on the code, scenes, and data the topic would touch, and where else they run. Prior art asks "does this exist?"; you ask "who breaks?"
 
 **RULES: Do NOT use TodoWrite. Return the claims schema ONLY. The language server is banned under the concurrency guard — anchor with Grep and Read. Every blast-radius claim states its evidence rung, and an LSP-exhaustive enumeration is a reported GAP rather than an estimate — the `survey` guard's ladder governs, and it is injected into this dispatch.**
 
@@ -127,6 +128,7 @@ For each existing symbol, file, scene, or data key the topic names:
 3. **Blackboard keys / signals / events** — Grep the string key, event or signal name; a string-keyed contract has no compiler check, so its consumers are only findable this way.
 4. **Test coverage of the touched surface** — which of the project's test suites exercise it. This tells the planner whether a change is gated.
 5. **Global and singleton reach** — any global or singleton access (e.g. `X.Instance`) to the touched system.
+6. **Where else it runs** — each other place the touched surface executes or is read: another project or the shared repo (a lock row, a publish), cloud and other platforms, concurrent sessions and worktrees, sidecar providers, the owner's devices; in game code, every entity class that can hold the touched trait, effect or semantic category. A place no read can confirm is a gap, never an absence.
 
 ## What each finding becomes
 - A consumer a change would break → `bearing: "blast-radius"`, `file` = `path:line`, evidence = the matched line verbatim.
@@ -146,15 +148,16 @@ For each existing symbol, file, scene, or data key the topic names:
 ### exp-design-source (is this already designed, planned, or specified?) — triggered
 
 ```
-You are exp-design-source. You establish what the Obsidian vault — the source of truth for design, lore, and formulas — already says about this topic, so a plan does not re-invent a decision that is already recorded.
+You are exp-design-source. You establish what the Obsidian vault — the source of truth for design, lore, and formulas — already says about this topic, and what the owner has said and ruled on it, so a plan does not re-invent a decision that is already recorded.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. DO NOT INVENT FORMULAS — read them from the vault verbatim or report their absence. Read only within the project's design vault folders.**
+**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. DO NOT INVENT FORMULAS — read them from the vault verbatim or report their absence. Read within the project's design vault folders and the owner-turn pages, state files and harness goal file the CONTEXT names.**
 
 ## Your Scope
 1. **Existing design doc** — search the vault for a doc covering this topic. Grep the WHOLE doc, not just the section that names your topic: sibling sections carry prescriptions that bind it (`gotcha_design_doc_cross_section_prescriptions`).
 2. **Roadmap state** — is there a Part covering this? What state is it in, and are its dependencies satisfied? A Part may already be SHIPPED while reading as pending — check the code, not just the roadmap row.
 3. **Formulas and constants** — quote any numeric rule verbatim with its source doc and heading.
 4. **Open questions** — any `## Open Questions` item in a covering doc is a fork the plan must resolve rather than silently pick.
+5. **Owner words and rulings** — the owner-turn pages staged in the run directory, the state files under `.claude/work/` and, for a harness topic, the harness goal file: quote each sentence that sets, rules on or rejects something about this subject, with its source and date. An agent's summary of the owner is not the owner's words.
 
 ## Explicit non-scope
 Do NOT survey the worklog backlog. `/worklog`'s relevance check owns that surface, runs once per session, and reads the titles mirror without loading it into context. Duplicating it here wastes tokens and produces a second, divergent answer.
@@ -183,7 +186,7 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 ## Your Scope
 1. **Governing procedure** — is there a SKILL, command, or `rules/*.md` that owns this class of work? Check `.claude/skills/`, `.claude/commands/`, `.claude/rules/`.
 2. **Existing executor** — is there already a command, workflow script, tool or reference procedure that DOES this, searched by the job, not the topic's domain? A near-miss counts: name it and say what it does not cover.
-3. **Gates** — which gate applies (the project's regression gate for code, which `change_control` §Gate cadence names; `/plan_check` when `execution_depth.md` §Admission table admits it; `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
+3. **Gates** — which gate applies (the project's regression gate for code, which `change_control` §Gate cadence names; `/plan_check` when the sizing calls for it (`drive_spine.md` §Sizing); `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
 4. **Baseline tracking** — is any file the topic would edit listed in `.claude/baseline.lock.json`? A tracked file is shared doctrine across projects, which changes the blast radius of editing it.
 5. **Hook coverage** — does a hook already enforce or nudge this? A hook that fires on the same trigger is either the answer or a conflict.
 
@@ -243,6 +246,7 @@ You are exp-empirical-state. You establish the observable state of tests and aut
 3. **Gate reachability** — do the relevant suites sit under a namespace the project's regression gate filter picks up (`change_control` §Gate cadence names the gate)? A test outside the filter never runs.
 4. **Authored data corpus** — for a topic touching authored data files, what values are actually authored today? Grep the corpus for the field and report the real range, not the type default. An authored data file that omits a field carries the type default, not the exemplar's value (`gotcha_cloned_tres_omissions_are_type_defaults`).
 5. **Existing fixtures and doubles** — which of the project's shared fixtures and test doubles already covers the interfaces involved.
+6. **Defects in the touched code** — an error-level line in a recent run log or artifact for the surface, a TODO, FIXME or disabled branch in the touched files, and an authored field no code reads. Report each as found; the design decides what to do with it.
 
 ## What each finding becomes
 - Existing coverage → `bearing: "constraint"` (it pins behavior the plan must not break), evidence = the test method name plus its key assert line.

@@ -18,7 +18,7 @@ Fans a single cluster's **Diverge** phase out across N generator agents — each
 
 ## When to use
 
-Fan-out is opt-in; default `/idea_brainstorm` stays single-agent. Whether it is admitted for a cluster follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Admission table. This command keeps the lens rubric below.
+Fan-out is opt-in; default `/idea_brainstorm` stays single-agent. Whether it runs for a cluster is the sizing's call (`drive_spine.md` §Sizing). This command keeps the lens rubric below.
 
 ## Step 0: Assemble the cluster CONTEXT (Claude-side — push-don't-pull)
 

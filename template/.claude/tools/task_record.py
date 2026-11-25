@@ -48,10 +48,11 @@ refuses the write and prints its replacement; legacy reproduction commands are n
     task_record.py show <task_id> | active --session <sid> | block <task_id> [--max-bytes N]
     task_record.py check <task_id> [--rerun]
 
-**One-call open.** `open --spec <spec.json>` opens the record, its requirements and exclusions, its scope and its
-triage in one transaction; the spec's keys are `session`, `title`, `requirements[]`, `exclusions[]`,
-`scope{owner,files[]}` and `triage{fields,paths[],outward[]}`. The same spec on an existing record is a no-op; a
-different spec is refused (edit through `add`/`triage`). A bare `open` on an existing record needs `--reset`.
+**One-call open.** `open --spec <spec.json>` opens the record, its requirements and exclusions, and its scope in one
+transaction; the spec's keys are `session`, `title`, `requirements[]`, `exclusions[]` and `scope{owner,files[]}`, and
+a `triage{fields,paths[],outward[]}` block is recorded when the spec carries one, else through `task_record.py triage`.
+The same spec on an existing record is a no-op; a different spec is refused (edit through `add`/`triage`). A bare
+`open` on an existing record needs `--reset`.
 
 `task_for` and `acceptance_text` are the brief-building default: `lens_briefs` and `sidecar_fanout` write the session's
 record's requirements and exclusions into every brief they build, unless the caller passes `task: false` (or `--no-task`)
@@ -136,7 +137,7 @@ SPEND_EFFECTS = ("lean", "normal")
 TRIAGE_ORDER = ("reach", "reversibility", "design", "grounding", "oracle", "size", "kind")
 SPEC_KEYS = ("session", "title", "requirements", "exclusions", "scope", "triage")
 SPEC_ACCEPTS = ("accepts: open <task_id> --spec <spec.json> [--reset], spec keys session, title, "
-                "requirements[], exclusions[], scope{owner,files[]}, triage{fields,paths[],outward[] optional}")
+                "requirements[], exclusions[], scope{owner,files[]}; triage{fields,paths[],outward[]} optional")
 SPEC_EXAMPLE = "example: python3 .claude/tools/task_record.py open my-task --spec .claude/scratch/my-task/spec.json"
 
 
@@ -317,12 +318,14 @@ def _string_list(value, name):
 
 
 def _validate_spec(spec):
-    """Normalize one spec object and derive its triage floor; returns (record fields, triage block)."""
+    """Normalize one spec object and derive its triage floor when the spec carries one; returns
+    (record fields, triage block or None). The record is opened without triage and records it through
+    `task_record.py triage`, so a spec that names none is complete."""
     import triage
     if not isinstance(spec, dict):
         raise _spec_refusal("the spec must be a JSON object")
     extra = sorted(set(spec) - set(SPEC_KEYS))
-    missing = sorted(set(SPEC_KEYS) - set(spec))
+    missing = sorted(set(SPEC_KEYS) - {"triage"} - set(spec))
     if extra:
         raise _spec_refusal("spec names unknown keys: %s" % ", ".join(extra))
     if missing:
@@ -336,7 +339,13 @@ def _validate_spec(spec):
         raise _spec_refusal("spec scope must be an object with exactly owner and files")
     if scope["owner"] is not None and not isinstance(scope["owner"], str):
         raise _spec_refusal("spec scope.owner must be a string or null")
-    triage_spec = spec["triage"]
+    record = {"session": spec["session"], "title": spec["title"],
+              "requirements": _string_list(spec["requirements"], "requirements"),
+              "exclusions": _string_list(spec["exclusions"], "exclusions"),
+              "owner": scope["owner"], "files": _string_list(scope["files"], "scope.files")}
+    triage_spec = spec.get("triage")
+    if triage_spec is None:
+        return record, None
     if not isinstance(triage_spec, dict) or not set(triage_spec) <= {"fields", "paths", "outward"}:
         raise _spec_refusal("spec triage must be an object with fields, paths and outward")
     if not {"fields", "paths"} <= set(triage_spec):
@@ -374,15 +383,11 @@ def _validate_spec(spec):
         fields[name] = value
     fields, derived = _derive_floor(fields, paths)
     block = {"fields": fields, "paths": paths, "outward": outward, "derived": derived, "at": now()}
-    record = {"session": spec["session"], "title": spec["title"],
-              "requirements": _string_list(spec["requirements"], "requirements"),
-              "exclusions": _string_list(spec["exclusions"], "exclusions"),
-              "owner": scope["owner"], "files": _string_list(scope["files"], "scope.files")}
     return record, block
 
 
 def open_from_spec(task_id, spec_path, reset=False):
-    """Open, record and triage a task record in one transaction from a JSON spec.
+    """Open and record a task record from a JSON spec, with a triage block when the spec carries one.
 
     The same spec on an existing record is a no-op; a different spec is refused, because the record
     already exists and `add`/`triage` are its edit routes. `--reset` replaces it."""
@@ -394,12 +399,12 @@ def open_from_spec(task_id, spec_path, reset=False):
     except json.JSONDecodeError as exc:
         raise _spec_refusal("spec %s is not JSON: %s" % (spec_path, exc))
     fields, triage_block = _validate_spec(spec)
-    digest = hashlib.sha256(json.dumps(
-        {"session": fields["session"], "title": fields["title"], "requirements": fields["requirements"],
-         "exclusions": fields["exclusions"], "scope": {"owner": fields["owner"], "files": fields["files"]},
-         "triage": {"fields": triage_block["fields"], "paths": triage_block["paths"],
-                    "outward": triage_block["outward"]}},
-        sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+    spec_shape = {"session": fields["session"], "title": fields["title"], "requirements": fields["requirements"],
+                  "exclusions": fields["exclusions"], "scope": {"owner": fields["owner"], "files": fields["files"]}}
+    if triage_block:
+        spec_shape["triage"] = {"fields": triage_block["fields"], "paths": triage_block["paths"],
+                                "outward": triage_block["outward"]}
+    digest = hashlib.sha256(json.dumps(spec_shape, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
 
     def conflict():
         raise _spec_refusal("record %s is already open with a different spec; edit it with `task_record.py add` "
@@ -417,7 +422,9 @@ def open_from_spec(task_id, spec_path, reset=False):
            "exclusions": fields["exclusions"], "decisions": [],
            "scope": {"owner": fields["owner"], "files": fields["files"]},
            "phase": None, "active_jobs": [], "slices": [], "accepted_artifacts": [], "admissions": [],
-           "next_action": None, "triage": triage_block, "spec_sha256": digest}
+           "next_action": None, "spec_sha256": digest}
+    if triage_block:
+        rec["triage"] = triage_block
 
     def mutation(state):
         if state.get("task_id") and not reset:

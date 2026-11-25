@@ -21,13 +21,9 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 
 ## Behaviour per situation
 
-**Rule:** A design, plan or brief states each task as who + situation + goal, and states the behaviour in each situation the person meets over the object's life, not at first use only. The situations are open; common ones are the first time, again, partly done, after an edit, empty, large and a failure. A data size is one kind of situation, never the whole list.
+**Rule:** A design, plan or brief states each task as who + situation + goal, and the behaviour in each situation the person meets over the object's life, not at first use only.
 
-- **Every derived value names its facts.** For each value the design derives (a default, a suggestion, a count, a label, which view opens), state the facts it reads and its value in each situation. A value that ignores a fact its own surface shows is a defect.
-- **A check asserts the value.** A test or acceptance row for a derived value asserts its value in each situation, never only that its control appears.
-- **An approval covers what it showed.** An owner's approval covers the states the approved artifact shows. Behaviour in a state it does not show is the agent's design, judged by this rule.
-- *Litmus:* for each derived value, find a situation where a fact it does not read changes the right answer. One exists → the value is wrong or unstated.
-- *Concrete:* a duration suggested from the estimate alone reads wrong after part of the work is booked; a surface reopened to repeat an action that shows the earlier uses first makes the repeat slower than the first.
+→ `reference/behaviour_per_situation.md` — read it when a design derives a value (a default, a suggestion, a count, which view opens) or writes its acceptance: each derived value names its facts, a check asserts the value in each situation, and an approval covers only the states it showed.
 
 ## Coupling & Discovery
 
@@ -198,22 +194,7 @@ Authored data is an API surface: configuration fields and data files carry the s
 
 **Rule:** Before adding a new class / Component / State / Resource subclass / `*Helper`, ask: **if I deleted this and inlined its body at every caller, what would scatter?**
 
-- **Deep module** — deleting it forces every caller to re-implement substantial logic, *and* the re-implementations would each need their own design decisions (which the module currently centralises). The interface earns its keep because it hides real complexity. Keep it.
-- **Shallow module** — deleting it changes nothing meaningful. Each caller absorbs a one-liner. The module's interface lists nearly every parameter the implementation needs; it's a redirection layer, not an abstraction. Inline it.
-
-**Heuristic:** if your interface signature lists every parameter the implementation needs, the module is shallow. Deep modules narrow the interface and absorb decisions internally.
-
-**Signal:** a `*Helper` / `*Utils` / `*Service` / `*Manager` class with one or two static methods that forward most of their arguments to another class is usually shallow. Either:
-
-1. **Inline at the call site** (delete the indirection), OR
-2. **Deepen the module** — move more decisions inside, narrow the parameter list, take a context object instead of 6 individual parameters.
-
-**Where this complements existing rules:**
-
-- `structure_rules.md` R9 ("no single-file folders") and R10 ("no mixed concerns in a flat folder") detect shallow patterns at the *folder* level. The Deletion Test extends the diagnostic to *interface signatures* — a folder full of one-liner classes can pass R9 while still being shallow.
-- The *Resource Strategy Hierarchies* and *Composable Configuration Resources* patterns above are the *positive* form of this rule: extension via deep abstract bases with concrete subclasses absorbing real configuration. The Deletion Test is the *negative* form: detecting indirections that don't earn their keep.
-
-**When applied during diagnosis:** if the `debugging` skill's Phase 5 surfaces a "no correct seam exists" finding, the Deletion Test articulates *why* — the seam-less area is usually a chain of shallow modules that each pushed responsibility downstream until the seam dissolved. Use this vocabulary in the Worklog `arch | <description>` entry to scope the future architectural work.
+→ `reference/deletion_test.md` — the deep and shallow module signs, the interface-signature heuristic, the `*Helper`/`*Utils`/`*Service`/`*Manager` signal with its exits, how the test complements the `structure_rules.md` folder checks, and its use when `debugging` finds no correct seam.
 
 ## Data-Driven Design — choose the right shape
 

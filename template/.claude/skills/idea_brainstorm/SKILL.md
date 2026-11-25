@@ -27,7 +27,7 @@ Produce the idea-bank doc and STOP.
 
 ## 2. When Ideation Runs
 
-One litmus decides: *is the design space unpopulated?* Run this skill when candidate ideas would have to be invented for a creative or spatial topic that no idea-bank or design doc covers (Step 1's check). Route to `/architecture_brainstorm` when canon or the user already populates the space: a mature domain whose named approaches you can list without searching, a convergent tactical or mechanical topic, a user who says to skip to design, or an `ideation-complete` doc. Whether the triage admits a brainstorm skill at all follows [`execution_depth.md`](../_brainstorm_shared/execution_depth.md) §Admission table.
+One litmus decides: *is the design space unpopulated?* Run this skill when candidate ideas would have to be invented for a creative or spatial topic that no idea-bank or design doc covers (Step 1's check). Route to `/architecture_brainstorm` when canon or the user already populates the space: a mature domain whose named approaches you can list without searching, a convergent tactical or mechanical topic, a user who says to skip to design, or an `ideation-complete` doc. Whether a brainstorm skill runs at all is the sizing's call (`drive_spine.md` §Sizing).
 
 ## 3. Workflow Position
 
@@ -58,7 +58,7 @@ Optional, and ONLY for **scope-framing** — constraints the pool should respect
 
 Run the pipeline once per natural cluster. Clusters map to user-surfaced themes; a new one requires explicit *"I'm proposing a category you didn't mention"* framing.
 
-**Optional `--fan_out`.** On `/idea_brainstorm <topic> --fan_out` (or when `execution_depth.md` §Admission table admits fan-out for the cluster), **Diverge** dispatches to [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md): N lens-diverse generators, an independent critique pass (dedup / fit / coverage-gap), then the raw pool + annotations return here. Opt-in; no flag means single-agent Diverge. It replaces **only** Diverge — Filter → Hone → Cluster & rank → present, the per-cluster user-react loop and the Hard Gate run unchanged. **Curation never leaves Claude:** the fan-out generates and critiques, never decides what survives.
+**Optional `--fan_out`.** On `/idea_brainstorm <topic> --fan_out` (or when the sizing calls for a fan-out for the cluster, `drive_spine.md` §Sizing), **Diverge** dispatches to [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md): N lens-diverse generators, an independent critique pass (dedup / fit / coverage-gap), then the raw pool + annotations return here. Opt-in; no flag means single-agent Diverge. It replaces **only** Diverge — Filter → Hone → Cluster & rank → present, the per-cluster user-react loop and the Hard Gate run unchanged. **Curation never leaves Claude:** the fan-out generates and critiques, never decides what survives.
 
 **Hidden (agent context only):**
 
