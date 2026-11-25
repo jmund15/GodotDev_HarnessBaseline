@@ -122,4 +122,4 @@ folder needs role subfolders or relocation. A `hybrid` subsystem follows its doc
 4. For a new top-level folder, update the registry in the same change.
 5. Use ASK for ownership, hybrid-style, and growth judgments, and PLAN for a namespace change.
 
-Run the project's structure audit, where it ships one, after a structural change or as an explicit hygiene pass.
+When to run the project's structure audit, where it ships one, is owned by that command.

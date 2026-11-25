@@ -62,9 +62,15 @@ import _optional_hooks  # noqa: E402 - after the sys.path insert above
 
 # (module basename, budget seconds). A plain literal: other tools read it with ast.literal_eval.
 CHAIN = (
+    ("prompt_memory_loader", 30),
+    ("critical_analysis_reminder", 30),
     ("prompt_git_state_delta", 15),
+    ("shell_census", 25),
     ("sidecar_watch_rearm", 5),
+    ("budget_posture", 15),
+    ("activity_registry", 15),
     ("overnight_ask_guard", 5),
+    ("skill_load_marker", 5),
 )
 
 # Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
@@ -80,7 +86,7 @@ UNWIRED = (
 
 # Members whose standalone `__main__` block swallows main()'s exceptions and exits 0, so text they
 # printed before the exception is still delivered there.
-_SWALLOWS = frozenset()
+_SWALLOWS = frozenset({"budget_posture", "activity_registry"})
 
 DEFAULT_REPORT_RECORDS = 100
 _TIMING_WRITE_BUDGET = 1.5

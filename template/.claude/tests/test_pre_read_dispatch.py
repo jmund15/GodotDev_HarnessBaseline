@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Re-runnable proof for hooks/pre_read_dispatch.py — the PreToolUse read/search chain.
 
-One sub-hook runs in the interpreter: semantic_search_scope_guard (block, or a rewrite through updatedInput).
+Sub-hooks run in the interpreter: indexed_reference_guard (main advice, delegate block) and
+semantic_search_scope_guard (block, or a rewrite through updatedInput) and
+video_read_hint (advisory).
 Each case below feeds a real PreToolUse payload by subprocess and asserts on the emitted channel: exit 2 +
 stderr for a block, hookSpecificOutput for a rewrite or fault note, nothing for a clean call. An exit code
 outside {0, 2} is a CRASH, never an allow.
@@ -29,7 +31,7 @@ SEARCH_TOOL = "mcp__plugin_semantic-search_semantic-search__search"
 sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 import _optional_hooks  # noqa: E402
 
-SUBHOOKS = ("semantic_search_scope_guard",)
+SUBHOOKS = ("indexed_reference_guard", "semantic_search_scope_guard", "video_read_hint")
 
 
 def run(payload, env, raw=None):
@@ -100,6 +102,39 @@ def main():
     crash_free("a clean small Read emits nothing and exits 0", rc, out, err,
                rc == 0 and out in ("", "{}") and err == "")
 
+    # --- indexed_reference_guard: main advice, delegate block ----------------
+    # Optional members ship with higher layers; a consumer without one runs the dispatcher's other cases.
+    member = _optional_hooks.present
+    if member("indexed_reference_guard"):
+        indexed = os.path.join(CLAUDE, "commands", "agents", "plan_check_agents.md")
+        rc, out, err = run(call("Read", {"file_path": indexed}), env)
+        try:
+            indexed_advice = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        except (ValueError, KeyError, TypeError):
+            indexed_advice = ""
+        crash_free("main-session indexed Read proceeds with accessor advice on the model channel",
+                   rc, out, err, rc == 0 and err == "" and "lens.py get --shared" in indexed_advice)
+        rc, out, err = run(call("Read", {"file_path": indexed, "offset": 1, "limit": 40}), env)
+        crash_free("a bounded Read of the same reference passes", rc, out, err, rc == 0 and out in ("", "{}"))
+        rc, out, err = run(call("Read", {"file_path": indexed}, agent_id="agent-9",
+                                agent_type="workflow-subagent"), env)
+        crash_free("a subagent deny cites guards/common.md and names the accessor next step",
+                   rc, out, err, rc == 2 and "guards/common.md" in err
+                   and "read a catalog with an accessor through it" in err
+                   and "lens.py get --shared" in err)
+        rc, out, err = run(call("Read", {"file_path": indexed, "offset": 1, "limit": 40},
+                                agent_id="agent-9", agent_type="workflow-subagent"), env)
+        crash_free("a bounded Read passes for a subagent too", rc, out, err, rc == 0)
+
+    # --- video_read_hint: a video or GIF Read names the contact-sheet skill, advisory only ---------------
+    if _optional_hooks.present("video_read_hint"):
+        rc, out, err = run(call("Read", {"file_path": os.path.join(tmp, "clip.mp4")}), env)
+        crash_free("a Read of a video advises the video_frames skill and proceeds", rc, out, err,
+                   rc == 0 and err == "" and "video_frames" in context_of(out))
+        rc, out, err = run(call("Read", {"file_path": small}), env)
+        crash_free("a Read of a text file carries no video advice", rc, out, err,
+                   rc == 0 and "video_frames" not in context_of(out))
+
     # --- semantic_search_scope_guard: correct or block, not subagent-exempt ------------
     sub_root = os.path.join(ROOT, ".claude")
     rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": sub_root}), env)
@@ -116,8 +151,7 @@ def main():
                rc == 0 and err == "")
 
     # A present optional member's broken import is reported on the model channel and the call proceeds.
-    member = _optional_hooks.present
-    for name in ('semantic_search_scope_guard',):
+    for name in ('indexed_reference_guard', 'semantic_search_scope_guard', 'video_read_hint'):
         if not member(name):
             continue  # a project that does not carry this optional hook has no import to break
         script = (
@@ -129,6 +163,11 @@ def main():
             'sys.meta_path.insert(0, Broken())\n'
             f'runpy.run_path({DISPATCH!r}, run_name="__main__")\n')
         data = call('Read', {'file_path': small}, session='fault-' + name)
+        if name == 'video_read_hint':
+            data = call('Read', {'file_path': os.path.join(tmp, 'clip.mp4')}, session='fault-' + name)
+        if name == 'indexed_reference_guard':
+            data = call('Read', {'file_path': os.path.join(CLAUDE, 'commands', 'agents', 'plan_check_agents.md')},
+                        session='fault-' + name)
         proc = subprocess.run([sys.executable, '-c', script], input=json.dumps(data),
                               capture_output=True, text=True, encoding='utf-8', env=env, timeout=120)
         crash_free(name + ' import fault reports on model channel',

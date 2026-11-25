@@ -457,6 +457,14 @@ def plan_cases(url):
     cases.append(("a failed refresh is not retried within the cache TTL",
                   len(_stub_calls(root)) == 1 and first.get("status") == "auth-error"
                   and second.get("status") == "auth-error"))
+
+    sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
+    import model_name_guard
+    verdict = model_name_guard.process({
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(ROOT / ".claude" / "scripts" / "_unwritten_probe_copy.py"),
+                       "content": SCRIPT.read_text(encoding="utf-8")}})
+    cases.append(("model_name_guard passes the probe text", not (verdict or {}).get("deny")))
     return cases
 
 

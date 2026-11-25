@@ -26,6 +26,9 @@ the dispatch engine is named before an inline script is written.
 Fail posture: advisory-side writer — always exits 0; a failed write only means
 the consumer keeps denying, which is the safe direction for an enforcement pair.
 
+A command the owner types (`/codify ...`) puts its whole body into the context with no tool call: the
+UserPromptSubmit member (prompt_dispatch CHAIN) records it as the same load, from the prompt's leading `/name`.
+
 Wired in: settings.json hooks.PostToolUse with matcher "Skill" runs `main()`. A Read reaches
 `process()` through post_read_dispatch.py sub-hook 6, which calls it only for a path ending in
 `SKILL.md`.
@@ -33,8 +36,10 @@ Wired in: settings.json hooks.PostToolUse with matcher "Skill" runs `main()`. A 
 
 import json
 import os
+import re
 import sys
 
+from _owner_text import LEADING_INJECTION_RE
 from _hook_state import state_path, update_json_locked, fire_once_since_compaction, mark_skill_in_context
 
 
@@ -42,6 +47,10 @@ from _hook_state import state_path, update_json_locked, fire_once_since_compacti
 # evidence schema, after the script is written. The note lands at the decision, before the script exists.
 DISPATCH_NOTE = ("In this project, dispatch pinned jobs through /delegate (orchestration section 0), "
                  "not an inline Workflow script.")
+
+
+# The owner's typed command, at the start of the prompt: the raw `/name args` or the tagged row the client writes.
+_TYPED_COMMAND = re.compile(r"(?:<command-message>[^<]*</command-message>\s*<command-name>/|/)([\w:.-]+)(?=\s|<|$)")
 
 
 def main() -> None:
@@ -52,7 +61,7 @@ def main() -> None:
     note = process(input_data)
     if note:
         print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
+            "hookEventName": "UserPromptSubmit" if "prompt" in input_data else "PostToolUse",
             "additionalContext": note,
         }}))
     sys.exit(0)
@@ -65,7 +74,9 @@ def process(input_data):
     without another settings entry; the Skill registration still runs `main()`.
     """
     tool = input_data.get("tool_name")
-    if tool == "Skill":
+    if tool is None and "prompt" in input_data:
+        bare = typed_command_name(input_data.get("prompt"))
+    elif tool == "Skill":
         skill = ((input_data.get("tool_input") or {}).get("skill") or "").strip()
         # Bare name and plugin-prefixed form both record under the bare name.
         bare = skill.split(":")[-1]
@@ -94,6 +105,20 @@ def process(input_data):
     if bare == "workflow-authoring" and not agent_id and fire_once_since_compaction(session_id, "skill_load_marker:dispatch"):
         return DISPATCH_NOTE
     return ""
+
+
+def typed_command_name(prompt):
+    """`<name>` when the owner's prompt opens with a slash command (its whole body now fills the context), else "".
+    A UserPromptSubmit prompt is the owner's own text, so no agent's field stands in; a command named mid-sentence,
+    after other text, is no load."""
+    body = prompt if isinstance(prompt, str) else ""
+    while True:
+        lead = LEADING_INJECTION_RE.match(body)
+        if not lead:
+            break
+        body = body[lead.end():]
+    match = _TYPED_COMMAND.match(body.lstrip())
+    return match.group(1).split(":")[-1] if match else ""
 
 
 def _loaded_digest(name, payload):

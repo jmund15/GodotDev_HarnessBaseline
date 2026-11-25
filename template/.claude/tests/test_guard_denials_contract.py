@@ -62,9 +62,27 @@ def case_missing_root_is_reported_as_a_gap(directory):
     assert coverage["gaps"] and coverage["files"] == 0, done.stdout
 
 
+def case_hook_lines_follow_the_hooks_source_and_the_day_window(directory):
+    hooks = Path(directory) / "hooks"
+    hooks.mkdir()
+    (hooks / "widget_guard.py").write_text('DENY = "BLOCKED widget %s (rules/x.md): put it down"\n', encoding="utf-8")
+    rows = list(TRANSCRIPT)
+    rows[1] = dict(rows[1], message={"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+                                                   "content": 'PreToolUse:Bash hook error: [python3 "x/pre_bash_dispatch.py"]: '
+                                                              "BLOCKED widget a1 (rules/x.md): put it down"}]})
+    root = Path(directory) / "projects"
+    root.mkdir()
+    (root / "planted-session.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    everything = run("--roots", str(root), "--hooks", str(hooks))
+    assert "hook widget_guard Bash denials=1 sessions=1 repeat=0 identical=0" in everything.stdout.splitlines(), everything.stdout
+    recent = run("--roots", str(root), "--hooks", str(hooks), "--days", "3")
+    assert "hook widget_guard" not in recent.stdout and "calls 0" in recent.stdout.splitlines(), recent.stdout
+
+
 def main():
     cases = [case_unknown_flag_exits_nonzero, case_planted_denial_counted_under_its_category,
-             case_missing_root_is_reported_as_a_gap]
+             case_missing_root_is_reported_as_a_gap,
+             case_hook_lines_follow_the_hooks_source_and_the_day_window]
     failures = []
     for case in cases:
         directory = tempfile.mkdtemp(prefix="guard-denials-proof-")

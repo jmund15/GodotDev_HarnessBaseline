@@ -56,6 +56,12 @@ check("an armed subagent read of a protected path is refused", rc == 2, out + er
 rc, out, err = run(call("Write", {"file_path": ROOT + "/outside.txt", "content": "x"}, agent=False))
 check("an orchestrator call on the same session passes", rc == 0 and err.strip() == "", out + err)
 
+# The benchmark left the project: no shipped settings layer spawns this hook on every LSP, ai-worker or godot call.
+CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+registering = [name for name in sorted(os.listdir(CLAUDE_DIR)) if name.startswith("settings") and name.endswith(".json")
+               and "rail_probe_guard.py" in open(os.path.join(CLAUDE_DIR, name), encoding="utf-8").read()]
+check("no settings layer registers the hook", not registering, registering)
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

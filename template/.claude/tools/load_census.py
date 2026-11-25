@@ -210,7 +210,7 @@ SHARED_STATE_HOOK_SKIP = {
 
 # UserPromptSubmit hooks that write shared/machine-wide state and need the throwaway
 # project/home/temp tree `_isolated_hook_env` builds. Empty in this tree: its dispatcher chain
-# (prompt_git_state_delta, sidecar_watch_rearm, overnight_ask_guard) either resolves every write
+# (prompt_git_state_delta, sidecar_watch_rearm, overnight_ask_guard, skill_load_marker) either resolves every write
 # through a cache or state seam the profiler already redirects into its own temp tree
 # (HARNESS_GIT_STATE_CACHE_DIR, HARNESS_REAPER_CACHE_DIR, HARNESS_HOOK_STATE_DIR) or is skipped by
 # name. A profile (a layer that registers a hook resolving a write through CLAUDE_PROJECT_DIR or

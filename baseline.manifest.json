@@ -1932,6 +1932,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/correction_record_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/critical_analysis_reminder.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/dangerous_shell_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -2058,6 +2068,16 @@
     },
     {
       "path": ".claude/hooks/model_ladder_gate.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/model_name_exemptions.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/model_name_guard.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4822,6 +4842,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_budget_posture_no_seats.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_budget_posture_rating_debt.py",
       "layer": "pure",
       "sync": "auto"
@@ -5033,6 +5058,16 @@
     },
     {
       "path": ".claude/tests/test_console_credit_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_correction_record_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_critical_analysis_reminder.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5883,6 +5918,11 @@
     },
     {
       "path": ".claude/tests/test_model_ladder_gate.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_model_name_guard.py",
       "layer": "pure",
       "sync": "auto"
     },

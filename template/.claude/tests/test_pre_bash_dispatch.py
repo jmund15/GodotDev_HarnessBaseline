@@ -412,7 +412,7 @@ def test_router_fault_reaches_model(monkeypatch):
 def test_launcher_commit_reaches_each_guard(monkeypatch, tmp_path):
     import shlex
     names = ('baseline_classification_guard', 'prototype_containment_guard',
-             'provisional_totality_guard', 'tres_nullstrip_guard', 'tres_script_strip_guard')
+             'provisional_totality_guard', 'rule_number_guard', 'tres_nullstrip_guard', 'tres_script_strip_guard')
     names = [name for name in names if name not in GODOT_MEMBERS or getattr(pre_bash_dispatch, name) is not None]
     monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
     original = pre_bash_dispatch._git_commit.commit_invocations
@@ -488,6 +488,8 @@ def main():
     check("bash_backslash_fidelity.py stays last: it rewrites the command, so every deny must win first",
           names[-1] == "bash_backslash_fidelity.py", repr(names))
 
+    check("rule_number_guard.py is registered", "rule_number_guard.py" in names, repr(names))
+
     # A floor guard that cannot import must block the action it guards, never crash the dispatcher with a
     # non-2 exit, and never block a command that only names its noun. The rows run in an empty planted
     # repo, so no state of the live checkout decides a row first. The floor's git check judges every shell call.
@@ -516,6 +518,13 @@ def main():
                       guard, "denies" if should_block else "does not block", label),
                   (proc.returncode == 2) == should_block and (not should_block or guard in proc.stderr),
                   "exit %s: %s" % (proc.returncode, proc.stderr[-400:]))
+    # rule_number_guard is an advisory: its import failure reaches the user's stderr and blocks nothing.
+    break_advisory = break_floor.replace(repr(guard), repr("rule_number_guard"), 1)
+    proc = run([sys.executable, "-c", break_advisory], payload("Bash", "git commit -m x", floor_repo), env, cwd=floor_repo)
+    check("a rule_number_guard import failure reports on stderr and does not block a commit",
+          proc.returncode == 0 and "rule_number_guard" in proc.stderr,
+          "exit %s: %s" % (proc.returncode, proc.stderr[-400:]))
+
     def planted_deny_main():
         sys.stdout.write(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny",

@@ -357,6 +357,35 @@ def test_absent_target_from_the_projects_own_linked_worktree(linked, monkeypatch
     assert bash(command, wt).denied is blocked
 
 
+@pytest.mark.parametrize("command,blocked", [
+    ("rm -rf {linked}/.claude/scratch/fan_dbg.json", False),
+    ("rm -rf {linked}/.claude/scratch/dir_with_repo", True),
+    ("rm -rf {linked}/.claude/scratch", True),
+    ("rm -rf {linked}/README.md", True),
+    ("rm -rf {stray}/.claude/scratch/fan_dbg.json", True),
+])
+def test_a_registered_worktrees_scratch_goes_from_any_cwd(linked, monkeypatch, command, blocked):
+    """S5 item 4's V2: a scratch entry of a registered linked worktree is judged like the project's own
+    whichever checkout the call runs in; an unregistered checkout's never goes."""
+    main, wt, stray = linked
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(main))
+    command = command.format(linked=str(wt).replace("\\", "/"), stray=str(stray).replace("\\", "/"))
+    assert bash(command, main).denied is blocked
+
+
+@pytest.mark.parametrize("command,names", [
+    ("rm -rf $UNSET/x", "not a literal path"),
+    ("rm -rf .claude/scratch/*/x", "not a literal path"),
+    ("rm -rf .claude/scratch/live_probe*.py", "not a literal path"),
+    ("rm -rf /elsewhere/data", "outside every exemption"),
+    ('for w in a b; do rm -rf ".claude/worktrees/$w"; done', "cannot read this delete"),
+])
+def test_a_denied_delete_names_the_exemption_that_failed(plant, command, names):
+    """S5 item 4's V2: 17 of 68 recursive-delete denies in 30 days named no failed exemption, so the caller retried."""
+    got = bash(command, plant)
+    assert got.denied and names in got.reason
+
+
 # --- test_dangerous_shell_guard_cache_cleanup.py --------------------------------------------------------------
 OTHER_CHECKOUT = "C:/any/other/checkout" if os.name == "nt" else "/any/other/checkout"
 OTHER_HOME = "C:/Users/someone" if os.name == "nt" else "/home/someone"

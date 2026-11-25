@@ -146,6 +146,17 @@ def main():
         cases.append(("check_logger_tag_prefix still warns about an untagged call",
                       rc == 0 and "[logger_tag_prefix]" in context(out)))
 
+    # --- design_surface_reminder ------------------------------------------
+    if _optional_hooks.present("design_surface_reminder"):
+        rc, out, err = run(written(clean_cs, "[Export] public bool Enabled = false;", session="postdsgn"), env)
+        cases.append(("design_surface_reminder fires on an [Export] bool through the dispatcher",
+                      rc == 0 and "design_litmus" in context(out)))
+        rc, out, err = run(written(clean_cs, "public int Value = 2;", session="postdsg2"), env)
+        cases.append(("a plain .cs edit draws no design reminder", rc == 0 and "design_litmus" not in context(out)))
+        md = plant(os.path.join(tmp, "repo", "Docs", "n.md"), "[Export] public bool Enabled = false;\n")
+        rc, out, err = run(written(md, "[Export] public bool Enabled = false;", session="postdsg3"), env)
+        cases.append(("the reminder is for .cs text only", rc == 0 and "design_litmus" not in context(out)))
+
     # Resource normalization now belongs to PreToolUse.
     tres = plant(os.path.join(tmp, "repo", "Data", "probe.tres"), BAD_TRES)
     rc, out, err = run(written(tres, BAD_TRES, session="posttres"), env)

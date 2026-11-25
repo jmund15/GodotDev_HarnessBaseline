@@ -24,7 +24,7 @@ TOOLS = CLAUDE / "tools"
 DISPATCH_SRC = CLAUDE / "hooks" / "prompt_dispatch.py"
 DISPATCH_NAME = "prompt_dispatch.py"
 
-PURE_MEMBERS = ("prompt_git_state_delta", "sidecar_watch_rearm", "overnight_ask_guard")
+PURE_MEMBERS = ("prompt_git_state_delta", "sidecar_watch_rearm", "overnight_ask_guard", "skill_load_marker")
 CODING_MEMBERS = ()
 GODOT_MEMBERS = ()
 GODOT_STANDIN = {"hooks": {"SessionStart": [{"hooks": [{
