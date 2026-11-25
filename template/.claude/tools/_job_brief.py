@@ -36,7 +36,7 @@ def restore_brief(brief, before="", after=""):
             "The current amendment overrides the original brief where they differ. Your report names what you applied.\n")
     tail = ("----- END EFFECTIVE BRIEF -----\n"
             "Resume from on-disk progress: Read every output file the effective brief names before redoing work. "
-            "Finish and return exactly what the effective brief requires, to the same paths.\n")
+            "Finish and return what the effective brief requires, to the same paths.\n")
     inline = head
     for name, source, text, revision in sources:
         inline += f"{name}: {source} (sha256 {revision})\n"

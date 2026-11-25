@@ -16,7 +16,7 @@ NO FIXES WITHOUT ROOT-CAUSE INVESTIGATION FIRST
 
 Proposing a fix before Phase 1 is complete → **stop and investigate**. Confidence is not evidence.
 
-On a runtime failure, search auto-memory for the literal error text first (`CLAUDE.core.md` §Proactive Context Loading), and run a control on the primary checkout before blaming a branch. Trace a duration before calling it normal: a stall or a slow run is explained from a trace, never from theory.
+On a runtime failure, search auto-memory for the literal error text first (`CLAUDE.core.md` *Memory*), and run a control on the primary checkout before blaming a branch. Trace a duration before calling it normal: a stall or a slow run is explained from a trace, never from theory.
 
 ## The Recurrence Law
 

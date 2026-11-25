@@ -145,4 +145,4 @@ Unlisted labels archive as `unrated`.
 ```bash
 python3 .claude/tools/orchestration_metrics.py --archive-summary
 ```
-Also rendered by `/eval_dashboard`: its Agents tab is the sanctioned surface for `effort` proposals and its Ladder tab for `roles` proposals (CLAUDE.md *Self-Improvement Loop*: aggregate before tuning). The roll-up also derives the over-pin candidate queue (written to `.claude/orchestration_candidates.json`) and prints the convergence line (see *Over-pin candidates*).
+Also rendered by `/eval_dashboard`: its Agents tab is the sanctioned surface for `effort` proposals and its Ladder tab for `roles` proposals (`CLAUDE.interactive.md` §Corrections and surfaced work: aggregate before tuning). The roll-up also derives the over-pin candidate queue (written to `.claude/orchestration_candidates.json`) and prints the convergence line (see *Over-pin candidates*).

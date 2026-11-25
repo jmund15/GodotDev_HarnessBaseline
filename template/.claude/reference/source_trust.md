@@ -46,7 +46,7 @@ The claims schema carries no `tier` field, so tier rides in the fields it alread
 
 ## Fetch order
 
-`CLAUDE.core.md` §4 points here; this section owns the order and each tier's mechanism.
+`CLAUDE.core.md` §9 *Search/fetch and every shell read* points here; this section owns the order and each tier's mechanism.
 
 1. **A version-pinned local docs cache**, where the project keeps one.
 2. **`scripts/fetch_source.sh`** — bytes to disk, free, quotable. Landed bytes are what make a quote checkable: `tools/verify_claims.py` grades them VERIFIED, UNVERIFIED or UNCHECKED, advisory-only, and never rewrites a claim into a gap (`reference/evidence_contract.md`). GitHub file reads use raw.githubusercontent.com — browse/tree URLs have no raw form.

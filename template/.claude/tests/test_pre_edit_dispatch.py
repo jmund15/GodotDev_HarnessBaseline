@@ -25,7 +25,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 
 import _settings_probe
 
@@ -123,19 +122,13 @@ def registration_cases():
 
 def live_script_instance(tmp):
     """Launch a real `bash <.claude/scripts/...sh>` so the guard has something to find."""
-    script_dir = os.path.join(tmp, "repo", ".claude", "scripts")
+    script_dir = os.path.join(tmp, "repo", ".claude", "scripts", "long-absolute-process-path-" * 3)
     os.makedirs(script_dir, exist_ok=True)
     script = os.path.join(script_dir, "harness_b2_probe.sh")
     with open(script, "w", newline="\n", encoding="utf-8") as fh:
-        fh.write("#!/usr/bin/env bash\nsleep 120\n")
-    bash = git_bash()
-    if not bash:
-        return script, None
-    proc = subprocess.Popen([bash, script.replace("\\", "/")],
+        fh.write("#!/usr/bin/env bash\nread -r release\n")
+    proc = subprocess.Popen([git_bash(), script.replace("\\", "/")], stdin=subprocess.PIPE,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1.0)  # let the process table catch up before the scan
-    if proc.poll() is not None:
-        return script, None
     return script, proc
 
 
@@ -228,17 +221,14 @@ def main():
 
     # --- running_script_edit_guard: additionalContext advisory -------------
     script, proc = live_script_instance(tmp)
-    if proc is None:
-        cases.append(("running_script_edit_guard planted case COULD NOT RUN (no bash)", False))
-    else:
-        try:
-            rc, out, err = run(edit(script, "echo hi", session="prerun01"), env)
-            decision, ctx = hook_output(out)
-            cases.append(("running_script_edit_guard still advises through additionalContext",
-                          rc == 0 and "RUNNING INSTANCE DETECTED" in ctx))
-        finally:
-            proc.kill()
-            proc.wait(timeout=30)
+    try:
+        rc, out, err = run(edit(script, "echo hi", session="prerun01"), dict(env, COLUMNS="80"))
+        decision, ctx = hook_output(out)
+        cases.append(("running_script_edit_guard still advises through additionalContext",
+                      rc == 0 and decision is None and os.path.basename(script) in ctx))
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=30)
 
     # --- malformed payload ------------------------------------------------
     rc, out, err = run_raw("not json at all", env)

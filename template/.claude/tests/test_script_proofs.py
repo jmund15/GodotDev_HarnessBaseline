@@ -311,3 +311,12 @@ def test_a_part_file_run_directly_shards_its_main_under_the_bridge_conftest(tmp_
                           errors="replace", cwd=str(tests), env=env, timeout=240)
     out = done.stdout + done.stderr
     assert done.returncode == 0 and "names no case" not in out and "1 cases in 1 shards" in out, out
+
+
+def test_a_proof_never_waits_on_this_machines_free_memory(tmp_path):
+    # A proof that launches a real child through the sidecar launchers met the live memory floors: with a local model
+    # server holding 19 GiB, test_sidecar_fanout.py waited out its timeout. No proof tests this machine's memory; a proof
+    # of the gate itself sets its own floors.
+    from _proof_runner import attempt
+    env = attempt.proof_env(str(tmp_path), 60, root=str(CLAUDE.parent))
+    assert env.get("LAUNCH_MIN_COMMIT_GIB") == "0" and env.get("LAUNCH_MIN_PHYSICAL_GIB") == "0", env.get("LAUNCH_MIN_COMMIT_GIB")

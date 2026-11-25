@@ -145,6 +145,15 @@ def main():
 
     cases += ownership_cases()
 
+    # A stray .claude/.claude/ must not make .claude/ itself the checkout root.
+    sys.path.insert(0, HOOKS)
+    import activity_registry
+    nest = tempfile.mkdtemp(prefix="arcnest_")
+    os.makedirs(os.path.join(nest, ".claude", ".claude", "scratch"))
+    cases.append(("a cwd inside .claude/ resolves to the checkout, past a stray .claude/.claude/",
+                  os.path.normcase(activity_registry.find_repo_root(os.path.join(nest, ".claude")))
+                  == os.path.normcase(nest)))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

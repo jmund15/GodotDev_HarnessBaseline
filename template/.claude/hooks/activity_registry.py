@@ -367,7 +367,7 @@ def find_repo_root(start):
     location cannot stand in: a shared hooks directory would point every worktree at the wrong checkout."""
     cur = os.path.abspath(start or os.getcwd())
     while True:
-        if os.path.isdir(os.path.join(cur, ".claude")):
+        if os.path.basename(cur) != ".claude" and os.path.isdir(os.path.join(cur, ".claude")):
             return cur
         parent = os.path.dirname(cur)
         if parent == cur:

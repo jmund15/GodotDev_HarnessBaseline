@@ -746,7 +746,7 @@ const raw = await parallel(resolved.map(a => () => {
     model: PIN(a.model), effort: EFF(a.effort), agentType: a.agentType,
   }
   const body = a.promptPath
-    ? 'Your full lens mandate is at: ' + a.promptPath + ' — read it with the Read tool and execute it exactly ' + READ_FAILURE + '.\n' + AMEND_LINE(rootedPath(A, a.promptPath))
+    ? 'Your full lens mandate is at: ' + a.promptPath + ' — read it with the Read tool and execute it ' + READ_FAILURE + '.\n' + AMEND_LINE(rootedPath(A, a.promptPath))
     : (a.prompt || '')
   const prompt = contextPre + body + guardRef(a)
   // Preserve null (a schema rejection after retries, or a dead agent): it MUST NOT collapse into an

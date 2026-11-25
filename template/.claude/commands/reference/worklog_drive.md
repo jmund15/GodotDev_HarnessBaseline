@@ -97,7 +97,7 @@ Survey mode does **not** log to tackle-history — it commits to nothing until a
 
 #### 4b — Confirm or ask (budget mode only)
 
-With no ready item, print `Worklog clear: no ready items in Active or Ledger.` with the waiting count and stop. With only scope-4 candidates, route them per 4c and stop. When the evidence settles the fill-set's boundary and no equally viable alternative exists, print `Driving: <fill-set summary> — total scope ~<sum>` with its evidence and trade-off, and go to 4d. Otherwise ask one packet (`CLAUDE.core.md` §Preferences): the proposed fill-set and each contested alternative as options, the recommendation and the default of driving the recommended fill-set. With no material prioritization signal, the options are the oldest ready candidates within the budget, and the question says so.
+With no ready item, print `Worklog clear: no ready items in Active or Ledger.` with the waiting count and stop. With only scope-4 candidates, route them per 4c and stop. When the evidence settles the fill-set's boundary and no equally viable alternative exists, print `Driving: <fill-set summary> — total scope ~<sum>` with its evidence and trade-off, and go to 4d. Otherwise ask one packet (`CLAUDE.interactive.md` §Answering and asking the owner): the proposed fill-set and each contested alternative as options, the recommendation and the default of driving the recommended fill-set. With no material prioritization signal, the options are the oldest ready candidates within the budget, and the question says so.
 
 #### 4c — Big-ticket flag
 

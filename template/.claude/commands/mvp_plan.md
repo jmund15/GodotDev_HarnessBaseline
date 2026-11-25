@@ -64,7 +64,7 @@ For each Part, the Source-column wikilink points to a design-doc section. Bundle
 - Per-Part test plan (acceptance criteria candidates)
 - Per-Part scene/feature deliverable (goal candidates)
 
-This is the **only** synthesis-shaped read in this command (per CLAUDE.core.md §9). All subsequent reasoning runs in Claude.
+This is the **only** synthesis-shaped read in this command (per the user `CLAUDE.md` *Local worker*). All subsequent reasoning runs in Claude.
 
 If a Part's design doc is missing or its section header doesn't resolve → flag the Part as *"design-source missing; user supplies MVP fields manually"* and continue.
 
@@ -86,7 +86,7 @@ Ask user to confirm the grouping or override (split, merge, reorder, rename). Ea
 
 ### Step 4 — Author each MVP Socratically (one at a time)
 
-For each MVP-N in approved order, author the seven `roadmap_triggers_mvp.md §6.11` fields and verify each before applying the approved MVP. Resolve owner-dependent fields in coherent owner-batched packets (`CLAUDE.core.md` §Preferences), deferring a field only when it depends on a prior answer. §6.11 owns each field's shape, including Required Parts' checkbox and link forms, Acceptance as cross-Part checks only, and the Playtest plan's two branches (a manual surface, or the explicit `Automated-only — no manual surface` declaration). Done when every field is present and Playtest plan is one of those two branches.
+For each MVP-N in approved order, author the seven `roadmap_triggers_mvp.md §6.11` fields and verify each before applying the approved MVP. Resolve owner-dependent fields in coherent owner-batched packets (`CLAUDE.interactive.md` §Answering and asking the owner), deferring a field only when it depends on a prior answer. §6.11 owns each field's shape, including Required Parts' checkbox and link forms, Acceptance as cross-Part checks only, and the Playtest plan's two branches (a manual surface, or the explicit `Automated-only — no manual surface` declaration). Done when every field is present and Playtest plan is one of those two branches.
 
 Candidate sources: Goal from Step 2's extracted goal candidates; Required Parts from Step 3's grouping; Excluded from Parts assigned to later MVPs, abandoned Parts and design-doc Open Questions; Validates from each Required Part's design-doc commitments; Playtest plan from each Part's design-doc playtest moment.
 

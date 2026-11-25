@@ -178,6 +178,7 @@ GODOT_PATTERNS = [
 # plan/roadmap pipeline, tool-routing hook family, code-architecture doctrine.
 CODING_PATTERNS = [
     ".claude/skills/architecture_brainstorm/*",
+    ".claude/skills/idea_brainstorm/*",
     ".claude/skills/architecture_philosophy/*",
     ".claude/skills/debugging/*",
     ".claude/hooks/pre_read_dispatch.py",
@@ -191,7 +192,9 @@ CODING_PATTERNS = [
     ".claude/commands/part_execute.md",
     ".claude/commands/plan_handoff.md",
     ".claude/commands/plan_part.md",
+    ".claude/commands/reference/plan_part_cross_reference.md",
     ".claude/commands/roadmap_next.md",
+    ".claude/commands/reference/roadmap_next_parse.md",
     ".claude/commands/update_roadmap.md",
     ".claude/commands/merge_pr.md",
     ".claude/commands/pr_ready.md",
@@ -275,6 +278,7 @@ CODING_PATTERNS = [
 PURE_PATTERNS = [
     ".claude/CLAUDE.md",
     ".claude/CLAUDE.core.md",
+    ".claude/CLAUDE.interactive.md",
     ".claude/settings.base.json",
     ".claude/settings.project.json",
     ".claude/worklog-titles.md",
@@ -359,6 +363,7 @@ PURE_PATTERNS = [
     ".claude/commands/routing_audit.md",
     ".claude/commands/self_evaluate.md",
     ".claude/commands/session_end.md",
+    ".claude/commands/reference/session_end_hot_set.md",
     ".claude/commands/sync_baseline.md",
     ".claude/commands/sync_permissions.md",
     ".claude/commands/test_skill.md",
@@ -384,7 +389,6 @@ PURE_PATTERNS = [
     ".claude/scripts/autolearn.sh",
     ".claude/scripts/check_learnings.sh",
     ".claude/skills/_brainstorm_shared/appetite_invariant.md",
-    ".claude/skills/idea_brainstorm/*",
     ".claude/skills/instruction_quality/*",
     ".claude/skills/mermaid_diagrams/*",
     ".claude/skills/obsidian_conventions/*",

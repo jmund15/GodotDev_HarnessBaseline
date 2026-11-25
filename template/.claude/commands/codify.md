@@ -3,7 +3,7 @@ description: Fix a failure in how agents decide at its root, or land a procedure
 disable-model-invocation: false
 ---
 
-Take ONE correction or ONE procedure you keep running by hand, and land it where it will be in context when the decision recurs. It runs on the trigger `CLAUDE.core.md` §Self-Improvement Loop names, asked or not, and when a user-invoked workflow's loaded contract names it; the steps below decide whether anything lands. Placement rules are owned by `instruction_quality` §3 and §5; this command orders them into one procedure and adds the duplicate check (Step 0) and the firing proof (Step 7).
+Take ONE correction or ONE procedure you keep running by hand, and land it where it will be in context when the decision recurs. It runs on the trigger `CLAUDE.interactive.md` §Corrections and surfaced work names, asked or not, and when a user-invoked workflow's loaded contract names it; the steps below decide whether anything lands. Placement rules are owned by `instruction_quality` §3 and §5; this command orders them into one procedure and adds the duplicate check (Step 0) and the firing proof (Step 7).
 
 `/autolearn` detects signals across a whole session and owns the quality gates; this command routes one item you already have.
 

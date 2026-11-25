@@ -87,8 +87,9 @@ def main():
         Handler.status = 429
         limited_run, limited = run(url)
         cases.append(("429 is a typed rate-limit outcome", limited_run.returncode == 0
-                      and limited and limited.get("status") == "network-error"
-                      and limited.get("error", {}).get("kind") == "rate-limit"))
+                      and limited and limited.get("status") == "rate-limited"
+                      and limited.get("error", {}).get("kind") == "rate-limit"
+                      and limited.get("error", {}).get("httpStatus") == 429))
 
         Handler.status = 200
         Handler.payload = b"not-json"

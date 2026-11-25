@@ -74,16 +74,20 @@ class SeatEffort(unittest.TestCase):
     def test_a_checklist_seat_takes_the_checklist_rung(self):
         self.assertEqual(self.seat("checklist"), "medium")
 
-    def test_a_review_seat_takes_the_review_rung(self):
-        self.assertEqual(self.seat("review"), "high")
+    def test_a_review_seat_has_no_computed_rung(self):
+        self.assertIsNone(self.seat("review"))
 
-    def test_a_written_rung_above_the_computed_one_is_capped_unless_measured(self):
-        self.assertEqual(self.seat("review", explicit="max"), "high")
-        self.assertEqual(self.seat("review", explicit="max", measured=True), "max")
+    def test_a_written_rung_above_the_computed_checklist_one_is_capped_unless_measured(self):
+        self.assertEqual(self.seat("checklist", explicit="max"), "medium")
+        self.assertEqual(self.seat("checklist", explicit="max", measured=True), "max")
 
-    def test_an_owner_named_seat_rung_runs_as_named(self):
-        self.assertEqual(self.seat("review", explicit="max", pick="owner"), "max")
-        self.assertEqual(self.seat("review", explicit="max", pick="cell"), "high")
+    def test_an_owner_named_checklist_rung_runs_as_named(self):
+        self.assertEqual(self.seat("checklist", explicit="max", pick="owner"), "max")
+        self.assertEqual(self.seat("checklist", explicit="max", pick="cell"), "medium")
+
+    def test_a_review_seat_keeps_its_written_rung_without_capping(self):
+        self.assertEqual(self.seat("review", explicit="max"), "max")
+        self.assertEqual(self.seat("review", explicit="max", pick="cell"), "max")
 
     def test_a_seat_with_no_reading_keeps_its_written_rung(self):
         self.assertEqual(self.seat(None, explicit="xhigh"), "xhigh")

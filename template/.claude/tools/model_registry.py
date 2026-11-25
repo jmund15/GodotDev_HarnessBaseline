@@ -2086,13 +2086,11 @@ def ladder_cost(entry, data=None, costs=None):
 _FANOUT_TERMS = ("mechanical fan-out", "locate", "enumerate", "extract", "copyable extraction", "rubric")
 _EFFORT_TERMS = {
     ("author", "tight"): ("tight-spec", "converged"),
-    ("author", "judged"): ("ambiguous execution",),
     ("scout", "tight"): _FANOUT_TERMS,
     ("lens", "tight"): _FANOUT_TERMS,
 }
 _READING_TERMS = {
     "checklist": ("checklist audit", "anchored", "rubric"),
-    "review": ("plan review", "plan-review seat", "plan-check seat", "design-review", "review seat"),
 }
 
 

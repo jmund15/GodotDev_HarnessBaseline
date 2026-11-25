@@ -83,7 +83,7 @@ def _scan_command() -> list:
             "Get-CimInstance Win32_Process | "
             "ForEach-Object { \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }",
         ]
-    return ["ps", "-eo", "pid=,ppid=,args="]
+    return ["ps", "-ww", "-eo", "pid=,ppid=,args="]
 
 
 def _parse_processes(stdout: str) -> dict:

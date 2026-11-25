@@ -1,6 +1,6 @@
 # Advanced GdUnit4 Features
 
-> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. Version provenance: the `gdUnit4.api` pin in `{{PROJECT_NAME}}.csproj`; this copy may drift from upstream. If an API call misbehaves, cross-check the trusted GdUnit4 URLs in CLAUDE.md §4.
+> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. Version provenance: the `gdUnit4.api` pin in `{{PROJECT_NAME}}.csproj`; this copy may drift from upstream. If an API call misbehaves, cross-check the trusted GdUnit4 URLs in `CLAUDE.core.md` §9 *Search/fetch and every shell read*.
 
 Lifecycle hooks, parameterized tests, utilities, and FAQ solutions.
 

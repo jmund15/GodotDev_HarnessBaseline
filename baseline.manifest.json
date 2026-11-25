@@ -17,6 +17,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/CLAUDE.interactive.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/CLAUDE.md",
       "layer": "pure",
       "sync": "seed"
@@ -1322,6 +1327,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/reference/plan_part_cross_reference.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/reference/pr_ready_boot_correlation.md",
       "layer": "godot",
       "sync": "auto"
@@ -1332,6 +1342,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/reference/roadmap_next_parse.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/reference/session_audit_parity.md",
       "layer": "coding",
       "sync": "auto"
@@ -1339,6 +1354,11 @@
     {
       "path": ".claude/commands/reference/session_audit_seats.md",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/reference/session_end_hot_set.md",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -1917,11 +1937,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/hooks/critical_analysis_reminder.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/hooks/dangerous_shell_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -2048,16 +2063,6 @@
     },
     {
       "path": ".claude/hooks/model_ladder_gate.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/hooks/model_name_exemptions.json",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/hooks/model_name_guard.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3092,7 +3097,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/architecture_brainstorm/reference/design_review.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/architecture_brainstorm/reference/doc_and_review.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/architecture_brainstorm/reference/existing_doc_and_placement.md",
       "layer": "coding",
       "sync": "auto"
     },
@@ -3262,6 +3277,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/idea_brainstorm/reference/idea_bank_doc.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/instruction_quality/SKILL.md",
       "layer": "pure",
       "sync": "auto"
@@ -3278,6 +3298,11 @@
     },
     {
       "path": ".claude/skills/instruction_quality/reference/orchestration.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/instruction_quality/reference/principles.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3633,7 +3658,7 @@
     },
     {
       "path": ".claude/skills/worklog_reference/reference/user_tasks_triggers.md",
-      "layer": "coding",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -5017,11 +5042,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_critical_analysis_reminder.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_cs_files.py",
       "layer": "godot",
       "sync": "auto"
@@ -5862,11 +5882,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_model_name_guard.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_model_pricing.py",
       "layer": "pure",
       "sync": "auto"
@@ -6493,7 +6508,7 @@
     },
     {
       "path": ".claude/tests/test_routing_audit_subagent_exempt.py",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {

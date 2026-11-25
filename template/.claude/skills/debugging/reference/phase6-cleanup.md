@@ -13,7 +13,7 @@ Required before declaring done:
 
 ## Post-mortem to auto-memory (mandatory if non-obvious)
 
-If the correct hypothesis surfaced a non-obvious gotcha that would bite again, save it: memory is the project's durable searched surface, commit messages are not. **Litmus:** *"Would forgetting this cause another debugging session like this one?"* → Yes = Memory. What to save and where it goes: `CLAUDE.core.md` §2 *Memory (One Store, Two Tiers)*; `/codify` owns placement details.
+If the correct hypothesis surfaced a non-obvious gotcha that would bite again, save it: memory is the project's durable searched surface, commit messages are not. **Litmus:** *"Would forgetting this cause another debugging session like this one?"* → Yes = Memory. What to save and where it goes: `CLAUDE.core.md` *Memory*; `/codify` owns placement details.
 
 ## Architectural recommendation, after the fix
 

@@ -1,6 +1,6 @@
 # Rigor
 
-Rigor (`light | normal | thorough`) is the one lever for how much a run must catch. Every stage that dispatches, reviews or folds reads it here; a layer that adds stages lists what rigor changes in each of them beside its own admission rules.
+Rigor (`light | normal | thorough`) is the one lever for how much a run must catch: how widely and deeply its results are verified (how many readers, which mandates get a seat, which findings count and owe a later round). `normal` is the balance of cost, time and quality the owner set; `light` and `thorough` move verification from it. Rigor never moves the cell a job runs on: the job's bar and the lean condition do (`reference/model_ladder_evidence.md` selection line). Every stage that dispatches, reviews or folds reads it here; a layer that adds stages lists what rigor changes in each of them beside its own admission rules.
 
 ## Recording and reading
 
@@ -30,7 +30,7 @@ A finding's optional `minRigor` is the lowest level whose row admits it, and it 
 
 | Stage | Owner file | What rigor changes |
 |---|---|---|
-| Model and effort selection | `skills/orchestration/SKILL.md` §5, `reference/model_ladder_evidence.md` selection line | Rigor is one of the bars the ladder's selection line buys quality against. It never lowers a row below the tier's floor. |
+| Model and effort selection | `skills/orchestration/SKILL.md` §5, `reference/model_ladder_evidence.md` selection line | None: a job's cell follows its bar and the lean condition, never rigor. High stakes buy verification (the rows below), not a stronger executor (`SKILL.md` §5). |
 | Later rounds | `skills/orchestration/reference/later_rounds.md` | Only units answering counting findings owe a round; which of them get a seat is `later_rounds.md`'s criterion, at every rigor. |
 | Fold and protocol | `commands/agents/review_fold.md`, `commands/agents/orchestrator_action_protocol.md` | The disposition set gains `below bar: noted`; APPROVE needs no counting actionable finding. |
 | Review engines | `skills/orchestration/SKILL.md` | `review_fanout.js`, `review_result.py` and `post_check.py` carry `minRigor` through merges. Every fold route states the bar in a `Bar:` line and stamps each finding's `counts` at it (`finding_bar.counts`), except the offer-apply fold in the bullet above, which omits it. `post_check.py` reports `rigor` and `belowBar`. |

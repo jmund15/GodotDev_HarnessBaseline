@@ -582,7 +582,7 @@ def project_root() -> Path:
     if probe.returncode == 0 and probe.stdout.strip():
         top = Path(probe.stdout.strip()).resolve()
     while True:
-        if (path / ".claude").is_dir():
+        if path.name != ".claude" and (path / ".claude").is_dir():
             return path
         if path == top or path == path.parent:
             break

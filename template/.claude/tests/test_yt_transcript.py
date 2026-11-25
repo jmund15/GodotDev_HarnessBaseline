@@ -36,14 +36,30 @@ def load():
     return mod
 
 
-def runner(transcript_out=None, meta_out=META, meta_rc=0, missing=False):
-    """A planted `subprocess.run`; `calls` records each argv it saw."""
+INFO = {"id": VID, "comments": [
+    {"id": "a", "parent": "root", "text": "fewer likes", "like_count": 3},
+    {"id": "b", "parent": "root", "text": "most liked\nsecond line", "like_count": 48},
+    {"id": "c", "parent": "b", "text": "a reply", "like_count": 99},
+    {"id": "d", "parent": "root", "text": "no like count"}]}
+
+
+def runner(transcript_out=None, meta_out=META, meta_rc=0, missing=False, extras_rc=0):
+    """A planted `subprocess.run`; `calls` records each argv it saw. The extras fetch (`--write-comments`)
+    writes `<o>.description` and `<o>.info.json` as yt-dlp does."""
     calls = []
 
     def run(argv, **_kw):
         calls.append(argv)
         if missing:
             raise FileNotFoundError("uvx")
+        if "--write-comments" in argv:
+            if extras_rc == 0:
+                stem = argv[argv.index("-o") + 1]
+                with open(stem + ".description", "w", encoding="utf-8") as fh:
+                    fh.write("Links: github.com/x/y\n")
+                with open(stem + ".info.json", "w", encoding="utf-8") as fh:
+                    json.dump(INFO, fh)
+            return subprocess.CompletedProcess(argv, extras_rc, "", "" if extras_rc == 0 else "ERROR: blocked")
         if "youtube_transcript_api" in argv:
             out = json.dumps(SEGMENTS) if transcript_out is None else transcript_out
             return subprocess.CompletedProcess(argv, 0, out, "")
@@ -130,6 +146,40 @@ def main():
     case("a non-YouTube argument exits 2", code6 == 2 and "YouTube" in err6, err6)
     code7, _, err7 = invoke(yt, [VID, "--out", nc_dir], runner(missing=True))
     case("a missing uvx exits 4 naming uvx", code7 == 4 and "uvx" in err7 and os.listdir(nc_dir) == [], err7)
+
+    # --meta: description and top-level comments, most liked first, beside the transcript.
+    mt_dir = tempfile.mkdtemp(prefix="yt_meta_")
+    run8 = runner()
+    code8, out8, err8 = invoke(yt, [VID, "--out", mt_dir, "--meta"], run8)
+    s8 = json.loads(out8) if code8 == 0 else {}
+    desc = s8.get("description") or ""
+    com = s8.get("comments") or ""
+    com_body = open(com, encoding="utf-8").read() if com and os.path.exists(com) else ""
+    case("--meta writes the description and a comments file, paths in the summary",
+         code8 == 0 and os.path.exists(desc) and com_body and s8.get("comment_count") == 3,
+         "code=%r out=%r err=%r" % (code8, out8, err8))
+    lines8 = com_body.splitlines()
+    case("comments are top-level only, most liked first, one line each",
+         len(lines8) == 3 and lines8[0].startswith("- [48 likes] most liked second line")
+         and "a reply" not in com_body and lines8[-1].startswith("- [0 likes]"), com_body)
+    run9 = runner()
+    code9, out9, _ = invoke(yt, [VID, "--out", mt_dir, "--meta"], run9)
+    case("--meta with transcript and extras cached fetches nothing",
+         code9 == 0 and run9.calls == [] and json.loads(out9).get("comment_count") == 3, repr(run9.calls))
+    ef_dir = tempfile.mkdtemp(prefix="yt_metafail_")
+    code10, out10, _ = invoke(yt, [VID, "--out", ef_dir, "--meta"], runner(extras_rc=1))
+    s10 = json.loads(out10) if code10 == 0 else {}
+    case("a failed extras fetch keeps the transcript and names the error",
+         code10 == 0 and os.path.exists(os.path.join(ef_dir, "%s.md" % VID)) and s10.get("meta_error")
+         and not s10.get("comments"), out10)
+    code12, out12, _ = invoke(yt, [VID, "--out", mt_dir, "--meta", "--refresh"], runner(extras_rc=1))
+    s12 = json.loads(out12) if code12 == 0 else {}
+    case("a failed --refresh of cached extras reports the error, never the stale files",
+         s12.get("meta_error") and not s12.get("comments"), out12)
+    run11 = runner()
+    invoke(yt, [VID, "--out", ef_dir], run11)
+    case("without --meta no extras fetch runs", not any("--write-comments" in c for c in run11.calls),
+         repr(run11.calls))
 
     return report(cases)
 

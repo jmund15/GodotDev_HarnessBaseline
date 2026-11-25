@@ -68,7 +68,7 @@ def _nudge_native_read(tool_input: dict, last_prompt: str, agent_id: str = "") -
     return (
         f"[tool-routing] The request asks for bulk copyable extraction across inputs; a direct "
         f"`Read` of `{name}` loads the whole file into context. Route the extraction through "
-        f"{route}, and require one result per input path. CLAUDE.core.md §9."
+        f"{route}, and require one result per input path. the user `CLAUDE.md` *Local worker*."
     )
 
 

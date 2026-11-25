@@ -92,7 +92,7 @@ Append a `## Review-pass updates` (or `## Follow-up commits`) section to the cac
 
 **Rule 1 — Preserve original body fidelity.** Summary + Key design decisions from the cached body stay verbatim, EXCEPT for surgical fixes to claims invalidated by new commits (e.g., a removed field that the original body described as load-bearing). Call out each surgical fix in the new section so the diff is visible. Never rewrite the original PR's prose — that's revisionism that obscures original intent and erases reviewer history.
 
-**Rule 2 — Update length must be proportional to commits added.** Update sections are NOT mini-PR-bodies. Detail belongs in commit messages; the PR body needs only the WHAT changed at a high level. An update section tells a reviewer what the new commits change, in proportion to them, and never outgrows the original summary. New commits that form a separate concern stay on this PR under their own update heading (`CLAUDE.core.md` §5–6).
+**Rule 2 — Update length must be proportional to commits added.** Update sections are NOT mini-PR-bodies. Detail belongs in commit messages; the PR body needs only the WHAT changed at a high level. An update section tells a reviewer what the new commits change, in proportion to them, and never outgrows the original summary. New commits that form a separate concern stay on this PR under their own update heading (`CLAUDE.core.md` *Commits*).
 
 Cite the commit range once at the section top; let reviewers click through for per-commit detail rather than restating it in the body.
 

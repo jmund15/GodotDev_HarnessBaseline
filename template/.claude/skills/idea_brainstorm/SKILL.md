@@ -97,7 +97,7 @@ Run the pipeline once per natural cluster. Clusters map to user-surfaced themes;
      - **Tension**: `[pillar-tension flag]`, `[mechanic-uncertain]`
      - **Cross-ref**: `[architecture: Finding N-X]`, `[see-cluster: M]`
 
-   While the owner is present, move on only after the current cluster is acknowledged: one cluster's reaction reshapes the next, so never dump every cluster and then collect reactions. When the owner is away (an unattended arming, `drive_spine.md` §Halts), save each cluster to the doc and batch the acknowledgments into one return packet (`CLAUDE.core.md` §Preferences).
+   While the owner is present, move on only after the current cluster is acknowledged: one cluster's reaction reshapes the next, so never dump every cluster and then collect reactions. When the owner is away (an unattended arming, `drive_spine.md` §Halts), save each cluster to the doc and batch the acknowledgments into one return packet (`CLAUDE.interactive.md` §Answering and asking the owner).
 
 6. **Checkpoint to `decisions.md`.** **[Shared]** [`flow_and_frontier.md §8`](../_brainstorm_shared/flow_and_frontier.md) for path, schema, append-on-classify, consumption. Per-cluster block appended under `## Decided`:
 
@@ -120,39 +120,7 @@ After all clusters are processed, find cross-cluster hybrids — ideas whose pow
 
 ### Step 5: Save the idea-bank doc
 
-**[Shared]** Path tiebreaker, folder-per-topic, frontmatter — [`common.md §5`](../_brainstorm_shared/common.md); spawn-placement for arch sessions — §5.1.
-
-**Map the placement to a path; never default to the parent folder for a sub-topic:**
-- **Fresh topic** (default): `YYYY-MM-DD-<kebab-case-topic>/ideas.md` (folder per topic, flat filename inside)
-- **Deeper-scope sub-topic** (§5.1 *child subfolder* — own ideation, parent-confined audience): `<parent-topic-folder>/<sub-slug>/ideas.md`, in a NEW child subfolder, NOT the parent folder. Recurring mis-save target; create it if absent.
-- **Cross-cutting sibling topic** (§5.1 all 3 criteria met): `YYYY-MM-DD-<sibling-slug>/ideas.md`, a NEW top-level folder at the parent's depth.
-- Frontmatter `phase: idea_brainstorm`, `status: ideation-active` (bump to `ideation-complete` on user approval).
-
-**Doc shape (lighter than an arch doc):**
-- Context & Scope
-- (Optional) Frame constraints from Step 2
-- Per-cluster sections: honed survivors (broader than chat — a sample of the hidden pool broad enough to test its breadth, the full pool living in the idea-pool section) · **Considered & Cut** (the cuts whose reasons teach the owner about the filter) · hidden-pool-size note · **Architectural Findings (priors)** — user-inherited commitments, typically `[user-canon-aligned]`, Hard Gate applies · **Open Questions** — interrogative deferrals, each seeding a downstream Step 2 Socratic question · **Routing** — one action + optional timing modifiers (below)
-- Cross-pollination section (Step 4 output)
-- (Optional) **Cross-Cluster Open Questions** — omit if empty
-- (Optional) **Cross-Cluster Workshop Topics** — `→ workshop` items needing USER decision; each subsection carries its own Routing line
-
-**No Parts-table in this doc.** Its nearest equivalent is per-cluster Routing, naming the next phase and translating via Step 6 into `arch-pending` / `idea-rework` / `workshop-pending` Parts, never `plan-pending` (§6 *implementation Parts directly*). This idea route does not apply the architecture brainstorm's Part-readiness gate.
-
-**Roadmap.md is NOT saved here.** This Step saves `ideas.md` only; `/update_roadmap` authors the roadmap in Step 6 under its single-executor rule ([`update_roadmap.md`](../../commands/update_roadmap.md)).
-
-#### Per-cluster handoff-readiness gate
-
-Evaluate each cluster against three criteria before assigning a Routing action; the result decides arch vs rerun.
-
-Read [`reference/handoff_and_routing.md`](reference/handoff_and_routing.md) §Per-cluster handoff-readiness gate for the criteria, the pass-status table, the workshop override and the rerun stop-condition.
-
-#### Per-Cluster Routing — action × timing
-
-Each cluster's `Routing` subsection: exactly ONE action + zero-or-more timing modifiers. Cross-Cluster Workshop Topics carry their own per-topic Routing line.
-
-Read [`reference/handoff_and_routing.md`](reference/handoff_and_routing.md) §Per-Cluster Routing for the action and timing-modifier tables, worked examples, the roadmap state mapping and the recommended-starting-cluster rule.
-
-**[Shared] Rationale spot-check** — `doc_production.md §2`. **[Shared] User review gate** — `doc_production.md §4`.
+Read [`idea_bank_doc.md`](reference/idea_bank_doc.md) at this step: it holds the step's procedure.
 
 ### Step 6: Invoke `/update_roadmap`
 
@@ -192,4 +160,4 @@ It runs batch-propose — one approval applies all `roadmap.md` edits (Parts tab
 - `feedback_no_unilateral_condensation.md` — Step 3 Diverge verbatim-port discipline
 - `feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
 - `feedback_session_start_hook_does_not_override_skill_procedure.md` — session-start hooks don't excuse skipping Step 2 / Step 3 gates
-- CLAUDE.core.md §9 — read_files routing (synthesis bundling)
+- the user `CLAUDE.md` *Local worker* — read_files routing (synthesis bundling)

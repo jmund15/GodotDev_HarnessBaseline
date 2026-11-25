@@ -1,5 +1,5 @@
 ---
-description: Ingest a conversation transcript or a YouTube video into a dated digest of deduped, routed actionables plus a rolling collaboration profile.
+description: File a conversation transcript or a YouTube video as a durable vault digest of deduped, routed actionables plus a rolling collaboration profile; reading a video for context is the video_frames skill.
 disable-model-invocation: true
 ---
 
@@ -15,13 +15,13 @@ Turns a collaborator conversation transcript into a durable, deduped ledger of r
 
 A conversation happened (voice note, call, live session) and its decisions, ideas, and action items need to land somewhere durable and routed. Or an outside video holds practices or ideas worth comparing against the project's own. Explicit invocation only.
 
-**Not this command:** already-converged design (the project's design or feature drive), a single deferral (`/worklog`), or audio with no transcript — transcribe first, this command takes text.
+**Not this command:** a source meant to inform the current work (the `video_frames` skill's text-first step reads a video's captions, description and comments), already-converged design (the project's design or feature drive), a single deferral (`/worklog`), or audio with no transcript — transcribe first, this command takes text.
 
 ---
 
 ## Arguments
 
-`/ingest_conversation <transcript-path | youtube-url> [slug]` — a path may point anywhere on disk; a YouTube URL (`youtu.be`, `youtube.com/watch`, `/shorts/`, `/live/`) makes this a **video source**. No argument → ask for the path or URL and nothing else. Any other URL → ask for a transcript path or a YouTube link.
+`/ingest_conversation <transcript-path | youtube-url> [slug]` — a path may point anywhere on disk; a YouTube URL (`youtu.be`, `youtube.com/watch`, `/shorts/`, `/live/`) makes this a **video source**. No argument → ask for the path or URL and nothing else. Any other URL → ask for a transcript path or a YouTube link. When the words beside the argument ask only for context or insight for the current work, and no digest, filing or action list, run the `video_frames` text-first step (or Read the transcript path) instead, use it in that work, and stop before Step 1.
 
 ---
 

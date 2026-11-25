@@ -57,8 +57,7 @@ they displace real answers.
 keep but search should not (tests, frozen fixtures, vendored code) goes in `.searchignore` instead;
 a harness path goes in `.claude/searchignore.harness`, which `baseline_sync.py pull` writes into
 `.searchignore`'s harness block. The indexer honors `.gitignore` and `.searchignore`, and they are the whole control surface. Anything genuinely worth searching
-stays tracked — the test is whether a *future* session would want to find it, not whether it
-was expensive to produce.
+stays tracked (the test: `CLAUDE.interactive.md` §Landing what you finish).
 
 Do NOT respond to a recall failure by adding query-phrasing guidance. Encoding a workaround for a structural fault outlives the fault and misleads after it
 is repaired — check composition first.

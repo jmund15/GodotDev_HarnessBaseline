@@ -25,8 +25,8 @@ clone, a nested repository in a job's scratch output, or a retired worktree's un
 
 A linked worktree this session provably created (`own`, proved by `_own_worktree.session_created_worktree`) keeps
 every condition but the status one, which reads `unstored_losses`: its ignored files go with it, and so does a dirty
-path whose working file is gone or whose content is already a blob in the object store (CLAUDE.core.md §Shell
-Discipline: "Ownership means this session provably created the worktree; only then may every ignored file go with it").
+path whose working file is gone or whose content is already a blob in the object store (CLAUDE.core.md §Shell Discipline:
+"Ownership means this session provably created the worktree; only then may every ignored file go with it").
 A submodule whose admin directory is gone is then judged against the main checkout's `.git/modules/<path>` store.
 
 An orphan (git pruned its admin directory, or its `.git` file is gone) has no status to read: it goes when every file

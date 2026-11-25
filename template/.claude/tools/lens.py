@@ -100,8 +100,8 @@ REGISTRIES = registries(_PREFIXES)
 TEMPLATES_RE = re.compile(r"^## (Agent|Lens) Templates\b")
 STRAY_RE = re.compile(r"^### ([a-z0-9][a-z0-9-]*)(?:\s|$)")
 
-# The reading a seat's effort is computed from (`model_registry.pin_effort`): a registry's lenses read as a plan or
-# design review unless a lens's header says `reading: checklist`.
+# A seat's reading (`model_registry.pin_effort`): a registry's lenses read as a plan or design review, whose effort the
+# dispatcher sets and no tool computes, unless a lens's header says `reading: checklist`.
 REGISTRY_READING = "review"
 
 REGISTRY_TIERS = {

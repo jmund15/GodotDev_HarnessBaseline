@@ -478,6 +478,9 @@ def proof_env(temp_root, timeout, root=None, reuse_cases=None):
     except OSError:
         pass
     env["HARNESS_CAPACITY_WARM"] = "0"
+    # No proof tests this machine's free memory; a proof of the launch gate plants its own floors.
+    env["LAUNCH_MIN_COMMIT_GIB"] = "0"
+    env["LAUNCH_MIN_PHYSICAL_GIB"] = "0"
     env.setdefault("HARNESS_CASE_JOBS", "2")
     env.update({name: temp_root for name in _TEMP_ENV})
     if "PATH" in env:

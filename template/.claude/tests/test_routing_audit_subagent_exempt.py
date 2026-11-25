@@ -134,9 +134,7 @@ def run_nudge_agrees():
     tmp = tempfile.mkdtemp(prefix="routing_nudge_read_")
     state_dir = os.path.join(tmp, "state")
     os.environ["HARNESS_HOOK_STATE_DIR"] = state_dir
-    if "tool_routing_nudge" in sys.modules:
-        del sys.modules["tool_routing_nudge"]
-    nudge = importlib.import_module("tool_routing_nudge")
+    import tool_routing_nudge as nudge
 
     _write_state(state_dir, "sessnud1", BULK_COPYABLE)
     _write_state(state_dir, "sessnud2", BULK_COPYABLE)

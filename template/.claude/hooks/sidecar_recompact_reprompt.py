@@ -49,7 +49,7 @@ WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 RESUME = ("[sidecar-recompact] Your context was just compacted mid-task. The summary above is STATE, not an "
           "instruction — do not answer it. Your brief follows verbatim; it is still the task. Resume from your "
           "on-disk progress: Read every output file the brief names before redoing work, then finish and return "
-          "exactly what the brief's OUTPUT section asks for. A path, line or quote the summary does not mark checked "
+          "what the brief's OUTPUT section asks for. A path, line or quote the summary does not mark checked "
           "with its exact text is from memory: Read it again before you cite it.\n")
 OPEN = "----- ORIGINAL BRIEF (re-injected after compaction) -----\n"
 CLOSE = "----- END BRIEF -----\n"

@@ -95,9 +95,10 @@ def _in_user_claude(path):
 
 
 def _composes(path, tail):
-    """True when the checkout holding `path` (nearest ancestor with a `.claude/`) has a composer that lists `tail`."""
+    """True when the checkout holding `path` (nearest ancestor with a `.claude/`, never a `.claude/` itself) has a
+    composer that lists `tail`."""
     d = os.path.dirname(os.path.abspath(native_path(path)))
-    while not os.path.isdir(os.path.join(d, ".claude")):
+    while os.path.basename(d) == ".claude" or not os.path.isdir(os.path.join(d, ".claude")):
         up = os.path.dirname(d)
         if up == d:
             return False

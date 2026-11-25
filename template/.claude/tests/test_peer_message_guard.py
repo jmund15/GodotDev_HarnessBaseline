@@ -43,7 +43,7 @@ class PeerMessageGuardTests(unittest.TestCase):
         decision, reason = self.decide("peer-d7")
         self.assertEqual("deny", decision)
         self.assertIn("idle", reason)
-        self.assertIn("CLAUDE.core.md", reason)
+        self.assertIn("CLAUDE.interactive.md", reason)
 
     def transcript(self, sid, age_sec):
         path = self.home / ".claude" / "projects" / "C--repo" / f"{sid}.jsonl"

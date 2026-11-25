@@ -21,7 +21,7 @@ Build; GdUnit4 through `xvfb-run --auto-servernum dotnet test --settings .runset
 |---|---|
 | LSP (cloud never starts plugin language servers) | `Grep('class Foo\b', glob='*.cs')` to anchor, then Read; state the coverage limit |
 | semantic-search, context7 (cloud skips repo `enabledPlugins`; only plugins enabled on the claude.ai account load) | Grep/Glob; the Godot docs cache, then WebFetch. Use a synced plugin tool only after one real call succeeds; semantic-search's model download needs a host the default allowlist lacks |
-| ai-worker MCP | Fallback per CLAUDE.core.md §9 *Offline fallback*; routing nudges naming it are advisory |
+| ai-worker MCP | Fallback per `CLAUDE.core.md` §9 *Search/fetch and every shell read*; routing nudges naming it are advisory |
 | Sidecars | Anthropic Workflow; SessionStart prints no sidecar status line here |
 | Obsidian vault (design docs, worklog) | `/worklog` mutations queue to `.claude/worklog-pending.md`. Say a design doc is unavailable; never reconstruct it |
 | `/regression_gate`, `verify.ps1` (Windows-bound) | Filtered `xvfb-run` test runs over every touched domain. Report them as a verify, not a gate: the gate runs locally before merge |
