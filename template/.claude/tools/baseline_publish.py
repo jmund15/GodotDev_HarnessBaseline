@@ -1290,7 +1290,10 @@ def _validate_worktree_source(root: Path, cache: Path, worktree: Path, pinned_sh
         raise PublishError("--from-worktree has uncommitted changes")
     ancestor = _git(resolved, ["merge-base", "--is-ancestor", pinned_sha, "HEAD"], check=False)
     if ancestor.returncode != 0:
-        raise PublishError("--from-worktree HEAD does not descend from the pinned baseline commit")
+        raise PublishError(
+            f"--from-worktree HEAD does not descend from the pinned baseline commit {pinned_sha[:12]}: merge it "
+            f"(`git -C {resolved} merge {pinned_sha[:12]}`), a normal merge, so the worktree also takes what that "
+            "commit's own publish added (layer entries, the regenerated manifest), then publish again")
 
 
 # ---------------------------------------------------------------------------

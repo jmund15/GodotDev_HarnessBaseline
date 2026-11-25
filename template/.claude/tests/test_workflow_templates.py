@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The workflow templates under `.claude/templates/workflows/` stay project-neutral and in step with each project's copy.
 
-A project copies the templates to `.github/workflows/` once; its copy may differ in the cap literals only
-(`timeout-minutes` values and `--cap-minutes` arguments), which stay literals because `main_check.parse_job_minutes`
-reads the job timeout as text.
+A project copies the templates to `.github/workflows/` once; its copy may differ in its project values only: the
+cap literals (`timeout-minutes` values and `--cap-minutes` arguments), which stay literals because
+`main_check.parse_job_minutes` reads the job timeout as text, and the repository's secret names (`*_TOKEN`).
 """
 import os
 import re
@@ -34,10 +34,13 @@ def read(path):
 
 def masked(text):
     text = re.sub(r'(timeout-minutes:\s*)\d+', r'\1N', text)
+    text = re.sub(r'\b[A-Z][A-Z0-9_]*_TOKEN\b', 'TOKEN', text)
     return re.sub(r'(--cap-minutes\s+)\d+', r'\1N', text)
 
 
 check('every template exists', all(os.path.isfile(os.path.join(TEMPLATES, n)) for n in NAMES))
+check('a repository secret name is a project value, masked like a cap',
+      masked('token: ${{ secrets.MM_LAND_TOKEN }}') == masked('token: ${{ secrets.LAND_TOKEN }}'))
 
 for name in NAMES:
     template = os.path.join(TEMPLATES, name)
