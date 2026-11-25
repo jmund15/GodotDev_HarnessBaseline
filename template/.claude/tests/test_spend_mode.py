@@ -30,6 +30,7 @@ TOKEN = "--lean"
 QUOTE = "Build job J1 of the lean-spend plan " + TOKEN
 FUTURE = "2031-01-01T00:00:00Z"
 BEFORE = "2030-06-01T00:00:00Z"
+MID = "2030-07-01T00:00:00Z"
 AFTER = "2031-06-01T00:00:00Z"
 
 
@@ -182,6 +183,39 @@ def case_clear_overrides_task():
         return r.returncode == 0 and got["mode"] == "normal" and got["expired"] is False, (r.returncode, got)
 
 
+def case_scoped_normal_returns_to_standing_lean():
+    # RED first: a session's standing lean, then a scoped normal whose until has passed: the lean stands again.
+    with fixture() as f:
+        sm = load_module("spend_mode", TOOL)
+        f.plant([owner_prompt(OWNER_UUID, QUOTE), owner_prompt("u2", "back to --normal for the window")])
+        if f.cli("set", "lean", "--until", FUTURE).returncode != 0:
+            return False, "lean set refused"
+        r = f.cli("set", "normal", "--until", BEFORE)
+        if r.returncode != 0:
+            return False, (r.returncode, r.stderr[:200])
+        got = sm.current(SID, now=MID)
+        ok = got["mode"] == "lean" and got["scope"] == "session" and got["until"] == FUTURE and got["expired"] is False
+        return ok, got
+
+
+def case_scoped_normal_over_task_lean_returns_to_it():
+    # RED first: a task's standing lean, a scoped normal on the same task whose until has passed, a new session.
+    with fixture() as f:
+        sm = load_module("spend_mode", TOOL)
+        tr = load_module("task_record", TASK_TOOL)
+        tr.open_record("sp-scoped", session_id=SID, title="Scoped")
+        f.plant([owner_prompt(OWNER_UUID, QUOTE), owner_prompt("u2", "back to --normal for the window")])
+        if f.cli("set", "lean", "--task", "sp-scoped", "--until", FUTURE).returncode != 0:
+            return False, "task lean set refused"
+        if f.cli("set", "normal", "--task", "sp-scoped", "--until", BEFORE).returncode != 0:
+            return False, "task normal set refused"
+        if os.path.exists(f.state_file()):
+            os.remove(f.state_file())
+        got = sm.current(SID, now=MID)
+        ok = got["mode"] == "lean" and got["scope"] == "task" and got["until"] == FUTURE and got["expired"] is False
+        return ok, got
+
+
 def case_session_scope_ends_with_session():
     with fixture() as f:
         sm = load_module("spend_mode", TOOL)
@@ -246,6 +280,8 @@ CASES = [
     ("current() reads normal after expiry with expired true, and lean before it", case_expired_reads_normal),
     ("falls back to the task's spend condition when the session has no record", case_falls_back_to_task),
     ("clear makes the session read normal over a task's lean condition", case_clear_overrides_task),
+    ("a scoped normal over a standing session lean returns to lean at its reset", case_scoped_normal_returns_to_standing_lean),
+    ("a scoped normal over a task's standing lean returns to it at its reset", case_scoped_normal_over_task_lean_returns_to_it),
     ("a session-scoped set ends with the session: scope session, no until", case_session_scope_ends_with_session),
     ("refuses an owner turn that holds words but not the --lean token", case_refuses_substring_without_token),
     ("refuses --lean inside a pasted block", case_refuses_token_inside_pasted_block),

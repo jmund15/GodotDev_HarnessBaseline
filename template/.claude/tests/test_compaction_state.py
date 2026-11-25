@@ -157,7 +157,8 @@ class DoctrineLineTest(unittest.TestCase):
         rule = model_ladder_gate.doctrine_rule(payload)
         deny, _ = model_ladder_gate.doctrine_check(payload)
         read = model_ladder_gate.READ_STEP.format(path=model_ladder_gate.expected_path(payload))
-        for step in (model_ladder_gate.SKILL_STEP, read):
+        skill = model_ladder_gate.skill_step("orchestration", payload, "orchestration §0")
+        for step in (skill, read):
             self.assertIn(step, rule)
             self.assertIn(step, deny)
         deny_tiers, _ = model_ladder_gate.doctrine_check(payload, tiers=lambda: ["architect"], embed_slice=False)
@@ -247,7 +248,7 @@ class RetentionTest(unittest.TestCase):
         path = self.compacted("ret00009", "orchestration", attachment=current_attachment("orchestration"))
         deny, _ = model_ladder_gate.doctrine_check({"session_id": "ret00009", "transcript_path": path,
                                                     "cwd": str(CLAUDE.parent)})
-        self.assertNotIn(model_ladder_gate.SKILL_STEP, deny)
+        self.assertNotIn("orchestration §0", deny)
         self.assertIn("ladder", deny)
 
     def test_the_dispatch_gate_still_denies_a_truncated_skill(self):
@@ -257,7 +258,7 @@ class RetentionTest(unittest.TestCase):
         path = Planted(self, rows).path
         deny, _ = model_ladder_gate.doctrine_check({"session_id": "ret00010", "transcript_path": path,
                                                     "cwd": str(CLAUDE.parent)})
-        self.assertIn(model_ladder_gate.SKILL_STEP, deny)
+        self.assertIn("orchestration §0", deny)
 
 
 class CompactionOrderTest(unittest.TestCase):

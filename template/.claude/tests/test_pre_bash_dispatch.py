@@ -677,6 +677,12 @@ def test_sidecar_doctrine_fault_denies_any_call_and_its_failed_import_only_a_lau
     assert code == 0, (code, out, err)
 
 
+def test_the_sidecar_doctrine_gate_runs_in_the_bash_chain_and_is_not_listed_unwired():
+    # D27: a sidecar launch is denied until the doctrine is in context; the denial is test_sidecar_dispatch_context's.
+    wired = [getattr(m, '__name__', '') for m, _ in pre_bash_dispatch.HOOKS]
+    assert 'sidecar_dispatch_context' in wired and 'sidecar_dispatch_context' not in pre_bash_dispatch.UNWIRED, wired
+
+
 if __name__ == "__main__":
     from _case_pool import run_sharded
     parts_present()

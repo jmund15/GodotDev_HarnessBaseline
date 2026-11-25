@@ -64,6 +64,7 @@ __all__ = [
     "spent_mark",
     "unspend",
     "mark_ladder_slice",
+    "adopt_ladder_digest",
     "ladder_slice_tiers",
     "stage_ladder_receipt",
     "consume_ladder_receipt",
@@ -172,12 +173,14 @@ def reattach_over_cap(root) -> list[dict]:
     return sorted(rows, key=lambda r: -r["chars"])
 _COMPACTED_AT_KEY = "compacted_at"
 LADDER_SLICE_KEY = "ladder_slice_tiers"
+LADDER_READY_KEY = "model_ladder_ready"
+LADDER_DIGEST_KEY = "ladder_digest"
 LADDER_RECEIPT_KEY = "ladder_receipt"
 LADDER_RECEIPT_CAP = 8
 LADDER_RECEIPT_FAILURE_KEY = "ladder_receipt_failure"
 BRIEF_TABLE_KEY = "brief_table_fits"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY,
-                          LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY, BRIEF_TABLE_KEY)
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", LADDER_READY_KEY, LADDER_SLICE_KEY,
+                          LADDER_DIGEST_KEY, LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY, BRIEF_TABLE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
 
@@ -298,10 +301,21 @@ def _agent_suffix(agent_id):
     return "@" + agent_id if agent_id else ""
 
 
-def mark_skill_in_context(session_id, name, agent_id=""):
+def mark_skill_in_context(session_id, name, agent_id="", digest=None):
     """Record that skill `name` is in this context window (the subagent's when `agent_id` is given); a
-    compaction clears it."""
-    fire_once_since_compaction(session_id, "skill_in_context:" + name + _agent_suffix(agent_id))
+    compaction clears it. `digest` is the `SKILL.md` body the load delivered (`_compaction_record.skill_file_digest`),
+    kept with the record so `skill_in_context` can tell a held copy that the file has since left behind; a load
+    with no file on disk records True."""
+    key = "skill_in_context:" + name + _agent_suffix(agent_id)
+
+    def update(state):
+        fired = state.get(_COMPACTION_KEY)
+        fired = fired if isinstance(fired, dict) else {}
+        fired[key] = digest or True
+        state[_COMPACTION_KEY] = fired
+        return True
+
+    update_json_locked(state_path(session_id), update)
 
 
 def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=None):
@@ -317,34 +331,55 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
     key = "skill_in_context:" + name + _agent_suffix(agent_id)
     state = read_json_salvage(state_path(session_id))
     fired = state.get(_COMPACTION_KEY)
-    if isinstance(fired, dict) and fired.get(key):
-        return True
-    if agent_id or not transcript_path:
-        return False
+    held = fired.get(key) if isinstance(fired, dict) else None
     try:
         import _compaction_record
         import _win_path
+        root = _win_path.native_path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    except Exception:
+        return bool(held)
+    if held:
+        # A recorded load carries the bytes it delivered: a file that has changed since leaves the session
+        # holding an older copy, which counts only after it reloads (a record with no digest cannot be told stale).
+        now = _compaction_record.skill_file_digest(name, root)
+        if held is True or now is None or held == now:
+            return True
+    if agent_id or not transcript_path:
+        return False
+    try:
         whole = _compaction_record.reattached_whole(transcript_path, state.get(_COMPACTED_AT_KEY))
     except Exception:
         return False
-    if not whole:
+    if not whole or not os.path.isdir(root):
         return False
-    root = _win_path.native_path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    if not os.path.isdir(root):
-        return False
-    current = [skill for skill, digest in whole.items()
-               if _compaction_record.skill_file_digest(skill, root) in (None, digest)]
-    for skill in current:
-        mark_skill_in_context(session_id, skill)
+    current = []
+    for skill, attached in whole.items():
+        on_disk = _compaction_record.skill_file_digest(skill, root)
+        if on_disk in (None, attached):
+            mark_skill_in_context(session_id, skill, digest=on_disk)
+            current.append(skill)
     return name in current
 
 
-def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False):
+def adopt_ladder_digest(state, digest):
+    """Inside a state update: a load of ladder text whose digest differs from the one recorded supersedes it, so the
+    earlier full Read and slices (of older text) are dropped before the new load is recorded. No digest (no ladder
+    file) records nothing."""
+    if not digest:
+        return
+    if state.get(LADDER_DIGEST_KEY) not in (None, digest):
+        state.pop(LADDER_READY_KEY, None)
+        state.pop(LADDER_SLICE_KEY, None)
+    state[LADDER_DIGEST_KEY] = digest
+
+
+def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False, digest=None):
     """Record that `model_registry.py for-role` printed these tiers into this context window; a compaction
     clears them. Accumulates across runs. `clear_receipt_failure` drops the last failed-delivery note in the
-    same write, so a credit never leaves its session accusing a delivery that succeeded. True when the record
-    was written."""
+    same write, so a credit never leaves its session accusing a delivery that succeeded. `digest` is the ladder
+    file's (`model_ladder_gate.ladder_digest`) the slice was cut from. True when the record was written."""
     def update(state):
+        adopt_ladder_digest(state, digest)
         have = state.get(LADDER_SLICE_KEY)
         state[LADDER_SLICE_KEY] = sorted({*(have if isinstance(have, list) else []), *tiers})
         if clear_receipt_failure:

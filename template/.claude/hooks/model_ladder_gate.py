@@ -9,6 +9,8 @@ carries the whole `for-role` text for every tier the registry claims and records
 names each missing tier with its dispatch consumer. A slice credits when the run's own stdout appears whole
 inside the delivered output: the Bash PostToolUse entry (`--bash-credit`) compares against the text the run
 staged, so a command joined with `&&` earns credit and one cut by a pipe, filter or redirect earns none.
+Each recorded load carries the digest of the text it delivered (the skill's body, the ladder file), so a session
+holding a copy the file has since left behind is denied until it reloads (`held_ladder`, `_hook_state.skill_in_context`).
 Class: process guard, blocking because the advisory that replaced it let the skip recur (instruction_quality §3)."""
 import json
 import os
@@ -18,11 +20,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import (LADDER_SLICE_KEY, ladder_slice_tiers, mark_ladder_slice, state_path,  # noqa: E402
-                         update_json_locked, skill_in_context, consume_ladder_receipt, fail_ladder_receipt,
+from _hook_state import (LADDER_DIGEST_KEY, LADDER_READY_KEY, LADDER_SLICE_KEY, adopt_ladder_digest,  # noqa: E402
+                         mark_ladder_slice, read_json_salvage, state_path, update_json_locked, skill_in_context, consume_ladder_receipt, fail_ladder_receipt,
                          ladder_receipt_failure, normalize_stdout, stdout_sha256)
 
-STATE_KEY = "model_ladder_ready"
+STATE_KEY = LADDER_READY_KEY
 SLICE_COMMAND = "python3 .claude/tools/model_registry.py for-role"
 RELATIVE_PATH = Path(".claude") / "reference" / "model_ladder_evidence.md"
 
@@ -34,6 +36,28 @@ def _root(payload):
 def expected_path(payload):
     """The absolute ladder path a Read must hit; denials print it so a worktree cwd cannot misresolve it."""
     return os.path.realpath(_root(payload if isinstance(payload, dict) else {}) / RELATIVE_PATH)
+
+
+def ladder_digest(payload):
+    """The digest of the ladder file the session's next Read would deliver (line endings normalized), else None
+    when there is none: a load records it, and a session whose recorded digest differs holds older text."""
+    try:
+        with open(expected_path(payload if isinstance(payload, dict) else {}), "rb") as fh:
+            return stdout_sha256(fh.read().decode("utf-8", errors="replace"))
+    except OSError:
+        return None
+
+
+def held_ladder(state, payload=None):
+    """(full ladder Read held, tiers a slice holds) from a session `state` dict, for the ladder file as it is now: a
+    record made against other text (the digest it carries differs) holds nothing, so the session is denied until it
+    reloads. A record with no digest cannot be told stale and stands."""
+    ready, tiers = state.get(STATE_KEY) is True, state.get(LADDER_SLICE_KEY)
+    tiers = {t for t in tiers if isinstance(t, str)} if isinstance(tiers, list) else set()
+    recorded = state.get(LADDER_DIGEST_KEY)
+    if recorded and recorded != ladder_digest(payload):
+        return False, set()
+    return ready, tiers
 
 
 def _full_read_succeeded(payload):
@@ -85,7 +109,10 @@ def mark_loaded(payload):
     if actual != expected:
         return False
 
+    digest = ladder_digest(payload)
+
     def update(state):
+        adopt_ladder_digest(state, digest)
         state[STATE_KEY] = True
         return True
 
@@ -155,7 +182,8 @@ def _credit_delivered_slice(payload):
         fail_ladder_receipt(session_id, reason)
         return False
     tiers = [tier for tier in receipt.get("tiers") or [] if isinstance(tier, str) and tier]
-    return bool(tiers and mark_ladder_slice(session_id, tiers, clear_receipt_failure=True))
+    return bool(tiers and mark_ladder_slice(session_id, tiers, clear_receipt_failure=True,
+                                            digest=ladder_digest(payload)))
 
 
 FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this call is allowed without it. "
@@ -163,30 +191,20 @@ FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this
 
 
 # The load steps the deny names and the post-compaction rule (`doctrine_rule`) states: one string per step.
-SKILL_STEP = 'invoke Skill(skill="orchestration") (orchestration §0)'
-SKILL_READ_STEP = 'Read `{path}` in full with the Read tool, no offset or limit ({rule})'
+# One string names both routes, since a caller cannot always tell which it holds: a delegate has no Skill tool, and
+# a full SKILL.md Read records the same load (`skill_load_marker.py`).
+SKILL_STEP = ('invoke Skill(skill="{name}"), or without the Skill tool Read `{path}` in full with the Read tool, '
+              'no offset or limit ({rule})')
 SLICE_STEP = 'print the doctrine for {which}: `' + SLICE_COMMAND + ' {tiers}` (orchestration §5)'
 SLICE_BELOW_STEP = 'read the ladder slice for {which} below (orchestration §5)'
 READ_STEP = 'Read `{path}` in full, no offset or limit (orchestration §5)'
 
 
-def has_skill_tool(payload):
-    """False for a delegate: no `guards/tool_profiles.json` row grants the Skill tool, and a sidecar child (the
-    launchers export CLAUDE_CODE_SIDECAR) or an in-session subagent (its transcript lives under `subagents`) runs
-    a profile."""
-    if os.environ.get('CLAUDE_CODE_SIDECAR'):
-        return False
-    transcript = str(payload.get('transcript_path') or '').replace('\\', '/')
-    return '/subagents/' not in transcript
-
-
 def skill_step(name, payload, rule):
-    """The one load step for skill `name`: the Skill call where the caller has the tool, else a full Read of its
-    SKILL.md, which `skill_load_marker.py` records as the same load."""
-    if has_skill_tool(payload):
-        return SKILL_STEP if name == 'orchestration' else f'invoke Skill(skill="{name}") ({rule})'
-    path = os.path.realpath(_root(payload) / '.claude' / 'skills' / name / 'SKILL.md')
-    return SKILL_READ_STEP.format(path=path, rule=rule)
+    """The load step for skill `name`, both routes named, its SKILL.md path absolute so a worktree cwd cannot
+    misresolve it."""
+    path = os.path.realpath(_root(payload if isinstance(payload, dict) else {}) / '.claude' / 'skills' / name / 'SKILL.md')
+    return SKILL_STEP.format(name=name, path=path, rule=rule)
 
 
 def _tier_phrase(tier, consumers):
@@ -200,7 +218,7 @@ def doctrine_rule(payload):
     return ('Before the next dispatch, load each skill governing its brief and artifacts in this context '
             '(orchestration §0 Governing skills). The dispatch doctrine must also be in this context: the orchestration skill (a '
             'copy re-attached whole and still current with its SKILL.md on disk after the compaction counts), else '
-            + SKILL_STEP + '; and, since each '
+            + skill_step('orchestration', payload, 'orchestration §0') + '; and, since each '
             'compaction clears the ladder, for a call whose jobs pin tiers, '
             + SLICE_STEP.format(which='each tier it pins', tiers='<tier>...')
             + '; for a call naming no tier, ' + READ_STEP.format(path=expected_path(payload)) + '.')
@@ -219,7 +237,7 @@ def _call_tiers(tiers):
     return (sorted(named), consumers) if named else None
 
 
-def _embedded_slice(session_id):
+def _embedded_slice(session_id, payload):
     """The whole `for-role` text for every tier the registry claims, recorded as loaded for all of them in one
     write, else None when it cannot be produced or recorded (the deny then names the command and records
     nothing). One write means a later call pinning a different tier is already covered. When the plan cannot be
@@ -245,7 +263,7 @@ def _embedded_slice(session_id):
             text = model_registry.ladder_slice(claimed)
         except Exception:
             return None
-    return text if mark_ladder_slice(session_id, claimed) else None
+    return text if mark_ladder_slice(session_id, claimed, digest=ladder_digest(payload)) else None
 
 
 def doctrine_check(payload, tiers=None, embed_slice=False):
@@ -268,12 +286,10 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     doctrine in context. By default, and when the slice cannot be produced, the deny names the slice command and
     records nothing."""
     session_id = payload.get('session_id') or ''
-    written, state = update_json_locked(state_path(session_id), lambda state: (
-        state.get(STATE_KEY) is True, state.get(LADDER_SLICE_KEY)))
+    written, state = update_json_locked(state_path(session_id), dict)
     if not written:
         return None, FAULT_NOTE
-    ladder_ready, covered = state
-    covered = set(covered) if isinstance(covered, list) else set()
+    ladder_ready, covered = held_ladder(state, payload)
     unmet, slice_text = [], None
     if not skill_in_context(session_id, 'orchestration', agent_id=payload.get('agent_id') or '',
                             transcript_path=payload.get('transcript_path'), root=str(_root(payload))):
@@ -287,7 +303,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
             missing = [t for t in needed if t not in covered]
             if missing:
                 named = ', '.join(_tier_phrase(tier, consumers) for tier in missing)
-                slice_text = _embedded_slice(session_id) if embed_slice else None
+                slice_text = _embedded_slice(session_id, payload) if embed_slice else None
                 unmet.append(SLICE_BELOW_STEP.format(which=named) if slice_text
                              else SLICE_STEP.format(which=named, tiers=' '.join(missing)))
     if not unmet:
@@ -303,19 +319,24 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     return reason, None
 
 
+def ladder_held(session_id):
+    """True while any of the ladder doctrine is in this context: a full Read, or a slice of any tier, of the ladder
+    text now on disk. Unreadable state reads as not held."""
+    ready, tiers = held_ladder(read_json_salvage(state_path(session_id or "")))
+    return bool(ready or tiers)
+
+
 def tier_in_context(session_id, tier):
-    """True while the ladder rows claiming `tier` are in this context: a full Read, or a slice that named the tier.
-    Unreadable state reads as not in context."""
-    return claim_loaded(session_id) or tier in ladder_slice_tiers(session_id)
+    """True while the ladder rows claiming `tier` are in this context: a full Read, or a slice that named the tier,
+    of the ladder text now on disk. Unreadable state reads as not in context."""
+    ready, tiers = held_ladder(read_json_salvage(state_path(session_id or "")))
+    return ready or tier in tiers
 
 
 def claim_loaded(session_id):
     """True while the ladder is in context; compaction clears it. Unreadable state reads as not loaded."""
-    def update(state):
-        return state.get(STATE_KEY) is True
-
-    written, ready = update_json_locked(state_path(session_id or ""), update)
-    return bool(written and ready)
+    written, state = update_json_locked(state_path(session_id or ""), dict)
+    return bool(written and held_ladder(state)[0])
 
 
 def main(argv=None):

@@ -752,7 +752,8 @@ def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
     except Exception:
         credited = None
     if credited is False:
-        out.append("preflight: unmet: skill `orchestration` is not in this context: %s" % model_ladder_gate.SKILL_STEP)
+        out.append("preflight: unmet: skill `orchestration` is not in this context: %s" % model_ladder_gate.skill_step(
+            "orchestration", {"cwd": str(root)}, "orchestration §0"))
     return out
 
 

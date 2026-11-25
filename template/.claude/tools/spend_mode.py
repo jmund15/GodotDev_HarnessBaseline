@@ -6,8 +6,9 @@ Only the owner sets it, on the owner's literal token (a turn of this session hol
 `session` (the default) ends with the session; `task` (`--task T`) requires an `--until` and records a `spend`
 condition on the task, so a later session that resumes the task reads the same posture. `current()` reads the
 posture a session has now: its session record first, else the latest `spend` condition on the session's newest
-task, accepted only when `task_record` resolves it as fresh. Past its expiry a lean posture reads `normal`, with
-`expired` set, so the posture line can say so.
+task, accepted only when `task_record` resolves it as fresh. A scoped (`--until`) posture records the standing
+posture beneath it at set time; past its expiry it lapses to that one, so a scoped normal returns to a standing
+lean. A lean that lapses to nothing reads `normal`, with `expired` set, so the posture line can say so.
 
 Lean changes pins, never fields, admission or review width. This module states the posture; the rows a pin may
 take are `model_registry.py for-role <tier>`'s facts, and the agent chooses (`orchestration`
@@ -68,35 +69,68 @@ def _session_posture(session_id):
 
 
 def _task_posture(session_id, root=None):
-    """The latest `spend` condition on the session's newest task, when `task_record` resolves it fresh."""
+    """The newest task's `spend` posture: its newest condition when that resolves fresh, and each older fresh
+    condition beneath it as `beneath`, the chain `_standing` walks when a scoped posture lapses."""
     rec = task_record.active(session_id, directory=root)
     if not rec:
         return None
     spend = [c for c in rec.get("conditions") or [] if isinstance(c, dict) and c.get("kind") == KEY]
     if not spend or task_record._condition_row(spend[-1])["status"] != "fresh":
         return None
-    cond = spend[-1]
-    return {"mode": cond.get("effect"), "scope": "task", "until": cond.get("until"),
-            "quote": cond.get("quote"), "task": rec.get("task_id")}
+    posture = None
+    for cond in spend:
+        if task_record._condition_row(cond)["status"] == "fresh":
+            posture = {"mode": cond.get("effect"), "scope": "task", "until": cond.get("until"),
+                       "quote": cond.get("quote"), "task": rec.get("task_id"), "beneath": posture}
+    return posture
+
+
+def _mode_of(layer):
+    return layer.get("mode") if layer.get("mode") in MODES else "normal"
+
+
+def _holds(layer, at):
+    """A layer without an until holds for good; a scoped one holds while its until is ahead. An until that cannot
+    be read is expired."""
+    until = layer.get("until")
+    if until is None:
+        return True
+    stamp = task_record.until_epoch(until)
+    return stamp is not None and at < stamp
+
+
+def _standing(top, at):
+    """Walk the posture chain from `top` past its lapsed layers: (the first layer that holds at `at` or None,
+    the first lapsed lean layer passed or None)."""
+    lapsed = None
+    layer = top
+    while layer:
+        if _holds(layer, at):
+            return layer, lapsed
+        if _mode_of(layer) == "lean" and lapsed is None:
+            lapsed = layer
+        layer = layer.get("beneath")
+    return None, lapsed
 
 
 def current(session_id, root=None, now=None):
     """The spend posture a session reads now: {"mode", "scope", "until", "quote", "expired"}.
 
-    `root` names the task-record directory (default: the project's). A lean posture past its `until` reads
-    `normal` with `expired` true; its scope and until stay, so the posture line can name the lapse."""
+    `root` names the task-record directory (default: the project's). A scoped layer past its `until` lapses to
+    the standing layer beneath it. A lean that lapses to nothing reads `normal` with `expired` true, its scope
+    and until kept, so the posture line can name the lapse."""
     at = _epoch(now)
-    posture = _session_posture(session_id) or _task_posture(session_id, root) or {}
-    mode = posture.get("mode") if posture.get("mode") in MODES else "normal"
-    until = posture.get("until")
-    expired = False
-    if mode == "lean" and until is not None:
-        stamp = task_record.until_epoch(until)
-        expired = stamp is None or at >= stamp
-        if expired:
-            mode = "normal"
-    return {"mode": mode, "scope": posture.get("scope"), "until": until,
-            "quote": posture.get("quote"), "expired": expired}
+    top = _session_posture(session_id) or _task_posture(session_id, root) or {}
+    layer, lapsed = _standing(top, at)
+    mode, expired = "normal", False
+    if layer is not None and _mode_of(layer) == "lean":
+        shown, mode = layer, "lean"
+    elif lapsed is not None:
+        shown, expired = lapsed, True
+    else:
+        shown = layer if layer is not None else top
+    return {"mode": mode, "scope": shown.get("scope"), "until": shown.get("until"),
+            "quote": shown.get("quote"), "expired": expired}
 
 
 def _verify_token(session_id, mode, transcript=None):
@@ -166,11 +200,14 @@ def set_spend(mode, scope_task=None, until=None, until_reset=None, session_id=No
         raise SpendRefused("task scope needs --until: lean cannot outlive the renewal it was set for")
     if until is not None and task_record.until_epoch(until) is None:
         raise SpendRefused("--until must be an ISO time with a zone, e.g. 2031-01-01T00:00:00Z")
+    standing, _ = _standing(_session_posture(session_id) or _task_posture(session_id) or {}, time.time())
     if scope_task:
         task_record.record_condition(scope_task, KEY, quote, mode, session_id=session_id,
                                      transcript=transcript, until=until)
     posture = {"mode": mode, "scope": "task" if scope_task else "session", "until": until, "quote": quote,
                "task": scope_task, "untilReset": until_reset, "message_id": holder, "set_at": task_record.now()}
+    if until is not None and standing is not None:
+        posture["beneath"] = standing
     _write_session(session_id, posture)
     return posture
 

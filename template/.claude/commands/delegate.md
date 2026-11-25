@@ -1,7 +1,7 @@
 ---
 description: Delegate scoped ad hoc jobs with explicit model/effort pins
 argument-hint: <task> | --jobs <path>
-allowed-tools: Bash(python3 .claude/tools/lens_briefs.py:*), Bash(python3 .claude/tools/sidecar_fanout.py:*), Bash(python3 .claude/tools/dispatch_size.py:*), Bash(python3 .claude/tools/orchestration_metrics.py:*), Bash(python3 .claude/tools/dispatch_result.py:*), Workflow
+allowed-tools: Bash(python3 .claude/tools/lens_briefs.py:*), Bash(python3 .claude/tools/sidecar_fanout.py:*), Bash(python3 .claude/tools/dispatch_size.py:*), Bash(python3 .claude/tools/orchestration_metrics.py:*), Bash(python3 .claude/tools/dispatch_result.py:*), Workflow, Skill, Read
 ---
 
 # Delegate

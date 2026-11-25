@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(git ls-files:*), Bash(git ls-tree:*), Bash(git branch:*), Bash(git grep:*), Bash(git check-ignore:*), Bash(python3 .claude/tools/lens.py:*), Bash(node:*), Bash(bash:*), Glob, Grep, Read, Write, Workflow
+allowed-tools: Bash(git ls-files:*), Bash(git ls-tree:*), Bash(git branch:*), Bash(git grep:*), Bash(git check-ignore:*), Bash(python3 .claude/tools/lens.py:*), Bash(node:*), Bash(bash:*), Glob, Grep, Read, Write, Workflow, Skill
 description: Ground a design: map what exists, its owners, constraints and consumers, with explicit coverage
 ---
 

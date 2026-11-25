@@ -332,8 +332,8 @@ def test_unread_ladder_is_unmet_on_every_dispatch_until_a_compaction_clears_it(t
     hooks_state.clear_compaction_keys('cadence1')
     reason, _ = gate.doctrine_check(payload)
     assert 'Skill(skill="orchestration")' in reason and 'model_ladder_evidence.md' in reason
-    # One load route per document: the Skill call, never a SKILL.md Read.
-    assert 'SKILL.md' not in reason, reason
+    # Both load routes, one string: the Skill call, or a full SKILL.md Read (a session without the Skill tool).
+    assert 'SKILL.md' in reason and 'no offset or limit' in reason, reason
 
 
 def test_bounded_full_read_meets_the_ladder_precondition(tmp_path, monkeypatch):
@@ -573,7 +573,7 @@ def test_a_sidecar_delegate_is_told_to_read_the_skill_it_cannot_invoke(tmp_path,
     gate = load('model_ladder_gate')
     reason, _ = gate.doctrine_check(_delegate_payload(tmp_path, 'deleg001'))
     skill = os.path.realpath(tmp_path / '.claude' / 'skills' / 'orchestration' / 'SKILL.md')
-    assert 'Skill(skill=' not in reason, reason
+    assert 'Skill(skill="orchestration")' in reason, reason
     assert skill in reason and 'Read tool' in reason and 'no offset or limit' in reason, reason
 
 
@@ -584,16 +584,29 @@ def test_an_in_session_subagent_is_told_to_read_the_skill_too(tmp_path, monkeypa
     gate = load('model_ladder_gate')
     payload = _delegate_payload(tmp_path, 'deleg002', '/home/u/.claude/projects/p/s/subagents/agent-1.jsonl')
     reason, _ = gate.doctrine_check(payload)
-    assert 'Skill(skill=' not in reason and 'Read tool' in reason, reason
+    assert 'Skill(skill="orchestration")' in reason and 'Read tool' in reason, reason
 
 
-def test_the_main_session_keeps_the_skill_call_as_its_one_route(tmp_path, monkeypatch):
+def test_the_main_session_deny_names_both_routes_with_the_absolute_path(tmp_path, monkeypatch):
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
     monkeypatch.delenv('CLAUDE_CODE_SIDECAR', raising=False)
     gate = load('model_ladder_gate')
     reason, _ = gate.doctrine_check(_delegate_payload(tmp_path, 'main0001', '/home/u/.claude/projects/p/main.jsonl'))
-    assert 'Skill(skill="orchestration")' in reason and 'SKILL.md' not in reason, reason
+    skill = os.path.realpath(tmp_path / '.claude' / 'skills' / 'orchestration' / 'SKILL.md')
+    assert 'Skill(skill="orchestration")' in reason and skill in reason and 'no offset or limit' in reason, reason
+
+
+def test_a_full_skill_read_admits_a_main_session_that_was_denied(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.delenv('CLAUDE_CODE_SIDECAR', raising=False)
+    gate, marker = load('model_ladder_gate'), load('skill_load_marker')
+    payload = _delegate_payload(tmp_path, 'main0002', '/home/u/.claude/projects/p/main.jsonl')
+    path = os.path.realpath(tmp_path / '.claude' / 'skills' / 'orchestration' / 'SKILL.md')
+    assert 'Skill(skill="orchestration")' in gate.doctrine_check(payload)[0]
+    marker.process(dict(_skill_read(path), session_id='main0002'))
+    assert 'Skill(skill=' not in gate.doctrine_check(payload)[0]
 
 
 def test_the_skill_read_the_deny_names_meets_it_for_a_delegate(tmp_path, monkeypatch):
@@ -609,6 +622,80 @@ def test_the_skill_read_the_deny_names_meets_it_for_a_delegate(tmp_path, monkeyp
     marker.process(dict(_skill_read(path), session_id='deleg003'))
     reason, _ = gate.doctrine_check(payload)
     assert 'SKILL.md' not in reason and 'model_ladder_evidence.md' in reason, reason
+
+
+def _project_with(tmp_path, monkeypatch, skill_text, ladder_text):
+    """A project root holding the orchestration skill and the ladder at the given text; returns their paths."""
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.delenv('CLAUDE_CODE_SIDECAR', raising=False)
+    skill = tmp_path / '.claude' / 'skills' / 'orchestration' / 'SKILL.md'
+    ladder = tmp_path / '.claude' / 'reference' / 'model_ladder_evidence.md'
+    for path, text in ((skill, skill_text), (ladder, ladder_text)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+    return skill, ladder
+
+
+def _ladder_read(gate, sid):
+    return {'tool_name': 'Read', 'session_id': sid, 'tool_input': {'file_path': gate.expected_path({})},
+            'tool_response': {'file': {'startLine': 1, 'numLines': 3, 'totalLines': 3}}}
+
+
+def test_a_warm_session_holding_an_older_skill_is_denied_until_it_reloads(tmp_path, monkeypatch):
+    skill, _ = _project_with(tmp_path, monkeypatch, '# orchestration\nold text\n', '# ladder\n')
+    gate, marker = load('model_ladder_gate'), load('skill_load_marker')
+    sid = 'warmsk01'
+    payload = {'session_id': sid, 'cwd': str(tmp_path)}
+    gate.mark_loaded(_ladder_read(gate, sid))
+    marker.process({'tool_name': 'Skill', 'session_id': sid, 'tool_input': {'skill': 'orchestration'}})
+    assert gate.doctrine_check(payload) == (None, None), 'a current copy must not be denied'
+    skill.write_text('# orchestration\nnew text\n', encoding='utf-8')
+    reason, _ = gate.doctrine_check(payload)
+    assert reason and 'Skill(skill="orchestration")' in reason and 'SKILL.md' in reason, reason
+    marker.process({'tool_name': 'Skill', 'session_id': sid, 'tool_input': {'skill': 'orchestration'}})
+    assert gate.doctrine_check(payload) == (None, None), 'a reload of the new text must admit'
+
+
+def test_a_warm_session_holding_an_older_ladder_is_denied_until_it_reloads(tmp_path, monkeypatch):
+    _, ladder = _project_with(tmp_path, monkeypatch, '# orchestration\n', '# ladder\nold rows\n')
+    gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
+    sid = 'warmld01'
+    payload = {'session_id': sid, 'cwd': str(tmp_path)}
+    hooks_state.mark_skill_in_context(sid, 'orchestration')
+    assert gate.mark_loaded(_ladder_read(gate, sid)) is True
+    assert gate.doctrine_check(payload) == (None, None), 'a current copy must not be denied'
+    ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
+    reason, _ = gate.doctrine_check(payload)
+    assert reason and 'model_ladder_evidence.md' in reason and gate.claim_loaded(sid) is False, reason
+    assert gate.mark_loaded(_ladder_read(gate, sid)) is True
+    assert gate.doctrine_check(payload) == (None, None)
+
+
+def test_a_warm_session_holding_an_older_ladder_slice_is_denied_and_a_current_one_is_not(tmp_path, monkeypatch):
+    _, ladder = _project_with(tmp_path, monkeypatch, '# orchestration\n', '# ladder\nold rows\n')
+    gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
+    sid = 'warmsl01'
+    payload = {'session_id': sid, 'cwd': str(tmp_path)}
+    hooks_state.mark_skill_in_context(sid, 'orchestration')
+    assert hooks_state.mark_ladder_slice(sid, ['architect'], digest=gate.ladder_digest(payload))
+    assert gate.doctrine_check(payload, tiers=lambda: ['architect']) == (None, None)
+    assert gate.tier_in_context(sid, 'architect') is True
+    ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'], embed_slice=False)
+    assert reason and 'architect' in reason, reason
+    assert gate.tier_in_context(sid, 'architect') is False
+
+
+def test_a_slice_of_the_new_ladder_replaces_the_tiers_held_from_the_old_one(tmp_path, monkeypatch):
+    _, ladder = _project_with(tmp_path, monkeypatch, '# orchestration\n', '# ladder\nold rows\n')
+    gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
+    sid = 'warmsl02'
+    here = {'cwd': str(tmp_path)}
+    assert hooks_state.mark_ladder_slice(sid, ['architect'], digest=gate.ladder_digest(here))
+    ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
+    assert hooks_state.mark_ladder_slice(sid, ['fanout'], digest=gate.ladder_digest(here))
+    assert hooks_state.ladder_slice_tiers(sid) == ['fanout']
 
 
 if __name__ == "__main__":

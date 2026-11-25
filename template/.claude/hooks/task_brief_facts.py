@@ -50,7 +50,6 @@ HEADER = "model | input | image route | draw or spend | intel | speed | window |
 # is never the first place the agent meets them.
 NOTICE_TAG = "[dispatch-prep]"
 NOTICE_ONCE = "task_brief_facts:dispatch_prep"
-SKILL_LOAD = 'invoke Skill(skill="orchestration")'
 LADDER_LOAD = ('run `python3 .claude/tools/model_registry.py for-role <tier>` bare (no pipe or filter) '
                'for each tier the jobs pin')
 # One malformed-block line per (brief, defect) per window: a repeat of what the session already holds changes nothing.
@@ -242,7 +241,8 @@ def _facts(block, path, data, session, session_id=None):
         earlier = _hook_state.brief_table_seen(session_id, tier, {row: _verdict(fit) for row, fit in fits.items()})
         if earlier is not None:
             return _short(tier, tokens, upper, unreadable, fits, names, earlier)
-        if tier in _hook_state.ladder_slice_tiers(session_id):
+        import model_ladder_gate
+        if model_ladder_gate.tier_in_context(session_id, tier):
             owners = (model_registry, dispatch_checks)
             labels = {}
             for route, entries, _plans in groups:
@@ -270,10 +270,8 @@ def _dispatch_prep_notice(payload):
         return ""
     import _hook_state
     try:
-        ladder = bool(_hook_state.ladder_slice_tiers(session_id))
-        if not ladder:
-            import model_ladder_gate
-            ladder = bool(model_ladder_gate.claim_loaded(session_id))
+        import model_ladder_gate
+        ladder = model_ladder_gate.ladder_held(session_id)
         skill = _hook_state.skill_in_context(session_id, "orchestration",
                                              transcript_path=payload.get("transcript_path"))
     except Exception:
@@ -281,8 +279,7 @@ def _dispatch_prep_notice(payload):
     if skill and ladder:
         return ""
     import model_ladder_gate
-    skill_load = (SKILL_LOAD if model_ladder_gate.has_skill_tool(payload)
-                  else model_ladder_gate.skill_step("orchestration", payload, "orchestration §0"))
+    skill_load = model_ladder_gate.skill_step("orchestration", payload, "orchestration §0")
     missing = [step for step, met in ((skill_load, skill), (LADDER_LOAD, ladder)) if not met]
     if not _hook_state.fire_once_since_compaction(session_id, NOTICE_ONCE):
         return ""

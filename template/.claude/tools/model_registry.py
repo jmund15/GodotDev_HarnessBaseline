@@ -3242,8 +3242,8 @@ def _doctrine_in_context():
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
         import model_ladder_gate
-        return bool(model_ladder_gate.claim_loaded(session_id) or model_ladder_gate.ladder_slice_tiers(session_id))
-    except Exception:
+        return model_ladder_gate.ladder_held(session_id)
+    except (ImportError, OSError, ValueError):
         return False
 
 

@@ -1,7 +1,7 @@
 ---
 description: Generate the full doc suite for a system — usage, architecture, and retrospective.
 disable-model-invocation: true
-allowed-tools: Workflow
+allowed-tools: Workflow, Skill, Read
 ---
 
 Generate the full documentation suite for a system (usage + architecture + retrospective).
