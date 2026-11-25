@@ -21,7 +21,7 @@ Harness code is built like any other code, held to the principles in `instructio
 (`reference/principles.md`): H5 (a tool computes only what facts settle), H8 (friction only where the agent
 broke a rule it held), H9 (what is deterministic is the tool's), H13 (a test asserts a decision) and H14
 (shared code names no project and carries no owner identity). Plan check and diff review weigh a removal
-under H2 and H4. A string an agent reads (a deny, injected hook context, tool output an agent acts on) is
+under H2. A string an agent reads (a deny, injected hook context, tool output an agent acts on) is
 agent-facing text: `instruction_quality` §3 (the facts-versus-judgment sort and a deny's next step) and §6
 govern it, and diff review checks it. Code tips in `instruction_quality`: §13 the channel a hook's output
 reaches, §14 a RED-first proof against a planted violation, §16 fail posture and docstring parity.
@@ -94,6 +94,8 @@ singleton) goes in `adaptation.json` `proof_serial`, and a proof whose fixture g
 
 A close ends with a `close growth:` line naming each proof that stays above its own earlier recorded time range, load divided out (one slow run is load or chance, and names nothing), and a `close reuse:` line counting its reruns by cause. A grown proof the changed work owns is that work's defect: bring it back into its range before the line of work closes. Every other open entry (`python3 .claude/tools/gate_growth.py` lists them) is surfaced work under the worklog's do-now gate. That line sees lasting drift after the land and never what one change added: a new proof has no range, and a changed one is named only after two later passes top a range deep enough that chance cannot name it. A change's own cost is measured at the change (`reference/mechanism_litmus.md` L3).
 
+**A test runs under a time bound, and a flaky one is quarantined, never retried.** Every test has one: `adaptation.json` `proof_timeouts` (file name: seconds) over a 120 s default, and an expiry is a red that names the test. A bound above the default is a named entry set from the test's loaded run time, so an ordinary peer load stays green and a hang does not. A test seen flaky is a `proof_quarantine` entry (file name: its cause): it runs as `xfail(strict=False)`, still reports, and the main check prints each entry with its cause and result. The quarantine list is what a retry phase would have hidden.
+
 A gate phase that runs units one at a time (a retry, a rerun, a bisect step) prints a line as each starts, and a wrapper that filters a gate's output passes those lines: a silent phase reads as a hang, and its time reaches nobody.
 
 **A commit's proof claim names a TRACKED proof, or it claims nothing.** "Four defects, each proven red
@@ -146,7 +148,7 @@ check, as above.
   resolves lock rows, any other conflict is a red), the submodule read and a fast-forward push of `main`. A push that
   loses a race fetches, rebases and pushes again. It runs no proof and no C# gate, and `LAND_RESULT=red` names only the
   args, fetch, rebase, submodule or push stage.
-- **The main check proves `main` after the land.** `main_check.yml` runs the harness close over each landed range, and
+- **The main check proves `main` after the land.** `main_check.yml` runs the project's pytest over `.claude/tests` at the landed tip (`pytest -n auto`, then the `proof_serial` proofs alone; no retry, no bisect, so a red row names no culprit commit), and
   the gate that `adaptation.json` `gate_cadence.main` declares (`tools/adaptation.py` owns its shape: exit 0 passes, exit 1
   names each failed test as a `FAILED_TEST=<id>` line) when the range changes a non-harness path; a project that declares none
   runs the close alone. A red is a row on the `main-check-state` branch
@@ -160,10 +162,12 @@ check, as above.
 
 ## Machine work slots
 
-Local heavy lanes share `tools/machine_slots.py` admission: close proofs, publish checks, preview lanes,
-delegate proofs and C# test lanes. Coordinators and remote model work hold no slot. Direct proof commands
+Local heavy lanes share `tools/machine_slots.py` admission: publish checks, preview lanes, delegate proofs run
+singly, C# test lanes and browser runs. Coordinators and remote model work hold no slot. Direct proof commands
 use `python3 .claude/tools/machine_slots.py run -- <proof command>`; fan-out sidecar shells inherit admission.
-`harness_tests.py` is a coordinator that admits each proof itself: run it bare, and `run` passes it through with no lane.
+A pytest run takes no lane: `run` passes `pytest` and `python -m pytest` through, and each proof in it meets a
+private pool under its own temp root, so peer load shows up as slower proofs, never as a queue. `harness_tests.py`
+is a coordinator that admits each proof itself and `run` passes it through too.
 A full pool queues work before its proof timeout starts: whole-machine takes first, then the rest, each in arrival
 order; a take that waits prints a `machine slots: queued` line to stderr naming the holders, so a queue never reads as a hang. Inside a dispatched job other than a `gate` job, a take waits one bounded call (`JOB_WAIT_S`), then exits 2 naming the run the job owes its dispatcher. Nested runners spend the parent's lane serially;
 case pools borrow extra lanes only when free. A serial proof drains the pool before running.

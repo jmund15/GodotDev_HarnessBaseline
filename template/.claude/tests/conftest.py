@@ -13,8 +13,10 @@ hybrid `test_*.py`, a pytest file with a script body, each `.js`, `.mjs`, `.sh` 
 that runs the file the way `harness_tests.py` does
 (`_proof_runner.attempt.run_proof`: its interpreter, isolated environment, temp root and timeout), so one
 `pytest -n auto` run covers the battery. A pytest file collected in process gets the same environment and the same
-cap per case (`_proof_environment`). adaptation.json's `proof_timeouts` caps a proof's seconds (default 300);
-`proof_excluded` and `proof_heavy` skip with their reason unless `--harness-all` (the runner's `--all`); a
+cap per case (`_proof_environment`). adaptation.json's `proof_timeouts` caps a proof's seconds (default 120);
+`proof_excluded` and `proof_heavy` skip with their reason unless `--harness-all` (the runner's `--all`);
+`proof_quarantine` (file name: its cause) runs a seen-flaky proof as `xfail(strict=False)`, so it still runs and reports
+and its failure is no red; a
 `proof_serial` proof skips while xdist workers share the machine and runs under `-p no:xdist`; the pass that runs
 them alone is `-p no:xdist --harness-serial`, which selects only those proofs. A proof whose interpreter is missing
 fails as cannot-run (v1's runner: unavailable coverage is never green). A file named with a
@@ -51,7 +53,8 @@ if os.name == "nt":
 
 HERE = Path(__file__).resolve().parent
 CLAUDE = HERE.parent
-DEFAULT_TIMEOUT_S = 300
+_THIS = sys.modules[__name__]
+DEFAULT_TIMEOUT_S = 120
 _FAILURE_LINE = re.compile(r"^\s*(FAIL|not ok)\b|^\w*(Error|Exception)\b:")
 
 
@@ -77,6 +80,7 @@ _attempt, _catalog, _adaptation = _runner_modules()
 _attempt.add_git_config(os.environ, [("gc.auto", "0"), ("maintenance.auto", "false")])
 _POLICY = _catalog.Policy.read_worktree(str(CLAUDE))
 _TIMEOUTS = _adaptation.get(str(CLAUDE), "proof_timeouts")
+_QUARANTINE = _adaptation.get(str(CLAUDE), "proof_quarantine")
 
 
 def _here(path):
@@ -147,7 +151,7 @@ def _proof_environment(request):
             del os.environ[name]
         os.environ.update(env)
 
-    env = _attempt.proof_env(temp_root, timeout, root=str(CLAUDE.parent))
+    env = _attempt.proof_env(temp_root, timeout, root=str(CLAUDE.parent), pytest_lane=True)
     # The machine's temp folder and system git config stay: pytest's tmp_path holds a case's own folders, and the floor's
     # delete rows judge the real temp. A module-scoped fixture builds its repositories before the first case, so a case
     # that saw another system config (Git for Windows sets `core.autocrlf=true`) would read them as dirty, which is how
@@ -169,6 +173,12 @@ def _proof_environment(request):
         _attempt._remove_temp_root(temp_root)
 
 
+@pytest.fixture(scope="session")
+def bridge():
+    """This module. `import conftest` names whichever conftest pytest loaded last (the floor's one beside this folder's)."""
+    return _THIS
+
+
 class ProofFailed(Exception):
     pass
 
@@ -176,7 +186,7 @@ class ProofFailed(Exception):
 class ProofItem(pytest.Item):
     def runtest(self):
         status, _seconds, detail = _attempt.run_proof(str(self.path), timeout=_timeout(self.path),
-                                                      root=str(CLAUDE.parent))
+                                                      root=str(CLAUDE.parent), pytest_lane=True)
         if status == "platform-skip":
             found = re.search(r"^(?:# )?PLATFORM-SKIP-PROOF (.*)$", detail, re.M)
             pytest.skip(found.group(1) if found else "platform skip")
@@ -224,6 +234,8 @@ def _shared(config):
 
 
 def pytest_configure(config):
+    if config.getoption("harness_serial") and config.getoption("numprocesses", default=0):
+        raise pytest.UsageError("--harness-serial requires -p no:xdist (or -n 0)")
     # `run_proof` gives a proof two case jobs (HARNESS_CASE_JOBS). Under `-n` each worker already holds a CPU, so those
     # jobs would oversubscribe the machine (b3 measured five proofs red only at 24 workers); a worker's proofs run one
     # case at a time. A value the caller set stays.
@@ -238,6 +250,8 @@ def pytest_collection_modifyitems(config, items):
         kept = [item for item in items if _here(item.path) and Path(str(item.path)).name in _POLICY.serial]
         config.hook.pytest_deselected(items=[item for item in items if item not in kept])
         items[:] = kept
+    # Workers take cases in collection order: the proofs with a named bound are the long ones, so they start first.
+    items.sort(key=lambda item: -_timeout(Path(str(item.path))) if _here(item.path) else 0)
     for item in items:
         path = Path(str(item.path))
         if not _here(path):
@@ -251,6 +265,8 @@ def pytest_collection_modifyitems(config, items):
             reason = f"proof_serial: {_POLICY.serial[name]}; it runs alone: python -m pytest -p no:xdist {name}"
         if reason:
             item.add_marker(pytest.mark.skip(reason=reason))
+        elif name in _QUARANTINE:
+            item.add_marker(pytest.mark.xfail(strict=False, reason=f"quarantined: {_QUARANTINE[name]}"))
 
 
 def pytest_sessionfinish(session, exitstatus):

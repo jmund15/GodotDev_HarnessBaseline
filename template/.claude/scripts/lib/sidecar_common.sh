@@ -1120,6 +1120,21 @@ for row in rows if isinstance(rows, list) else []:
         "matcher": row["matcher"],
         "hooks": [{"type": "command", "command": command, "timeout": 10}],
     })
+# A child never runs with fewer delegate guards than its dispatcher: the loss floor's one entry (hooks/pre_bash.py, which
+# carries the wait clamp) comes from the launcher's root unless the child's own checkout registers it. The hook finds
+# its siblings and tools from its own file, so a workdir with no .claude/ runs it unchanged.
+def _registers_floor(workdir):
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            if "hooks/pre_bash.py" in (Path(workdir) / ".claude" / name).read_text(encoding="utf-8"):
+                return True
+        except OSError:
+            pass
+    return False
+if not _registers_floor(workdir or os.getcwd()):
+    base.setdefault("hooks", {}).setdefault("PreToolUse", []).append({
+        "matcher": "Bash|PowerShell|Monitor|TaskStop",
+        "hooks": [{"type": "command", "command": 'python3 "%s"' % (root / "hooks/pre_bash.py").as_posix(), "timeout": 75}]})
 print(json.dumps(base) if base else "")
 PY
 }

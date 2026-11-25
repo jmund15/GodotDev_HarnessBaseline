@@ -41,10 +41,13 @@
 # is Anthropic-specific: the plan's credential, no endpoint override, a free structural --check and
 # an opt-in --check --deep that spends one turn to test live authentication.
 #
-# CACHE TTL: the child's prompt cache is written at 5 minutes (CLAUDE_CODE_PROMPT_CACHE_TTL=5m), not the
-# subscription default of 1 hour. Only this launcher sets it: codex-proxy, deepseek and opencode
-# children talk to a non-Anthropic backend whose cache the variable does not govern.
-# The cache-lifetime memory note holds the replay and the reversal test.
+# CACHE TTL: the child's prompt cache is written per job at 5 minutes or 1 hour
+# (CLAUDE_CODE_PROMPT_CACHE_TTL), never the subscription's silent 1-hour default. The job's choice is
+# SIDECAR_CACHE_TTL (a jobs file's `cacheTtl`); absent, the kind row's `cacheTtl` in guards/tool_profiles.json
+# (a `gate` waits on long runs, so 1h), else 5m. foreground_wait_guard.py reads the same variable from the
+# child's environment to set its wait clamp: 270 s on 5m, the Bash ceiling on 1h. Only this launcher sets it:
+# codex-proxy, deepseek and opencode children talk to a non-Anthropic backend whose cache it does not govern.
+# The cache-lifetime memory note holds the prices, the replay and the break-even.
 #
 # Usage:
 #   anthropic_sidecar.sh [-m MODEL] [-e EFFORT] -G KIND [-Q TIER]   (KIND: a launcher kind in guards/tool_profiles.json; -Q replaces the kind row's tier)
@@ -327,6 +330,9 @@ SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "${SC_SETTINGS_JSON:-}")" || ex
 
 ac_scrub
 
+AC_CACHE_TTL="${SIDECAR_CACHE_TTL:-$(python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$SC_SHAPE" --field=cacheTtl | tr -d '\r')}"
+case "$AC_CACHE_TTL" in 5m|1h) ;; *) sc_die 2 "invalid cache TTL '$AC_CACHE_TTL' (SIDECAR_CACHE_TTL: 5m|1h)" ;; esac
+
 # NO ANTHROPIC_BASE_URL and NO ANTHROPIC_AUTH_TOKEN, on purpose: unset is what routes the child
 # to Anthropic. ANTHROPIC_API_KEY is blanked so a stray parent value cannot win the auth race and
 # bill an API account instead of the subscription — or, on a key plan, is EXPORTED inside the
@@ -338,7 +344,7 @@ run_claude() {
   cd "$SC_RUN_CWD" && ( ac_export_key; env \
     ${SC_SCRUB[@]+"${SC_SCRUB[@]}"} \
     CLAUDE_CODE_ENTRYPOINT=cli \
-    CLAUDE_CODE_PROMPT_CACHE_TTL=5m \
+    CLAUDE_CODE_PROMPT_CACHE_TTL="$AC_CACHE_TTL" \
     ${AC_BLANK_KEY[@]+"${AC_BLANK_KEY[@]}"} \
     ${AC_CHILD_CONFIG_DIR:+CLAUDE_CONFIG_DIR="$AC_CHILD_CONFIG_DIR"} \
     ANTHROPIC_SMALL_FAST_MODEL="$SC_MODEL" \

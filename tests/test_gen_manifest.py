@@ -48,7 +48,7 @@ def _mirror() -> Path:
         for name in (".gitignore", "baseline.manifest.json"):
             shutil.copy2(ROOT / name, root / name)
         subprocess.run(["git", "init", "-q", str(root)], check=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         _mirror_root = root
     return _mirror_root
 
@@ -56,7 +56,7 @@ def _mirror() -> Path:
 def _run_check(root: Path = ROOT) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(root / "tools" / "gen_manifest.py"), "--check"], cwd=root,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
 

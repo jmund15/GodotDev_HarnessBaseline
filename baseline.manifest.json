@@ -1117,11 +1117,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/commands/doc_workflow_battery.md",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/commands/eval_dashboard.md",
       "layer": "pure",
       "sync": "auto"
@@ -1579,11 +1574,6 @@
     {
       "path": ".claude/commands/update_roadmap.md",
       "layer": "coding",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/commands/worker_audit.md",
-      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -4127,16 +4117,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/fixtures/main_check/close_record_green.json",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/fixtures/main_check/close_record_timeout.json",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/fixtures/model_ladder_gate_bash_result.json",
       "layer": "pure",
       "sync": "auto"
@@ -6322,6 +6302,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_proof_bounds.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_proof_cost.py",
       "layer": "pure",
       "sync": "auto"
@@ -7592,26 +7577,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_worker_rate_difficulty.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/test_worker_rate_epoch.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/test_worker_rate_mutations.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/test_worker_rate_provenance.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_workflow_provider_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -8433,11 +8398,6 @@
     },
     {
       "path": ".claude/tools/work_key.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tools/worker_rate.py",
       "layer": "pure",
       "sync": "auto"
     },

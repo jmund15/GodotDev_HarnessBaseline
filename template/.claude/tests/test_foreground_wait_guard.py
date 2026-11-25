@@ -53,18 +53,18 @@ def advisory(command, background=False):
     return rc, context, out + err
 
 
-for label, command in (("a subshell backgrounded with a trailing ampersand", "( pytest -q ) &"),
+for label, command in (("a subshell backgrounded with a trailing ampersand", "( make check ) &"),
                        ("a line ending in a background ampersand", "pytest -q &\necho done")):
     rc, context, detail = advisory(command)
     check(label + " draws the run_in_background advisory",
           rc == 0 and "run_in_background" in context, detail)
 
 for label, command, background in (
-        ("a logical and is not a background job", "pytest -q && echo ok", False),
-        ("a redirect into a descriptor is not a background job", "pytest -q 2>&1", False),
+        ("a logical and is not a background job", "make check && echo ok", False),
+        ("a redirect into a descriptor is not a background job", "make check 2>&1", False),
         ("an ampersand inside quotes is not a background job", 'echo "tail &"', False),
         ("an ampersand in a heredoc body is data", "cat <<'EOF'\nline &\nEOF", False),
-        ("an ampersand on a call already detached with run_in_background is not repeated", "( pytest -q ) &", True)):
+        ("an ampersand on a call already detached with run_in_background is not repeated", "( make check ) &", True)):
     rc, context, detail = advisory(command, background)
     check(label + " passes silently", rc == 0 and "run_in_background" not in context, detail)
 
@@ -163,6 +163,19 @@ check("the interactive orchestrator's raised timeout is clamped to the default i
       rc == 0 and updated is not None and not updated.get("run_in_background")
       and updated.get("timeout") == 120000 and updated.get("command") == RENDER, detail)
 
+LOOP_WAIT = "until grep -q done a2.log; do sleep 30; done"
+# The clamp is the child's prompt-cache lifetime: a child on the 1-hour cache (`CLAUDE_CODE_PROMPT_CACHE_TTL=1h`, set
+# by its launcher) waits to the Bash ceiling; a 5-minute or unknown one keeps SUBAGENT_WAIT_MS.
+for ttl, want in (("1h", 590000), ("5m", SUBAGENT_WAIT_MS), (None, SUBAGENT_WAIT_MS)):
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_PROMPT_CACHE_TTL"}
+    env.update(CLAUDE_CODE_ENTRYPOINT="sdk-cli", **({"CLAUDE_CODE_PROMPT_CACHE_TTL": ttl} if ttl else {}))
+    for shape, cmd in (("command", RENDER), ("until-loop", LOOP_WAIT)):
+        r = subprocess.run([sys.executable, HOOK], input=json.dumps(timed(cmd, 590000)), capture_output=True,
+                           text=True, encoding="utf-8", timeout=30, env=env)
+        upd = (json.loads(r.stdout).get("hookSpecificOutput", {}).get("updatedInput") if r.stdout.strip() else None) or {}
+        check("a %s child's 590000 ms %s wait runs at %d ms" % (ttl or "no-TTL", shape, want),
+              r.returncode == 0 and upd.get("timeout", 590000) == want, r.stdout + r.stderr)
+
 LOOP = "for i in $(seq 1 40); do grep -q 'facts in' a2.log && break; sleep 20; done"
 rc, updated, verdict, detail = rewrite(timed(LOOP, 600000), "sdk-cli")
 check("a for-loop wait is a wait loop: clamped, with no EXIT line added",
@@ -218,6 +231,19 @@ with tempfile.TemporaryDirectory() as tmp:
     rc, hso, detail = raised("python3 .claude/tests/test_timed_fit_probe.py", 150000, None, env)
     check("a proof batch whose recorded time exceeds the raise is clamped",
           rc == 0 and (hso.get("updatedInput") or {}).get("timeout") == BASH_DEFAULT_MS, detail)
+
+# A foreground pytest run that names no single test file is the whole battery: a woken caller gets the batch advice.
+# One that names a test file is a narrow run and stays silent.
+for label, command, advised in (
+        ("a wide pytest run", "python3 -m pytest -n auto -q .claude/tests", True),
+        ("a bare pytest run", "pytest -q", True),
+        ("a pytest run naming one test file", "python3 -m pytest -q .claude/tests/test_main_check.py", False),
+        ("a pytest run naming one case", "python3 -m pytest .claude/tests/test_a.py::test_b", False),
+        ("a pytest help call", "python3 -m pytest --help", False),
+        ("a grep that names pytest", "grep -n pytest .claude/tests/conftest.py", False)):
+    rc, hso, detail = raised(command, BASH_DEFAULT_MS)
+    got = "whole battery" in hso.get("additionalContext", "")
+    check("%s %s the batch advice" % (label, "draws" if advised else "never draws"), rc == 0 and got == advised, detail)
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

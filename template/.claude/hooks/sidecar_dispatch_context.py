@@ -117,7 +117,7 @@ PEAK_EXIT = 11           # lib/sidecar_common.sh: peak pricing window on a peakP
 ENDPOINT_DOWN_EXIT = 16  # the row's endpoint is unavailable right now (live probe no answer, 429 or 5xx); nothing ran; no override
 SAFE_JOB_FIELDS = frozenset({
     "label", "alias", "rows", "promptFile", "effort", "kind", "tier", "armDisclosure",
-    "contextFiles", "schemaFile", "workdir", "transport", "plan", "pick", "spec",
+    "cacheTtl", "contextFiles", "schemaFile", "workdir", "transport", "plan", "pick", "spec",
 })
 REQUIRED_JOB_FIELDS = frozenset({"label", "promptFile", "kind"})  # and `alias` or `rows`, per `_listed_rows`
 # Auto-approval rungs. `ultra` stays out on purpose: a job at it falls to owner approval.

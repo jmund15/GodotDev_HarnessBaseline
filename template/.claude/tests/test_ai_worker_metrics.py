@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""Minimal proof for tools/ai_worker_metrics.py and its worker_rate.py error column.
+"""Minimal proof for tools/ai_worker_metrics.py, the reducer over the ai-worker call ledger.
 
-A bad --days value is refused, a planted ledger is reported, `--by` buckets rows by
-outcome and caller with skipped calls apart from failures, a skipped row is never
-counted as an error by either reducer, and worker_rate counts it neither as a call nor as unrated.
+A bad --days value is refused, a planted ledger is reported, and `--by` buckets rows by
+outcome and caller with skipped calls apart from failures.
 
     python3 .claude/tests/test_ai_worker_metrics.py
 """
 from __future__ import annotations
 
-import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -119,33 +116,10 @@ def case_every_by_axis_is_accepted(directory):
         assert by_groups(done.stdout), (axis, done.stdout)
 
 
-def case_skipped_row_is_not_an_error_in_worker_rate(directory):
-    import worker_rate as wr
-
-    ledger = planted_ledger(directory, [failed(0, "sess-a"), skipped(1, "sess-a")])
-    saved = wr.LEDGER, wr.RATINGS
-    wr.LEDGER, wr.RATINGS = ledger, Path(directory) / "ratings.jsonl"
-    real_out = sys.stdout
-    sys.stdout = captured = io.StringIO()
-    try:
-        rc = wr.cmd_report(types.SimpleNamespace(since=None, server_sha=None))
-    finally:
-        sys.stdout = real_out
-        wr.LEDGER, wr.RATINGS = saved
-    assert rc == 0, rc
-    body = [line for line in captured.getvalue().splitlines() if line.startswith("read_files / ")]
-    assert len(body) == 1, captured.getvalue()
-    columns = body[0][52:].split()
-    assert columns[0] == "1", f"a skipped row sent nothing, so it is not a call: {columns}"
-    assert columns[4] == "1", f"only the failed row is an error: {columns}"
-    assert columns[-1] == "1", f"a skipped row has no output to rate: {columns}"
-
-
 def main():
     cases = [case_bad_days_value_exits_nonzero, case_planted_ledger_reports_its_model,
              case_by_outcome_keeps_skipped_apart_and_unlabelled_legacy,
-             case_by_caller_session_puts_unknown_last, case_every_by_axis_is_accepted,
-             case_skipped_row_is_not_an_error_in_worker_rate]
+             case_by_caller_session_puts_unknown_last, case_every_by_axis_is_accepted]
     failures = []
     for case in cases:
         directory = tempfile.mkdtemp(prefix="ai-worker-metrics-proof-")

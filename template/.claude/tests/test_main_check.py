@@ -2,12 +2,10 @@
 rows on the `main-check-state` branch (rules/harness_tooling.md §Land and main check).
 
 Each case plants a repo whose `origin` is a bare `file://` remote under a temp root: nothing reaches the network or
-the real `origin`. The repo carries a planted `.claude/scripts/harness_tests.py` that either forwards its argv to the
-real runner (`--repo` the planted repo) or, when a close plan is present, prints the plan and writes its record to the
-stamp, and a planted gate script that replays gate scenarios: the project declares it as `gate_cadence.main` in the
-planted repo's `adaptation.json`, and its verdict is its exit code plus `FAILED_TEST=<id>` stdout lines. The close record
-comes from a captured real output under `fixtures/main_check/`, with only the fields a case must control replaced (the
-tree's head, the range's base). A project-local proof replays that project's real gate output and exit table.
+the real `origin`. The repo carries a planted `.claude/tests/conftest.py` that, when a close plan is present, writes the plan as the
+junit file pytest was asked for and ends with the plan's exit code (no plan: pytest runs the planted tests for real),
+and a planted gate script that replays gate scenarios: the project declares it as `gate_cadence.main` in the
+planted repo's `adaptation.json`, and its verdict is its exit code plus `FAILED_TEST=<id>` stdout lines. A project-local proof replays that project's real gate output and exit table.
 
     python3 .claude/tests/test_main_check.py
 """
@@ -28,7 +26,6 @@ sys.path.insert(0, str(HERE))
 from _harness_repo_case import RepoCase, ROOT  # noqa: E402
 
 SCRIPT = ROOT / '.claude' / 'scripts' / 'main_check.py'
-REAL_RUNNER = ROOT / '.claude' / 'scripts' / 'harness_tests.py'
 FIXTURES = HERE / 'fixtures' / 'main_check'
 PLATFORM = 'windows' if os.name == 'nt' else 'linux' if sys.platform.startswith('linux') else 'macos'
 JOB_MINUTES = 777
@@ -37,7 +34,7 @@ EXIT_CODES = {'PASS': 0, 'FAIL': 1, 'INVALID': 2, 'WARN': 3, 'BLOCKED': 4, 'INCO
 GATE_ARGV = ['pwsh', '-NoProfile', '-File', '.claude/scripts/planted_gate.ps1', '-NoBaselineUpdate', '-RetryOnly']
 GATE_OUTPUTS = ['out/baseline.json', 'out/durations.json']
 ADAPTATION = '.claude/skills/project_subsystems/adaptation.json'
-SUB_ENV = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'protocol.file.allow', 'GIT_CONFIG_VALUE_0': 'always'}
+SUB_ENV = {'MAIN_CHECK_WORKERS': '0', 'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'protocol.file.allow', 'GIT_CONFIG_VALUE_0': 'always'}
 
 WORKFLOW = """name: main-check
 on:
@@ -52,32 +49,49 @@ jobs:
       - run: python3 .claude/scripts/main_check.py close
 """ % JOB_MINUTES
 
-SHIM = '''import json, os, subprocess, sys, time
-here = os.path.dirname(os.path.abspath(__file__))
-scratch = os.path.join(here, "..", "scratch")
-os.makedirs(scratch, exist_ok=True)
-with open(os.path.join(scratch, "close_calls.jsonl"), "a") as fh:
-    fh.write(json.dumps({"argv": sys.argv[1:], "probe": os.environ.get("MC_PROBE"), "both": os.environ.get("MC_BOTH"),
-                         "deadline": os.environ.get("HARNESS_DEADLINE")}) + "\\n")
-plan_path = os.path.join(scratch, "close_plan.json")
-if not os.path.exists(plan_path):
-    sys.exit(subprocess.run([sys.executable, %(real)r, "--repo", os.getcwd()] + sys.argv[1:]).returncode)
-plan = json.load(open(plan_path, encoding="utf-8"))
-time.sleep(plan.get("sleep", 0))
-for line in plan.get("lines", []):
-    print(line)
-record = plan.get("record")
-if record is not None:
-    if not plan.get("literal"):
-        head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        base = sys.argv[sys.argv.index("--range-start") + 1] if "--range-start" in sys.argv else None
-        record = dict(record, head=head, base=base, ts=time.time())
-    stamp = os.environ["HARNESS_TEST_STAMP"]
-    doc = json.load(open(stamp)) if os.path.exists(stamp) else {}
-    doc["close"] = record
-    json.dump(doc, open(stamp, "w"))
-sys.exit(plan.get("exit", 0))
-''' % {'real': str(REAL_RUNNER)}
+CONFTEST = '''import json, os, time
+from xml.sax.saxutils import quoteattr
+import pytest
+
+SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scratch")
+PLAN = os.path.join(SCRATCH, "close_plan.json")
+
+
+def pytest_configure(config):
+    if hasattr(config, "workerinput") or not os.path.exists(PLAN):
+        return
+    os.makedirs(SCRATCH, exist_ok=True)
+    with open(os.path.join(SCRATCH, "close_calls.jsonl"), "a") as fh:
+        fh.write(json.dumps({"argv": list(config.invocation_params.args), "probe": os.environ.get("MC_PROBE"),
+                             "both": os.environ.get("MC_BOTH")}) + "\\n")
+
+
+def junit(plan, path):
+    red = {r["proof"]: r for r in plan["record"].get("red", [])}
+    cases = ["<testcase classname=\'x\' name=\'case\' file=\'.claude/tests/%s\'/>" % n
+             for n in plan["record"].get("proofs", []) if n not in red]
+    cases += ["<testcase classname=\'x\' name=\'case\' file=\'.claude/tests/%s\'><failure message=%s>%s</failure>"
+              "</testcase>" % (n, quoteattr(r["detail"]), "") for n, r in red.items()]
+    cases += ["<testcase classname=\'x\' name=\'case\' file=\'.claude/tests/%s\'><skipped type=\'pytest.xfail\' "
+              "message=\'q\'/></testcase>" % n for n, how in plan["record"].get("quarantine", {}).items() if how == "failed"]
+    with open(path, "w") as fh:
+        fh.write("<testsuites><testsuite name=\'pytest\'>" + "".join(cases) + "</testsuite></testsuites>")
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, "workerinput") or not os.path.exists(PLAN):
+        return
+    plan = json.load(open(PLAN, encoding="utf-8"))
+    time.sleep(plan.get("sleep", 0))
+    for line in plan.get("lines", []):
+        print(line)
+    if plan.get("record") is not None:
+        junit(plan, session.config.option.xmlpath)
+    elif session.config.option.xmlpath and os.path.exists(session.config.option.xmlpath):
+        os.remove(session.config.option.xmlpath)
+    session.exitstatus = plan.get("exit", 0)
+'''
 
 BASELINE_SLUG = 'jmund15/GodotDev_HarnessBaseline'
 BASELINE_SHA = '2caaab4e5d6c80520127847e0aab8e8b6661a1ce'
@@ -124,10 +138,6 @@ exit ([int] $step.exit)
 '''
 
 
-def fixture(name):
-    return json.loads((FIXTURES / name).read_text(encoding='utf-8'))['record']
-
-
 def fixture_lines(name):
     return [l for l in (FIXTURES / name).read_text(encoding='utf-8').splitlines() if not l.startswith('#')]
 
@@ -140,7 +150,7 @@ class MainCheckCase(RepoCase):
     def seed_repo(self):
         super().seed_repo()
         self.write('.github/workflows/main_check.yml', WORKFLOW)
-        self.write('.claude/scripts/harness_tests.py', SHIM)
+        self.write('.claude/tests/conftest.py', CONFTEST)
         self.write('.claude/scripts/planted_gate.ps1', GATE_STUB.replace('@NAME@', 'gate'))
         self.declare_gate()
         self.write('.claude/tests/test_main_check_planted.py', 'print("planted proof ran")\n')
@@ -234,18 +244,17 @@ class MainCheckCase(RepoCase):
         return [r for r in self.remote_state()['rows'] if r['clearedAt'] is None and r['platform'] == platform]
 
     def plan_close(self, record='green', **plan):
+        """Plant the close's outcome: `record` names the proofs that ran (`proofs`), the files with a failing case (`red`,
+        each with its text) and the quarantined entries that failed; None plants a run with no junit file."""
         if record == 'green':
-            record = fixture('close_record_green.json')
-        elif record is not None:
-            record = dict(fixture('close_record_green.json'), **record)
+            record = {}
         self.write('.claude/scratch/close_plan.json', json.dumps(dict(plan, record=record)))
 
-    def red_record(self, *reds, cannot_run=(), pre_existing=(), proofs=None):
-        return {'verdict': 'red', 'red': list(reds), 'cannotRun': list(cannot_run), 'preExisting': list(pre_existing),
-                'proofs': proofs or [r['proof'] for r in reds]}
+    def red_record(self, *reds, proofs=None):
+        return {'red': list(reds), 'proofs': proofs or [r['proof'] for r in reds]}
 
-    def red(self, proof, commit, detail='FAIL: unit regressed\n'):
-        return {'proof': proof, 'commit': commit, 'detail': detail}
+    def red(self, proof, detail='FAIL: unit regressed\n'):
+        return {'proof': proof, 'detail': detail}
 
     def gate_step(self, kind, ident=None, tip=None, failed=None, exit=None):
         """One gate invocation: the verdict's exit code and the `FAILED_TEST=` lines a FAIL names."""
@@ -294,28 +303,32 @@ class MainCheckCase(RepoCase):
 
 
 class StateAndVerdict(MainCheckCase):
-    def test_a_red_proof_planted_in_the_range_is_a_new_red_with_its_culprit(self):
-        self.plant('good')
-        self.commit_as('plant a proof and its input')
-        good = self.push()
-        self.seed_state(good)
-        self.land('unrelated edit', session='sess-a', **{'.claude__hooks__other.py': 'X = 1\n'})
-        culprit = self.land('break the unit', session='sess-b', **{'.claude__hooks__unit.py': 'VALUE = "bad"\n'})
-        later = self.land('doc edit', session='sess-c', **{'.claude__notes.md': 'doc\n'})
-        runner = [sys.executable, str(self.repo / '.claude' / 'scripts' / 'harness_tests.py'), '--close', '--now']
-        alone = subprocess.run(runner + ['--base', good], cwd=self.repo, capture_output=True, text=True)
-        stamp = json.loads(Path(os.environ['HARNESS_TEST_STAMP']).read_text())['close']
-        self.assertEqual(stamp['paths'], [], 'today --base alone selects nothing on a range already on origin/main: ' + alone.stdout)
-        rc, out = self.whole_run('r1')
+    def test_a_real_pytest_run_becomes_red_rows_quarantine_lines_and_a_passing_proof_clears_its_row(self):
+        # The live boundary once: no close plan, so pytest runs the planted tests and the junit file it wrote is read.
+        self.write('.claude/skills/project_subsystems/adaptation.json',
+                   json.dumps({'proof_quarantine': {'test_wobbly.py': 'races its own fixture'}}))
+        self.seed_state(self.base, rows=[self.row('test_good.py', commit='abc')])
+        self.land('plant tests', **{
+            '.claude__tests__test_good.py': 'def test_good():\n    pass\n',
+            '.claude__tests__test_bad.py': 'def test_bad():\n    assert False, "FAIL: unit regressed"\n',
+            '.claude__tests__test_broken.py': 'import not_a_real_module_for_this_proof\n',
+            '.claude__tests__test_wobbly.py': 'import pytest\n\n\n@pytest.mark.xfail(strict=False, reason="quarantined")\n'
+                                              'def test_wobbly():\n    assert False\n'})
+        rc, out = self.stage('close', 'r1')
+        self.assertIn('QUARANTINE test_wobbly.py: failed (cause: races its own fixture)', out)
         close = self.record('r1', 'close')['record']
-        self.assertEqual([r['proof'] for r in close['red']], ['test_unit.py'], out)
-        self.assertEqual(close['red'][0]['commit'], culprit, out)
+        self.assertEqual([r['proof'] for r in close['red']], ['test_bad.py', 'test_broken.py'], out)
+        self.assertIn('test_good.py', close['proofs'])
+        self.assertNotIn('test_wobbly.py', [r['proof'] for r in close['red']])
+        self.stage('gate', 'r1')
+        rc, out = self.stage('finalize', 'r1')
         state = self.remote_state()
-        self.assertEqual(state['checkedTo'], later, 'a red with nothing unrun moves checkedTo: ' + out)
-        rows = [r for r in state['rows'] if r['name'] == 'test_unit.py']
-        self.assertEqual([(r['kind'], r['platform'], r['commit'], r['session']) for r in rows],
-                         [('proof', PLATFORM, culprit, 'sess-b')], out)
-        self.assertTrue(rows[0]['firstLine'] and rows[0]['firstSeen'] and rows[0]['clearedAt'] is None)
+        self.assertEqual(state['checkedTo'], self.tips[-1], out)
+        self.assertEqual(state['run']['outcome'], 'red', out)
+        rows = {r['name']: r for r in state['rows']}
+        self.assertEqual(sorted(n for n, r in rows.items() if r['clearedAt'] is None), ['test_bad.py', 'test_broken.py'])
+        self.assertEqual((rows['test_bad.py']['commit'], rows['test_bad.py']['session']), (None, None))
+        self.assertTrue(rows['test_good.py']['clearedAt'], 'a passing case clears the proof\'s open row: ' + out)
 
     def test_checked_to_moves_on_green_and_on_red_with_nothing_unrun(self):
         sha = self.land('first', **{'.claude__notes.md': 'a\n'})
@@ -324,45 +337,40 @@ class StateAndVerdict(MainCheckCase):
         self.assertEqual(self.remote_state()['checkedTo'], sha, out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'green', out)
         sha = self.land('second', **{'.claude__notes.md': 'b\n'})
-        self.plan_close(self.red_record(self.red('test_unit.py', sha)))
+        self.plan_close(self.red_record(self.red('test_unit.py')))
         rc, out = self.whole_run('r2')
         self.assertEqual(self.remote_state()['checkedTo'], sha, out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'red', out)
 
-    def test_checked_to_moves_on_a_red_with_unrun_proofs_and_writes_a_row_per_entry(self):
-        sha = self.land('first', **{'.claude__tests__test_other.py': 'print("ok")\n'})
-        self.plan_close(self.red_record(self.red('test_unit.py', sha), cannot_run=['test_other.py']))
-        rc, out = self.whole_run('r1')
-        state = self.remote_state()
-        self.assertEqual(state['checkedTo'], sha, out)
-        rows = {r['name']: r for r in self.open_rows()}
-        self.assertEqual(sorted(rows), ['test_other.py', 'test_unit.py'], out)
-        self.assertEqual((rows['test_unit.py']['commit'], rows['test_unit.py']['cause']), (sha, None), out)
-        self.assertEqual((rows['test_other.py']['commit'], rows['test_other.py']['firstLine']),
-                         (None, 'could not run in the close'), out)
+    def test_a_red_row_names_the_session_only_when_one_session_landed_the_range(self):
+        # The close runs no bisect, so a red names a session only when every commit of its range carries that session.
+        self.land('first', session='sess-a', **{'.claude__notes.md': 'a\n'})
+        self.land('second', session='sess-a', **{'.claude__notes.md': 'b\n'})
+        self.plan_close(self.red_record(self.red('test_unit.py')))
+        self.whole_run('r1')
+        rows = [r for r in self.remote_state()['rows'] if r['name'] == 'test_unit.py']
+        self.assertEqual([(r['commit'], r['session']) for r in rows], [(None, 'sess-a')])
+        self.land('third', session='sess-b', **{'.claude__notes.md': 'c\n'})
+        self.land('fourth', session='sess-c', **{'.claude__notes.md': 'd\n'})
+        self.plan_close(self.red_record(self.red('test_other.py')))
+        self.whole_run('r2')
+        rows = [r for r in self.remote_state()['rows'] if r['name'] == 'test_other.py']
+        self.assertEqual([(r['commit'], r['session']) for r in rows], [(None, None)])
 
-    def test_an_incomplete_close_holding_behavior_claims_advances_with_an_uncovered_row(self):
-        self.land('first', **{'.claude__notes.md': 'a\n'})
-        self.plan_close({'verdict': 'incomplete', 'red': [], 'cannotRun': ['<behavior claims>'], 'proofs': []})
-        rc, out = self.whole_run('r1')
-        self.assertEqual(self.remote_state()['checkedTo'], self.tips[-1], out)
-        rows = self.open_rows()
-        self.assertEqual([(r['name'], r['cause']) for r in rows], [('<behavior claims>', 'uncovered')], out)
-        self.assertIn('r1', rows[0]['firstLine'], 'the uncovered row names the run that could not name the proof: ' + out)
-
-    def test_a_timeout_red_gets_the_timeout_cause_and_no_commit(self):
+    def test_a_case_that_outran_its_bound_gets_the_timeout_cause_and_a_crashed_worker_the_crash_cause(self):
         self.land('first', **{'.claude__tests__test_slow_unit.py': 'print("ok")\n',
+                              '.claude__tests__test_dead_unit.py': 'print("ok")\n',
                               '.claude__tests__test_unit.py': 'print("ok")\n'})
-        sha = self.tips[-1]
-        record = fixture('close_record_timeout.json')
-        self.plan_close(record)
+        self.plan_close(self.red_record(
+            self.red('test_slow_unit.py', 'test_slow_unit.py: fail\nTIMEOUT after 120s\n'),
+            self.red('test_dead_unit.py', "worker 'gw3' crashed while running '.claude/tests/test_dead_unit.py::proof'"),
+            self.red('test_unit.py')))
         rc, out = self.whole_run('r1')
         rows = {r['name']: r for r in self.open_rows()}
-        self.assertEqual((rows['test_slow_unit.py']['cause'],
-                          rows['test_slow_unit.py']['commit']), ('timeout', None), out)
-        self.assertEqual((rows['test_unit.py']['cause'], rows['test_unit.py']['commit']),
-                         (None, record['red'][1]['commit']), out)
-        self.assertEqual(self.remote_state()['checkedTo'], sha, out)
+        self.assertEqual({n: (r['cause'], r['commit']) for n, r in rows.items()},
+                         {'test_slow_unit.py': ('timeout', None), 'test_dead_unit.py': ('crash', None),
+                          'test_unit.py': (None, None)}, out)
+        self.assertEqual(self.remote_state()['checkedTo'], self.tips[-1], out)
 
     def test_consecutive_ranges_chain(self):
         first = self.land('first', **{'.claude__notes.md': 'a\n'})
@@ -370,7 +378,7 @@ class StateAndVerdict(MainCheckCase):
         self.whole_run('r1')
         second = self.land('second', **{'.claude__notes.md': 'b\n'})
         self.whole_run('r2')
-        starts = [c['argv'][c['argv'].index('--range-start') + 1] for c in self.close_calls()]
+        starts = [self.record(r, 'start')['rangeStart'] for r in ('r1', 'r2')]
         self.assertEqual(starts, [self.base, first])
         self.assertEqual(self.remote_state()['checkedTo'], second)
 
@@ -447,13 +455,13 @@ class StateAndVerdict(MainCheckCase):
 
     def test_a_close_that_crashes_without_a_record_is_no_verdict_with_its_cause(self):
         self.land('first', **{'.claude__notes.md': 'a\n'})
-        self.write('.claude/scratch/close_plan.json', json.dumps({'record': None, 'exit': 3, 'lines': ['harness_tests: close INCOMPLETE: planted']}))
+        self.write('.claude/scratch/close_plan.json', json.dumps({'record': None, 'exit': 3, 'lines': ['pytest: internal error: planted']}))
         rc, out = self.whole_run('r1')
         state = self.remote_state()
         self.assertEqual((state['checkedTo'], state['run']['outcome']), (self.base, 'no-verdict'), out)
-        self.assertIn('INCOMPLETE: planted', state['run']['detail'], out)
+        self.assertIn('internal error: planted', state['run']['detail'], out)
 
-    def test_a_killed_close_and_a_superseded_close_leave_checked_to(self):
+    def test_a_killed_close_leaves_checked_to(self):
         self.land('first', **{'.claude__notes.md': 'a\n'})
         self.plan_close(None, sleep=30)
         rc, out = self.stage('close', 'killed', '--cap-minutes', '0.01')
@@ -461,22 +469,6 @@ class StateAndVerdict(MainCheckCase):
         rc, out = self.stage('finalize', 'killed')
         self.assertEqual(self.remote_state()['checkedTo'], self.base, out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'no-verdict', out)
-        self.plan_close(None, exit=2, lines=['harness_tests: a newer close superseded this one; it stops without a verdict'])
-        self.stage('close', 'superseded')
-        rc, out = self.stage('finalize', 'superseded')
-        self.assertEqual(self.remote_state()['checkedTo'], self.base, out)
-        self.assertEqual(self.remote_state()['run']['outcome'], 'no-verdict', out)
-
-    def test_a_second_run_starts_at_the_first_runs_tip_after_a_red_with_unrun_proofs(self):
-        first = self.land('first', **{'.claude__tests__test_other.py': 'print("ok")\n'})
-        self.plan_close(self.red_record(self.red('test_unit.py', first), cannot_run=['test_other.py']))
-        self.whole_run('r1')
-        second = self.land('second', **{'.claude__notes.md': 'b\n'})
-        self.whole_run('r2')
-        starts = [c['argv'][c['argv'].index('--range-start') + 1] for c in self.close_calls()]
-        self.assertEqual(starts, [self.base, first])
-        self.assertEqual(self.remote_state()['checkedTo'], second)
-
     def test_each_stage_sees_the_settings_env_a_session_gets(self):
         self.write('.claude/settings.json', json.dumps({'env': {'MC_PROBE': 'project', 'MC_BOTH': 'project'}}))
         self.commit_as('settings')
@@ -489,7 +481,6 @@ class StateAndVerdict(MainCheckCase):
         self.mc('close', '--repo', str(self.repo), '--run-id', 'r1', env=env)
         call = self.close_calls()[-1]
         self.assertEqual((call['probe'], call['both']), ('project', 'project'))
-        self.assertTrue(call['deadline'], 'the close gets a deadline short of the step cap')
 
     def test_run_folders_older_than_two_weeks_are_swept_at_close_start(self):
         old = self.run_dir('ancient')
@@ -544,7 +535,7 @@ class GateStage(MainCheckCase):
         self.land('a proof the row names', **{'.claude__tests__test_x.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('A.B.One', kind='gate'), self.row('A.B.Two', kind='gate'),
                                           self.row('test_x.py', kind='proof')])
-        self.plan_close({'verdict': 'green', 'proofs': []})
+        self.plan_close({'proofs': []})
         self.plan_gate(self.gate_step('PASS', '20261118-000012-12'))
         rc, out = self.whole_run('r1')
         rows = {r['name']: r for r in self.remote_state()['rows']}
@@ -741,49 +732,6 @@ class CloseStage(MainCheckCase):
         self.assertIn('submodule', state['run']['detail'], out)
         self.assertNotEqual(state['checkedTo'], self.tips[-1], out)
 
-    def test_a_planted_proof_that_prints_default_ref_sees_the_default_and_the_range_start_never_leaks(self):
-        self.write('.claude/hooks/unit.py', 'VALUE = 1\n')
-        self.write('.claude/tests/test_unit.py',
-                   "import os, sys\nsys.path.insert(0, %r)\nimport harness_tests\n"
-                   "ref = harness_tests._default_ref(os.getcwd())\nprint('default_ref', ref)\n"
-                   "if ref != 'origin/main':\n    print('FAIL: default ref is ' + str(ref))\n    sys.exit(1)\n"
-                   % str(ROOT / '.claude' / 'scripts'))
-        self.commit_as('proof that prints the default ref')
-        base = self.push()
-        self.seed_state(base)
-        self.land('edit the input', **{'.claude__hooks__unit.py': 'VALUE = 2\n'})
-        rc, out = self.whole_run('r1')
-        close = self.record('r1', 'close')['record']
-        self.assertEqual((close['verdict'], close['proofs']), ('green', ['test_unit.py']), out)
-
-    def test_range_start_holds_in_a_worktree_on_a_branch_with_an_upstream(self):
-        self.plant('good')
-        self.commit_as('plant')
-        good = self.push()
-        self.git('checkout', '-q', '-b', 'topic', '--track', 'origin/main')
-        self.land('edit', **{'.claude__hooks__unit.py': 'VALUE = "good2"\n'})
-        runner = [sys.executable, str(self.repo / '.claude' / 'scripts' / 'harness_tests.py'), '--close', '--now']
-        subprocess.run(runner + ['--range-start', good], cwd=self.repo, capture_output=True, text=True)
-        close = json.loads(Path(os.environ['HARNESS_TEST_STAMP']).read_text())['close']
-        self.assertEqual((close['base'], close['paths']), (good, ['.claude/hooks/unit.py']))
-
-    def test_a_range_changing_only_the_main_check_workflow_selects_its_proof(self):
-        self.land('edit the workflow only', **{'.github__workflows__main_check.yml': WORKFLOW + '# edit\n'})
-        rc, out = self.whole_run('r1')
-        close = self.record('r1', 'close')['record']
-        self.assertEqual(close['paths'], ['.github/workflows/main_check.yml'], out)
-        self.assertEqual(close['proofs'], ['test_main_check_planted.py'], out)
-
-    def test_range_start_and_base_cannot_be_combined_and_range_start_needs_close(self):
-        runner = [sys.executable, str(REAL_RUNNER), '--repo', str(self.repo)]
-        accepted = subprocess.run(runner + ['--close', '--now', '--range-start', self.base], capture_output=True, text=True)
-        self.assertNotIn('unrecognized', accepted.stderr)
-        both = subprocess.run(runner + ['--close', '--base', self.base, '--range-start', self.base], capture_output=True, text=True)
-        alone = subprocess.run(runner + ['--range-start', self.base], capture_output=True, text=True)
-        self.assertNotIn('unrecognized', both.stderr + alone.stderr)
-        self.assertNotEqual(both.returncode, 0)
-        self.assertNotEqual(alone.returncode, 0)
-
     def test_a_missing_state_branch_is_a_stage_failure_that_writes_nothing(self):
         self.git('push', '-q', 'origin', ':refs/heads/main-check-state')
         rc, out = self.stage('close', 'r1')
@@ -793,32 +741,20 @@ class CloseStage(MainCheckCase):
 
 
 class Rows(MainCheckCase):
-    def test_pre_existing_reds_without_a_row_become_commit_null_rows_and_a_red_with_a_row_adds_no_second(self):
-        self.land('first', **{'.claude__notes.md': 'a\n'})
-        self.land('the known proof exists', **{'.claude__tests__test_known.py': 'print("ok")\n'})
-        self.seed_state(self.base, rows=[self.row('test_known.py', commit='abc', session='s-known')])
-        self.plan_close({'verdict': 'green', 'preExisting': ['test_known.py', 'test_old.py']})
-        self.whole_run('r1')
-        rows = self.open_rows()
-        self.assertEqual(sorted(r['name'] for r in rows), ['test_known.py', 'test_old.py'])
-        by = {r['name']: r for r in rows}
-        self.assertEqual((by['test_old.py']['commit'], by['test_old.py']['session'], by['test_old.py']['kind']), (None, None, 'proof'))
-        self.assertEqual(by['test_known.py']['commit'], 'abc')
-
     def test_a_proof_row_clears_on_a_recorded_pass_and_keeps_clearedAt_and_clearedBy(self):
         self.land('first', **{'.claude__notes.md': 'a\n', '.claude__tests__test_unit.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('test_unit.py', commit='abc')])
-        self.plan_close({'verdict': 'green', 'proofs': ['test_unit.py']})
+        self.plan_close({'proofs': ['test_unit.py']})
         self.whole_run('r1')
         row = [r for r in self.remote_state()['rows'] if r['name'] == 'test_unit.py'][0]
         self.assertTrue(row['clearedAt'])
         self.assertEqual(row['clearedBy'], self.tips[-1])
         self.assertEqual(row['commit'], 'abc')
 
-    def test_a_proof_selected_but_not_run_stays_open(self):
+    def test_a_proof_that_ran_no_case_stays_open(self):
         self.land('first', **{'.claude__notes.md': 'a\n', '.claude__tests__test_unit.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('test_unit.py')])
-        self.plan_close({'verdict': 'incomplete', 'proofs': ['test_unit.py'], 'cannotRun': ['test_unit.py']})
+        self.plan_close({'proofs': []})
         self.whole_run('r1')
         self.assertEqual([r['name'] for r in self.open_rows()], ['test_unit.py'])
 
@@ -831,18 +767,14 @@ class Rows(MainCheckCase):
         self.assertEqual((row['name'], row['clearedBy']), ('test_gone.py', sha))
         self.assertTrue(row['clearedAt'])
 
-    def test_the_close_is_handed_every_open_proof_row_and_a_recorded_pass_clears_it(self):
+    def test_a_recorded_pass_clears_a_timeout_row_and_a_red_keeps_its_row(self):
         self.land('first', **{'.claude__tests__test_unit.py': 'print("ok")\n',
                               '.claude__tests__test_still.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('test_unit.py', cause='timeout', first_line='TIMEOUT after 900s'),
                                           self.row('test_still.py')])
-        sha = self.tips[-1]
-        self.plan_close({'verdict': 'red', 'proofs': ['test_unit.py', 'test_still.py'],
-                         'red': [self.red('test_still.py', sha, 'FAIL: planted\n')]})
+        self.plan_close({'proofs': ['test_unit.py', 'test_still.py'],
+                         'red': [self.red('test_still.py', 'FAIL: planted\n')]})
         rc, out = self.whole_run('r1')
-        close = [c for c in self.close_calls() if '--also' in c['argv']][0]
-        self.assertEqual(sorted(close['argv'][close['argv'].index('--also') + 1:]),
-                         ['.claude/tests/test_still.py', '.claude/tests/test_unit.py'], out)
         rows = {r['name']: r for r in self.remote_state()['rows']}
         self.assertTrue(rows['test_unit.py']['clearedAt'], 'a recorded pass clears a timeout row: ' + out)
         self.assertIsNone(rows['test_still.py']['clearedAt'], out)
@@ -850,8 +782,8 @@ class Rows(MainCheckCase):
     def test_a_later_red_on_a_proof_with_an_open_row_keeps_a_row_open_with_its_new_line(self):
         self.land('first', **{'.claude__tests__test_unit.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('test_unit.py', cause='timeout', first_line='TIMEOUT after 900s')])
-        self.plan_close({'verdict': 'red', 'proofs': ['test_unit.py'],
-                         'red': [self.red('test_unit.py', self.tips[-1], 'AssertionError: a new break\n')]})
+        self.plan_close({'proofs': ['test_unit.py'],
+                         'red': [self.red('test_unit.py', 'AssertionError: a new break\n')]})
         rc, out = self.whole_run('r1')
         lines = sorted(r['firstLine'] for r in self.open_rows() if r['name'] == 'test_unit.py')
         self.assertEqual(lines, ['AssertionError: a new break', 'TIMEOUT after 900s'], out)
@@ -869,7 +801,7 @@ class Rows(MainCheckCase):
     def test_a_run_clears_only_its_own_platforms_rows(self):
         self.land('first', **{'.claude__tests__test_unit.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('test_unit.py', platform='linux' if PLATFORM != 'linux' else 'windows')])
-        self.plan_close({'verdict': 'green', 'proofs': ['test_unit.py']})
+        self.plan_close({'proofs': ['test_unit.py']})
         self.whole_run('r1')
         self.assertTrue(all(r['clearedAt'] is None for r in self.remote_state()['rows']))
 
@@ -904,7 +836,7 @@ class Rows(MainCheckCase):
 class StateBranch(MainCheckCase):
     def test_finalize_pushes_the_state_and_a_second_clone_reads_the_same_rows(self):
         self.land('first', session='sess-1', **{'.claude__notes.md': 'a\n'})
-        self.plan_close(self.red_record(self.red('test_unit.py', self.tips[-1])))
+        self.plan_close(self.red_record(self.red('test_unit.py')))
         self.whole_run('r1')
         second = Path(self.aux.name) / 'second'
         subprocess.run(['git', 'clone', '-q', self.remote.as_uri(), str(second)], check=True, capture_output=True)
@@ -918,7 +850,7 @@ class StateBranch(MainCheckCase):
 
     def test_a_lost_lease_reads_the_remote_state_reapplies_the_result_and_pushes_once_more(self):
         self.land('first', **{'.claude__notes.md': 'a\n'})
-        self.plan_close(self.red_record(self.red('test_unit.py', self.tips[-1])))
+        self.plan_close(self.red_record(self.red('test_unit.py')))
         self.stage('close', 'r1')
         self.stage('gate', 'r1')
         peer_row = self.row('Peer.Tests.Pending', kind='gate', session='peer')
@@ -1165,7 +1097,7 @@ class BaselineLinuxSource(MainCheckCase):
                                    'conclusion': None, 'event': 'push'}])
         self.land('the proof exists here', **{'.claude__tests__test_case_pool.py': 'print("ok")\n'})
         self.seed_state(self.base, rows=[self.row('test_case_pool.py', platform='linux', commit='a' * 40)])
-        self.plan_close({'verdict': 'green', 'proofs': ['test_case_pool.py']})
+        self.plan_close({'proofs': ['test_case_pool.py']})
         rc, out = self.whole_run('r1')
         rows = self.linux_rows()
         self.assertEqual([(r['name'], r['clearedAt']) for r in rows], [('test_case_pool.py', None)], out)

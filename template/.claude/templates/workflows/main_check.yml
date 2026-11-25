@@ -1,4 +1,4 @@
-# Proves each range landed on main, after the land: the harness close over the commits from checkedTo to the tip, the
+# Proves each range landed on main, after the land: the project's pytest close over the tree at the tip, the
 # regression gate when the range owes it, then the verdict as rows on the main-check-state branch (main_check.py).
 # One run goes at a time and only the newest pending one waits: a range always runs from checkedTo to the tip, so a
 # dropped run's commits are proved at the newer tip. The job timeout is the stage caps plus finalize;

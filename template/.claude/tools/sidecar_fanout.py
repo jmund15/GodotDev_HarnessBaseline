@@ -130,6 +130,12 @@ carries (default: the session's active record; `false` opts out). Per job:
     window                "full" -> the job skips the login's compaction cap (`SIDECAR_FULL_WINDOW`) and compacts
                           at its row's own point: `compactAtTokens` when the row sets one, else the model's
                           window; any other value refuses
+    cacheTtl              5m|1h -> the child's prompt-cache lifetime (`SIDECAR_CACHE_TTL`; Anthropic seats only). Omitted,
+                          the kind row's (`gate` 1h) else 5m. The wait clamp follows it: 270 s on 5m, the Bash
+                          ceiling on 1h. Litmus: set 1h when the job will wait more than about an hour in total
+                          on long runs (tests, builds, other jobs); the 1h write costs 0.75 x the job's final
+                          context more than 5m, and 5m's 270 s polls cost 0.1 x context per 4.5 min waited
+                          against 0.1 x per 10 min on 1h. Break-even and replay: the cache-TTL memory archive
     tools                 {add:[], remove:[]} -> a signed `-t` (`+Bash,-mcp:ai-worker`); items are
                           built-in names or `mcp:<server>`
     toolsCsv              kind `arm` only: its task row as an unsigned `-t`; cannot be combined with `tools`
@@ -732,6 +738,7 @@ PAID_BY = {}
 # label -> the effort fields of the run record (`model_registry.effort_record`) for the row the job runs on.
 EFFORT_FACTS = {}
 _EFFORT_RECORD_FIELDS = ("requestedEffort", "effort", "effortCase", "justification", "pick")
+CACHE_TTL = {}  # label -> the job's written `cacheTtl`, which the launcher reads as SIDECAR_CACHE_TTL
 FULL_WINDOW = set()  # labels of jobs that opt out of the login's compaction cap (`window: "full"`)
 _LIVE = {}  # {"load": plan -> live launchers}: read once per process, so a 13-job pass costs one table read
 # label -> the `Slot` `plan_job` placed the job in; `main` clears it with FALLBACKS and hands the planned jobs' slots to `Waves`.
@@ -1677,6 +1684,10 @@ def plan_job(job, data, out_dir, authorize, stage=None):
         if job["window"] != "full":
             raise JobError(f"job {label}: `window` must be \"full\" or absent, got {job['window']!r}")
         FULL_WINDOW.add(label)
+    if job.get("cacheTtl") is not None:
+        if job["cacheTtl"] not in tool_profiles.CACHE_TTLS:
+            raise JobError(f"job {label}: `cacheTtl` must be {'|'.join(tool_profiles.CACHE_TTLS)} or absent, got {job['cacheTtl']!r}")
+        CACHE_TTL[label] = job["cacheTtl"]
     # A bare string here iterates per CHARACTER, so a malformed job passes planning and dispatches a
     # billed launcher with argv full of single letters.
     for key in ("contextFiles", "extraArgs"):
@@ -2477,6 +2488,8 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
         child_env.pop("HARNESS_SLOT_BUDGET", None)
         if label in FULL_WINDOW:
             child_env["SIDECAR_FULL_WINDOW"] = "1"
+        if label in CACHE_TTL:
+            child_env["SIDECAR_CACHE_TTL"] = CACHE_TTL[label]
         since = time.time()
         if True:
             print(f"[dispatch] {label}: {' '.join(argv[:6])} ...", flush=True)
@@ -4498,6 +4511,7 @@ def _main(argv):
         PAID_BY.clear()
         EFFORT_FACTS.clear()
         FULL_WINDOW.clear()
+        CACHE_TTL.clear()
         SLOTS.clear()
         _LIVE.clear()
         _REPORTED_UNREADABLE.clear()

@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -440,19 +441,24 @@ def proof_environment(env):
     return env
 
 
-_SELF_ADMITTING = {'harness_tests.py'}
+def _command_name(value):
+    return value.replace('\\', '/').rsplit('/', 1)[-1].lower()
 
 
-def _self_admitting(command):
-    """True when the script the interpreter runs takes its own lanes per proof. Wrapped, it would hold one lane
-    for its whole batch and run serially inside it (`HARNESS_SLOT_BUDGET=1`), so an exclusive head waits out
-    the batch. The script decides, never a later argument naming it (as `bash_slots.sh` reads a call)."""
-    for arg in command[1:]:
-        if arg in ('-c', '-m', '-Command', '-e', '--eval'):
+def _no_lane(command):
+    """Skip admission for pytest and for the legacy coordinator, never for an argument that merely names one."""
+    exe = _command_name(command[0]).removesuffix('.exe')
+    if exe in ('pytest', 'py.test'):
+        return True
+    python = re.fullmatch(r'py|python(?:\d+(?:\.\d+)?)?', exe) is not None
+    for i, arg in enumerate(command[1:], 1):
+        if arg == '-m':
+            return python and command[i + 1:i + 2] == ['pytest']
+        if arg in ('-c', '-Command', '-e', '--eval'):
             return False
         if arg.startswith('-'):
             continue
-        return arg.replace('\\', '/').rsplit('/', 1)[-1] in _SELF_ADMITTING
+        return _command_name(arg) == 'harness_tests.py'
     return False
 
 
@@ -493,7 +499,7 @@ def main():
         command = command[1:]
     if args.mode == 'run' and not command:
         parser.error('run needs -- COMMAND ...')
-    if args.mode == 'run' and _self_admitting(command):
+    if args.mode == 'run' and _no_lane(command):
         return subprocess.call(command)
     held = None
     deadline = args.deadline

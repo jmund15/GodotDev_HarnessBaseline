@@ -56,7 +56,11 @@ class SettingsProof(unittest.TestCase):
             def merge(registration=registration, adaptation={"plugins": {"bench": "."}}, **kw):
                 proc, base = self.merge_proc(root, lib, adaptation, registration, **kw)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                return json.loads(proc.stdout), base
+                result = json.loads(proc.stdout)
+                # The launcher's floor row is ChildGuardsProof's subject; this case compares the plugin and brief rows.
+                pre = [g for g in result["hooks"]["PreToolUse"] if not any("hooks/pre_bash.py" in h["command"] for h in g["hooks"])]
+                result["hooks"]["PreToolUse"] = pre
+                return result, base
 
             result, base = merge()
             groups = result["hooks"]["PreToolUse"]
@@ -182,6 +186,46 @@ class CheckFactsTierProof(unittest.TestCase):
         bogus = validate("bogus")
         self.assertIn("rc=2", bogus)
         self.assertIn("invalid tier 'bogus'", bogus)
+
+
+class ChildGuardsProof(unittest.TestCase):
+    """A sidecar child never runs with fewer delegate guards than its dispatcher, whatever its workdir holds."""
+    FLOOR = "hooks/pre_bash.py"  # the loss floor's one entry; it carries the wait clamp (foreground_wait_guard)
+
+    def merge(self, workdir):
+        proc = subprocess.run([git_bash(), "-c", 'source "$1" >/dev/null 2>&1; SC_ROOT="$2"; SC_WORKDIR="$3"; unset BENCH_ARM BENCH_RULER_SCOPE; sc_settings_with_bench_guard ""',
+                               "_", (CLAUDE / "scripts/lib/sidecar_common.sh").as_posix(), CLAUDE.as_posix(), workdir.as_posix()],
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout.strip() or "{}")
+
+    def floor_rows(self, merged):
+        return [(row["matcher"], hook["command"]) for row in merged.get("hooks", {}).get("PreToolUse", [])
+                for hook in row["hooks"] if self.FLOOR in hook["command"]]
+
+    def test_a_workdir_with_no_harness_gets_the_floor_from_the_launcher_root(self):
+        with tempfile.TemporaryDirectory(prefix="sidecar_childguards_") as tmp:
+            rows = self.floor_rows(self.merge(Path(tmp)))
+            self.assertEqual(len(rows), 1, rows)
+            matcher, command = rows[0]
+            self.assertEqual(matcher, "Bash|PowerShell|Monitor|TaskStop")
+            self.assertNotIn("CLAUDE_PROJECT_DIR", command)
+            self.assertTrue((CLAUDE / self.FLOOR).is_file())
+            self.assertIn((CLAUDE / self.FLOOR).as_posix(), command)
+
+    def test_a_workdir_whose_harness_registers_the_floor_gets_it_once(self):
+        with tempfile.TemporaryDirectory(prefix="sidecar_childguards_") as tmp:
+            (Path(tmp) / ".claude").mkdir()
+            (Path(tmp) / ".claude/settings.json").write_text(json.dumps({"hooks": {"PreToolUse": [{
+                "matcher": "Bash", "hooks": [{"type": "command",
+                                              "command": 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash.py"'}]}]}}), encoding="utf-8")
+            self.assertEqual(self.floor_rows(self.merge(Path(tmp))), [])
+
+    def test_a_workdir_harness_that_predates_the_floor_still_gets_it(self):
+        with tempfile.TemporaryDirectory(prefix="sidecar_childguards_") as tmp:
+            (Path(tmp) / ".claude").mkdir()
+            (Path(tmp) / ".claude/settings.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(len(self.floor_rows(self.merge(Path(tmp)))), 1)
 
 
 if __name__ == "__main__":

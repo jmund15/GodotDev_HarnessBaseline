@@ -150,7 +150,6 @@ GODOT_PATTERNS = [
     ".claude/auto-memory/gotcha_config_exception_node_bound_not_static.md",
     ".claude/auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md",
     ".claude/auto-memory/gotcha_authoring_validator_needs_static_resolvable_reference.md",
-    ".claude/commands/doc_workflow_battery.md",
     # Accepted cold-memory moves and new Godot harness proofs:
     ".claude/auto-memory/archive/arch_rule_*.md",
     ".claude/auto-memory/archive/feedback_dont_defer_existing_framework_abstractions.md",
@@ -500,7 +499,6 @@ PURE_PATTERNS = [
     ".claude/commands/ladder_ingest.md",
     ".claude/commands/overnight.md",
     ".claude/commands/pin_ab.md",
-    ".claude/commands/worker_audit.md",
     ".claude/commands/worktree_prune.md",
     ".claude/hooks/_command_text.py",
     ".claude/hooks/_file_lock.py",
@@ -571,9 +569,6 @@ PURE_PATTERNS = [
     ".claude/tests/test_unbounded_scan_guard.py",
     ".claude/tests/test_verify_transport_status_reason.py",
     ".claude/tests/test_void_check_engagement.py",
-    ".claude/tests/test_worker_rate_difficulty.py",
-    ".claude/tests/test_worker_rate_mutations.py",
-    ".claude/tests/test_worker_rate_provenance.py",
     ".claude/tests/test_workflow_provider_guard.py",
     ".claude/tests/test_workflow_provider_guard_effort.py",
     ".claude/tests/test_workflow_provider_guard_ladder.py",
@@ -593,7 +588,6 @@ PURE_PATTERNS = [
     ".claude/tools/sidecar_resume_check.py",
     ".claude/tools/verify_transport_status.py",
     ".claude/tools/void_check.py",
-    ".claude/tools/worker_rate.py",
 
 ]
 

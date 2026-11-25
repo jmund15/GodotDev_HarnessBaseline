@@ -326,7 +326,7 @@ def case_command_mode():
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_SIDECAR")}
     env["CLAUDE_CODE_SIDECAR"] = "1"
     r = subprocess.run([sys.executable, os.path.join(HOOKS, "wide_test_guard.py"), "--command",
-                        "python3 .claude/scripts/harness_tests.py --close"],
+                        "python3 -m pytest -n auto -q .claude/tests"],
                        capture_output=True, text=True, timeout=120, env=env)
     check("the CLI exits 2 with the reason", r.returncode == 2 and "Wide test run refused" in r.stdout,
           "%s %s" % (r.returncode, (r.stdout + r.stderr)[-400:]))

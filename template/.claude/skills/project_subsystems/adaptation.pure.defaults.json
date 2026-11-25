@@ -12,7 +12,53 @@
         "exempt": ["^--help$", "^--tiers$"],
         "narrow": null,
         "hint": "scoped proofs (`--for`/`--proofs-for`) run at the dispatcher's merge: dispatch a `gate` job with them"
+      },
+      {
+        "runner": "(?i)(?:(?:python3?|py)\\s+-m\\s+)?pytest\\b",
+        "exempt": ["^--help$", "^--collect-only$"],
+        "narrow": {"requires": ["\\btest_[\\w.-]+\\.py\\b"]},
+        "hint": "narrow: `python3 -m pytest .claude/tests/test_<unit>.py`; the whole battery runs at the dispatcher's merge: dispatch a `gate` job"
       }
     ]
+  },
+  "proof_timeouts": {
+    "test_runtime_slots.ps1": 1560,
+    "test_review_ledger.py": 1440,
+    "test_main_check_part2.py": 1380,
+    "test_main_check.py": 1200,
+    "test_baseline_publish.py": 1200,
+    "test_scratch_prune.py": 600,
+    "test_harness_tests_pass_cache.py": 960,
+    "test_CommentOnlyGate.py": 960,
+    "test_harness_tests_pass_cache_part2.py": 900,
+    "test_baseline_sync_part3.py": 780,
+    "test_semantic_search_idle_proxy.mjs": 720,
+    "test_harness_tests_pass_cache_part3.py": 660,
+    "test_baseline_publish_part2.py": 660,
+    "test_baseline_sync_part2.py": 660,
+    "test_script_proofs.py": 600,
+    "test_lens_briefs_prepare.py": 600,
+    "test_anthropic_console_credentials.sh": 540,
+    "test_gate_cadence_guard.py": 540,
+    "test_sidecar_common_registration_part2.py": 540,
+    "test_sidecar_common_registration.py": 480,
+    "test_triage_commit_check_project.py": 480,
+    "test_sidecar_tool_profiles.sh": 480,
+    "test_baseline_sync.py": 480,
+    "test_regression_gate_reuse.py": 480,
+    "test_baseline_classification_guard.py": 420,
+    "test_wide_test_guard.py": 300,
+    "test_conformance_j1.py": 300,
+    "test_index_commit.py": 300,
+    "test_overnight_ask_guard.py": 300,
+    "test_session_audit_inputs.py": 300,
+    "test_review_rounds_replay.py": 300,
+    "test_semantic_search_idle_install.py": 300,
+    "test_sidecar_detach.sh": 300,
+    "test_sidecar_review_cli.py": 300,
+    "test_sidecar_tools_limit.sh": 300,
+    "test_sidecar_usage_limit.sh": 300,
+    "test_vault_sync_sync.py": 300,
+    "test_session_digest_workflow_results.py": 300
   }
 }

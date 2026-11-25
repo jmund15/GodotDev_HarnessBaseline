@@ -13,16 +13,18 @@
 nonzero when it could not do its job, and `finalize` ends nonzero when the run reached no verdict.
 
 close     Fetches `origin/main` and the state branch, resets the worktree to the tip, updates its submodules to the
-          tip's gitlinks, writes the run's start to the state, and runs `harness_tests.py --close --now --range-start
-          <checkedTo> --also <this platform's open proof rows>`. The close runs every proof it selects and every
-          retry, so a red never stops another proof and the open rows run once more in the pool. The close gets
-          HARNESS_DEADLINE at 90% of the cap so it ends itself with a record.
+          tip's gitlinks, writes the run's start to the state, and runs the project's pytest over `.claude/tests`
+          (`pytest -n auto`, then the `proof_serial` proofs alone) with a junit file. The junit file becomes the close
+          record: a file with a failing case is a red proof row (its first failing line, or `timeout` for a case that
+          outran its bound), and each `proof_quarantine` entry prints with its cause and its result. A red never stops
+          another test and nothing is retried or bisected, so a row carries no culprit commit. The run is killed at
+          90% of the cap and then has no verdict.
 gate      Runs the project's `gate_cadence.main` command (`tools/adaptation.py`; absent: no gate, never owed) when the
           range owes it (`gate_owed`) or the run was dispatched. Exit 0 passes; exit 1 fails and names each failed
           test as a `FAILED_TEST=<id>` stdout line, and a fail naming none is no verdict; an exit in `retry_exits`
           is rerun once before it is recorded; any other exit is no verdict. A fail is never rerun.
-finalize  Moves `checkedTo` to the tip on every close that finished, green or red, once the reds and `cannotRun`
-          entries have their open rows, and when an owed gate passed or failed naming its failed tests. Only a
+finalize  Moves `checkedTo` to the tip on every close that finished, green or red, once the reds
+          have their open rows, and when an owed gate passed or failed naming its failed tests. Only a
           close that did not finish (killed, superseded, a checkout or submodule fault) or an owed gate with no
           verdict leaves it, and `run.outcome` says so. It also reads the baseline repo's Linux lanes for the
           commit `baseline.lock.json`'s `synced_commit` names, and records each red proof as a `platform: linux`
@@ -37,9 +39,8 @@ wall); `sources.baselineLinux` (readAt, status ok, pending, unreadable or none, 
 kind proof or gate, platform windows, linux or macos, commit, session, firstLine, firstSeen, clearedAt, clearedBy,
 cause). A linux row's `commit` is the baseline commit its run proved, and it clears only when a later baseline run
 lists that proof as passed, never by its absence from the red set. A `cause` proves only what it names: a
-`timeout` row is a proof that timed out again alone (or whose own subprocess did), so no bisect ran and its
-`commit` is null; an `uncovered` row names a run whose close could not name a proof. A row with no cause is
-unclassified until the fixer or S7r classifies it. Times are UTC ISO-8601 seconds. `outcome` is green, red or
+`timeout` row is a proof with a case that outran its bound, a `crash` row one whose worker died; neither names a
+commit, and no row does (the close runs no bisect); a red row's `session` is the one session that landed the whole range, else null. A row with no cause is unclassified until the fixer classifies it. Times are UTC ISO-8601 seconds. `outcome` is green, red or
 no-verdict. A row is open while `clearedAt` is null and stays 30 days after it clears.
 """
 import argparse
@@ -47,11 +48,13 @@ import calendar
 import copy
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
 import time
+from xml.etree import ElementTree
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "hooks"))
@@ -79,12 +82,16 @@ GH_READ_TIMEOUT_S = 60
 
 HARNESS_PATH = re.compile(r"^\.claude/|^\.github/|\.md$|^\.gitignore$|^\.searchignore$", re.IGNORECASE)
 FAILURE_MARK = re.compile(r"^(FAIL|not ok)\b|Error|Exception", re.IGNORECASE)
-CLOSE_ECHO = re.compile(r"^(FAIL|FIRST RED|FLAKY|NEEDS|harness_tests: |    \| )")  # `    | `: a red's output excerpt
+CLOSE_ECHO = re.compile(r"^(FAILED |ERROR |QUARANTINE |=+ .* in [\d.]+s)")
+PROOF_FILE = re.compile(r"^(?:test_.+|.+_test)\.(?:py|js|mjs|sh|ps1)$")
+TIMEOUT_LINE = re.compile(r"TIMEOUT after \d+s")
+CRASH_LINE = re.compile(r"worker '\S+' crashed while running")
+CLOSE_TESTS = ".claude/tests"
 GATE_STREAM = ("STAGE", "FAILED_TEST", "VERDICT", "BUSY", "WAIT")
 GATE_PROJECT_STREAM = ("BUILD", "IMPORT_GATE", "SUITE", "BATCH", "DIAGNOSE", "DETAIL", "GATE_ERROR", "TREE_CHANGED", "MANIFEST")
 GATE_ECHO = re.compile("^(%s)" % "|".join(GATE_STREAM + GATE_PROJECT_STREAM))
 FAILED_TEST_LINE = re.compile(r"^FAILED_TEST=(.+)$", re.MULTILINE)
-CAUSE_LINE = re.compile(r"INCOMPLETE|incomplete|not passed or failed|superseded")
+CAUSE_LINE = re.compile(r"INTERNALERROR|ERROR|[Ee]rror")
 PROOF_FAIL_LINE = re.compile(r"^FAIL \d+(?:\.\d+)?s (\S.*)$")
 PROOF_PASS_LINE = re.compile(r"^OK \d+(?:\.\d+)?s (\S.*)$")
 GHA_LINE_PREFIX = re.compile("^[^\\t]*\\t[^\\t]*\\t\\ufeff?\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z ?")
@@ -240,10 +247,6 @@ def run_logged(cmd, *, cwd, env, log_path, echo, cap_seconds):
         return code, fh.read()
 
 
-def stamp_path(repo):
-    return os.environ.get("HARNESS_TEST_STAMP") or os.path.join(repo, ".claude", "logs", "harness_tests_stamp.json")
-
-
 def parse_job_minutes(text):
     """The job-level `timeout-minutes` of the workflow text (four-space indent), else GitHub's job default."""
     found = re.search(r"^    timeout-minutes:\s*(\d+)\s*$", text, re.MULTILINE)
@@ -323,6 +326,14 @@ def session_of(repo, commit):
     return next((line.strip() for line in out.splitlines() if line.strip()), None)
 
 
+def range_session(repo, range_start, tip):
+    """The one session that landed every commit of the range, else None. The close runs no bisect, so a red belongs to a
+    session only when no other session landed beside it."""
+    commits = git_try(repo, "rev-list", "%s..%s" % (range_start, tip)).text.split()
+    sessions = {session_of(repo, commit) for commit in commits}
+    return sessions.pop() if len(sessions) == 1 else None
+
+
 # ---- the state branch --------------------------------------------------------------------------------------------
 
 def fetch_branch(repo, branch):
@@ -384,9 +395,55 @@ def has_open_row(rows, name, platform, first_line=None):
 # ---- stage close -------------------------------------------------------------------------------------------------
 
 def tracked_proofs(repo, tip):
-    from _proof_runner.catalog import Catalog, View
+    """{proof file name: path} the tip tracks in the tests folder and its `floor/` folder."""
+    listing = git(repo, "ls-tree", "-r", "--name-only", tip, "--", CLOSE_TESTS).splitlines()
+    return {os.path.basename(path): path for path in listing
+            if os.path.dirname(path) in (CLOSE_TESTS, CLOSE_TESTS + "/floor") and PROOF_FILE.match(os.path.basename(path))}
 
-    return {os.path.basename(path): path for path in Catalog.open(View.revision(repo, tip)).proofs}
+
+def close_record(junit_paths, head, base, quarantine):
+    """The close's record from the junit files of its pytest passes (`-o junit_family=xunit1`, which names each case's
+    `file`). `proofs` are the files with a case that ran (a skip proves nothing), `red` the files with a failing or erroring case, each with its first
+    failing text; a case that outran its bound names itself (`TIMEOUT after Ns`, or its worker crashing) and the red
+    carries that `cause`. A case marked xfail is a quarantined result, never a red: `quarantine` maps each entry of the
+    project's `proof_quarantine` to `failed` or `passed`."""
+    ran, red, results = set(), {}, {}
+    for path in junit_paths:
+        for case in ElementTree.parse(path).iter("testcase"):
+            name = posixpath.basename((case.get("file") or "").replace("\\", "/")) or case.get("name") or "?"
+            bad = case.find("failure") if case.find("failure") is not None else case.find("error")
+            skipped = case.find("skipped")
+            xfailed = skipped is not None and skipped.get("type") == "pytest.xfail"
+            if skipped is None:
+                ran.add(name)
+            if name in quarantine:
+                results[name] = "failed" if xfailed or bad is not None else results.get(name, "passed")
+            if bad is not None and name not in quarantine:
+                text = ((bad.get("message") or "") + "\n" + (bad.text or "")).strip()
+                cause = "timeout" if TIMEOUT_LINE.search(text) else "crash" if CRASH_LINE.search(text) else None
+                red.setdefault(name, {"proof": name, "detail": text, "cause": cause, "commit": None})
+    return {"head": head, "base": base, "ts": time.time(), "verdict": "red" if red else "green",
+            "red": sorted(red.values(), key=lambda r: r["proof"]), "proofs": sorted(ran),
+            "quarantine": {name: results.get(name, "not run") for name in quarantine}}
+
+
+def quarantine_lines(quarantine, record):
+    return ["QUARANTINE %s: %s (cause: %s)" % (name, (record.get("quarantine") or {}).get(name, "not run"), cause)
+            for name, cause in sorted(quarantine.items())]
+
+
+def pytest_passes(run_folder, serial):
+    """[(command, junit path)] for the close's pytest passes: the parallel pass over the tests folder, then the serial
+    pass when the project names any `proof_serial` proof."""
+    base = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xunit1", "-rfE",
+            "--continue-on-collection-errors", "--durations=20"]
+
+    def one(label, *mode):
+        junit = os.path.join(run_folder, "close_%s.xml" % label)
+        return base + list(mode) + ["--junitxml=" + junit, CLOSE_TESTS], junit
+
+    passes = [one("parallel", "-n", os.environ.get("MAIN_CHECK_WORKERS", "auto"))]
+    return passes + [one("serial", "-p", "no:xdist", "--harness-serial")] * bool(serial)
 
 
 def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
@@ -429,45 +486,38 @@ def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
         return 1
 
     env = settings_env(repo)
-    env["HARNESS_DEADLINE"] = str(began + cap_minutes * 60 * DEADLINE_SHARE)
-    runner = os.path.join(repo, ".claude", "scripts", "harness_tests.py")
     closed = time.time()
-    also = open_proof_rows(repo, tip, state)
-    say("close %s..%s; %d open proof row(s) join the selection" % (range_start[:12], tip[:12], len(also)))
-    command = [sys.executable, runner, "--close", "--now", "--range-start", range_start]
-    if also:
-        command += ["--also"] + also
-    code, text = run_logged(command, cwd=repo, env=env,
-                            log_path=os.path.join(run_dir(repo, run_id), "close.log"), echo=CLOSE_ECHO,
-                            cap_seconds=cap_minutes * 60 * KILL_SHARE)
-    stamped = (read_json(stamp_path(repo)) or {}).get("close")
-    valid = (isinstance(stamped, dict) and stamped.get("head") == tip and stamped.get("base") == range_start
-             and isinstance(stamped.get("ts"), (int, float)) and stamped["ts"] >= closed - 1)
+    say("close %s..%s" % (range_start[:12], tip[:12]))
+    claude = os.path.join(repo, ".claude")
+    quarantine = adaptation.get(claude, "proof_quarantine") or {}
+    deadline = began + cap_minutes * 60 * DEADLINE_SHARE
+    code, text, junits = 0, "", []
+    for command, junit in pytest_passes(run_dir(repo, run_id), adaptation.get(claude, "proof_serial")):
+        code, out = run_logged(command, cwd=repo, env=env, log_path=junit.replace(".xml", ".log"),
+                               echo=CLOSE_ECHO, cap_seconds=max(1, deadline - time.time()))
+        text += out or ""
+        junits.append(junit)
+        if code not in (0, 1):
+            break
+    finished = code in (0, 1) and all(os.path.exists(path) for path in junits)
+    record = close_record(junits, tip, range_start, quarantine) if finished else None
     lines = [l for l in text.splitlines() if l.strip()]
     cause = next((l for l in reversed(lines) if CAUSE_LINE.search(l)), lines[-1] if lines else "no output")
+    if record:
+        for line in quarantine_lines(quarantine, record):
+            say(line)
     ended = time.time()
     put_record(repo, run_id, "close", {"exit": code, "timedOut": code is None, "startedAt": closed, "endedAt": ended,
-                                       "wall": ended - closed, "record": stamped if valid else None, "cause": cause})
+                                       "wall": ended - closed, "record": record, "cause": cause})
     return 0
 
 
-def open_proof_rows(repo, tip, state):
-    """This platform's open `proof` rows whose proof the tip still has, as the close's `--also` paths."""
-    present = tracked_proofs(repo, tip)
-    return sorted({present[row["name"]] for row in state["rows"]
-                   if open_row(row) and row.get("kind") == "proof" and row.get("platform") == platform_name()
-                   and row.get("name") in present})
-
-
 def settled_by(record_):
-    """Names of the proofs the close ran to a pass, and of those it ended red or excused."""
+    """Names of the proofs the close ran to a pass, and of those it ended red."""
     if not record_:
         return set(), set()
     red = {r.get("proof") for r in record_.get("red") or []}
-    other = red | set(record_.get("preExisting") or []) | set(record_.get("cannotRun") or []) | set(
-        record_.get("uncommittedProofRed") or [])
-    passed = set(record_.get("proofs") or []) - other
-    return passed, red | set(record_.get("preExisting") or [])
+    return set(record_.get("proofs") or []) - red, red
 
 
 # ---- stage gate --------------------------------------------------------------------------------------------------
@@ -662,7 +712,7 @@ def failed_test_ids(ids):
 
 def judge_close(start, closed):
     """(complete, reason, record): whether the run's close finished, why not, and the runner's record when it is
-    this run's own. A close that ran to a record finished, green or red: its reds and `cannotRun` entries become
+    this run's own. A close that ran to a record finished, green or red: its reds become
     rows, never a reason to leave `checkedTo` behind. A killed, superseded or faulted close leaves no record."""
     if not closed:
         return False, "close: no record of this run", None
@@ -769,28 +819,18 @@ def run_finalize(repo, run_id):
     if rec:
         for red in rec.get("red") or []:
             name, detail = red.get("proof"), red.get("detail")
-            cause = red.get("cause")  # the runner classifies a timeout red and runs no bisect on it
-            commit = None if cause else red.get("commit")
-            rows.append(new_row(name, "proof", commit, session_of(repo, commit), first_failure_line(detail), now,
+            cause = red.get("cause")  # `timeout` or `crash`: a case that outran its bound
+            rows.append(new_row(name, "proof", None, range_session(repo, range_start, tip), first_failure_line(detail), now,
                                 cause=cause))
             if cause is None:
                 new_reds.add(name)
-        for name in rec.get("cannotRun") or []:
-            if name == "<behavior claims>":
-                rows.append(new_row(name, "proof", None, None, "could not name the proof in run " + run_id, now,
-                                    cause="uncovered"))
-            else:
-                rows.append(new_row(name, "proof", None, None, "could not run in the close", now))
-    if close_ok:
-        for name in rec.get("preExisting") or []:
-            rows.append(new_row(name, "proof", None, None, "fails at the range start", now))
     if failed:
         commit = non_harness_commit(repo, range_start, tip)
         for test_id in failed:
             rows.append(new_row(test_id, "gate", commit, session_of(repo, commit), "gate FAIL: " + test_id, now))
     advance = close_ok and gate_ok
     reasons = [why for why in (close_why, gate_why) if why]
-    outcome = "no-verdict" if not advance else "red" if (rec.get("red") or rec.get("cannotRun") or failed) else "green"
+    outcome = "no-verdict" if not advance else "red" if (rec.get("red") or failed) else "green"
     wall = {"close": (closed or {}).get("wall"), "gate": (gate or {}).get("wall"), "finalize": None}
     linux, linux_rows = read_baseline_source(repo, tip)
     res = {"now": now, "tip": tip, "advance": advance, "rows": rows, "passed": passed, "gate_pass": gate_pass,

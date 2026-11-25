@@ -32,8 +32,9 @@ skipped or thinned for being reversible.
 
 ## Two clauses
 
-> **A fix re-asks the litmus.** Before fixing a mechanism, read its recent fixes:
-> `git log --oneline --since=30.days --grep='^fix' -- <its files>`. When an earlier fix changed the same decision, or
+> **A fix re-asks the litmus.** Before fixing a mechanism, read its history:
+> `git log --oneline -- <its files>`, every commit type, since a redesign or deletion lands as `feat` or `refactor`,
+> then the body and cited plan of each commit that changed the decision. When an earlier fix changed the same decision, or
 > this fix would add one more case (a phrasing, a name, a path pattern, an event kind) to a list the mechanism decides
 > by, fix the decision: make it decide on the property the cases share, observed as a fact. When no observed fact
 > carries that property (the input is prose, free shell text, an owner's wording or model output), the decision fails

@@ -83,6 +83,7 @@ def load_table(path=None):
 
 KIND_ROUTES = ("launcher", "fanout", "engine", "agent")
 KIND_DISCLOSURES = ("bare", "pointer", "full")
+CACHE_TTLS = ("5m", "1h")  # a sidecar child's prompt-cache lifetime (`CLAUDE_CODE_PROMPT_CACHE_TTL`); a row's `cacheTtl` default is 5m
 
 
 def _validate_kinds(kinds):
@@ -108,6 +109,8 @@ def _validate_kinds(kinds):
         routes = row.get("routes")
         if not (isinstance(routes, list) and routes and all(r in KIND_ROUTES for r in routes)):
             raise ValueError("kind %r: routes must be a non-empty list of %s" % (name, "|".join(KIND_ROUTES)))
+        if row.get("cacheTtl") not in (None,) + CACHE_TTLS:
+            raise ValueError("kind %r: cacheTtl must be %s or absent" % (name, "|".join(CACHE_TTLS)))
         disclosure = row.get("disclosure")
         if disclosure is not None and disclosure not in KIND_DISCLOSURES:
             raise ValueError("kind %r: disclosure must be %s or null" % (name, "|".join(KIND_DISCLOSURES)))
@@ -1354,9 +1357,9 @@ def main(argv=None):
     rk.add_argument("--config-dir", default="")
     rk.add_argument("--workdir", default="")
     rk.add_argument("--field", default="profile", choices=FIELDS)
-    kr = sub.add_parser("kind-row", help="a launcher kind's disclosure (empty for arm) or guard, after the route check")
+    kr = sub.add_parser("kind-row", help="a launcher kind's disclosure (empty for arm), guard or cacheTtl (default 5m), after the route check")
     kr.add_argument("--kind", required=True)
-    kr.add_argument("--field", default="disclosure", choices=("disclosure", "guard"))
+    kr.add_argument("--field", default="disclosure", choices=("disclosure", "guard", "cacheTtl"))
     mcp = sub.add_parser("mcp-config")
     mcp.add_argument("spec")
     mcp.add_argument("config_dir", nargs="?", default="")
@@ -1386,7 +1389,8 @@ def main(argv=None):
             table = load_table()
             if args.kind not in (table.get("kinds") or {}) or "launcher" not in table["kinds"][args.kind]["routes"]:
                 resolve_kind(args.kind, route="launcher", table=table, walk_mcp=False)   # raises with the public kinds
-            print(table["kinds"][args.kind].get(args.field) or (args.kind if args.field == "guard" else ""))
+            print(table["kinds"][args.kind].get(args.field)
+                  or {"guard": args.kind, "cacheTtl": CACHE_TTLS[0]}.get(args.field, ""))
             return 0
         if args.cmd == "resolve-kind":
             base = split_csv(args.base_builtins) if args.base_builtins is not None else None
