@@ -1,0 +1,16 @@
+{
+  "label": "ctx1m-haiku55-t11-2026-10-08:t11:haiku55:r1",
+  "servedModel": "claude-haiku-5-5",
+  "requestedModel": "claude-haiku-5-5",
+  "costModel": "plan-quota",
+  "costBasis": "list-price (plan-quota; not spend)",
+  "inputTokens": 64,
+  "cacheReadTokens": 5449021,
+  "cacheWriteTokens": 300333,
+  "cacheWrite1hTokens": 300333,
+  "outputTokens": 145051,
+  "priceMultiplier": 1.0,
+  "durationMs": 614846,
+  "numTurns": 91,
+  "costUSD": 0.187089
+}
