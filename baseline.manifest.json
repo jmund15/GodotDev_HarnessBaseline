@@ -6477,6 +6477,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_seat_findings.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_seat_outcome_parity.py",
       "layer": "coding",
       "sync": "auto"
@@ -7928,6 +7933,11 @@
     },
     {
       "path": ".claude/tools/scratch_prune.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/seat_findings.py",
       "layer": "pure",
       "sync": "auto"
     },

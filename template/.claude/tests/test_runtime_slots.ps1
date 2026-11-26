@@ -1423,9 +1423,16 @@ exit 0
             $rec = Get-CheckoutHolder -Repo $repo -RecordDir $n.rec
             Assert-True 'T35 a held lock names its holder pid, label, session and time' (
                 $rec -and [int] $rec.holderPid -eq [int] $lh.Pid -and $rec.label -eq 'H' -and $rec.sessionId -eq 'sess-t35' -and $rec.acquiredAt -and $rec.checkout -eq $repo) ($rec | ConvertTo-Json -Compress)
+            Assert-True 'T35 a Logic taker records no runtime demand' ($rec.runtime -eq $false) ($rec | ConvertTo-Json -Compress)
             [void](Invoke-HolderRelease $h)
             Assert-True 'T35 the record is gone after Exit-RunLocks' (-not (Test-Path -LiteralPath $recPath))
             Stop-Holder $h
+
+            $rt = Start-Holder -N $n -Checkout H -SlotCount 2
+            [void](Wait-Ready $rt)
+            Assert-True 'T35 a runtime taker records its runtime demand, so a pool sharing the slots counts it' ((Get-CheckoutHolder -Repo $repo -RecordDir $n.rec).runtime -eq $true)
+            [void](Invoke-HolderRelease $rt)
+            Stop-Holder $rt
 
             $outer = Enter-RunLocks -Repo $repo -Label 'outer' -TimeoutMs $HangMs -CheckoutLockName ($n.ckPrefix + 'H') -RecordDir $n.rec
             try {

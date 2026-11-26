@@ -265,6 +265,7 @@ def main():
         import importlib.util
         tasks_dir = str(Path(tmp) / "tasks")
         os.environ["HARNESS_TASK_RECORD_DIR"] = tasks_dir
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)  # a write binds the record to the calling session
         spec = importlib.util.spec_from_file_location("task_record", str(Path(HOOK).parent.parent / "tools" / "task_record.py"))
         tr = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tr)

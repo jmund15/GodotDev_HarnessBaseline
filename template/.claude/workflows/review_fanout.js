@@ -1009,7 +1009,9 @@ for (let i = 0; i < resolved.length; i++) {
     const agent = resolved[i]
     const recovery = agent && spills(agent)
       ? 'Recover the paid-for review from ' + spillPath('review:' + lens) + ' before re-dispatching.'
-      : 'Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + lens + '.'
+      : 'Recover BEFORE re-dispatching: '
+        + (agent && agent.promptPath ? 'the findings the seat recorded at ' + String(agent.promptPath).replace(/\.[^./\\]+$/, '.findings.jsonl') + ' (`--review-close` reads them), else ' : '')
+        + '/salvage_fanout <transcriptDir> ' + lens + '.'
     flags.push({ kind: 'lens-no-return', lens, detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. ' + recovery })
     perAgent.push({ key: lens, count: null, status: 'failed', capabilityPartial: false, mandates: seatMandates(lens, 'failed', 0, null, null, false), checkedTargets: [] })
     continue

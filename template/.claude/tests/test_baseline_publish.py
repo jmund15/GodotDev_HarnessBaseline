@@ -1497,7 +1497,7 @@ def test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base() -> No
                 text = str(exc)
             else:
                 raise AssertionError("a publish over a moved upstream row must refuse")
-        assert rel in text and "diverged" in text and "pull --merge" in text and "--over-upstream " + rel in text, text
+        assert rel in text and "diverged" in text and "`pull`" in text and "--over-upstream " + rel in text, text
         journals = list((root / ".claude" / ".cache" / "baseline-publish").glob("*.json"))
         assert json.loads(journals[0].read_text(encoding="utf-8"))["steps"][0]["status"] == "red"
         lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
@@ -1752,7 +1752,7 @@ def test_corrupt_journal_resume_exits_nonzero() -> None:
         assert "unreadable" in output.lower(), output
 
 
-def test_from_worktree_refuses_dirty_foreign_nondescendant_sibling_and_nested() -> None:
+def test_from_worktree_refuses_dirty_foreign_sibling_and_nested() -> None:
     with _fixture() as path:
         remote, baseline_commit = _seed_bare_baseline(path)
         root = _seed_worktree_root(path, remote, baseline_commit)
@@ -1807,7 +1807,7 @@ def test_from_worktree_refuses_dirty_foreign_nondescendant_sibling_and_nested() 
         else:
             raise AssertionError("expected a worktree nested inside another worktree to be refused")
 
-        # non-descendant: the worktree HEAD is BEHIND the freshly-resolved pinned sha
+        # behind: the worktree HEAD is an ancestor of the freshly-resolved pinned sha
         cache4, behind_wt, pinned4 = _make_author_worktree(path, root, remote, "s5-behind")
         advance = path / "advance-clone"
         _git(path, "clone", "-q", str(remote), str(advance))
@@ -1820,9 +1820,89 @@ def test_from_worktree_refuses_dirty_foreign_nondescendant_sibling_and_nested() 
             publish.run(root, {"kind": "worktree", "repo": str(behind_wt), "commit": pinned4},
                         None, [], True, True, None)
         except publish.PublishError as exc:
-            assert "descend" in str(exc), str(exc)
+            assert "no changes" in str(exc), str(exc)  # absorbed, not refused: nothing of its own to publish
         else:
-            raise AssertionError("expected a worktree behind the pinned baseline to be refused")
+            raise AssertionError("expected a worktree with nothing past the advanced baseline to have no changes")
+        advanced = _git(advance, "rev-parse", "HEAD").decode().strip()
+        assert _git(behind_wt, "rev-parse", "HEAD").decode().strip() == advanced
+
+
+LAYER_FILE = "tools/layer_entries.json"
+LAYER_SEED = b'{\n  "version": 1,\n  "entries": {\n    "a": "pure"\n  }\n}\n'
+LAYER_EDIT = b'{\n  "version": 1,\n  "entries": {\n    "a": "forked"\n  }\n}\n'
+
+
+def _squash_published_line(path: Path):
+    """An author worktree whose publish squashed its rows onto shared main through the fake gh, so the
+    squash message and the layer rows are the tool's own output. Returns (publish, root, cache, line);
+    `line` is that worktree, left at the author commit the squash was cut from."""
+    remote, baseline_commit = _seed_bare_baseline(path)
+    root = _seed_worktree_root(path, remote, baseline_commit)
+    cache, line, _pinned = _make_author_worktree(path, root, remote, "absorb-line")
+    rows = [".claude/tools/doomed.py", ".claude/tools/kept.py"]
+    _classify_rows(root, rows)
+    _write(line / LAYER_FILE, LAYER_SEED)
+    for row in rows:
+        _write(line / "template" / row, b"x = 1\n")
+    source = _commit(line, "author change")
+    publish = _load_publish()
+    with _patched_env(_install_fake_gh(path)):
+        journal = publish.run(root, {"kind": "worktree", "repo": str(line), "commit": source},
+                              None, [], False, True, None)
+    assert all(step["status"] == "green" for step in journal["steps"]), journal["steps"]
+    return publish, root, cache, line
+
+
+def _absorb(publish, root: Path, cache: Path, line: Path) -> str:
+    """The descent step a second `--from-worktree` publish runs, at the pin the first publish left."""
+    pinned = publish._pin(root, publish.sync.load_lock(root))[1]
+    publish._validate_worktree_source(root, cache, line, pinned)
+    return pinned
+
+
+def _is_ancestor(repo: Path, ancestor: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, "HEAD"]).returncode == 0
+
+
+def test_absorb_keeps_a_later_author_deletion_and_carries_the_publish_rows() -> None:
+    with _fixture() as path:
+        publish, root, cache, line = _squash_published_line(path)
+        _git(line, "rm", "-q", "template/.claude/tools/doomed.py")
+        _commit(line, "author deletes the file")
+        pinned = _absorb(publish, root, cache, line)
+        assert _is_ancestor(line, pinned)
+        assert not (line / "template" / ".claude" / "tools" / "doomed.py").exists()
+        carried = json.loads((line / LAYER_FILE).read_text(encoding="utf-8"))["entries"]
+        assert ".claude/tools/doomed.py" in carried and ".claude/tools/kept.py" in carried, carried
+        # the only thing left to publish is the author's own deletion
+        records = publish._diff_records(line, pinned)
+        assert [(r["relpath"], r["op"]) for r in records] == [(".claude/tools/doomed.py", "D")], records
+
+
+def test_absorb_keeps_a_later_author_edit() -> None:
+    with _fixture() as path:
+        publish, root, cache, line = _squash_published_line(path)
+        _write(line / "template" / ".claude" / "tools" / "kept.py", b"x = 2\n")
+        _commit(line, "author edits the file")
+        pinned = _absorb(publish, root, cache, line)
+        assert _is_ancestor(line, pinned)
+        assert (line / "template" / ".claude" / "tools" / "kept.py").read_bytes() == b"x = 2\n"
+        carried = json.loads((line / LAYER_FILE).read_text(encoding="utf-8"))["entries"]
+        assert ".claude/tools/kept.py" in carried, carried
+
+
+def test_absorb_stops_on_a_publish_change_that_conflicts_with_a_later_author_edit() -> None:
+    with _fixture() as path:
+        publish, root, cache, line = _squash_published_line(path)
+        # the publish added its rows beside "a"; the author line edits that same line afterwards
+        _write(line / LAYER_FILE, LAYER_EDIT)
+        _commit(line, "author edits the layer row")
+        try:
+            _absorb(publish, root, cache, line)
+        except publish.PublishError as exc:
+            assert LAYER_FILE in str(exc), str(exc)
+        else:
+            raise AssertionError("expected a conflicting publish change to stop the absorb")
 
 
 def test_author_history_never_publishes_ancestor_token() -> None:
@@ -3016,7 +3096,10 @@ def main(part: int = 1) -> int:
         test_resume_redoes_steps_after_deleted_worktree,
         test_step_keeps_the_red_attempt_when_it_reruns_green,
         test_corrupt_journal_resume_exits_nonzero,
-        test_from_worktree_refuses_dirty_foreign_nondescendant_sibling_and_nested,
+        test_from_worktree_refuses_dirty_foreign_sibling_and_nested,
+        test_absorb_keeps_a_later_author_deletion_and_carries_the_publish_rows,
+        test_absorb_keeps_a_later_author_edit,
+        test_absorb_stops_on_a_publish_change_that_conflicts_with_a_later_author_edit,
         test_author_history_never_publishes_ancestor_token,
         test_from_worktree_publishes_root_files_and_lock_rows,
         test_publish_strips_memory_provenance_keys_from_the_published_file,

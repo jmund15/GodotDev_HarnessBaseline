@@ -56,6 +56,45 @@ def case_areas_key_reads_and_wrong_type_falls_back():
         _rm(tmp)
 
 
+def case_retired_keys_are_named_with_where_and_replacement():
+    rows = [{"name": "Old", "triggers": ["x"], "paths": ["a/**"]}, {"name": "New", "paths": ["b/**"]},
+            {"name": "Older", "triggers": []}]
+    lines = adaptation.retired_keys({"memory_domains": rows, "drive_commands": [], "tests_root": "Tests"})
+    assert len(lines) == 2, lines  # one line per retired key present, not per row; an empty value is present
+    by_key = {line.split()[0]: line for line in lines}
+    triggers = by_key["memory_domains[].triggers"]
+    assert "Old" in triggers and "Older" in triggers and "New" not in triggers, triggers
+    assert "memory_domains[].paths" in triggers, triggers
+    assert "drive_commands" in by_key and "delete" in by_key["drive_commands"], lines
+    assert adaptation.retired_keys({"memory_domains": [{"name": "New", "paths": []}], "tests_root": "T"}) == []
+    assert adaptation.retired_keys({}) == [] and adaptation.retired_keys({"memory_domains": "wrong"}) == []
+
+
+def case_a_table_row_is_one_path_and_walks_nested_lists():
+    table = [{"path": "rows[].inner[].old", "replacement": "rows[].inner[].new"}]
+    data = {"rows": [{"name": "A", "inner": [{"old": 1}, {"new": 2}]}, {"inner": [{"new": 1}]}, "stray"]}
+    got = adaptation.retired_keys(data, table)
+    assert len(got) == 1 and got[0].startswith("rows[].inner[].old") and "A" in got[0] and "rows[].inner[].new" in got[0], got
+
+
+def case_a_path_ending_in_a_list_names_each_row_and_never_crashes():
+    table = [{"path": "rows[]", "replacement": "delete the list"}]
+    got = adaptation.retired_keys({"rows": [{"name": "A"}, {"name": "B"}]}, table)
+    assert len(got) == 1 and "2 rows" in got[0] and "A" in got[0] and "B" in got[0], got
+
+
+def case_the_shipped_table_is_well_formed_and_no_shipped_adaptation_file_holds_a_retired_key():
+    table = adaptation.RETIRED_KEYS
+    assert table and all(isinstance(r.get("path"), str) and isinstance(r.get("replacement"), str)
+                         and set(r) == {"path", "replacement"} for r in table), table
+    assert len({r["path"] for r in table}) == len(table), "a path listed twice"
+    skill_dir = os.path.join(TOOLS, "..", "skills", "project_subsystems")
+    for name in sorted(os.listdir(skill_dir)):
+        if name.startswith("adaptation") and name.endswith(".json"):
+            with open(os.path.join(skill_dir, name), encoding="utf-8") as fh:
+                assert adaptation.retired_keys(json.load(fh)) == [], name
+
+
 def main():
     cases = []
     failures = []
@@ -64,6 +103,15 @@ def main():
         cases.append(("areas key reads and wrong type falls back", True))
     except (AssertionError, KeyError) as exc:
         cases.append(("areas key reads and wrong type falls back: %s" % (exc,), False))
+    for case in (case_retired_keys_are_named_with_where_and_replacement,
+                 case_a_table_row_is_one_path_and_walks_nested_lists,
+                 case_a_path_ending_in_a_list_names_each_row_and_never_crashes,
+                 case_the_shipped_table_is_well_formed_and_no_shipped_adaptation_file_holds_a_retired_key):
+        try:
+            case()
+            cases.append((case.__name__, True))
+        except (AssertionError, KeyError, AttributeError) as exc:
+            cases.append(("%s: %r" % (case.__name__, exc), False))
     doc = open(os.path.join(TOOLS, "adaptation.py"), encoding="utf-8").read().split('"""')[1]
     tmp = tempfile.mkdtemp(prefix="adaptation_proof_")
     try:

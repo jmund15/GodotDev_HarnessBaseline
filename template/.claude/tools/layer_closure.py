@@ -99,7 +99,7 @@ OPTIONAL_DATA = {
     ".claude/tools/workstation_profile.py": ("commands/workstation_setup.md",),
     ".claude/tools/semantic_search_idle_install.py": ("package.json",),
     ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md", "CLAUDE.coding.md",
-                                                     "CLAUDE.godot.md", "guards/common.godot.md"),
+                                                     "CLAUDE.godot.md", "guards/common.godot.md", "harness-goal.md"),
     ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),

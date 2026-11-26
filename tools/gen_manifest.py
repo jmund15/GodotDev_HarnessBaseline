@@ -676,6 +676,20 @@ def main() -> int:
             print(f"  {rel}", file=sys.stderr)
         return 1
 
+    present = {entry["path"] for entry in files}
+    dead = [rel for rel in layer_entries() if rel not in present]
+    if dead and check_only:
+        print("ERROR: layer entries name no template file — generation prunes them:", file=sys.stderr)
+        for rel in dead:
+            print(f"  {rel}", file=sys.stderr)
+        return 1
+    if dead:
+        data = json.loads(LAYER_ENTRIES_PATH.read_text(encoding="utf-8"))
+        for rel in dead:
+            data["entries"].pop(rel, None)
+        LAYER_ENTRIES_PATH.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        print(f"pruned {len(dead)} layer entries naming no template file: {', '.join(dead)}")
+
     manifest = {"version": 2, "files": files}
     expected = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
     manifest_path = ROOT / "baseline.manifest.json"

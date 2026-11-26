@@ -144,8 +144,10 @@ def _git_paths(root, args):
 
 def open_paths(root, entries=None):
     """The journal's open rows: unresolved paths still uncommitted, the rows an earlier pull left in the tree with
-    no green proof. A path git reports clean was committed, so it left the journal; a path git does not track
-    (never committed, or ignored) stays. When git cannot answer every unresolved path stays, the alarming side."""
+    no green proof. A path git reports clean was committed, so it left the journal; a present path git does not
+    track (never committed, or ignored) stays. A retired path is absent: it stays while git reports its deletion
+    (unstaged or staged) and leaves once the deletion is committed, as git then lists it nowhere. When git cannot
+    answer every unresolved path stays, the alarming side."""
     pending = unresolved(root, entries)
     if not pending:
         return []
@@ -155,4 +157,4 @@ def open_paths(root, entries=None):
                  if len(entry) > 3}
     except (OSError, subprocess.SubprocessError):
         return pending
-    return [rel for rel in pending if rel not in tracked or rel in dirty]
+    return [rel for rel in pending if rel in dirty or (rel not in tracked and _digest(root, rel) is not None)]

@@ -96,7 +96,13 @@ paths the gate writes, which owe no gate when a range changes only them and harn
 command reads a point with `get pr_pipeline.<point>`. A point holding a blank or non-string entry, and an unknown
 point, is dropped with one stderr line, and every point is present after `load()`, empty by default.
 
-Unknown top-level keys are ignored; the `gate_cadence` table rejects its own unknown keys (`gate_cadence_errors`).
+`load()` ignores an unknown top-level key, because other readers read their own keys from the same file
+(`gate_guards`, `proof_bindings`); the `gate_cadence` table rejects its own unknown keys (`gate_cadence_errors`).
+A key a reader stopped reading is a row of `RETIRED_KEYS` ({path, replacement}; `memory_domains[].triggers`
+is a key inside each row of a list), and `retired_keys(data)` returns one line per such key present in a project's
+`adaptation.json`: where it is and what replaces it. `baseline_sync.py compose` prints those lines and `compose --check`
+exits 1 on them, the step a consumer runs after every pull. Retiring the next key is one row and its case in
+`tests/test_adaptation.py`.
 """
 from __future__ import annotations
 
@@ -387,7 +393,7 @@ def load(claude_dir) -> dict:
     that are present and parseable, merged in read order (module docstring). An absent file
     contributes nothing, silently. An unparseable file, non-object root, or a known key of the wrong
     type contributes nothing for the affected key(s) plus one stderr line each, naming the file.
-    Unknown keys are ignored.
+    Unknown keys are ignored; `retired_keys` names the retired ones.
 
     Cached per (path, mtime, size) of every candidate file so a process that reads several keys via
     `get()` re-parses the files and re-prints a malformed-value warning once, not once per key
@@ -407,6 +413,56 @@ def load(claude_dir) -> dict:
         result["pr_pipeline"] = {point: list(seen["pr_pipeline"].get(point, [])) for point in PIPELINE_POINTS}
     _CACHE[cache_key] = dict(result)
     return result
+
+
+# `path` is a key path; `name[]` walks each row of a list.
+RETIRED_KEYS: list = [
+    {"path": "memory_domains[].triggers",
+     "replacement": "memory_domains[].paths: globs over the files a plan declares (plan_memory_reminder matches "
+                    "those; no reader of a row's words remains)"},
+    {"path": "high_risk_patterns",
+     "replacement": "delete it: its only reader, prompt_memory_loader's keyword list, was removed"},
+    {"path": "drive_commands",
+     "replacement": "delete it: its only reader, prompt_memory_loader's drive branch, was removed"},
+]
+_ROW_NAME_LIMIT = 5
+
+
+def _found(node, parts):
+    """Where the path `parts` (a `name[]` segment walks each dict of a list) holds a key in `node`: one location per
+    holder, the row names joined by `/` (empty for a top-level key)."""
+    if not parts:
+        return [""]
+    if not isinstance(node, dict):
+        return []
+    head, *rest = parts
+    name = head.removesuffix("[]")
+    if name not in node:
+        return []
+    if head == name:
+        return _found(node[name], rest) if rest else [""]
+    found = []
+    for index, row in enumerate(node[name] if isinstance(node[name], list) else []):
+        label = str(row.get("name", index) if isinstance(row, dict) else index)
+        found += [label + ("/" + inner if inner else "") for inner in _found(row, rest)]
+    return found
+
+
+def retired_keys(data, table=None) -> list:
+    """One line per retired key present in `data` (a parsed `adaptation.json`): the key path, the rows holding it
+    when it sits inside a list, and what replaces it. A key present with an empty value counts: presence is what
+    names a reader that no longer exists."""
+    lines = []
+    for row in RETIRED_KEYS if table is None else table:
+        found = _found(data, row["path"].split("."))
+        if not found:
+            continue
+        where = ""
+        if "[]" in row["path"]:
+            shown = ", ".join(found[:_ROW_NAME_LIMIT]) + (" +%d more" % (len(found) - _ROW_NAME_LIMIT) if len(found) > _ROW_NAME_LIMIT else "")
+            where = " (%d row%s: %s)" % (len(found), "" if len(found) == 1 else "s", shown)
+        lines.append("%s%s -> %s" % (row["path"], where, row["replacement"]))
+    return lines
 
 
 def _merge_value(earlier, later):

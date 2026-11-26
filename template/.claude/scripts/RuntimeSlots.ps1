@@ -44,7 +44,7 @@
 
 .HOLDER RECORD
   Every taker of a checkout lock (Enter-RunLocks, TwinCheckout.ps1's Enter-TwinLock) also writes holder-<worktreeId>.json:
-  holderPid, procStart, checkout, label, sessionId, acquiredAt. It exists so a gate that waits on the lock can name who
+  holderPid, procStart, checkout, label, runtime (the call asked for a runtime slot), sessionId, acquiredAt. It exists so a gate that waits on the lock can name who
   holds it. It is separate from the checkout record, whose presence is the admission contract for held children. The write
   is best-effort and skipped when a live record already names the caller (re-entry on the same thread); a taker removes
   only a record it wrote, before it releases the mutex. Get-CheckoutHolder returns the record only while its process lives.
@@ -273,7 +273,7 @@ function Get-CheckoutHolder {
 
 # Writes the caller's holder record unless a live one already names the caller. True only when this call wrote it.
 function Write-CheckoutHolder {
-    param([Parameter(Mandatory)] [string] $Repo, [string] $Label = '', [string] $RecordDir = '')
+    param([Parameter(Mandatory)] [string] $Repo, [string] $Label = '', [string] $RecordDir = '', [switch] $Runtime)
     Set-StrictMode -Version Latest
     try {
         $dir = Get-RuntimeSlotRecordDir -RecordDir $RecordDir
@@ -285,6 +285,7 @@ function Write-CheckoutHolder {
             procStart  = (Get-ProcStartUtc (Get-Process -Id $PID))
             checkout   = $Repo
             label      = $Label
+            runtime    = [bool] $Runtime
             sessionId  = $sid
             acquiredAt = (Get-Date).ToUniversalTime().ToString('o')
         })
@@ -305,6 +306,29 @@ function Remove-CheckoutHolder {
             Remove-Item -LiteralPath (Join-Path $dir "$name.json") -Force -ErrorAction SilentlyContinue
         }
     } catch { }
+}
+
+# The worktree ids of the other checkouts with a live runtime call in flight on this record dir: a live holder record
+# whose taker asked for a runtime slot (waiting for one or running), or a live slot record not yet released. A fact
+# the takers write about their own call; an older record with no `runtime` field counts as none (the pool keeps its
+# full width, the pre-share behaviour).
+function Get-RuntimeCallers {
+    param([Parameter(Mandatory)] [string] $Repo, [string] $RecordDir = '')
+    Set-StrictMode -Version Latest
+    $dir = Get-RuntimeSlotRecordDir -RecordDir $RecordDir
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
+    $own = Get-WorktreeId $Repo
+    $ids = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'holder-*' -or $_.Name -like 'slot-*' })) {
+        $rec = Read-SlotRecord -RecordDir $dir -Name $f.BaseName
+        if ($null -eq $rec -or $rec -is [string] -or -not $rec.PSObject.Properties['procStart'] -or -not $rec.PSObject.Properties['checkout']) { continue }
+        $demands = if ($f.Name -like 'slot-*') { -not $rec.PSObject.Properties['releasedAt'] -or $null -eq $rec.releasedAt }
+                   else { $rec.PSObject.Properties['runtime'] -and $rec.runtime -eq $true }
+        if (-not $demands -or -not (Test-SlotProcessLive $rec.holderPid $rec.procStart)) { continue }
+        $id = Get-WorktreeId ([string] $rec.checkout)
+        if ($id -ne $own) { [void] $ids.Add($id) }
+    }
+    @($ids)
 }
 
 function New-SlotRecord {
@@ -929,7 +953,7 @@ function Enter-RunLocks {
             if ($r.Index -lt 0) { & $fail 'checkout'; return $lease }
             $held.Add($ck)
             if ($r.Abandoned) { $lease.Abandoned = $true }
-            $lease.HolderRecord = Write-CheckoutHolder -Repo $Repo -Label $Label -RecordDir $lease.RecordDir
+            $lease.HolderRecord = Write-CheckoutHolder -Repo $Repo -Label $Label -RecordDir $lease.RecordDir -Runtime:$Runtime
         }
 
         if ($env:HARNESS_SLOT_BUDGET -ne '1') {

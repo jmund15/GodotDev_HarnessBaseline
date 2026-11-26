@@ -28,6 +28,8 @@ $IntraCheckoutWidthMax = $null
 # 123 ms minus 2 x 20000 ms = 20829 ms of pre-work and kill tail; 2x margin.
 $script:PoolBackstopTailMs = 42000
 $script:PoolPollMs = 500
+# How often a pool with queued units re-reads the other live callers to size its width (a record read per caller).
+$script:PoolShareRecheckMs = 5000
 $script:SuiteWrapperPath = Join-Path $PSScriptRoot 'run_test_suite.ps1'
 $script:PoolRepo = Resolve-TestRepo -ScriptsRoot $PSScriptRoot
 
@@ -79,9 +81,17 @@ function Remove-OldRunDirs {
 
 # ------------------------------------------------------------------ pool
 # The width a pool runs at when its caller passes no -MaxParallel: the runtime slot count of this checkout, capped by
-# $IntraCheckoutWidthMax ($null casts to -Ceiling 0, no cap). .Source says which bound won.
+# $IntraCheckoutWidthMax ($null casts to -Ceiling 0, no cap), shared evenly with the other checkouts that have a
+# runtime call in flight (Get-RuntimeCallers), so a slot a child frees is left for the waiting caller, never refilled
+# by the pool's next child. Alone, the pool keeps every slot. Rounds up, so the callers' shares cover every slot, and
+# never below 1. Which caller is a background check and which is interactive work is not a fact the records hold, so
+# the share is symmetric. .Source says which bound won.
 function Get-RunPoolWidth {
-    Get-RuntimeSlotCount -Repo $script:PoolRepo -Ceiling $IntraCheckoutWidthMax
+    $w = Get-RuntimeSlotCount -Repo $script:PoolRepo -Ceiling $IntraCheckoutWidthMax
+    $others = @(Get-RuntimeCallers -Repo $script:PoolRepo).Count
+    $share = [math]::Max(1, [int] [math]::Ceiling($w.Count / (1 + $others)))
+    if ($share -ge $w.Count) { return $w }
+    [pscustomobject] @{ Count = $share; Source = 'share'; Raw = $w.Raw }
 }
 
 # A child's stdout file: <ResultsRoot>/<the wrapper's run dir name>/wrapper.out, beside the child's TRX.
@@ -210,8 +220,16 @@ function Invoke-RunPool {
     foreach ($u in @($Units | Sort-Object -Property @{ Expression = { [double] $_.expectSec }; Descending = $true } -Stable)) { $pending.Enqueue($u) }
     $running = [System.Collections.Generic.List[object]]::new()
     $results = [System.Collections.Generic.List[object]]::new()
+    # A pool sized by its caller keeps that width; a default-width pool re-sizes while units are queued, so a caller that
+    # appears mid-run gets slots at the next unit boundary instead of after this pool's last unit.
+    $resize = -not $PSBoundParameters.ContainsKey('MaxParallel')
+    $sizedAt = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         while ($pending.Count -gt 0 -or $running.Count -gt 0) {
+            if ($resize -and $pending.Count -gt 0 -and $sizedAt.ElapsedMilliseconds -ge $script:PoolShareRecheckMs) {
+                $MaxParallel = [math]::Max(1, (Get-RunPoolWidth).Count)
+                $sizedAt.Restart()
+            }
             while ($pending.Count -gt 0 -and $running.Count -lt $MaxParallel) {
                 $u = $pending.Dequeue()
                 $p = & $Launch $u

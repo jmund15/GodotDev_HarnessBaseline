@@ -19,6 +19,7 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -305,6 +306,95 @@ out_z = tempfile.mkdtemp(dir=ROOT, prefix="none_")
 code_z, text_z = main_in_process([jobs_n, "--out-dir", out_z, "--review-close"])
 case("a seat that left no file anywhere is named as never run",
      lambda: code_z == 1 and "never ran" in text_z and "n4" in text_z and "s4" in text_z)
+
+# a seat whose structured return failed after it recorded findings: the close reads them back from the findings file
+# beside its brief (`seat_findings.py`), whichever transport ran the seat
+def recorded_seat(rows, torn=False, stale=False, returned=None):
+    """(code, out, review) for one native seat `n6` whose run returned `returned` (None: the structured return failed)
+    after it recorded `rows` (one JSON object per line) beside its brief, and one sidecar seat that returned."""
+    brief = os.path.join(tempfile.mkdtemp(dir=ROOT, prefix="brief_"), "n6.md")
+    with open(brief, "w", encoding="utf-8") as fh:
+        fh.write("Review the subject.\n")
+    with open(brief[:-3] + ".findings.jsonl", "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("".join(json.dumps(row) + "\n" for row in rows) + ('{"agent": "' if torn else ""))
+    if stale:
+        os.utime(brief, (time.time() + 60, time.time() + 60))
+    jobs_f = write_jobs([seat("n6", promptFile=brief), seat("s6", plan=OTHER)])
+    out_f = tempfile.mkdtemp(dir=ROOT, prefix="recorded_")
+    plant_sidecar_seat(out_f, "s6", "finding from s6")
+    wf_f = plant_workflow(tempfile.mkdtemp(dir=ROOT, prefix="wf_"), {"n6": ("ag6", returned, WHOLE_READ)})
+    code_f, _text = close(jobs_f, out_f, workflow=[wf_f])
+    review_f = read(out_f, "review.json") or {}
+    return code_f, out_f, review_f
+
+
+def owned(review_f, label):
+    return sorted(s["finding"]["description"] for s in review_f.get("sources", []) if s["seat"] == label)
+
+
+KEPT = [reply("recorded %d" % n)["findings"][0] for n in (1, 2, 3)]
+COVERAGE = {"checked": reply("x")["checked"], "gaps": []}
+code_f, out_f, review_f = recorded_seat(KEPT + [COVERAGE])
+cover_f = {c["label"]: c for c in review_f.get("coverage", [])}
+case("a native seat whose return failed after it recorded findings and its coverage yields every finding to the close",
+     lambda: owned(review_f, "n6") == ["recorded 1", "recorded 2", "recorded 3"] and cover_f["n6"]["status"] == "completed"
+     and review_f["status"] == "complete" and code_f == 0)
+code_f, out_f, review_f = recorded_seat(KEPT)
+cover_f = {c["label"]: c for c in review_f.get("coverage", [])}
+case("recorded findings with no coverage row are kept and the seat reads partial, never complete",
+     lambda: owned(review_f, "n6") == ["recorded 1", "recorded 2", "recorded 3"] and cover_f["n6"]["status"] == "partial"
+     and review_f["status"] == "partial")
+code_f, out_f, review_f = recorded_seat(KEPT + [COVERAGE], torn=True)
+case("a torn last line costs only itself",
+     lambda: owned(review_f, "n6") == ["recorded 1", "recorded 2", "recorded 3"])
+code_f, out_f, review_f = recorded_seat(KEPT + [COVERAGE], stale=True)
+cover_f = {c["label"]: c for c in review_f.get("coverage", [])}
+case("a findings file older than its brief belongs to an earlier run and is not read",
+     lambda: owned(review_f, "n6") == [] and cover_f["n6"]["status"] == "uncovered")
+code_f, out_f, review_f = recorded_seat(KEPT + [COVERAGE], returned=reply("returned one"))
+case("a seat whose return succeeded keeps its returned findings and ignores the file",
+     lambda: owned(review_f, "n6") == ["returned one"])
+
+# the live `--review` branch (no --detach, no native seat) reads a failed return back through `recover_returns`
+def live_panel(rows, returned_ok=False):
+    """(code, text, review) for one live `--review` run of two sidecar seats: `s7` recorded `rows` beside its brief
+    and its structured return failed (exit 1, an error result, no valid record) unless `returned_ok`; `t7` returned."""
+    brief = os.path.join(tempfile.mkdtemp(dir=ROOT, prefix="brief_"), "s7.md")
+    with open(brief, "w", encoding="utf-8") as fh:
+        fh.write("Review the subject.\n")
+    with open(brief[:-3] + ".findings.jsonl", "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("".join(json.dumps(row) + "\n" for row in rows))
+    jobs_l = write_jobs([seat("s7", plan=OTHER, promptFile=brief), seat("t7", plan=OTHER)])
+    out_l = tempfile.mkdtemp(dir=ROOT, prefix="live_")
+    plant_sidecar_seat(out_l, "t7", "finding from t7")
+    if returned_ok:
+        plant_sidecar_seat(out_l, "s7", "returned one")
+    else:
+        with open(os.path.join(out_l, "s7.out.json"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "result", "is_error": True, "result": "structured output failed"}) + "\n")
+        transcript(os.path.join(out_l, "s7.stream"), WHOLE_READ)
+        with open(os.path.join(out_l, "s7.record.json"), "w", encoding="utf-8") as fh:
+            json.dump({"exitCode": 1, "schemaValid": False}, fh)
+    held = sf.run_jobs
+    sf.run_jobs = lambda planned, *a, **k: sf.seat_results([{"label": label} for label, _a, _o in planned], out_l)
+    try:
+        code_l, text_l = main_in_process([jobs_l, "--out-dir", out_l, "--review"])
+    finally:
+        sf.run_jobs = held
+    return code_l, text_l, read(out_l, "review.json") or {}
+
+
+code_l, text_l, review_l = live_panel(KEPT + [COVERAGE])
+cover_l = {c["label"]: c for c in review_l.get("coverage", [])}
+case("the live --review run yields every finding of a seat whose return failed after it recorded them, and is no FAIL",
+     lambda: owned(review_l, "s7") == ["recorded 1", "recorded 2", "recorded 3"]
+     and cover_l["s7"]["status"] == "completed" and review_l["status"] == "complete" and code_l == 0
+     and "FAIL  s7" not in text_l)
+case("that seat's result line carries the failed-return warning",
+     lambda: any("WARNING" in l and "structured return failed" in l for l in text_l.splitlines()))
+code_l, text_l, review_l = live_panel(KEPT + [COVERAGE], returned_ok=True)
+case("on the live --review run a seat whose return succeeded ignores its findings file",
+     lambda: owned(review_l, "s7") == ["returned one"] and "structured return failed" not in text_l)
 
 # a sidecar seat still running refuses the close
 out_r = tempfile.mkdtemp(dir=ROOT, prefix="running_")

@@ -179,7 +179,7 @@ def create_tools(tmp_path, monkeypatch):
         target.write_text(json.dumps({"worktree_create_tools": list(names)}), encoding="utf-8")
         monkeypatch.setattr(_delete_rule, "PROJECT_ROOT", root)
 
-    plant("lane_worktree.py")
+    plant("example_lane_tool.py")
     return plant
 
 
@@ -196,9 +196,9 @@ LIVE_TASK_NOTIFICATION = (
     "<output-file><output></output-file>\n<status>completed</status>\n"
     "<summary>Background command \"Create two lane worktrees with an asset import\" completed (exit code 0)</summary>\n"
     "</task-notification>")
-LIVE_LANE_CHAIN = ('cd "<root>" && python3 .claude/tools/lane_worktree.py create <first> --from main --import && '
-                   'python3 .claude/tools/lane_worktree.py create <name> --from main --import')
-LIVE_LANE_HEREDOC = ('cd "<root>" && python3 .claude/tools/lane_worktree.py create <name> --from main 2>&1 | tail -1; '
+LIVE_LANE_CHAIN = ('cd "<root>" && python3 .claude/tools/example_lane_tool.py create <first> --from main --import && '
+                   'python3 .claude/tools/example_lane_tool.py create <name> --from main --import')
+LIVE_LANE_HEREDOC = ('cd "<root>" && python3 .claude/tools/example_lane_tool.py create <name> --from main 2>&1 | tail -1; '
                      "python3 - <<'EOF'\nimport json\nj={\"jobs\":[{\"label\":\"wlc-cleanup\"}]}\n"
                      "open(\".claude/scratch/jobs_cleanup.json\",\"w\",newline=\"\\n\").write(json.dumps(j,indent=1))\n"
                      "EOF\npython3 .claude/tools/dispatch_size.py .claude/scratch/jobs_cleanup.json 2>&1 "

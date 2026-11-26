@@ -107,7 +107,9 @@ def _add_target(args: list[str], chdir: str | None, cwd: str, assignments: dict)
 
 _ADD_SKIPPERS = frozenset({'exit', 'return', 'exec', 'set', 'trap', 'eval', 'source', '.', 'if', 'then', 'else',
                            'elif', 'while', 'until', 'for', 'case', 'function', '{', '(', 'cd', 'pushd', 'popd'})
-_TAIL_FILTER = re.compile(r'\s*tail(?:\s+-n\s*\d+|\s+-\d+)?\s*')
+# A filter after an add that keeps every line's start, so a `fatal:` or `error:` line stays visible: a cut from
+# column 1 keeps at least the six columns either marker needs.
+_VISIBLE_FILTER = re.compile(r'\s*(?:tail(?:\s+-n\s*\d+|\s+-\d+)?|cut\s+-c\s*1?-(?:[6-9]|[1-9]\d+))\s*')
 _FAILURE_LINE = re.compile(r'(?m)^\s*(?:fatal|error):')
 # The notice's tail wording changes between client versions; its id and output path do not, and the path is
 # re-checked against the completion notification's own `output-file`.
@@ -117,17 +119,17 @@ _EXIT_CODE = re.compile(r'\(exit code (\d+)\)')
 
 
 def _visible_head(segment: str) -> str | None:
-    """A list's command text when its errors reach the call's output (at most the supported tail filter after it,
+    """A list's command text when its errors reach the call's output (only `_VISIBLE_FILTER` stages after it,
     `2>&1` its only redirect, no expansion, comment or escape), else None."""
     pipeline = split_at(segment, '|')
-    if not pipeline or len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
+    if not pipeline or not all(_VISIBLE_FILTER.fullmatch(stage) for stage in pipeline[1:]):
         return None  # a blank or comment-only segment lexes to no pipeline stage
     head = pipeline[0].strip().removesuffix('2>&1').strip()
     return None if any(c in head for c in '<>$`\\#') else head
 
 
 def _visible_git_invocation(segment: str, cwd: str):
-    """A literal git call with visible errors and at most the supported tail filter."""
+    """A literal git call with visible errors and only `_VISIBLE_FILTER` stages after it."""
     head = _visible_head(segment)
     parsed = git_invocation(head) if head is not None and cwd else None
     return parsed if parsed and not parsed[2] else []
@@ -162,7 +164,7 @@ def _visible_add_target(segment: str, cwd: str, lane_root: Path | None = None) -
 def _first_visible_add(command: str, cwd: str, lane_root: Path | None = None) -> list[Path]:
     """The paths of the adds that run first in their call with their errors in the call's output.
 
-    Accepts `git [-C <dir>] worktree add <args> [2>&1] [| tail -N]`, or a listed create tool's
+    Accepts `git [-C <dir>] worktree add <args> [2>&1] [| tail -N] [| cut -c1-N]`, or a listed create tool's
     `python <tool> create <name> ...` in the same form, as the first list (after any literal
     `cd`, which `&&` makes binding and `;` admits only to the directory it already runs in), and each
     list of the same form joined to it by `&&`, `;` or a newline, followed by anything: what follows

@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -356,7 +357,7 @@ def _read_check_states(root: Path, lock: dict, source: dict, records: list[dict]
                 declare[record["relpath"]] = upstream
                 continue
             refused.append(f"  {record['relpath']}: {state}; the baseline's copy changed since this row's base, so "
-                           f"publishing overwrites that change; run `pull --merge {record['relpath']}` first, or "
+                           f"publishing overwrites that change; run a bare `pull` first, or "
                            f"publish over it with `--over-upstream {record['relpath']}`")
         left = _proofs_left_behind(root, lock, source, records, reader)
     finally:
@@ -1288,12 +1289,46 @@ def _validate_worktree_source(root: Path, cache: Path, worktree: Path, pinned_sh
     status = _git(resolved, ["status", "--porcelain"])
     if status.stdout.strip():
         raise PublishError("--from-worktree has uncommitted changes")
-    ancestor = _git(resolved, ["merge-base", "--is-ancestor", pinned_sha, "HEAD"], check=False)
-    if ancestor.returncode != 0:
+    if _git(resolved, ["merge-base", "--is-ancestor", pinned_sha, "HEAD"], check=False).returncode != 0:
+        _absorb_pinned(resolved, pinned_sha)
+
+
+_PUBLISH_SUBJECT = "feat(baseline): publish "
+_PUBLISH_SOURCE = re.compile(r"^Source: worktree \S+ @ ([0-9a-f]{40})$", re.MULTILINE)
+
+
+def _squash_source_base(worktree: Path, pinned_sha: str) -> str | None:
+    """The author commit the newest publish squash in `HEAD..pinned_sha` was cut from, when `HEAD` holds it.
+    That commit, not the old shared main, is the merge base that leaves the squash's own delta."""
+    log = _git_text(worktree, ["log", "--format=%x1e%B", f"HEAD..{pinned_sha}"])
+    for message in log.split("\x1e")[1:]:
+        found = _PUBLISH_SOURCE.search(message) if message.startswith(_PUBLISH_SUBJECT) else None
+        if found and _git(worktree, ["merge-base", "--is-ancestor", found.group(1), "HEAD"], check=False).returncode == 0:
+            return found.group(1)
+    return None
+
+
+def _absorb_pinned(worktree: Path, pinned_sha: str) -> None:
+    """Make `HEAD` descend from the pinned commit without taking the squash whole. A publish squashes the author
+    tree onto shared main, which breaks ancestry: a merge from the old shared main re-applies the author line's
+    own earlier edits and deletions, and `-s ours` drops what the publish added. The pinned tree is committed
+    over the squash's source commit and the pinned commit, so an ordinary merge of it has the source commit as
+    its base: only the squash's delta applies, later author edits and deletions stand, and the merge records the
+    pinned commit as an ancestor. A path the delta and a later edit both change stays conflicted in the worktree."""
+    base = _squash_source_base(worktree, pinned_sha)
+    identity = ["-c", "user.name=baseline-publisher", "-c", "user.email=baseline@invalid"]
+    theirs = pinned_sha
+    if base:
+        theirs = _git_text(worktree, [*identity, "commit-tree", f"{pinned_sha}^{{tree}}", "-p", base, "-p", pinned_sha,
+                                      "-m", f"baseline publication {pinned_sha[:12]}"])
+    merged = _git(worktree, [*identity, "merge", "-q", "--no-edit", "-m", f"absorb baseline {pinned_sha[:12]}", theirs],
+                  check=False)
+    if merged.returncode != 0:
+        paths = _git_text(worktree, ["diff", "--name-only", "--diff-filter=U"]).splitlines()
         raise PublishError(
-            f"--from-worktree HEAD does not descend from the pinned baseline commit {pinned_sha[:12]}: merge it "
-            f"(`git -C {resolved} merge {pinned_sha[:12]}`), a normal merge, so the worktree also takes what that "
-            "commit's own publish added (layer entries, the regenerated manifest), then publish again")
+            f"--from-worktree HEAD does not descend from the pinned baseline commit {pinned_sha[:12]}, and what that "
+            f"commit's publish changed conflicts with this line's later edits at: {', '.join(paths) or '(none named)'}. "
+            f"The merge is open in {worktree}: resolve those paths, `git commit`, and publish again")
 
 
 # ---------------------------------------------------------------------------
@@ -1571,16 +1606,17 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
         return _resume(root, resume_id, accept_hits, bool(dry_run), bool(full_battery), bool(open_only))
     if source is None:
         raise PublishError("a source commit or worktree is required")
-    source = _resolve_source(root, source)
     lock = sync.load_lock(root)
     baseline_cache, baseline_before = _pin(root, lock)
 
     if no_ci and _pinned_has_ci_workflow(baseline_cache, baseline_before):
         raise PublishError("--no-ci requires no baseline workflow at the pinned commit")
 
+    # Validation may absorb the pinned commit into the worktree, moving its HEAD, so the source resolves after it.
+    if source["kind"] == "worktree":
+        _validate_worktree_source(root, baseline_cache, Path(source["repo"]), baseline_before)
+    source = _resolve_source(root, source)
     worktree_source = Path(source["repo"]) if source["kind"] == "worktree" else None
-    if worktree_source is not None:
-        _validate_worktree_source(root, baseline_cache, worktree_source, baseline_before)
 
     requested = list(rows) if rows is not None else None
 

@@ -256,6 +256,7 @@ from stream_events import iter_stream_events  # noqa: E402  -- the one stream re
 import tool_profiles  # noqa: E402  -- the one defaults table, resolver and `tools` parser
 import citer_coverage
 import review_result  # noqa: E402  -- source IDs, coverage and quote verdicts
+import seat_findings  # noqa: E402  -- a review seat's findings recorded one by one beside its brief
 import fold_check  # noqa: E402  -- the shared post-fold checker; its verdict decides the fold
 import post_check  # noqa: E402  -- closes every --review run: verdicts, fold checks, ledger rows, next seats
 import finding_bar  # noqa: E402  -- the run's bar line for the fold prompt
@@ -3717,6 +3718,25 @@ def seat_results(jobs, out_dir):
     return results
 
 
+def recover_returns(jobs, results):
+    """`results` with each review seat whose structured return failed or never landed, and who recorded findings
+    one by one (`seat_findings.py`), read as returned: exit 0 and `recovered`, which `review_result.prepare_review`
+    reads the rows by. A usage-limit stop stays its own outcome, since that seat resumes."""
+    recovered = dict(results)
+    for job in jobs:
+        label = job["label"]
+        run = results.get(label) or {}
+        if run.get("exit") == USAGE_LIMIT_EXIT or review_result.returned(run) or not job.get("promptFile"):
+            continue
+        rows = seat_findings.recover(job["promptFile"])
+        if rows:
+            recovered[label] = {**run, "exit": 0, "recovered": True,
+                                "deliveryFlag": f"its structured return failed; {len(rows['findings'])} recorded "
+                                                f"finding(s) read from {_posix(seat_findings.path_for(job['promptFile']))}"
+                                                + ("" if "checked" in rows else ", no coverage row")}
+    return recovered
+
+
 def close_call(argv, jobs_path):
     """The `--review-close` call that closes the run `argv` started: its flags without the launch-only ones, the
     original jobs file, and one `--workflow-dir` slot for each NATIVE call."""
@@ -3753,7 +3773,7 @@ def close_panel(args, jobs, out_dir, data, selection):
         print("--review-close refused: still running: " + ", ".join(running)
               + ". Close once they end (the session watcher wakes you); nothing was consolidated.")
         return 2
-    results = seat_results(jobs, out_dir)
+    results = recover_returns(jobs, seat_results(jobs, out_dir))
     for label in landed:
         print(f"[close] {label}: landed from its Workflow run")
     text, code = summarize([(job["label"], None, None) for job in jobs], results, False)
@@ -4685,6 +4705,8 @@ def _main(argv):
               if v}
     REFUSED = None  # seats are about to start: from here a failure is a run's, not a launch's refusal
     results = {} if args.refold else run_jobs(planned, args.max_parallel, out_dir, **extras)
+    if args.review:
+        results = recover_returns(jobs, results)
     text, code = summarize(planned, results, args.compare)
     if not args.review:
         text += resume_plan(jobs, results, out_dir, lanes)[1]

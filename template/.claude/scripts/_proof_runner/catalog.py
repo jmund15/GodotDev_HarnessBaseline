@@ -270,10 +270,30 @@ def _import_statements(code):
 
 
 class Sources:
+    """The proofs' text and static reach over the view's files. `files` is the view's plus the `absent` paths a
+    selection asked about: a file deleted from the tree is still the module an old proof imports, so its path stays
+    resolvable (an import names the module, and the module's file is what is gone)."""
+
     def __init__(self, view):
         self.view = view
         self._texts, self._code, self._loaded = {}, {}, {}
+        self.absent = frozenset()
         self.parse_code = code_text
+
+    @cached_property
+    def files(self):
+        return self.view.files | self.absent
+
+    def admit_absent(self, rels):
+        """Resolve imports to `rels` that the view lacks. A no-op for a live path, so the common selection pays
+        nothing; a new absent path rebuilds the name index and the resolved imports once."""
+        new = {rel for rel in rels if rel.startswith(".claude/") and rel.endswith(CODE_EXT)
+               and rel not in self.view.files} - self.absent
+        if new:
+            self.absent |= new
+            for stale in ("files", "names"):
+                self.__dict__.pop(stale, None)
+            self._loaded.clear()
 
     def _text(self, rel):
         if rel not in self._texts:
@@ -288,7 +308,7 @@ class Sources:
     @cached_property
     def names(self):
         by_base, by_stem, by_module = {}, {}, {}
-        for rel in self.view.files:
+        for rel in self.files:
             base = rel.rsplit('/', 1)[-1]
             by_base.setdefault(base, set()).add(rel)
             if rel.endswith(CODE_EXT):
@@ -303,7 +323,7 @@ class Sources:
 
     def _module_files(self, importer, dotted, level):
         parts = [p for p in dotted.split('.') if p]
-        files = self.view.files
+        files = self.files
         if level:
             base = importer.split('/')[:-1]
             base = base[:max(0, len(base) - (level - 1))]
@@ -331,7 +351,7 @@ class Sources:
             for match in _JS_REQUIRE.finditer(code):
                 target = posixpath.normpath(posixpath.join(posixpath.dirname(rel), match[2]))
                 found |= {t for t in (target, target + '.js', target + '.mjs', target + '/index.js')
-                          if t in self.view.files}
+                          if t in self.files}
         if rel.endswith('.py'):
             def module(name, level=0):
                 return self._module_files(rel, name, level) | {
@@ -394,6 +414,7 @@ class Catalog:
         return names
 
     def bindings(self, touched, include_excluded=False):
+        self.sources.admit_absent(map(norm, touched))
         rules = {}
         for rel in dict.fromkeys(map(norm, touched)):
             folder, name = posixpath.split(rel)

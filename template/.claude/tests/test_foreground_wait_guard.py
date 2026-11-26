@@ -254,6 +254,32 @@ for label, command, advised in (
     got = "whole battery" in hso.get("additionalContext", "")
     check("%s %s the batch advice" % (label, "draws" if advised else "never draws"), rc == 0 and got == advised, detail)
 
+# A foreground loop wait is bounded by its per-call clamp, never by a running total. The job a print-mode child waits
+# on is almost always its own run, and a run it started in its own shell ends with the child (reap end-seat), so a
+# deny past 30 minutes of waits would force a return that kills the run it waits on. Eight clamped waits are 36 minutes.
+def waits_in_one_session(entrypoint, agent, count, command):
+    session = "%s-fwg" % uuid.uuid4().hex
+    state = tempfile.mkdtemp(prefix="fwg-waits-")
+    env = dict(os.environ, CLAUDE_CODE_ENTRYPOINT=entrypoint, HARNESS_HOOK_STATE_DIR=state)
+    env.pop("CLAUDE_CODE_SIDECAR", None)
+    env.pop("CLAUDE_CODE_PROMPT_CACHE_TTL", None)
+    verdicts = []
+    for _ in range(count):
+        payload = timed(command, 600000, session_id=session, **({"agent_id": agent, "agent_type": "workflow-subagent"} if agent else {}))
+        r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True, text=True,
+                           encoding="utf-8", timeout=30, env=env)
+        hso = json.loads(r.stdout).get("hookSpecificOutput", {}) if r.stdout.strip() else {}
+        verdicts.append((r.returncode, hso.get("permissionDecision"), (hso.get("updatedInput") or {}).get("timeout"), r.stdout))
+    return verdicts
+
+
+TASK_OUTPUT = "until grep -q 'EXIT' /tmp/claude/tasks/b1.output; do sleep 30; done"
+for label, entrypoint, agent in (("a print-mode child's", "sdk-cli", ""), ("a Workflow agent's", "cli", "agent-hb")):
+    verdicts = waits_in_one_session(entrypoint, agent, 8, TASK_OUTPUT)
+    check(label + " eight clamped waits on its own run's output are never denied for their length",
+          all(rc == 0 and verdict is None and timeout == SUBAGENT_WAIT_MS for rc, verdict, timeout, _ in verdicts),
+          [v[:3] for v in verdicts])
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

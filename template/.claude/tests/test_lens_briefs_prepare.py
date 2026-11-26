@@ -647,6 +647,10 @@ def sidecar_target():
     check("sidecar: prepare writes the jobs file in the sidecar schema",
           jobs.is_file() and all(j.get("kind") == "reviewer" for j in json.loads(jobs.read_text(encoding="utf-8"))),
           jobs.read_text(encoding="utf-8")[:400] if jobs.exists() else "absent")
+    seats = json.loads(jobs.read_text(encoding="utf-8")) if jobs.is_file() else []
+    check("sidecar: each seat's brief names the findings file the review tail reads back, beside the brief itself",
+          bool(seats) and all("seat_findings.py add " + Path(j["promptFile"]).resolve().as_posix()
+                              in Path(j["promptFile"]).read_text(encoding="utf-8") for j in seats), seats)
     sys.path.insert(0, str(TOOLS))
     import review_result
     check("sidecar: the ledger roster prep writes passes sidecar_fanout's --ledger-roster check",

@@ -271,11 +271,14 @@ Bash reads a running script by byte offset, so a size-changing edit makes every 
 
 Proofs that copy scripts into a temp checkout copy fixed file lists. A new sibling is absent from each, and its proofs fail with "not recognized" far from the edit. Before the first proof run, `git grep -n '<an existing sibling>.ps1' -- .claude/tests` and add the new file to every list that names that sibling, or keep the helper in its caller's file.
 
-## Deleting a flag is not done until its stale invocations name their replacement
+## Deleting a flag or a data key is not done until its stale uses name their replacement
 
-Docs, plans and memory files carry the old command text. A removed parameter yields a PowerShell
-binding error that names the parameter, not the migration. Have the guard recognize retired flags and
-print the replacement; keep archived plan files as they are — they are history, not instructions.
+Docs, plans and memory files carry the old command text, and each consumer's `adaptation.json` carries the
+old keys. A removed parameter yields a PowerShell binding error that names the parameter, not the migration,
+and a key its reader stops reading fails silently. Have the guard recognize retired flags and print the
+replacement. A retired `adaptation.json` key gets a row in `tools/adaptation.py` `RETIRED_KEYS`. `sync_baseline` Pull
+step 3 runs `compose --check` after every pull, and it names the key with its replacement. Keep archived plan files as they are —
+they are history, not instructions.
 
 The mirror case: a guard that newly requires a field on a call is not done until the field defaults from
 the data that owns it (a lens or job registry) or every command example that shows the call carries it. A

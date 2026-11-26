@@ -782,6 +782,15 @@ async function verificationCases() {
       && deadNoWriteFlag.detail.includes('/salvage_fanout'),
     JSON.stringify(deadNoWrite.result))
 
+  const deadBrief = await run({
+    agents: [reviewAgent('dead-brief', { kind: 'reviewer', prompt: undefined, promptPath: '/runs/p/brief_dead-brief.md' })],
+  }, null)
+  const deadBriefFlag = deadBrief.result.flags.find(f => f.kind === 'lens-no-return')
+  check('a no-Write seat that dies names the findings file beside its brief before salvage',
+    deadBriefFlag && deadBriefFlag.detail.includes('/runs/p/brief_dead-brief.findings.jsonl')
+      && deadBriefFlag.detail.indexOf('.findings.jsonl') < deadBriefFlag.detail.indexOf('/salvage_fanout'),
+    JSON.stringify(deadBrief.result))
+
   const dead = await run({
     agents: [reviewAgent('dead')],
     spillDir: '.claude/scratch/review-spills',
