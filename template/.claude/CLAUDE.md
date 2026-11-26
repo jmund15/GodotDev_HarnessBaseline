@@ -11,13 +11,13 @@
 <Your test-first policy: which domains require a failing test before implementation, which are verified by integration tests or inspection, and the rationalization you refuse.>
 
 ## 3. Obsidian (The Design Source)
-Read and search `DevProjects/{{PROJECT_NAME}}`, plus any vault path the user, a skill or a command names; native file tools work even while Obsidian is open. Search before choosing a path. Project-specific writes go to `{{PROJECT_NAME}}/Claude/`. Load `obsidian_conventions`; `environment_bootstrap` owns machine paths. Never invent a formula absent from the design source.
+Read and search `DevProjects/{{PROJECT_NAME}}`, plus any vault path the user, a skill or a command names; native file tools work even while Obsidian is open. Search before choosing a path. Project-specific writes go to `{{PROJECT_NAME}}/Claude/`. Never invent a formula absent from the design source.
 
 ## Worklog Location
-`DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` is authoritative; `.claude/worklog-titles.md` is the title-only lookup. `worklog_reference` and `/worklog` own operations; `CLAUDE.interactive.md` §Corrections and surfaced work owns when to log.
+`DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` is authoritative; `.claude/worklog-titles.md` is the title-only lookup. `CLAUDE.interactive.md` §Corrections and surfaced work owns when to log.
 
 ## Project Domains
-Add your content domains to `.claude/skills/project_subsystems/adaptation.json`'s `memory_domains` key; it is the only source, feeding both `reference/memory_domains.md` and `hooks/plan_memory_reminder.py` `DOMAINS`.
+Add your content domains to `.claude/skills/project_subsystems/adaptation.json`'s `memory_domains` key; it is the only source, feeding `reference/memory_domains.md` and `hooks/plan_memory_reminder.py` (a row's `paths` globs match the files a plan declares).
 
 ## Project-Specific Conventions
 *   <add conventions that only make sense in this project — content taxonomies, naming, subsystem invariants>

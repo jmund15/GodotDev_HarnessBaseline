@@ -1118,7 +1118,7 @@ def lean_registry():
 
 
 def tier_table_cases(case):
-    """`tier_table` is the one facts computation behind `for-role` and the brief hook; the drop-first
+    """`tier_table` is the one facts computation behind `for-role`; the drop-first
     behavior is proved in tests/test_tier_table.py, and the two retired CLIs name their replacement."""
     case("provider_bands exposes tier_table and no lean_candidates",
          callable(getattr(pb, "tier_table", None)) and not hasattr(pb, "lean_candidates"))

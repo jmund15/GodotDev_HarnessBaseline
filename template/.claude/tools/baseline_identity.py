@@ -715,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
     if args.command == "digest":
-        repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd()
+        repo_root = Path(args.repo_root).resolve() if args.repo_root else _load_baseline_sync().project_root()
         try:
             return cmd_digest(
                 Path(args.out), repo_root, args.subsystems, args.abbrev, args.baseline_dir,

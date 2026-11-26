@@ -66,6 +66,7 @@ except Exception:  # advisory hook: a broken import must not brick session start
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hook_parts
 import _model_tier
+from _prompt_provenance import in_delegate
 try:
     import _session_transport  # noqa: E402
 except Exception:
@@ -193,22 +194,6 @@ def sidecar_delegate_shape() -> str | None:
         guard = None
     return guard if guard in ("common", "survey", "review", "author", "gate") else "common"
 
-
-def sidecar_delegate_tier() -> str:
-    """How verbosely this delegate's rails are spelled out: CLAUDE_CODE_SIDECAR_TIER, else detailed.
-
-    The env override is the only input. Anything unset or unrecognized therefore falls to `detailed` — the safe direction, since an
-    over-explicit rail costs bytes while an under-explicit one costs adherence.
-    """
-    tier = (os.environ.get("CLAUDE_CODE_SIDECAR_TIER") or "").strip().lower()
-    return tier if tier in ("detailed", "condensed", "minimal", "none") else "detailed"
-
-
-# Guard-text tier (how verbosely a delegate's rails are spelled) -> session tier (which
-# `## detailed` bodies it reads). `none` means the launcher already judged the child capable
-# enough to need no spelled-out rails, so it reads at the top tier.
-_DELEGATE_SESSION_TIER = {"minimal": "minimal", "none": "minimal", "condensed": "condensed",
-                          "detailed": "detailed"}
 
 TIER_LINE_STRICT = (
     "[session] Session tier: `detailed` — read every `## detailed` section you encounter in a "
@@ -436,7 +421,8 @@ def build_text(payload: dict, write_tier: bool = True) -> str:
     shape = sidecar_delegate_shape()
     out.append(effort_line(payload, delegate=bool(shape)))
     if shape:
-        tier = _DELEGATE_SESSION_TIER.get(sidecar_delegate_tier(), "detailed")
+        # The child's model row decides, as for any session (`_model_tier`) and as a native seat's rails do.
+        tier = _model_tier.tier_of(payload.get("model"))
     elif write_tier:
         tier = _model_tier.write_session_tier(payload.get("session_id"), payload.get("model"))
     else:
@@ -453,7 +439,7 @@ def build_text(payload: dict, write_tier: bool = True) -> str:
         # this session", which is actively wrong for a child that cannot even spawn
         # (deepseek_sidecar.sh disallows Task/Agent by default).
         try:
-            rails = guard_text(shape, sidecar_delegate_tier()) if guard_text else ""
+            rails = guard_text(shape, tier) if guard_text else ""
             if rails:
                 out.append(rails)
         except Exception:
@@ -478,7 +464,7 @@ def build_text(payload: dict, write_tier: bool = True) -> str:
             out.append(ANTHROPIC_RAILS)
         else:
             out.append(provider_rails(transport, source, payload))
-    if not shape and not payload.get("agent_id"):
+    if not shape and not in_delegate(payload, os.environ):
         layer = interactive_text()
         if layer:
             out.append(layer)
@@ -492,18 +478,18 @@ def build_text(payload: dict, write_tier: bool = True) -> str:
     return "".join(piece + "\n" for piece in out)
 
 
-def _overflow_note(dropped: int) -> str:
+def _overflow_note(dropped: int, model="") -> str:
     """The line that ends the last part when the text outgrew PARTS: what is missing and where to read it."""
     shape = sidecar_delegate_shape()
-    where = (" Read the whole rails: `python3 .claude/tools/guard_text.py %s %s`." % (shape, sidecar_delegate_tier())
+    where = (" Read the whole rails: `python3 .claude/tools/guard_text.py %s auto %s`." % (shape, model or "<your model>")
              if shape else " Raise PARTS in hooks/session_model_rails.py and register the added parts.")
     return "[rails overflow] The last %d lines of this session-start text did not fit the registered parts.%s\n" % (
         dropped, where)
 
 
-def part_text(text: str, n: int) -> str:
+def part_text(text: str, n: int, model="") -> str:
     """Part `n` of `text` across PARTS registered commands, ending with the overflow note when it outgrew them."""
-    return _hook_parts.part_of(text, n, PARTS, overflow=_overflow_note)
+    return _hook_parts.part_of(text, n, PARTS, overflow=lambda dropped: _overflow_note(dropped, model))
 
 
 def main(argv=None) -> None:
@@ -515,7 +501,7 @@ def main(argv=None) -> None:
     except Exception:
         payload = {}
     text = build_text(payload, write_tier=part in (None, 1))
-    sys.stdout.write(text if part is None else part_text(text, part))
+    sys.stdout.write(text if part is None else part_text(text, part, payload.get("model") or ""))
 
 
 if __name__ == "__main__":

@@ -32,7 +32,6 @@ def rails_stdout(payload, env_extra=None):
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_SIDECAR", None)
     env.pop("CLAUDE_CODE_SIDECAR_SHAPE", None)
-    env.pop("CLAUDE_CODE_SIDECAR_TIER", None)
     env["HARNESS_HOOK_STATE_DIR"] = STATE_DIR
     env.update(env_extra or {})
     proc = subprocess.run([sys.executable, RAILS], input=json.dumps(payload),
@@ -109,25 +108,24 @@ for model, expected, wants_verify in CASES:
           ("read every `## detailed` section" in out) == (expected == "detailed"))
     check(f"[{label}] no old tier heading named", "## strict" not in out)
 
-# --- delegate branch: tier comes from CLAUDE_CODE_SIDECAR_TIER, never the payload model -----
-for env_tier, expected in [("condensed", "condensed"), ("none", "minimal"), ("minimal", "minimal"),
-                           ("detailed", "detailed"), ("", "detailed"), ("bogus", "detailed"),
-                           ("terse", "detailed")]:  # old names are not accepted from the env
-    out = rails_stdout(
-        {"session_id": "sid-delegate", "model": "fable", "hook_event_name": "SessionStart"},
-        {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": "reviewer",
-         "CLAUDE_CODE_SIDECAR_TIER": env_tier},
-    )
+# --- delegate branch: the tier is the registry row's for the CHILD's model, as for any session ----
+# A delegate's payload model is the model the launcher gave the child; its rails read at that row's
+# `railTier`, the tier a native Workflow seat of the same model gets (`workflow_provider_guard._rails_map`).
+# The old `CLAUDE_CODE_SIDECAR_TIER` env no launcher set is no input: planting it changes nothing.
+for model, expected in [("claude-opus-5-5", "condensed"), ("claude-fable-5-2", "minimal"),
+                        ("claude-sonnet-5-5", "detailed"), ("gpt-6-luna", "detailed"),
+                        ("claude-mythos-5-1", "detailed"), (None, "detailed")]:
+    label = f"delegate model={model or '<absent>'}"
+    payload = {"session_id": "sid-delegate", "hook_event_name": "SessionStart"}
+    if model:
+        payload["model"] = model
+    out = rails_stdout(payload, {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": "reviewer",
+                                 "CLAUDE_CODE_SIDECAR_TIER": "none"})
     lines = tier_lines(out)
-    check(f"[delegate TIER={env_tier or '<unset>'}] exactly one tier line", len(lines) == 1,
-          f"{len(lines)} lines")
-    check(f"[delegate TIER={env_tier or '<unset>'}] tier is `{expected}`",
+    check(f"[{label}] exactly one tier line", len(lines) == 1, f"{len(lines)} lines")
+    check(f"[{label}] session tier is `{expected}`",
           bool(lines) and f"`{expected}`" in lines[0], lines[0] if lines else "")
-    if env_tier != "none":
-        check(f"[delegate TIER={env_tier or '<unset>'}] guard header names the {expected} tier",
-              f"{expected} tier; home:" in out, out[-400:])
-    check(f"[delegate TIER={env_tier or '<unset>'}] driver notes follow the child model, not the tier",
-          "Recognizing a name" in out)
+    check(f"[{label}] guard header names the {expected} tier", f"{expected} tier; home:" in out, out[-400:])
 
 print("-" * 78)
 print(f"{'FAILED: ' + ', '.join(failures) if failures else 'all checks passed'}")

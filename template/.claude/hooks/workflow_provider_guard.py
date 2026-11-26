@@ -19,7 +19,7 @@ added to a job for what its brief says: a job that writes declares `kind: author
 Proof: tests/test_workflow_tool_profiles.py.
 
 RULE W -- WIDE RUN AT LAUNCH (process guard). A job's brief that orders a wide test run is refused before
-any agent starts: each `check` entry of its `task` block and, for a kind whose built-ins hold Bash, each
+any agent starts: each `check` entry of its `task` block and each
 command `tools/tool_profiles.brief_commands` finds in the brief (quoted data, a ```json fence and a negated
 clause add none). `gate` is the one kind that may run one, and the deny names the runner and that next step;
 `_dispatch_checks.wide_run_refusal` owns the match. Retire it when delegate transcripts show no non-gate

@@ -120,6 +120,14 @@ def run(args, *, cwd=None, env=None, input=None, timeout=30, prefix=(), optional
     return GitResult(done.returncode, done.stdout or b"", done.stderr or b"")
 
 
+def root_relative(prefix, names):
+    """{name: name below `prefix`} for each toplevel-relative `names` entry inside the harness root, which may sit
+    below the toplevel; `prefix` is that root's `git rev-parse --show-prefix`, fetched through the caller's own git
+    seam. For output `--relative` leaves alone: a merge's combined diff (`--cc`, `--diff-merges=dense-combined`)
+    names toplevel paths whatever the flag."""
+    return {name: name[len(prefix):] for name in names if name.startswith(prefix)}
+
+
 def soft_text(call, **run_kwargs):
     """Decoded stdout of a `GitResult`, or of `run(call, **run_kwargs)` when `call` is an argv; None for a
     nonzero exit, a missing git or a timeout. An empty success is "", never None."""

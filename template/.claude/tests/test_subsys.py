@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "subsys.py"
 
@@ -35,8 +36,7 @@ def planted_root():
     root = Path(tempfile.mkdtemp(prefix="subsys-proof-"))
     (root / ".claude" / "tools").mkdir(parents=True)
     (root / ".claude" / "skills" / "project_subsystems" / "reference").mkdir(parents=True)
-    shutil.copyfile(TOOL, root / ".claude" / "tools" / "subsys.py")
-    shutil.copyfile(TOOL.with_name("cli_usage.py"), root / ".claude" / "tools" / "cli_usage.py")
+    copy_closure(root / ".claude", "tools/subsys.py")
     (root / ".claude" / "skills" / "project_subsystems" / "reference" / "subsystem_details.md").write_text(
         CATALOG, encoding="utf-8")
     return root

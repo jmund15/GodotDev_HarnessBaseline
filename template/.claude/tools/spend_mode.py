@@ -35,6 +35,7 @@ for _d in (os.path.join(HERE, "..", "hooks"), HERE):
         sys.path.insert(0, _d)
 import _hook_state  # noqa: E402
 import _owner_text  # noqa: E402
+from _prompt_provenance import in_delegate  # noqa: E402
 import provider_bands  # noqa: E402
 import provider_capacity  # noqa: E402
 import task_record  # noqa: E402
@@ -188,7 +189,7 @@ def set_spend(mode, scope_task=None, until=None, until_reset=None, session_id=No
     the posture at once. An `until_reset` is resolved to its ISO time here."""
     if mode not in MODES:
         raise SpendRefused("mode must be lean or normal")
-    if os.environ.get("CLAUDE_CODE_SIDECAR"):
+    if in_delegate({}, os.environ):
         raise SpendRefused("a delegate cannot set the owner's spend posture; the owner sets lean or normal")
     session_id = session_id or _session_id()
     holder, quote = _verify_token(session_id, mode, transcript)

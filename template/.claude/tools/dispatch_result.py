@@ -579,7 +579,7 @@ def _changed_rows(root, write_set, returned, since, base="HEAD"):
             seen.add(path)
             rows.append({"status": line[:2], "path": path, "outside": not _inside(path, write_set)})
         if base != "HEAD":
-            for path in _git(root, "diff", "--name-only", base, "HEAD", "--", *scope).splitlines():
+            for path in _git(root, "diff", "--relative", "--name-only", base, "HEAD", "--", *scope).splitlines():
                 if path and path not in seen:
                     seen.add(path)
                     rows.append({"status": "committed", "path": path, "outside": not _inside(path, write_set)})

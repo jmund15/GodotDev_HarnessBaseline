@@ -465,6 +465,75 @@ def test_cache_must_block(plant, command):
     assert bash(command, plant).denied
 
 
+# --- U62078: `.agents/`, `bin/`, `obj/` (when git ignores them) and `desktop.ini` regenerate -----------------------
+OUTPUTS_PASS = [
+    "rm -rf bin", "rm -rf bin/", "rm -rf obj", "rm -rf .agents", "rm -rf src/obj", "rm -rf bin/Debug",
+    "rm -rf bin obj .agents", "rm -rf {project}/obj", "rm -rf .agents/workflows",
+    "rm -rf desktop.ini", "rm -rf Art/desktop.ini", "Remove-Item -Recurse -Force obj", "cd src && rm -rf obj",
+    "rm -rf Sub/obj",                      # a submodule's own git judges its outputs
+]
+OUTPUTS_BLOCK = [
+    "rm -rf lib/bin",                      # a `bin/` git does not ignore may hold source
+    "rm -rf lib/bin/tool.cs",
+    "rm -rf scripts/bin",                  # ignored by pattern but a tracked file lives there
+    "rm -rf Gen/obj",                      # holds a repository
+    "rm -rf bin/..",
+    "rm -rf bin src",
+    "rm -rf bin*",
+    "rm -rf Binary", "rm -rf Art/desktop.ini/..", "rm -rf .agentsx",
+    "rm -rf Sub/bin",                      # ignored in the submodule but tracked there: the outer repository cannot see it
+]
+
+
+@pytest.fixture
+def outputs_plant(plant):
+    with open(plant / ".git" / "info" / "exclude", "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("/bin/\nobj/\n.agents/\n/scripts/bin/\n")
+    for rel in ("bin/Debug/app.dll", "obj/a.json", ".agents/workflows/run.md", "src/obj/b.json", "Art/desktop.ini",
+                "desktop.ini", "lib/bin/tool.cs", "scripts/bin/run.sh", "Binary/x.dat"):
+        write(plant, rel, "x\n")
+    git(plant, "add", "-f", "scripts/bin/run.sh")
+    clone = plant / "Gen" / "obj" / "clone"
+    clone.mkdir(parents=True)
+    git(clone, "init", "-q")
+    sub = plant / "Sub"
+    sub.mkdir()
+    git(sub, "init", "-q")
+    write(sub, ".git/info/exclude", "bin/\nobj/\n")
+    write(sub, "bin/tracked.dll")
+    write(sub, "obj/o.json")
+    git(sub, "add", "-f", "bin/tracked.dll")
+    return plant
+
+
+@pytest.mark.parametrize("command", OUTPUTS_PASS)
+def test_owner_picked_outputs_go(outputs_plant, command):
+    got = bash(command.format(project=str(outputs_plant).replace("\\", "/")), outputs_plant)
+    assert got.kind == "allow", got.reason
+
+
+@pytest.mark.parametrize("command", OUTPUTS_BLOCK)
+def test_an_unignored_tracked_or_repository_holding_bin_still_denies(outputs_plant, command):
+    assert bash(command, outputs_plant).denied
+
+
+def test_a_peer_working_in_an_output_keeps_it(outputs_plant):
+    import peer_message_guard
+    peer = [{"cwd": str(outputs_plant / "obj"), "sessionId": "5eed5eed-aaaa-4bbb-8ccc-0000000000aa", "name": "peer"}]
+    with mock.patch.object(peer_message_guard, "live_sessions", return_value=peer):
+        assert bash("rm -rf obj", outputs_plant).denied
+        assert bash("rm -rf bin", outputs_plant).kind == "allow"
+
+
+def test_an_output_inside_a_linked_worktree_is_judged_by_that_checkouts_git(outputs_plant):
+    git(outputs_plant, "worktree", "add", "-q", "--detach", ".claude/worktrees/w1")
+    wt = outputs_plant / ".claude" / "worktrees" / "w1"
+    for rel in ("obj/a.json", "lib/bin/tool.cs"):
+        write(wt, rel, "x\n")
+    assert bash("rm -rf .claude/worktrees/w1/obj", outputs_plant).kind == "allow"
+    assert bash("rm -rf .claude/worktrees/w1/lib/bin", outputs_plant).denied
+
+
 @pytest.mark.parametrize("command", ["rm -rf ~/peer", "rm -rf $HOME/peer", "rm -rf %USERPROFILE%/peer",
                                      "rm -rf peer*/x"])
 def test_cache_expansion_token_under_a_temp_cwd(plant, command):

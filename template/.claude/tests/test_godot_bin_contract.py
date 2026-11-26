@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".claude" / "tools"))
 from sidecar_launch import git_bash  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 BASH = git_bash()
 NODE = shutil.which("node")
@@ -29,11 +30,8 @@ class GodotBinContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         scripts = self.temp / ".claude" / "scripts"
         scripts.mkdir(parents=True)
-        for name in ("godot_bin.sh", "engine_userdata.py"):
-            shutil.copy(ROOT / ".claude" / "scripts" / name, scripts / name)
-        tools = self.temp / ".claude" / "tools"
-        tools.mkdir()
-        shutil.copy(ROOT / ".claude" / "tools" / "cli_usage.py", tools / "cli_usage.py")
+        shutil.copy(ROOT / ".claude" / "scripts" / "godot_bin.sh", scripts / "godot_bin.sh")
+        copy_closure(self.temp / ".claude", "scripts/engine_userdata.py")
         (self.temp / "stub.js").write_text(STUB, encoding="utf-8")
         self.engine = self.temp / "fake_engine.exe"
         try:

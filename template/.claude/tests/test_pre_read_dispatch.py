@@ -3,6 +3,7 @@
 
 Sub-hooks run in the interpreter: indexed_reference_guard (main advice, delegate block) and
 semantic_search_scope_guard (block, or a rewrite through updatedInput) and
+file_size_preblock (the head of a very large file through updatedInput) and
 video_read_hint (advisory).
 Each case below feeds a real PreToolUse payload by subprocess and asserts on the emitted channel: exit 2 +
 stderr for a block, hookSpecificOutput for a rewrite or fault note, nothing for a clean call. An exit code
@@ -31,7 +32,7 @@ SEARCH_TOOL = "mcp__plugin_semantic-search_semantic-search__search"
 sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 import _optional_hooks  # noqa: E402
 
-SUBHOOKS = ("indexed_reference_guard", "semantic_search_scope_guard", "video_read_hint")
+SUBHOOKS = ("indexed_reference_guard", "semantic_search_scope_guard", "video_read_hint", "file_size_preblock")
 
 
 def run(payload, env, raw=None):
@@ -85,6 +86,8 @@ def main():
     env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
                CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8")
     env.pop("HARNESS_ROUTING_HARD_BLOCK_CS_GREP", None)
+    for marker in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT"):
+        env.pop(marker, None)  # the delegate markers are planted per case, never inherited
     cases = list(registration_cases())
 
     def crash_free(label, rc, out, err, ok):
@@ -135,6 +138,23 @@ def main():
         crash_free("a Read of a text file carries no video advice", rc, out, err,
                    rc == 0 and "video_frames" not in context_of(out))
 
+    # --- file_size_preblock: a very large unbounded Read is rewritten to its head, for a subagent too ----------
+    if member("file_size_preblock"):
+        import file_size_preblock as fsp
+        big = os.path.join(tmp, "big.md")
+        with open(big, "wb") as fh:
+            fh.write(b"a line of text\n" * (fsp.CLAMP_BYTES // 15 + 1))
+        for who, extra in (("main session", {}), ("subagent", {"agent_id": "agent-9", "agent_type": "workflow-subagent"})):
+            rc, out, err = run(call("Read", {"file_path": big}, **extra), env)
+            specific = (json.loads(out or "{}").get("hookSpecificOutput") or {})
+            limit = (specific.get("updatedInput") or {}).get("limit")
+            crash_free("a very large unbounded Read is clamped to its head for the " + who, rc, out, err,
+                       rc == 0 and err == "" and isinstance(limit, int) and limit > 0
+                       and "offset=%d" % (limit + 1) in specific.get("additionalContext", ""))
+        rc, out, err = run(call("Read", {"file_path": big, "offset": 1, "limit": 40}), env)
+        crash_free("a bounded Read of the same file passes untouched", rc, out, err,
+                   rc == 0 and out in ("", "{}"))
+
     # --- semantic_search_scope_guard: correct or block, not subagent-exempt ------------
     sub_root = os.path.join(ROOT, ".claude")
     rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": sub_root}), env)
@@ -151,7 +171,7 @@ def main():
                rc == 0 and err == "")
 
     # A present optional member's broken import is reported on the model channel and the call proceeds.
-    for name in ('indexed_reference_guard', 'semantic_search_scope_guard', 'video_read_hint'):
+    for name in SUBHOOKS:
         if not member(name):
             continue  # a project that does not carry this optional hook has no import to break
         script = (

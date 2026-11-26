@@ -84,6 +84,25 @@ class WakeDecisionTests(unittest.TestCase):
             self.assertIn('RE-ARM NOW: ' + watch.ARM_COMMAND, output.getvalue())
             self.assertNotIn('CHECKIN', output.getvalue())
 
+    def test_wake_with_live_work_points_at_the_open_work_map_before_the_rearm(self):
+        live = {'u': {'records': [('seat', 'seat.record.json')], 'fanout_dir': None}}
+        ended = {'u': {'records': [('seat', 'seat.record.json')], 'fanout_dir': None}}
+        with patch.object(watch, 'record_state', return_value=('WATCH', None, 'pid')), \
+                patch.object(watch, 'stall_idle', return_value='1002'), \
+                patch.object(watch, 'upstream_age', return_value=watch.UPSTREAM_LIVE_S + 1), \
+                patch.object(watch.time, 'sleep'):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                watch.wake_loop(lambda: live)
+            text = output.getvalue()
+            self.assertIn('orchestration §2', text)
+            self.assertLess(text.index('orchestration §2'), text.index('RE-ARM NOW'))
+        with patch.object(watch, 'record_state', return_value=('DONE', '1', 'exit')):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                watch.wake_loop(lambda: ended)
+            self.assertNotIn('orchestration §2', output.getvalue())
+
     def test_standing_stale_stall_wakes_but_fresh_traffic_does_not(self):
         group = {'u': {'records': [('seat', 'seat.record.json')], 'fanout_dir': None}}
         for age in (None, watch.UPSTREAM_LIVE_S + 1, 23):

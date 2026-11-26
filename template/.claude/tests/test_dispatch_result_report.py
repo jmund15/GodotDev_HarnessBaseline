@@ -32,6 +32,23 @@ STREAM = [
 ]
 STREAM_TEXT = "\n".join(json.dumps(row) for row in STREAM)
 
+# A job with no Write tool, cut from a real stream (drive hfx-w4, trimmed and neutralized): the report goes to
+# `<label>.md` through a Bash heredoc, a Stop-hook turn follows, and the final message is a short reply to it.
+SHELL_STREAM = [
+    {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {
+            "command": "cd \"$WORK\"; cat > out/job.md <<'E'\n# job: the fix\n\nFixed and committed.\nE\necho OK"}}]}},
+    {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "OK", "is_error": False}]}},
+    {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "The fix is committed and the report is at out/job.md."}]}},
+    {"type": "user", "message": {"role": "user", "content": [
+        {"type": "text", "text": "Stop hook feedback:\n1 background shell(s) are running with no live wait."}]}},
+    {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "The watcher is running; I am not waiting on it."}]}},
+    {"type": "result", "result": "The watcher is running; I am not waiting on it."},
+]
+
 
 class Delivery(unittest.TestCase):
     def setUp(self):
@@ -66,6 +83,21 @@ class Delivery(unittest.TestCase):
         got = dispatch_result.capture_delivery(self.dir, "job", self.out, self.since)
         self.assertTrue(stale.read_text(encoding="utf-8").startswith("No more work needed"))
         self.assertIsNotNone(got["flag"])
+
+    def test_a_report_written_by_a_shell_command_is_kept_like_any_other(self):
+        self.out.write_text("\n".join(json.dumps(row) for row in SHELL_STREAM), encoding="utf-8")
+        (self.dir / "job.md").write_text(REPORT, encoding="utf-8")
+        got = dispatch_result.capture_delivery(self.dir, "job", self.out, self.since)
+        self.assertEqual((self.dir / "job.md").read_text(encoding="utf-8"), REPORT)
+        self.assertEqual(got["path"], self.dir / "job.md")
+        self.assertEqual(Path(got["reply"]).name, "job.reply.md")
+        self.assertTrue(Path(got["reply"]).read_text(encoding="utf-8").startswith("The watcher is running"))
+
+    def test_a_report_written_elsewhere_leaves_the_final_message_as_the_delivery(self):
+        self.out.write_text("\n".join(json.dumps(row) for row in SHELL_STREAM), encoding="utf-8")
+        got = dispatch_result.capture_delivery(self.dir, "job", self.out, self.since)
+        self.assertTrue((self.dir / "job.md").read_text(encoding="utf-8").startswith("The watcher is running"))
+        self.assertIsNone(got["reply"])
 
     def test_single_turn_stream_is_not_flagged(self):
         single = [STREAM[0], {"result": "one answer"}]

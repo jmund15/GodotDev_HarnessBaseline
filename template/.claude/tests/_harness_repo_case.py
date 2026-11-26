@@ -69,6 +69,8 @@ class RepoCase(unittest.TestCase):
                            ('EXCLUDED', {}), ('HEAVY', {}), ('SERIAL', {}),
                            ('DURATIONS_PATH', None), ('KNOWN_RED_LOG', None), ('PASSES_PATH', None)]:
             patch.object(runner, key, value).start()
+        # The machine's CPU is an ambient input: a loaded machine would read a planted red as contended.
+        patch.object(runner._slot_pool, 'cpu_read', lambda: None).start()
 
     def git(self, *args):
         result = subprocess.run(['git', '-C', str(self.repo), *args], capture_output=True, text=True)

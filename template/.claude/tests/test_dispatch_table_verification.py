@@ -6,6 +6,7 @@ The audit ignores VERIFIED -> non-VERIFIED file drift, not missing run-time verd
 """
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -296,6 +297,16 @@ def test_unavailable_verifier_is_named_as_the_cause_not_as_mismatches():
     assert audit['verifier']['status'] == 'unavailable' and cause in audit['verifier']['errors'], audit
 
 
+def test_the_verifier_rerun_is_a_command_bash_can_run():
+    e, _, _ = plant(block('UNCHECKED', 'unavailable'), applied='UNCHECKED')
+    (Path(e.root) / 'in-run.json').write_text(json.dumps(dict(status='unavailable', errors=['x'])), encoding='utf-8')
+    e.run(stop_payload(), '--complete')
+    rerun = json.loads(reports(e)[0].read_text())['verifier']['rerun']
+    assert '\\' not in rerun, 'bash strips an unquoted backslash path: ' + rerun
+    words = shlex.split(rerun)
+    assert Path(words[words.index('--workflow-dir') + 1]).is_dir(), rerun
+
+
 def test_absent_verification_block_names_the_missing_verifier():
     e, _, _ = plant()
     e.run(stop_payload(), '--complete')
@@ -421,9 +432,10 @@ def test_review_merging_findings_is_not_a_missing_source():
 def plant_review_run(name, run_id, *, args, result, report):
     e = Env()
     e.plant_run(run_id, 'completed', [])
-    report_path = Path(e.root) / 'in-run.json'
-    report_path.write_text(json.dumps(report), encoding='utf-8')
-    result = dict(result, verification=dict(result['verification'], report=str(report_path)))
+    if report is not None:
+        report_path = Path(e.root) / 'in-run.json'
+        report_path.write_text(json.dumps(report), encoding='utf-8')
+        result = dict(result, verification=dict(result['verification'], report=str(report_path)))
     host = Path(e.session) / 'workflows' / (run_id + '.json')
     record = json.loads(host.read_text())
     # The host names a run by the engine's meta.name, which hyphenates the script's basename.
@@ -886,6 +898,82 @@ def test_native_fold_audit_quote_absent_from_the_snapshot_stays_unverified():
     e.run(stop_in(root), '--complete')
     audit = json.loads((run_dir / 'verification_audit.json').read_text())
     assert audit['verdicts']['F1']['verdict'] == 'UNVERIFIED', audit['verdicts']['F1']
+
+
+CLOSE_FIXTURE = HERE / 'fixtures/stop_audit/review_close_native'
+
+
+def _close_fixture(name):
+    return json.loads((CLOSE_FIXTURE / name).read_text(encoding='utf-8'))
+
+
+def native_close_run(*, closed=True, edited=True):
+    """The captured native-seat review, closed by `--review-close --workflow-dir`: the Workflow host result holds
+    no `verification`; the close's rows, report and fold snapshot sit in its out dir. The planted repository holds
+    each cited quote at the close (snapshot), then the owner's hand edit removes `edited_after_close.json`'s."""
+    import fold_check
+    review = _close_fixture('review.json')
+    quotes = {}
+    for source in review['sources']:
+        for item in source['finding']['evidence']:
+            path, _, line = item['file'].rpartition(':')
+            quotes.setdefault(path, []).append((item['file'], item['quote']))
+    root = Path(tempfile.mkdtemp(prefix='close_native_'))
+    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    gone = set(_close_fixture('edited_after_close.json'))
+
+    def plant(live):
+        for path, held in quotes.items():
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(''.join(q + '\n' for cite, q in held if not (live and cite in gone)),
+                              encoding='utf-8', newline='\n')
+
+    out = root / '.claude/scratch/close'
+    out.mkdir(parents=True)
+    plant(live=False)
+    manifest = out / 'snapshot.json'
+    manifest.write_text(json.dumps(fold_check.snapshot_blobs(root, sorted(quotes))), encoding='utf-8')
+    if edited:
+        plant(live=True)
+    (out / 'review.json').write_text(json.dumps(review), encoding='utf-8')
+    jobs = [dict(root=str(root), snapshot=str(manifest), files=sorted(quotes), newPaths=[],
+                 digest=str(out / 'digest.json'))]
+    (out / 'fold_jobs.json').write_text(json.dumps(jobs), encoding='utf-8')
+    post = _close_fixture('post_check.json')
+    post['source'] = ['--sidecar-dir', str(out), '--expect-total', str(len(review['sources']))]
+    (out / 'post_check.json').write_text(json.dumps(post), encoding='utf-8')
+    claims = _close_fixture('claims.json')
+    claims['verification']['report'] = str(out / 'post_check.json')
+    (out / 'claims.json').write_text(json.dumps(claims), encoding='utf-8')
+    e, run_dir = plant_review_run('dispatch', 'wf_close-native', args={'root': str(root)}, report=None,
+                                  result=_close_fixture('host_result.json'))
+    (run_dir / 'journal.jsonl').write_bytes((CLOSE_FIXTURE / 'journal.jsonl').read_bytes())
+    if closed:
+        (run_dir / 'review_close.json').write_text(json.dumps(claims), encoding='utf-8')
+    return e, run_dir, root
+
+
+def test_closed_native_review_passes_stop_with_the_closes_verdict():
+    e, run_dir, root = native_close_run(edited=False)
+    e.run(stop_in(root), '--complete')
+    audit = json.loads((run_dir / 'verification_audit.json').read_text())
+    assert not e.body and audit['outcome'] == 'match', (audit['mismatches'], audit['errors'], audit.get('verifier'))
+    assert sorted(audit['verdicts']) == ['F1', 'F2', 'F3', 'F4', 'F5']
+
+
+def test_native_review_with_no_close_still_blocks():
+    e, run_dir, root = native_close_run(closed=False, edited=False)
+    e.run(stop_in(root), '--complete')
+    assert e.body.get('decision') == 'block', 'a review whose close never ran owes a verification block'
+
+
+def test_text_edited_after_the_close_does_not_unverify_the_closes_claims():
+    e, run_dir, root = native_close_run()
+    e.run(stop_in(root), '--complete')
+    audit = json.loads((run_dir / 'verification_audit.json').read_text())
+    assert not e.body and audit['outcome'] == 'match', (audit['mismatches'], audit['errors'], audit.get('verifier'))
+    assert audit['counts']['UNVERIFIED'] == 0, audit['counts']
 
 
 def measure():

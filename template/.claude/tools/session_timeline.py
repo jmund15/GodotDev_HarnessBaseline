@@ -42,7 +42,7 @@ TEST_RE = re.compile(
     r"|gdunit|GdUnit|\btest_\w+\.(py|ps1|sh|mjs|js)\b", re.I)
 COMMIT_RE = re.compile(r"\bgit (-C \S+ )?commit\b")
 BOOKKEEPING_RE = re.compile(
-    r"task_record\.py|orchestration_metrics\.py|review_ledger\.py|extract_numbers\.py|worklog"
+    r"task_record\.py|orchestration_metrics\.py|review_ledger\.py|rule_units\.py|worklog"
     r"|git (-C \S+ )?(add|commit|status|diff|log|show|rev-parse|ls-files)\b"
     r"|restate_scan|post_check\.py|session_end_check|triage\.py")
 NOTIFIED_TOOL_RE = re.compile(r"<tool-use-id>([\w-]+)<")

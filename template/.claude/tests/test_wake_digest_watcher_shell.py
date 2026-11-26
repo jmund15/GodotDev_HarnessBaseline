@@ -51,6 +51,36 @@ class WatcherShell(unittest.TestCase):
         self.assertEqual(self.notices("make", "DONE job-a\n"), ["btask1"])
 
 
+# Trimmed from session 07a0e9cc's transcript (lines 8547, 8548 and 8551): the client writes an `api-request-blob`
+# copy of an assistant message, with no timestamp, after the call's result has landed.
+CALL = {"type": "tool_use", "id": "toolu_01KN1kRAmPkzRVTypsbvRaxQ", "name": "SendMessage", "caller": {"type": "direct"},
+        "input": {"to": "peer", "message": "m"}}
+CALL_ROWS = [
+    {"type": "assistant", "isSidechain": False, "timestamp": "2026-11-26T02:49:30.451Z",
+     "message": {"role": "assistant", "content": [CALL]}},
+    {"type": "user", "isSidechain": False, "timestamp": "2026-11-26T02:49:31.002Z",
+     "message": {"role": "user", "content": [{"tool_use_id": CALL["id"], "type": "tool_result", "content": "ok"}]}},
+    {"type": "api-request-blob", "sessionId": "07a0e9cc-072f-4e24-8b54-9ce56fc2a051",
+     "hash": "f8f32f1e3c280cafb49386477a86ef2164a50ce85f4a959a6c5aa3bf128075eb",
+     "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "s"}, CALL]}},
+]
+
+
+class PendingCalls(unittest.TestCase):
+    def pending(self, rows, now):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = os.path.join(tmp, "s.jsonl")
+            with open(transcript, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("".join(json.dumps(r) + "\n" for r in rows))
+            return wake_digest.pending_calls(transcript, wake_digest.new_shell_scan(), now=now)
+
+    def test_a_call_with_no_result_is_pending(self):
+        self.assertEqual(self.pending(CALL_ROWS[:1], now=1795661430), {CALL["id"]})
+
+    def test_a_request_blob_copy_of_an_answered_call_is_not_pending(self):
+        self.assertEqual(self.pending(CALL_ROWS, now=1795661430), set())
+
+
 # Trimmed from session f3a34186's bqcuah9lv enqueue and delivered attachment.
 CAPTURED_NOTICE = (
     '<task-notification>\n<task-id>bqcuah9lv</task-id>\n'

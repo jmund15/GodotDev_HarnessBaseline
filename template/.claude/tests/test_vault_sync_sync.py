@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 # Every git here names its repository (`--git-dir`, a path argument), so none reads the checkout; the proof still starts
@@ -18,8 +19,7 @@ _CWD = tempfile.mkdtemp(prefix='vault_sync_cwd_')
 os.chdir(_CWD)
 atexit.register(lambda: (os.chdir(_HERE), shutil.rmtree(_CWD, ignore_errors=True)))
 _STAGE = tempfile.TemporaryDirectory()
-for _name in ('vault_sync.py', 'vault_read.py'):
-    shutil.copy(ROOT / '.claude/tools' / _name, Path(_STAGE.name) / _name)
+copy_closure(_STAGE.name, 'tools/vault_sync.py', flat=True)
 TOOL = Path(_STAGE.name) / 'vault_sync.py'
 (TOOL.parent / 'vault_sync.project.json').write_text(
     json.dumps({'folders': ['Proj'], 'gitDirName': 'vault-git-test', 'taskName': 'VaultSyncTest'}), encoding='utf-8')

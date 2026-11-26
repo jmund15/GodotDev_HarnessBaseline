@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(git status:*), Bash(python3 .claude/tools/extract_numbers.py:*), Bash(python3 .claude/tools/restate_scan.py:*), Bash(python3 .claude/tools/lens_briefs.py:*), Bash(python3 .claude/tools/sidecar_fanout.py:*), Bash(python3 .claude/tools/fold_check.py:*), Bash(git ls-files:*), Bash(grep:*), Bash(python3 .claude/tools/review_ledger.py:*), Bash(python3 .claude/tools/post_check.py:*), Glob, Grep, Read, Write, Workflow
+allowed-tools: Bash(git status:*), Bash(python3 .claude/tools/rule_units.py:*), Bash(python3 .claude/tools/restate_scan.py:*), Bash(python3 .claude/tools/lens_briefs.py:*), Bash(python3 .claude/tools/sidecar_fanout.py:*), Bash(python3 .claude/tools/fold_check.py:*), Bash(git ls-files:*), Bash(grep:*), Bash(python3 .claude/tools/review_ledger.py:*), Bash(python3 .claude/tools/post_check.py:*), Glob, Grep, Read, Write, Workflow
 description: Audit a written plan for scope, evidence and design defects
 ---
 
@@ -30,7 +30,7 @@ Reuse the `/explore` dossier's domains and memory claims as the memory seat's se
 `plc-memory-alignment` declares `kfm: index`, so `lens_briefs.py` materializes and checks the snapshot and names its index in that seat's brief. The seat Reads only selected body files; the parent may still use `kfm.py get` for its own focused check. Refresh a stale snapshot before consuming the review, never inject the full catalog.
 
 ### 1f–1g. Code surfaces, inbound references and lens context
-Read [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 1 context before the seats launch: §1f for a code plan (introduced types and authored fields against their existing owners), §1f-meta for a meta plan (the `INBOUND_REFS` sweep that `lens_briefs.py` produces) and §1g for every plan (the evidence each seat receives, and the `extract_numbers.py` and `restate_scan.py` outputs a meta or mixed plan passes to its text seats).
+Read [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 1 context before the seats launch: §1f for a code plan (introduced types and authored fields against their existing owners), §1f-meta for a meta plan (the `INBOUND_REFS` sweep that `lens_briefs.py` produces) and §1g for every plan (the evidence each seat receives, and the `restate_scan.py` output a meta or mixed plan passes to its text seats).
 
 ## Phase 2: Launch Plan-Check Sub-Agents
 

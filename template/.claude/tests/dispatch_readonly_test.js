@@ -11,8 +11,10 @@ const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'dis
 const SCRIPT = path.join(__dirname, '..', 'workflows', 'dispatch.js')
 const clone = (v) => JSON.parse(JSON.stringify(v))
 
+// The fixture's rows predate the table that gives every public kind but `gate` Bash: a read-only kind holds it now.
 const argsFor = (edit) => {
   const a = clone(FIXTURE)
+  for (const row of [a.__toolProfiles['m4-FA'], a.__kindRows.lens, a.__kindRows.reviewer]) row.builtins = [...row.builtins, 'Bash']
   edit(a)
   return a
 }
@@ -20,7 +22,7 @@ const withKind = (kind) => (a) => {
   a.jobs[0].kind = kind
   a.__toolProfiles['m4-FA'] = a.__kindRows[kind]
 }
-const withBash = (a) => { a.__toolProfiles['m4-FA'] = { ...a.__toolProfiles['m4-FA'], builtins: [...a.__toolProfiles['m4-FA'].builtins, 'Bash'] } }
+const withoutBash = (a) => { a.__toolProfiles['m4-FA'].builtins = a.__toolProfiles['m4-FA'].builtins.filter(t => t !== 'Bash') }
 
 async function run(args, agentImpl) {
   const calls = [], logs = []
@@ -47,8 +49,11 @@ async function run(args, agentImpl) {
   let r = await run(argsFor(() => {}))
   check('m4 replay: a lens job runs as lane-survey, the type its kind row sets',
     r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey', j(r))
-  check('m4 replay: a lens holds no write tool and no shell, so its prompt carries no read-only line to keep',
-    !r.calls[0].prompt.includes(READONLY))
+  check('m4 replay: a lens holds a shell and no write tool, so its prompt tells it not to write through the shell',
+    r.calls[0].prompt.includes(READONLY))
+  r = await run(argsFor(withoutBash))
+  check('a lens whose profile holds no shell (a -Bash delta) has no write path, so its prompt carries no read-only line',
+    r.calls.length === 1 && !r.calls[0].prompt.includes(READONLY), j(r))
   check('m4 replay: the recorded profile is agent-type, kind lens',
     r.logs.some(l => /^TOOL-PROFILES /.test(l) && /"enforcement":"agent-type"/.test(l) && /"kind":"lens"/.test(l)), r.logs.join(' | ').slice(0, 300))
 
@@ -65,8 +70,7 @@ async function run(args, agentImpl) {
   r = await run(argsFor(a => { withKind('reviewer')(a) }))
   check('a reviewer job runs as lane-review', r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-review', j(r))
 
-  r = await run(argsFor(a => { withKind('reviewer')(a); withBash(a) }))
-  check('a no-write kind whose profile holds Bash is told not to write through the shell',
+  check('a reviewer job is told not to write through the shell it holds',
     r.calls.length === 1 && r.calls[0].prompt.includes(READONLY), j(r))
 
   r = await run(argsFor(a => { withKind('author')(a) }))

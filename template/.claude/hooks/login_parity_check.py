@@ -13,7 +13,7 @@ is drift the spawned sync refreshes), and prints at most one line, which Session
                           starts nothing
   any other exit, a timeout
                           names the failure and the command to run by hand
-A sidecar child (CLAUDE_CODE_SIDECAR set) runs nothing, so no delegate starts a sync mid-run.
+A delegate child (`in_delegate`: a launcher or `claude -p` child) runs nothing, so no delegate starts a sync mid-run.
 A cloud VM (CLAUDE_CODE_REMOTE=true) runs nothing: it has no local logins to keep in step.
 Advisory: the hook never blocks a session, and exits 0. Only the newest KEEP_LOGS sync logs are kept.
 """
@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hook_state  # noqa: E402
 from _claude_scope import is_cloud  # noqa: E402
+from _prompt_provenance import in_delegate  # noqa: E402
 from _bounded_run import detach_options, run_bounded  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -116,7 +117,7 @@ def _verdict(returncode, stdout, stderr):
 
 def decide():
     """The one line to inject, or None."""
-    if os.environ.get("CLAUDE_CODE_SIDECAR") or is_cloud():
+    if in_delegate({}, os.environ) or is_cloud():
         return None
     proc = run_bounded(CHECK_ARGV, CHECK_TIMEOUT)
     if proc.returncode is None:

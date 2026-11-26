@@ -85,7 +85,7 @@ CANDIDATES = [
 TABLE = tp.load_table()
 # The read-only kind rows carry the read-only git server.
 READ_ONLY_SERVERS = ["semantic-search", "ai-worker", "git"]
-SURVEY_SPEC = "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__ai-worker,mcp__git"
+SURVEY_SPEC = "Read,Glob,Grep,Bash,mcp__plugin_semantic-search_semantic-search,mcp__ai-worker,mcp__git"
 
 
 def spec(shape, **kw):
@@ -96,7 +96,7 @@ def spec(shape, **kw):
 # ---- 1. the shape vectors ---------------------------------------------------------------
 for shape in ("judge", "scout", "reviewer"):
     profile, _, _ = tp.resolve(shape, candidates=CANDIDATES)
-    check("%s builtins" % shape, ["Read", "Glob", "Grep"], profile["builtins"])
+    check("%s builtins" % shape, ["Read", "Glob", "Grep", "Bash"], profile["builtins"])
     servers = READ_ONLY_SERVERS if shape != "any" else ["semantic-search", "ai-worker"]
     check("%s servers" % shape, servers, profile["mcpServers"])
     check("%s spec" % shape, (SURVEY_SPEC if shape != "any"
@@ -135,10 +135,10 @@ check("unsigned csv is a legacy replacement", ("legacy-replace", [], []),
 check("empty -t asserts nothing", ("shape-default", [], []), tp.parse_tools_csv(""))
 check("delta adds a server", SURVEY_SPEC + ",mcp__godot", spec("scout", tools_csv="+mcp:godot"))
 check("delta removes a server",
-      "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__git",
+      "Read,Glob,Grep,Bash,mcp__plugin_semantic-search_semantic-search,mcp__git",
       spec("scout", tools_csv="-mcp:ai-worker"))
 check("delta adds and removes in one csv",
-      "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__git,mcp__godot",
+      "Read,Glob,Grep,Bash,mcp__plugin_semantic-search_semantic-search,mcp__git,mcp__godot",
       spec("scout", tools_csv="-mcp:ai-worker,+mcp:godot"))
 check("delta removes a read tool", "Read,Bash,mcp__plugin_semantic-search_semantic-search,"
       "mcp__ai-worker,mcp__git", spec("scout", tools_csv="+Bash,-Glob,-Grep"))
@@ -147,7 +147,7 @@ check("delta is canonical order, not written order", "Read,Glob,Grep,Edit,Write,
 check("a structured delta merges with -t", "Read,Glob,Grep,Edit,Write,Bash,mcp__godot",
       spec("author", tools_csv="-mcp:semantic-search,-mcp:ai-worker", add=["mcp:godot"]))
 check("structured add and remove work alone",
-      "Read,Glob,Grep,mcp__git,mcp__godot", spec("scout", tools_csv="-mcp:semantic-search,-mcp:ai-worker",
+      "Read,Glob,Grep,Bash,mcp__git,mcp__godot", spec("scout", tools_csv="-mcp:semantic-search,-mcp:ai-worker",
                                         add=["mcp:godot"]))
 check("a Workflow signed tools string keeps its Bash grant", (["Bash"], ["Grep"]),
       tp.tools_delta("+Bash,-Grep"))
@@ -598,11 +598,11 @@ _PUBLIC = ["scout", "lens", "reviewer", "author", "judge", "gate"]
 check("PUBLIC_KINDS derive from the table's non-internal rows", _PUBLIC,
       sorted(tp.public_kinds(_TB), key=_PUBLIC.index))
 for _k, _b, _d, _a, _t in (
-        ("scout", ["Read", "Glob", "Grep"], "bare", "lane-survey", "fanout"),
-        ("lens", ["Read", "Glob", "Grep"], "pointer", "lane-survey", "fanout"),
-        ("reviewer", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
+        ("scout", ["Read", "Glob", "Grep", "Bash"], "bare", "lane-survey", "fanout"),
+        ("lens", ["Read", "Glob", "Grep", "Bash"], "pointer", "lane-survey", "fanout"),
+        ("reviewer", ["Read", "Glob", "Grep", "Bash"], "full", "lane-review", "executor"),
         ("author", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], "full", "lane-author", "executor"),
-        ("judge", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
+        ("judge", ["Read", "Glob", "Grep", "Bash"], "full", "lane-review", "executor"),
         ("gate", ["Read", "Grep", "Bash"], "full", "lane-gate", "fanout")):
     _p = tp.resolve_kind(_k, route="fanout", candidates=CANDIDATES)[0]
     check("resolve_kind %s: builtins, disclosure, agentType, tier" % _k, (_b, _d, _a, _t),
@@ -636,7 +636,7 @@ def _bad_kinds(mutate):
 
 
 raises("two kinds sharing an agentType with different built-ins are refused", "agentType",
-       lambda: _bad_kinds(lambda k: k["judge"].update(builtins=["Read", "Glob", "Grep", "Bash"])))
+       lambda: _bad_kinds(lambda k: k["judge"].update(builtins=["Read", "Glob", "Grep"])))
 check("a table whose kinds carry no legacy field loads", True,
       bool(_bad_kinds(lambda k: [row.pop("legacy", None) for row in k.values()])))
 check("no kind row carries a legacy field", [], [n for n, r in _TB["kinds"].items() if "legacy" in r])
@@ -655,7 +655,7 @@ def _rk(*argv):
 
 _rc, _out, _err = _rk("--kind=lens")
 _prof = json.loads(_out) if _rc == 0 else {}
-check("resolve-kind lens prints builtins, disclosure and guard", (0, ["Read", "Glob", "Grep"], "pointer", "survey"),
+check("resolve-kind lens prints builtins, disclosure and guard", (0, ["Read", "Glob", "Grep", "Bash"], "pointer", "survey"),
       (_rc, _prof.get("builtins"), _prof.get("disclosure"), _prof.get("guard")))
 _rc, _out, _err = _rk("--kind=author", "--tools=-mcp:ai-worker")
 _prof = json.loads(_out) if _rc == 0 else {}
@@ -665,7 +665,7 @@ check("resolve-kind takes a signed +Bash", (0, "Read,Glob,Grep,Bash"),
       (_rc, ",".join(json.loads(_out)["builtins"]) if _rc == 0 else ""))
 _rc, _out, _err = _rk("--kind=reviewer", "--tools=Read,Glob,Grep")
 check("resolve-kind refuses an unsigned -t naming -G <kind> and a signed delta", True,
-      _rc == 2 and "-G <kind>" in _err and "+Bash" in _err)
+      _rc == 2 and "-G <kind>" in _err and "-mcp:ai-worker" in _err)
 _rc, _out, _err = _rk("--kind=scout", "--tools=+Edit")
 check("resolve-kind refuses +Edit off an author via -t", True, _rc == 2 and "use kind author" in _err)
 _rc, _out, _err = _rk("--kind=survey")
@@ -720,19 +720,24 @@ def _bad_variants(variants):
 
 check("the table has no `shapes` key: the kind rows own the defaults", False, "shapes" in TABLE)
 check("the table has no job_kind_shape reader left", False, hasattr(tp, "job_kind_shape"))
-check("the live table ships the reviewer+Bash variant",
-      [{"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review-sh"}],
-      [{k: v for k, v in row.items() if k != "remove"} for row in TABLE.get("variants", [])])
-check("a reviewer+Bash delta resolves to lane-review-sh", "lane-review-sh", _native("reviewer", ["Bash"]))
+_PUBLIC = [k for k in tp.public_kinds(TABLE)]
+check("every public kind's built-ins hold Bash, so no job matches a kind to its commands",
+      [], [k for k in _PUBLIC if "Bash" not in tp.resolve_kind(k, route="fanout", walk_mcp=False)[0]["builtins"]])
+check("a judge job resolves with Bash on the launcher route", True,
+      "Bash" in tp.resolve_kind("judge", route="launcher", walk_mcp=False)[0]["builtins"])
+check("no public kind but author holds Edit or Write", [],
+      [k for k in _PUBLIC if k != "author" and {"Edit", "Write"} & set(TABLE["kinds"][k]["builtins"])])
+check("the live table ships no variant: a kind's row carries its tools", [], TABLE.get("variants"))
 raises("a reviewer+Write delta is refused", "author", lambda: _native("reviewer", ["Write"]))
-raises("a scout+Bash delta has no covering agent file", "no covering agent file", lambda: _native("scout", ["Bash"]))
+check("a stale +Bash delta on a kind that holds Bash runs as the kind's own agent type", "lane-survey",
+      _native("scout", ["Bash"]))
 for _kind, _agent in (("scout", "lane-survey"), ("lens", "lane-survey"), ("reviewer", "lane-review"),
                       ("author", "lane-author"), ("judge", "lane-review")):
     check("a planted native %s job resolves to %s" % (_kind, _agent), _agent, _native(_kind))
 _rendered = tp.render_agents(TABLE, CANDIDATES)
-check("render_agents writes the variant file with Bash after the reviewer's built-ins", True,
-      "tools: Read, Glob, Grep, Bash, " in _rendered.get("lane-review-sh.md", ""))
-check("render_agents writes one file per agent type", ["lane-author.md", "lane-gate.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+check("render_agents gives the judge's and reviewer's shared type Bash after its built-ins", True,
+      "tools: Read, Glob, Grep, Bash, " in _rendered.get("lane-review.md", ""))
+check("render_agents writes one file per agent type", ["lane-author.md", "lane-gate.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
       sorted(_rendered))
 _NO_GIT = [c for c in CANDIDATES if c[0] != "git"]
 _rendered_no_git = tp.render_agents(TABLE, _NO_GIT)

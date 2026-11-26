@@ -20,13 +20,15 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import (LADDER_DIGEST_KEY, LADDER_READY_KEY, LADDER_SLICE_KEY, adopt_ladder_digest,  # noqa: E402
+from _hook_state import (LADDER_DIGEST_KEY, fire_once_since_compaction, LADDER_READY_KEY, LADDER_SLICE_KEY, adopt_ladder_digest,  # noqa: E402
                          mark_ladder_slice, read_json_salvage, state_path, update_json_locked, skill_in_context, consume_ladder_receipt, fail_ladder_receipt,
                          ladder_receipt_failure, normalize_stdout, stdout_sha256)
 
 STATE_KEY = LADDER_READY_KEY
 SLICE_COMMAND = "python3 .claude/tools/model_registry.py for-role"
 RELATIVE_PATH = Path(".claude") / "reference" / "model_ladder_evidence.md"
+NOTICE_TAG = "[dispatch-prep]"
+NOTICE_ONCE = "model_ladder_gate:advance_notice"
 
 
 def _root(payload):
@@ -266,6 +268,30 @@ def _embedded_slice(session_id, payload):
     return text if mark_ladder_slice(session_id, claimed, digest=ladder_digest(payload)) else None
 
 
+def _skill_held(session_id, payload):
+    return skill_in_context(session_id, 'orchestration', agent_id=payload.get('agent_id') or '',
+                            transcript_path=payload.get('transcript_path'), root=str(_root(payload)))
+
+
+def advance_notice(payload):
+    """The earlier surface of `doctrine_check` (instruction_quality §3): one line naming the loads a dispatch will be
+    denied for, so the deny is not the first place the agent meets them. Empty when the orchestration skill and a ladder
+    slice or full Read are both in context, for an unidentified session, and after the first line since the session
+    started or last compacted. The caller supplies the moment (the first dispatch-prep signal of a window)."""
+    session_id = payload.get('session_id') or ''
+    if not session_id:
+        return ''
+    ready, tiers = held_ladder(read_json_salvage(state_path(session_id)), payload)
+    unmet = []
+    if not _skill_held(session_id, payload):
+        unmet.append(skill_step('orchestration', payload, 'orchestration §0'))
+    if not (ready or tiers):
+        unmet.append(SLICE_STEP.format(which='each tier the jobs pin', tiers='<tier>...'))
+    if not unmet or not fire_once_since_compaction(session_id, NOTICE_ONCE):
+        return ''
+    return '%s a dispatch is denied until you %s.' % (NOTICE_TAG, ' and '.join(unmet))
+
+
 def doctrine_check(payload, tiers=None, embed_slice=False):
     """(deny reason, fault note) for a pinned dispatch. The reason names each doctrine not in this context, by its
     one load route: the orchestration skill (orchestration §0) and the ladder (orchestration §5). The step after
@@ -291,8 +317,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
         return None, FAULT_NOTE
     ladder_ready, covered = held_ladder(state, payload)
     unmet, slice_text = [], None
-    if not skill_in_context(session_id, 'orchestration', agent_id=payload.get('agent_id') or '',
-                            transcript_path=payload.get('transcript_path'), root=str(_root(payload))):
+    if not _skill_held(session_id, payload):
         unmet.append(skill_step('orchestration', payload, 'orchestration §0'))
     if not ladder_ready:
         needed = _call_tiers(tiers)

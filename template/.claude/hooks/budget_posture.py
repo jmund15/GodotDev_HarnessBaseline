@@ -784,8 +784,6 @@ def emit_spend(session_id, dstate, dpath, own_band):
 
 def main():
     payload = json.load(sys.stdin)
-    if payload.get('agent_id') or os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'sdk-cli':
-        return
     session_id = payload.get("session_id", "unknown")
 
     # Dedupe state — per session, same lifecycle as the capture files.

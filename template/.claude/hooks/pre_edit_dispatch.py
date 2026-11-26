@@ -17,6 +17,8 @@ Order (the first block wins; advisories emit after all checks):
   4. harness_edit_skill_reminder.process — harness edit → deny until instruction_quality is in context,
                                            then a once-per-compaction advisory
   5. running_script_edit_guard.process   — live script instance → advisory
+     repeat_fix_notice.process           — first edit of a runtime harness file with a repeat of counted fixes
+                                           → advisory naming them and the redesign route
 
 Sub-hook contract: `process(payload)` returns one of
   {"block": <message>}   hard block — stderr + exit 2, the tool call is aborted
@@ -55,17 +57,9 @@ CHAIN = (
     ("model_name_guard", "advisory"),
     ("harness_edit_skill_reminder", "advisory"),
     ("running_script_edit_guard", "advisory"),
+    ("repeat_fix_notice", "advisory"),
 )
 CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
-
-# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
-# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
-UNWIRED = (
-    "plan_job_map_guard",
-    "rail_probe_guard",
-    "readonly_lens_write_guard",
-)
-
 
 try:
     import _hook_state

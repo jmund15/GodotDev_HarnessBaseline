@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _sidecar_launch import bash_exe  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 CLAUDE = Path(__file__).resolve().parents[1]
 # The merge runs over a root with no adaptation.json, so the guard's registration must be the launcher's own.
@@ -33,11 +34,8 @@ def bare_root(tmp):
     bare = Path(tmp, 'bare')
     hooks, tools = bare / 'hooks', bare / 'tools'
     hooks.mkdir(parents=True)
-    for name in ('_checkout_root.py', '_git_run.py'):
-        (hooks / name).write_bytes((CLAUDE / 'hooks' / name).read_bytes())
     tools.mkdir()
-    for name in ('adaptation.py', 'tool_profiles.py', 'plugin_registry.py'):
-        (tools / name).write_bytes((CLAUDE / 'tools' / name).read_bytes())
+    copy_closure(bare, 'hooks/_checkout_root.py', 'hooks/_git_run.py', 'tools/adaptation.py', 'tools/tool_profiles.py')
     (bare / 'guards').mkdir()
     (bare / 'guards' / 'tool_profiles.json').write_bytes((CLAUDE / 'guards' / 'tool_profiles.json').read_bytes())
     return bare.as_posix()
@@ -89,7 +87,7 @@ def main():
             ck(name, rc == want and (want == 0 or work.as_posix() in err.replace(chr(92), '/')), (rc, err))
 
         case('deny Write to the main tests dir', 2, 'Write', main_root / '.claude' / 'tests' / 'x.py')
-        case('deny Edit to a main tracked file', 2, 'Edit', main_root / '.claude' / 'tools' / 'eval_findings.py')
+        case('deny Edit to a main tracked file', 2, 'Edit', main_root / '.claude' / 'tools' / 'task_record.py')
         case('deny NotebookEdit in the main checkout', 2, 'NotebookEdit', main_root / 'n.ipynb', field='notebook_path')
         case('deny a `..` climb from the workdir', 2, 'Write', work / '..' / '..' / 'tests' / 'x.py')
         case('deny a relative path on a main-checkout cwd', 2, 'Write', 'a.py', cwd=main_root)

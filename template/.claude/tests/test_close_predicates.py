@@ -256,19 +256,6 @@ class PredicateTests(unittest.TestCase):
         self.assertIsNone(row["value"])
         self.assertIn("absent", row["basis"]["error"])
 
-    def test_routing_audit_true_false_null(self):
-        log = self.repo / "logs" / "routing_audit.jsonl"
-        write(log, '{"a": 1}\n')
-        self.assertIs(run("routing_audit", self.repo)["value"], True)
-        write(log, "\n")
-        self.assertIs(run("routing_audit", self.repo)["value"], False)
-        log.unlink()
-        row = run("routing_audit", self.repo)
-        self.assertIs(row["value"], False)
-        self.assertEqual(row["basis"]["source"], "absent")
-        log.mkdir()
-        self.assertIsNone(run("routing_audit", self.repo)["value"])
-
     def test_orchestration_metrics_true_false_null(self):
         original = cp._load_tool
         try:
@@ -462,23 +449,6 @@ class PredicateTests(unittest.TestCase):
         self.assertEqual(row["basis"]["scratch_entries"], 0)
         write(self.repo / ".claude" / "scratch" / "leftover" / "x.txt", "x")
         self.assertIs(run("harness_prune", self.repo)["value"], True)
-
-    def test_routing_audit_counts_only_rows_since_the_last_aggregation(self):
-        log = self.repo / "logs" / "routing_audit.jsonl"
-        stats = self.repo / "logs" / "routing_audit_stats.json"
-        write(stats, json.dumps({"generated_at": "2026-01-02T10:00:00+00:00"}))
-        write(log, '{"ts": "2026-01-02T09:00:00+00:00"}\n')
-        row = run("routing_audit", self.repo)
-        self.assertIs(row["value"], False)
-        self.assertEqual(row["basis"]["rows_since"], 0)
-        write(log, '{"ts": "2026-01-02T09:00:00+00:00"}\n{"ts": "2026-01-02T11:00:00Z"}\n')
-        row = run("routing_audit", self.repo)
-        self.assertIs(row["value"], True)
-        self.assertEqual(row["basis"]["rows_since"], 1)
-        write(log, '{"ts": "2026-01-02T09:00:00+00:00"}\n{"no_ts": 1}\n')
-        self.assertIsNone(run("routing_audit", self.repo)["value"])
-        write(stats, "{not json")
-        self.assertIsNone(run("routing_audit", self.repo)["value"])
 
     def test_parity_with_session_end_check_gated_set(self):
         import session_end_check

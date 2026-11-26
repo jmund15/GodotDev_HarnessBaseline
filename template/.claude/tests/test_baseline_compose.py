@@ -18,13 +18,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 _TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 COMPOSE_PATH = _TOOLS_DIR / "baseline_compose.py"
 SYNC_PATH = _TOOLS_DIR / "baseline_sync.py"
-# baseline_sync.py's own imports, copied into each temp consumer so the CLI runs there.
-SYNC_TOOLS = ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py",
-              "adaptation.py", "layer_closure.py", "cli_usage.py", "lock_merge.py")
 
 
 def _load(path: Path, name: str):
@@ -207,10 +205,10 @@ def main() -> int:
     # 8. `render_memory_domains`: the marker is replaced by a table built from the rows, and a
     #    missing/duplicated marker is a ComposeError.
     base_text = "# Memory Domain Table\n\n<!-- memory-domains-table -->\n\nTail.\n"
-    domains = [{"name": "Testing", "triggers": ["unit-test"], "memory_keywords": [], "skills": ["testing"], "rules": []}]
+    domains = [{"name": "Testing", "paths": ["Tests/**"], "memory_keywords": [], "skills": ["testing"], "rules": []}]
     rendered = bc.render_memory_domains(base_text, domains)
     ok = ("<!-- memory-domains-table -->" not in rendered
-          and "| Testing | unit-test |" in rendered
+          and "| Testing | Tests/** |" in rendered and "Triggers" not in rendered
           and rendered.startswith("# Memory Domain Table")
           and rendered.endswith("Tail.\n"))
     failures.append(case("render_memory_domains replaces the marker with a row", ok, rendered))
@@ -232,8 +230,7 @@ def main() -> int:
     claude2 = root2 / ".claude"
     (claude2 / "hooks").mkdir(parents=True)
     (claude2 / "tools").mkdir(parents=True)
-    for name in SYNC_TOOLS:
-        shutil.copy(_TOOLS_DIR / name, claude2 / "tools" / name)
+    copy_closure(claude2, "tools/baseline_sync.py")
     base_settings = {"permissions": {"allow": ["A"]}, "hooks": {}}
     project_settings = {"permissions": {"allow": ["B"]}, "hooks": {}}
     (claude2 / "settings.base.json").write_text(json.dumps(base_settings), encoding="utf-8")
@@ -243,7 +240,7 @@ def main() -> int:
     (claude2 / "reference" / "memory_domains.base.md").write_text(
         "# Memory Domain Table\n\n<!-- memory-domains-table -->\n", encoding="utf-8")
     (claude2 / "skills" / "project_subsystems" / "adaptation.json").write_text(
-        json.dumps({"memory_domains": [{"name": "Testing", "triggers": ["unit-test"]}]}), encoding="utf-8")
+        json.dumps({"memory_domains": [{"name": "Testing", "paths": ["Tests/**"]}]}), encoding="utf-8")
     (claude2 / "skills" / "project_subsystems" / "SKILL.md").write_text(
         "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: fixture-subsystem\n    paths: [fixture]\n```\n",
         encoding="utf-8")
@@ -305,8 +302,7 @@ def main() -> int:
     claude3 = root3 / ".claude"
     (claude3 / "hooks").mkdir(parents=True)
     (claude3 / "tools").mkdir(parents=True)
-    for name in SYNC_TOOLS:
-        shutil.copy(_TOOLS_DIR / name, claude3 / "tools" / name)
+    copy_closure(claude3, "tools/baseline_sync.py")
     base_settings = {"permissions": {"allow": ["A"]}, "hooks": {}}
     project_settings = {"permissions": {"allow": ["B"]}, "hooks": {}}
     (claude3 / "settings.base.json").write_text(json.dumps(base_settings), encoding="utf-8")
@@ -526,8 +522,7 @@ def main() -> int:
         claude = tmp / ".claude"
         (claude / "hooks").mkdir(parents=True)
         (claude / "tools").mkdir(parents=True)
-        for name in SYNC_TOOLS:
-            shutil.copy(_TOOLS_DIR / name, claude / "tools" / name)
+        copy_closure(claude, "tools/baseline_sync.py")
         (claude / "settings.base.json").write_text(json.dumps({"permissions": {"allow": ["A"]}}), encoding="utf-8")
         (claude / "settings.godot.json").write_text(
             json.dumps({"permissions": {"allow": ["G"], "deny": ["GD"]}}), encoding="utf-8")

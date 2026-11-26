@@ -20,7 +20,7 @@ Signal detection runs over the digest, never over what survived compaction. In `
 python3 .claude/tools/session_digest.py --prompt-tail autolearn --handoff
 ```
 
-Use the handoff only as the bounded orientation packet. Then dispatch one `kind: reviewer` job through `/delegate` with `tools: "+Bash"` (its accessors below are python commands), pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
+Use the handoff only as the bounded orientation packet. Then dispatch one `kind: reviewer` job through `/delegate` pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
 
 ```bash
 python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>
@@ -40,7 +40,7 @@ Each proposal names its executor: `/codify` for a guidance or memory edit, a fix
 
 The pass is done when the parent has reconciled the table's distinct IDs and counts against the digest `pages` totals and the `git log` output, read the source rows behind every `accepted` or disputed claim, and ruled on each proposal the analyst returned.
 
-**Nuance recall (conditional):** apply [Transcript Nuance Recall](agents/transcript_nuance_recall.md), which owns the gate, the quote check and the cached pass. Candidates enter at MEDIUM confidence through the normal filter. `/self_evaluate` reads this pass instead of repeating it.
+**Nuance recall (conditional):** apply [Transcript Nuance Recall](agents/transcript_nuance_recall.md), which owns the gate, the quote check and the cached pass. Candidates enter at MEDIUM confidence through the normal filter.
 
 ## Surface routing
 
@@ -57,7 +57,7 @@ python3 .claude/tools/rule_retirement.py --client-version <this client's version
   --census .claude/logs/load_census.json --json logs/rule_retirement.json
 ```
 
-Each `fired` row becomes one proposed retirement in the review packet, naming the rule, its trigger and the reason it fired. A fired `review-by` row is proposed as keep (renew the date to when the rule's evidence could next plausibly change, stating that reason in the renewal row), retire, or demote to `.claude/auto-memory/archive/`, citing the file's citing-session count from `memory_hit_counts` in `/tmp/eval_out/stats.json` (`tools/analyze_eval_archive.py`; memory files) and `git log -1 --format=%cs -- <path>`. A fired `evidence` row is proposed as confirm (delete the marker), revise (rewrite the rule and re-date `since:`), or retire, citing the rows `rule_retirement.py` counted. Each `malformed` row becomes a proposed trigger repair — a trigger no kind matches retires nothing. Report the `undecidable` count with the evidence that was not supplied; do not read it as "still needed".
+Each `fired` row becomes one proposed retirement in the review packet, naming the rule, its trigger and the reason it fired. A fired `review-by` row is proposed as keep (renew the date to when the rule's evidence could next plausibly change, stating that reason in the renewal row), retire, or demote to `.claude/auto-memory/archive/`, citing `git log -1 --format=%cs -- <path>`. A fired `evidence` row is proposed as confirm (delete the marker), revise (rewrite the rule and re-date `since:`), or retire, citing the rows `rule_retirement.py` counted. Each `malformed` row becomes a proposed trigger repair — a trigger no kind matches retires nothing. Report the `undecidable` count with the evidence that was not supplied; do not read it as "still needed".
 
 ## Signal detection
 
@@ -68,8 +68,8 @@ Scan the session for:
 **Approvals** (supporting evidence) — a user statement confirming an approach.
 
 **Missed delegation** (orchestrator-tier sessions)
-- `DELEGATION:` entries in the self-evaluate archive, or user feedback about work that should have been dispatched
-- Each carries a rationalization + proposed harness edit (per `/self_evaluate`'s delegation calibration); when the same rationalization recurs across sessions, propose the named edit against the ladder (`reference/model_ladder_evidence.md`) or the grain/litmus rules (`orchestration` §5/§11) (or the recording session's proposed file) rather than re-describing the failure
+- User feedback about work that should have been dispatched
+- When the same missed-delegation slip recurs across sessions, propose an edit against the ladder (`reference/model_ladder_evidence.md`) or the grain/litmus rules (`orchestration` §5/§11) rather than re-describing the failure
 
 **Friction** (mandatory disposition — the class that is otherwise glossed over and never fixed)
 - Every digest friction row: a denied tool call, an error that needed a workaround, a blocking wait, a user interrupt, a user complaint about process ("this used to not happen", "why do you keep…")
@@ -107,7 +107,7 @@ Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py re
 
 ## Cross-session sweep
 
-When session start reports unread correction rows (`autolearn: N correction row(s) no sweep has read, oldest YYYY-MM-DD`), dispatch `/autolearn` across those unread `recorded` rows and their sessions as a background job through `/delegate` on a cheap `fanout` row (`python3 .claude/tools/model_registry.py for-role fanout`). Dispatching through `/delegate` records the job's cost where `/orchestration_metrics` reads and archives it. Return the findings as one review packet (`## Review packet`) for the owner to rule on, then mark the swept rows read at the end of the sweep:
+When session start reports unread correction rows (`autolearn: N correction row(s) no sweep has read, oldest YYYY-MM-DD`), dispatch `/autolearn` across those unread `recorded` rows and their sessions as a background job through `/delegate` on a cheap `fanout` row (`python3 .claude/tools/model_registry.py for-role fanout`). The job lists the rows with `python3 .claude/tools/autolearn_outcomes.py unswept --rows` and cites each by its `id` (`autolearn_outcomes.py show <id>` prints it back), never by line number: a rotation shifts lines. Dispatching through `/delegate` records the job's cost where `/orchestration_metrics` reads and archives it. Return the findings as one review packet (`## Review packet`) for the owner to rule on, then mark the swept rows read at the end of the sweep:
 
 ```bash
 python3 .claude/tools/autolearn_outcomes.py swept

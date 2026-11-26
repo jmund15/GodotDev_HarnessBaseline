@@ -1,318 +1,52 @@
 #!/usr/bin/env python3
-"""Sub-hook of post_edit_dispatch.py: the facts a `task` brief carries, at the brief write.
+"""Sub-hook of post_edit_dispatch.py: what a scratch brief's `task` block tells its author at the write, before dispatch.
 
-Class: advisory. It never denies. A malformed `task` block is named in its context line once per brief and defect,
-since the session started or last compacted.
+Class: advisory. It never denies. A Write or Edit of a file under `.claude/scratch/` that leaves a ```task block gets
+up to two context lines:
+- a malformed block (`dispatch_result.task_block` names the defect), with `[task-brief-facts]` and a fix-it ask, once
+  per brief and defect since the session started or last compacted;
+- the dispatch-prep notice (`model_ladder_gate.advance_notice`, the earlier surface of the doctrine deny): the loads a
+  launch is denied for while they are not in context, once per window.
+A well-formed block adds no malformed line; the dispatch-prep notice does not depend on the block. A write with no
+```task fence adds nothing.
 
-At the first brief write of a window while the orchestration skill or the ladder is not in context, one extra
-line (`NOTICE_TAG`) names both loads and that a launch is denied until they are met, so a deny never announces
-them first. It fires once per window and is silent once both are met; `model_ladder_gate.doctrine_check` owns
-the two conditions.
-
-A Write or Edit that leaves a file holding a ```task block gets one context block: a route header per route, then
-one row per claiming model on that route, in registry order, with no pick. A plan route's header names each
-surviving plan's quota left, read cache-only with no probe; a plan with no fresh cache reading is named
-`warming` and its rows wait for that reading. A plan row states its draw: the
-output-rate ratio to the cheapest row on its own route, one measured point, never compared across plans. A
-pay-per-token row states its spend: its priced reading ratio to the cheapest row on its route, with the USD figure.
-Every row also states the catalog's input modalities (`unknown` on an inputGap), the transport's image-route fact,
-the ladder's intel and speed, whether the reading fits its usable window, and the first `+` and
-first `−` clause of its `±` cell, quoted verbatim. A later brief of the same tier in the same session, with no
-compaction between, gets one short line instead: its reading, the fit of each row whose fit changed, and `table as
-earlier this session`. A tier whose `for-role` table already reached this context (a delivered receipt,
-`_hook_state.ladder_slice_tiers`) gets one line with its reading, each row's fit and draw, and `table as earlier
-this session`. The record is `_hook_state.brief_table_seen`, cleared by a compaction. The reading is two numbers, as
-`dispatch_size` measures a job: the lower (the brief, its listed files and the files it names to read whole, which
-`_dispatch_checks.price_reading` prices) and the upper (every named file read whole). A row's fit is judged on the lower
-number against the row's compaction point.
-
-Owners: `dispatch_result.task_block` (the block), `provider_bands.tier_table` (rows, plans, warming, probation),
-`dispatch_size` (the reading and the fit), `_dispatch_checks` (the price and the draw ratio) and the ladder (intel,
-speed, `±`).
+Not here: a table of rows claiming the block's tier, with their price, plan room and window fit. That is delegation-plugin
+machinery (model routing, `provider_bands.tier_table`); the same facts reach the pick through `model_registry.py for-role`
+(which the notice names) and the launcher's `dispatch_size.fit_lines`. Last carried by this hook at commit e6f2dd72.
 
 Contract: `process(payload) -> {"context": text} | None`.
 """
 
+import hashlib
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(os.path.dirname(HERE), "tools")
-ROOT = os.path.dirname(os.path.dirname(HERE))
 TAG = "[task-brief-facts]"
-TOOL_NAMES = ("Write", "Edit")
 FENCE = "```task"
-NOTE = ("draw ratios compare models within one plan (list-price ratio, one measured point); "
-        "across plans compare room")
-HEADER = "model | input | image route | draw or spend | intel | speed | window | first + | first −"
-
-# The dispatch loads `model_ladder_gate.doctrine_check` denies on, stated before the first dispatch so a deny
-# is never the first place the agent meets them.
-NOTICE_TAG = "[dispatch-prep]"
-NOTICE_ONCE = "task_brief_facts:dispatch_prep"
-LADDER_LOAD = ('run `python3 .claude/tools/model_registry.py for-role <tier>` bare (no pipe or filter) '
-               'for each tier the jobs pin')
-# One malformed-block line per (brief, defect) per window: a repeat of what the session already holds changes nothing.
 MALFORMED_ONCE = "task_brief_facts:malformed:"
 
 
-def _owners():
-    if TOOLS not in sys.path:
-        sys.path.insert(0, TOOLS)
-    if HERE not in sys.path:
-        sys.path.insert(0, HERE)
-    import _dispatch_checks
+def _malformed(session_id, path, text):
+    """The fix-it line for a malformed `task` block, empty when the block is sound or the session was already told."""
+    import _hook_state
     import dispatch_result
-    import dispatch_size
-    import model_registry
-    import provider_bands
-    return dispatch_result, dispatch_size, model_registry, provider_bands, _dispatch_checks
-
-
-def _n(value):
-    return "{:,}".format(value)
-
-
-def _left(value):
-    return "left unknown" if value is None else "left %.1f%%" % value
-
-
-def _fit(dispatch_size, row_id, lower, upper, data, transport=None):
-    """The fit cell of one row: the lower reading against the row's compaction point on `transport`, with the upper
-    reading (every named file read whole) beside it."""
-    fit = dispatch_size.fit_tokens(row_id, lower, data, {"transport": transport} if transport else None)
-    if fit["error"]:
-        return "window unjudged (%s)" % fit["error"]
-    both = "%s of %s; %s if read whole" % (_n(lower), _n(fit["usable"]), _n(upper))
-    if fit["over"]:
-        return "over by %s tokens (%s)" % (_n(fit["over"]), both)
-    if upper > fit["usable"]:
-        return "ceiling over (%s)" % both
-    return "fits (%s)" % both
-
-
-def _reading(dispatch_size, path):
-    """(lower, upper, unreadable): the brief as `dispatch_size` measures a job. Lower is the brief, its listed files
-    and the files it names to read whole; upper adds the named files it edits or cites by line."""
-    size = dispatch_size.dispatch_size({"jobs": [{"label": "brief", "promptFile": path}]}, ROOT)
-    per = size["perJob"][0]
-    return per["lowerTokens"], per["upperTokens"], size["unreadable"]
-
-
-def _ladder(model_registry, data):
-    """{registry id: the ladder row} for the intel, speed and `±` cells; {} when the ladder cannot be read."""
     try:
-        with open(model_registry.ladder_path(), encoding="utf-8") as fh:
-            rows = model_registry.parse_ladder_rows(fh, ("model", "intel", "speed", "±"))
-    except OSError:
-        return {}
-    out = {}
-    for row in rows:
-        for m in model_registry.ladder_rows(row["model"], data):
-            out.setdefault(m["id"], row)
-    return out
-
-
-def _clauses(cell):
-    """(first +, first −) clause of a ladder `±` cell, verbatim; None where the cell states none."""
-    plus, sep, minus = (cell or "").partition("−")
-    first_plus = plus.strip().lstrip("+").strip().split(";")[0].strip()
-    first_minus = minus.split(";")[0].strip() if sep else ""
-    return first_plus or None, first_minus or None
-
-
-def _quoted(sign, clause):
-    return '%s "%s"' % (sign, clause) if clause else "%s (none stated)" % sign
-
-
-def _money(price):
-    return "unpriced" if price is None else "$%.4f" % price
-
-
-def _input_cell(model_registry, entry):
-    """The catalog's input modalities, or `unknown` when the row records an inputGap."""
-    types = model_registry.input_types(entry)
-    return ",".join(types) if types else "unknown"
-
-
-def _image_cell(model_registry, entry, data):
-    """The transport's image-delivery fact: `verified`, `unverified`, or `unstated` on a bare fixture."""
-    return ((model_registry.image_route(entry, data) or {}).get("state") or "unstated")
-
-
-def _route_labels(route, entries, data, tokens, owners):
-    """(is_plan, {row id: draw or spend label}) for one route: ratios restart per route, so a plan's draw is
-    taken against the cheapest priced row of that plan's route and a pay-per-token row's spend against its own."""
-    model_registry, dispatch_checks = owners
-    if model_registry.cost_model_for(route, data) == "plan-quota":
-        draws = dispatch_checks.draw_ratios([e["id"] for e in entries], data)
-        return True, {e["id"]: "draw " + ("n/a" if draws.get(e["id"]) is None else "%.2fx" % draws[e["id"]])
-                      for e in entries}
-    prices = {e["id"]: dispatch_checks.price_reading(e["id"], tokens, data)[0] for e in entries}
-    priced = [p for p in prices.values() if p]
-    base = min(priced) if priced else None
-    labels = {}
-    for entry in entries:
-        price = prices[entry["id"]]
-        ratio = None if price is None or not base else price / base
-        labels[entry["id"]] = "spend %s %s" % ("n/a" if ratio is None else "%.2fx" % ratio, _money(price))
-    return False, labels
-
-
-def _route_lines(route, entries, seat, data, tokens, owners, ladder, fits, plans):
-    """One route's header line, then one row per entry."""
-    suffix = ", session route" if route == seat else ""
-    plan, labels = _route_labels(route, entries, data, tokens, owners)
-    model_registry = owners[0]
-    if plan:
-        room = "; ".join("%s %s" % (p["plan"], _left(p["left"])) for p in plans) or "no plan"
-        lines = ["route %s (plan%s): %s" % (route, suffix, room)]
-    else:
-        lines = ["route %s (pays per token%s, room n/a)" % (route, suffix)]
-    for entry in entries:
-        cell = ladder.get(entry["id"], {})
-        plus, minus = _clauses(cell.get("±"))
-        model_row = model_registry.resolve(entry["id"], data)
-        cells = [entry.get("alias") or entry["id"], _input_cell(model_registry, model_row),
-                 _image_cell(model_registry, model_row, data), labels[entry["id"]],
-                 cell.get("intel", "?"), cell.get("speed", "?"),
-                 fits[entry["id"]], _quoted("+", plus), _quoted("−", minus)]
-        if entry.get("probation"):
-            cells.append('probation "%s"' % entry["probation"])
-        lines.append(" | ".join(cells))
-    return lines
-
-
-def _verdict(fit):
-    """A fit cell's verdict without its token counts: `fits`, `over` or `window` (unjudged)."""
-    return fit.split(" ", 1)[0]
-
-
-def _short(tier, tokens, upper, unreadable, fits, names, earlier):
-    """One line for a repeat brief of `tier`: its reading, each row whose fit verdict moved since the stored table,
-    and that the table stands as earlier. A new reading size alone is not news: the line already states it."""
-    changed = ["%s %s" % (names[row], fit) for row, fit in fits.items() if earlier.get(row) != _verdict(fit)]
-    parts = ["%s tier %s; reading %s tokens (%s if every named file is read whole)" % (TAG, tier, _n(tokens), _n(upper))]
-    if unreadable:
-        parts.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
-    parts.append("fit changed: " + "; ".join(changed) if changed else "fits as earlier")
-    parts.append("table as earlier this session")
-    return "; ".join(parts)
-
-
-def _receipt_short(tier, tokens, unreadable, fits, names, labels):
-    """One line for a brief whose tier's table already reached this context through a delivered `for-role`
-    receipt: its reading, each row's fit and draw, and that the table stands as earlier. Never the table again."""
-    parts = ["%s tier %s; reading %s tokens" % (TAG, tier, _n(tokens))]
-    if unreadable:
-        parts.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
-    parts.append("; ".join("%s %s, %s" % (names[row], labels[row], fit) for row, fit in fits.items()))
-    parts.append("table as earlier this session")
-    return "; ".join(parts)
-
-
-def _facts(block, path, data, session, session_id=None):
-    dispatch_result, dispatch_size, model_registry, provider_bands, dispatch_checks = _owners()
-    tier = block.get("tier")
-    if not isinstance(tier, str) or not tier:
-        return "%s the task block names no tier, so no row can be listed" % TAG
-
-    def cache_only(name, _data=None):
-        return provider_bands.read_capacity(name, data, live=False)
-
-    got = provider_bands.tier_table(tier, session, data=data, read=cache_only)
-    if got.get("refused"):
-        return "%s tier %s: %s" % (TAG, tier, got["refused"])
-    tokens, upper, unreadable = _reading(dispatch_size, path)
-    ladder = _ladder(model_registry, data)
-    pay = {}
-    for option in got["payOptions"]:
-        pay.setdefault(option["transport"], []).append(option)
-    groups = [(group["route"], group["rows"], group["plans"]) for group in got["groups"]]
-    groups += [(route, entries, []) for route, entries in pay.items()]
-    fits = {}
-    names = {}
-    for route, entries, _plans in groups:
-        for entry in entries:
-            fits[entry["id"]] = _fit(dispatch_size, entry["id"], tokens, upper, data, route)
-            names[entry["id"]] = entry.get("alias") or entry["id"]
-    if session_id is not None:
-        import _hook_state
-        earlier = _hook_state.brief_table_seen(session_id, tier, {row: _verdict(fit) for row, fit in fits.items()})
-        if earlier is not None:
-            return _short(tier, tokens, upper, unreadable, fits, names, earlier)
-        import model_ladder_gate
-        if model_ladder_gate.tier_in_context(session_id, tier):
-            owners = (model_registry, dispatch_checks)
-            labels = {}
-            for route, entries, _plans in groups:
-                labels.update(_route_labels(route, entries, data, tokens, owners)[1])
-            return _receipt_short(tier, tokens, unreadable, fits, names, labels)
-    lines = ["%s tier %s, session plan %s; reading %s tokens (%s if every named file is read whole); "
-             "USD only on pay-per-token rows; facts only, registry order" % (TAG, tier, session, _n(tokens), _n(upper))]
-    if unreadable:
-        lines.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
-    if got.get("warming"):
-        lines.append(", ".join("%s warming" % name for name in got["warming"]))
-    lines += [NOTE, HEADER]
-    owners = (model_registry, dispatch_checks)
-    for route, entries, plans in groups:
-        lines += _route_lines(route, entries, got["seat"], data, tokens, owners, ladder, fits, plans)
-    return "\n".join(lines)
-
-
-def _dispatch_prep_notice(payload):
-    """One line at the first dispatch-prep signal of a window while the orchestration skill or the ladder is
-    not in context: both loads, and that a launch is denied until they are. Silent once both are met, and
-    silent after it has fired once since the session started or last compacted."""
-    session_id = payload.get("session_id") or ""
-    if not session_id:
-        return ""
-    import _hook_state
-    try:
-        import model_ladder_gate
-        ladder = model_ladder_gate.ladder_held(session_id)
-        skill = _hook_state.skill_in_context(session_id, "orchestration",
-                                             transcript_path=payload.get("transcript_path"))
-    except Exception:
-        return ""
-    if skill and ladder:
-        return ""
-    import model_ladder_gate
-    skill_load = model_ladder_gate.skill_step("orchestration", payload, "orchestration §0")
-    missing = [step for step, met in ((skill_load, skill), (LADDER_LOAD, ladder)) if not met]
-    if not _hook_state.fire_once_since_compaction(session_id, NOTICE_ONCE):
-        return ""
-    return "%s a dispatch is denied until you %s." % (NOTICE_TAG, " and ".join(missing))
-
-
-def _malformed_is_news(session_id, path, exc):
-    """True the first time this session, since its last compaction, sees `exc` on the brief at `path`."""
-    import hashlib
-    import _hook_state
-    key = MALFORMED_ONCE + hashlib.sha1(("%s\n%s" % (path, exc)).encode("utf-8", "replace")).hexdigest()[:16]
-    try:
-        return _hook_state.fire_once_since_compaction(session_id, key)
-    except Exception:
-        return True
-
-
-def _with_notice(result, notice):
-    """`result` with the dispatch-prep notice appended to its context line, or the notice alone."""
-    if not notice:
-        return result
-    text = (result or {}).get("context") or ""
-    return {"context": text + "\n" + notice if text else notice}
+        dispatch_result.task_block(text)
+    except ValueError as exc:
+        key = MALFORMED_ONCE + hashlib.sha1(("%s\n%s" % (path, exc)).encode("utf-8", "replace")).hexdigest()[:16]
+        if _hook_state.fire_once_since_compaction(session_id, key):
+            return "%s %s; fix it before dispatch." % (TAG, exc)
+    return ""
 
 
 def process(payload):
-    data_in = payload if isinstance(payload, dict) else {}
-    if data_in.get("tool_name") not in TOOL_NAMES:
+    payload = payload if isinstance(payload, dict) else {}
+    if payload.get("tool_name") not in ("Write", "Edit"):
         return None
-    path = (data_in.get("tool_input") or {}).get("file_path")
-    if not isinstance(path, str) or not path:
-        return None
-    if "/.claude/scratch/" not in path.replace("\\", "/"):
+    path = (payload.get("tool_input") or {}).get("file_path")
+    if not isinstance(path, str) or "/.claude/scratch/" not in path.replace("\\", "/"):
         return None
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -321,17 +55,10 @@ def process(payload):
         return None
     if FENCE not in text:
         return None
-    notice = _dispatch_prep_notice(data_in)
-    dispatch_result, _size, model_registry, provider_bands, _checks = _owners()
-    try:
-        block = dispatch_result.task_block(text)
-    except ValueError as exc:
-        if not _malformed_is_news(data_in.get("session_id") or "default", path, exc):
-            return _with_notice(None, notice)
-        return _with_notice({"context": "%s %s; fix it before dispatch." % (TAG, exc)}, notice)
-    if block is None:
-        return _with_notice(None, notice)
-    session = provider_bands.session_plan()
-    data = model_registry.load()
-    return _with_notice({"context": _facts(block, path, data, session,
-                                           session_id=data_in.get("session_id") or "default")}, notice)
+    for where in (TOOLS, HERE):
+        if where not in sys.path:
+            sys.path.insert(0, where)
+    import model_ladder_gate
+    lines = [line for line in (_malformed(payload.get("session_id") or "default", path, text),
+                               model_ladder_gate.advance_notice(payload)) if line]
+    return {"context": "\n".join(lines)} if lines else None

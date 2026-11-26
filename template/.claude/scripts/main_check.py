@@ -59,7 +59,9 @@ from xml.etree import ElementTree
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "hooks"))
 from _bounded_run import ProcessTree  # noqa: E402
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
+from _msys import resolve_argv  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "tools"))
 import adaptation  # noqa: E402
@@ -164,7 +166,7 @@ def read_json(path):
 
 
 def repo_root(arg):
-    return os.path.abspath(arg) if arg else git(os.getcwd(), "rev-parse", "--show-toplevel")
+    return os.path.abspath(arg) if arg else harness_root()
 
 
 def runs_root(repo):
@@ -582,15 +584,11 @@ def repo_slug(url):
 def gh_read(args, timeout=GH_READ_TIMEOUT_S):
     """(returncode or None, stdout, stderr) of a bounded `gh` call; a missing gh, a spawn fault or the timeout is
     None, so an unreadable source never stops the main check."""
-    exe = shutil.which("gh")
-    if not exe:
-        return None, "", "gh is not on PATH"
-    cmd = [exe, *args]
+    cmd, problem = resolve_argv(["gh", *args])
+    if problem:
+        return None, "", problem
     try:
-        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
-            done = subprocess.run(subprocess.list2cmdline(cmd), shell=True, capture_output=True, timeout=timeout)
-        else:
-            done = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        done = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, "", str(exc)
     return (done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace"))

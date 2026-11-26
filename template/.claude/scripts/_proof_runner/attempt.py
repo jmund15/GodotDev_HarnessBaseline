@@ -59,7 +59,8 @@ class AttemptJob(NamedTuple):
 
 class AttemptResult(NamedTuple):
     """One run's answer. The first three fields are the tuple every caller already unpacks; `timeout` is the
-    typed replacement for reading the detail text."""
+    typed replacement for reading the detail text. `busy` is the machine's CPU share across a failed run (None when
+    it passed or could not be read): how much room the red had."""
     status: str
     run_s: float
     detail: str
@@ -67,6 +68,7 @@ class AttemptResult(NamedTuple):
     wait_s: float = 0.0
     wait_split: object = None
     observations: object = ()
+    busy: object = None
 
 
 @dataclass
@@ -84,6 +86,7 @@ class RunContext:
     default_timeout: object = None
     inherited: bool = False
     held: bool = False
+    room: object = None
 
 
 SKIPPED = AttemptResult("skipped", 0.0, "not run: HARNESS_DEADLINE passed")
@@ -623,7 +626,11 @@ def run(ctx, job):
     try:
         if ctx.stop is not None and ctx.stop():
             return MOVED._replace(wait_s=wait, wait_split=split)
-        return _admitted_run(ctx, job)._replace(wait_s=wait, wait_split=split)
+        mark = ctx.room.mark() if ctx.room else None
+        result = _admitted_run(ctx, job)
+        if ctx.room and result.status == "fail":
+            result = result._replace(busy=ctx.room.busy(mark))
+        return result._replace(wait_s=wait, wait_split=split)
     finally:
         ctx.release(handles)
 

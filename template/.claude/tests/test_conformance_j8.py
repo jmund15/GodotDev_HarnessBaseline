@@ -37,7 +37,6 @@ class Conformance(unittest.TestCase):
             self.assertIsNotNone(triage.parse_trailer(incomplete)[1])
 
     def test_rv6_consumers_and_full_task_schema(self):
-        import triage_commit_check
         import escape_log
         import review_calibration
         import task_record
@@ -59,15 +58,6 @@ class Conformance(unittest.TestCase):
             git("add", "hook.py")
             message = root / "message.txt"
             message.write_text("fix: fixture\n\n" + TRAILER)
-            payload = {"tool_name": "Bash", "session_id": "j8", "cwd": str(root),
-                       "tool_input": {"command": 'git commit -F "' + message.as_posix() + '"'}}
-            proc = subprocess.run([sys.executable, str(CLAUDE / "hooks/triage_commit_check.py")],
-                                  input=json.dumps(payload), capture_output=True, text=True,
-                                  env=dict(os.environ, CLAUDE_PROJECT_DIR=str(root)))
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-            self.assertIn("reach local -> shared", context)
-            self.assertNotIn("unreadable", context)
             git("commit", "-qF", str(message))
             sha = git("rev-parse", "HEAD")
             with patch.object(escape_log, "_REPO", str(root)):

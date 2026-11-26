@@ -1,9 +1,8 @@
-"""Re-runnable proof for hooks/_file_lock.py and its three consumers.
+"""Re-runnable proof for hooks/_file_lock.py and its consumers.
 
 The lock's liveness evidence is the holder's open handle, never the lock's age: a live
 holder that stalls keeps its lock, and a holder that exits (however it exits) releases it.
-The lock cases once lived in test_self_eval_archive_store.py and
-test_orchestration_metrics_pending.py; they moved here when both tools and _hook_state
+The lock cases once lived in the per-tool proofs; they moved here when the tools and _hook_state
 adopted the one implementation.
 
     python3 .claude/tests/test_file_lock.py
@@ -23,7 +22,6 @@ HOOKS = os.path.normpath(os.path.join(HERE, "..", "hooks"))
 TOOLS = os.path.normpath(os.path.join(HERE, "..", "tools"))
 FILE_LOCK_PATH = os.path.join(HOOKS, "_file_lock.py")
 HOOK_STATE_PATH = os.path.join(HOOKS, "_hook_state.py")
-STORE_PATH = os.path.join(TOOLS, "self_eval_archive_store.py")
 METRICS_PATH = os.path.join(TOOLS, "orchestration_metrics.py")
 
 # argv: module path, "file_lock" | "hook_state", lock/state path, "hold" | "crash"
@@ -315,26 +313,6 @@ def main():
                   path_loaded.returncode == 0 and path_loaded.stdout.strip() == "True ran"))
 
     # Tools wait on a holder of the shared lock and carry no private copy of it.
-    store = load("self_eval_archive_store_under_test", STORE_PATH)
-    tool_lock = os.path.join(root, "store-wiring.lock")
-    holder, ready = start_holder(FILE_LOCK_PATH, "file_lock", tool_lock)
-    original_timeout = store.LOCK_TIMEOUT_SECONDS
-    store.LOCK_TIMEOUT_SECONDS = 0.3
-    try:
-        try:
-            with store._lock(tool_lock):
-                store_waited = False
-        except TimeoutError:
-            store_waited = True
-    finally:
-        store.LOCK_TIMEOUT_SECONDS = original_timeout
-        stop(holder)
-    cases.append(("self_eval_archive_store waits on a _file_lock holder",
-                  ready and store_waited))
-    cases.append(("self_eval_archive_store carries no private lock implementation",
-                  not any(hasattr(store, name) for name in
-                          ("_create_lock", "_remove_abandoned_lock", "_release_lock"))))
-
     metrics = load("orchestration_metrics_under_test", METRICS_PATH)
     metrics.PENDING_VERDICTS = os.path.join(root, "orchestration_verdicts.json")
     holder, ready = start_holder(FILE_LOCK_PATH, "file_lock", metrics.PENDING_VERDICTS + ".lock")

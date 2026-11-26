@@ -64,15 +64,16 @@ for kind in scout lens reviewer judge; do
 done
 check "author keeps write_doc: SC_DISALLOWED is the base list" "Task,Agent,Workflow" "$(disallowed author)"
 
-READ_SPEC="Read,Glob,Grep,mcp__${SS_NORM},mcp__ai-worker,mcp__git"
+READ_BUILTINS="Read,Glob,Grep,Bash"   # every kind but gate holds Bash; only author writes
+READ_SPEC="$READ_BUILTINS,mcp__${SS_NORM},mcp__ai-worker,mcp__git"
 for kind in scout lens reviewer judge; do
-  check "$kind resolves to the table's row"  "Read,Glob,Grep|$READ_SPEC|$kind shape-default strict semantic-search,ai-worker,git" "$(resolved $kind '')"
+  check "$kind resolves to the table's row"  "$READ_BUILTINS|$READ_SPEC|$kind shape-default strict semantic-search,ai-worker,git" "$(resolved $kind '')"
 done
 check "author resolves to the write set"    "Read,Glob,Grep,Edit,Write,Bash|Read,Glob,Grep,Edit,Write,Bash,mcp__${SS_NORM},mcp__ai-worker|author shape-default strict semantic-search,ai-worker" "$(resolved author '')"
 check "gate resolves to its own row, no MCP" "Read,Grep,Bash|Read,Grep,Bash|gate shape-default strict " "$(resolved gate '')"
 check "arm takes its task row and one server" "Read,Glob,Grep,Edit,Write,Bash,TodoWrite|Read,Glob,Grep,Edit,Write,Bash,TodoWrite,mcp__${SS_NORM}|arm task-base strict semantic-search" "$(resolved arm 'Read,Glob,Grep,Edit,Write,Bash,TodoWrite,mcp__'"${SS_KEY}"'__search')"
-check "a signed csv is a delta"             "Read,Glob,Grep|Read,Glob,Grep,mcp__${SS_NORM},mcp__ai-worker,mcp__git,mcp__godot|scout delta strict semantic-search,ai-worker,git,godot" "$(resolved scout '+mcp:godot')"
-check "a removal drops exactly one server"  "Read,Glob,Grep|Read,Glob,Grep,mcp__${SS_NORM},mcp__git|scout delta strict semantic-search,git" "$(resolved scout '-mcp:ai-worker')"
+check "a signed csv is a delta"             "$READ_BUILTINS|$READ_SPEC,mcp__godot|scout delta strict semantic-search,ai-worker,git,godot" "$(resolved scout '+mcp:godot')"
+check "a removal drops exactly one server"  "$READ_BUILTINS|$READ_BUILTINS,mcp__${SS_NORM},mcp__git|scout delta strict semantic-search,git" "$(resolved scout '-mcp:ai-worker')"
 # The arm row carries no built-ins, so a delta on an arm needs its task row beside it -- and the
 # two grammars cannot share one `-t` CSV. SC_BASE_BUILTINS is that second value; a delta that
 # cannot be reached from the command line is a profile no A/B cell can express.
@@ -130,7 +131,7 @@ refusal review ''                       'scout, lens, reviewer, author, judge'
 # An unsigned -t is the retired absolute list: it refuses on every kind but arm, naming -G <kind> and a signed delta.
 for kind in scout lens reviewer author judge; do
   refusal $kind 'Read,Glob,Grep'        '-G <kind>'
-  refusal $kind 'Read,Glob,Grep'        '+Bash'
+  refusal $kind 'Read,Glob,Grep'        '-mcp:ai-worker'
 done
 refusal ''    ''                        'scout, lens, reviewer, author, judge'
 # -B base built-ins are the arm row's task list; they are legal only with -G arm.
@@ -139,7 +140,7 @@ check "-B refuses on a public kind, naming -G arm" "yes" "$(case "$b_out" in *"t
 
 # The launcher reads no brief: sc_resolve_tools takes the kind row and the signed delta, never a prompt
 # file, a positional prompt or a -C file. A brief that names `git diff` or a slash command leaves the
-# profile as the kind carries it; a job that needs Bash writes `-t +Bash`.
+# profile as the kind carries it.
 printf 'Enumerate with `git diff origin/main...HEAD`.\n' > "$WORK/git_brief.md"
 printf 'Run /pr_ready over the branch.\n' > "$WORK/pr_ready_brief.md"
 unbriefed() {  # $1 kind, $2 -t, $3 -f file -> builtins, or the refusal
@@ -148,10 +149,10 @@ unbriefed() {  # $1 kind, $2 -t, $3 -f file -> builtins, or the refusal
     SC_PROMPT_FILE="$3" SC_PROMPT='' SC_CONTEXT_FILES=("$3")
     sc_resolve_tools >/dev/null 2>&1 && printf '%s' "$SC_RESOLVED_BUILTINS" ) 2>&1 | tr -d '\r'
 }
-check "a brief naming git diff does not widen a reviewer" "Read,Glob,Grep" "$(unbriefed reviewer '' "$WORK/git_brief.md")"
+check "a brief naming git diff does not widen a reviewer" "$READ_BUILTINS" "$(unbriefed reviewer '' "$WORK/git_brief.md")"
 check "a brief telling the child to run /pr_ready resolves: the launcher scans no brief" "Read,Glob,Grep,Edit,Write,Bash" \
       "$(unbriefed author '' "$WORK/pr_ready_brief.md")"
-check "+Bash is the way to ask for a shell" "Read,Glob,Grep,Bash" "$(unbriefed reviewer '+Bash' "$WORK/git_brief.md")"
+check "a +Bash grant a reviewer already holds changes nothing" "$READ_BUILTINS" "$(unbriefed reviewer '+Bash' "$WORK/git_brief.md")"
 check "sc_resolve_tools no longer passes --widen or --brief" "0" \
       "$(sed -n '/^sc_resolve_tools() {/,/^}/p' "$LIB" | grep -c -e '--widen' -e '--brief')"
 
@@ -179,6 +180,21 @@ sys.exit(not ("[delegate rails — shape %r" % sys.argv[2] in p
 check "bare: resolved luna's notes occur in exactly one append file" "gpt-6-luna:1" "$(appended_notes bare scout survey)"
 check "pointer: resolved luna's notes occur in exactly one append file" "gpt-6-luna:1" "$(appended_notes pointer lens survey)"
 check "a judge kind appends the common rails and luna notes" "gpt-6-luna:1" "$(appended_notes bare judge common)"
+# The launcher names no rail tier: the appended rails read at the registry row's tier for the resolved model,
+# on every path that assembles them (bare, pointer, and a hookless seat at full), as a native Workflow seat's do.
+appended_tier() {  # $1 disclosure, $2 model, $3 hookless (1|'') -> the tier the rails header names
+  ( SC_TRANSPORT=anthropic
+    . "$LIB" >/dev/null 2>&1
+    SC_MODEL="$2" SC_SHAPE=reviewer SC_DISCLOSURE="$1" SC_HOOKLESS="${3:-}" SC_WORKDIR="$(cd "$HERE/../.." && pwd)"
+    sc_resolve_model >/dev/null 2>&1; sc_build_disclosure >/dev/null 2>&1
+    for ((i=0; i<${#SC_APPEND_ARGS[@]}; i+=2)); do
+      sed -n 's/^\[delegate rails — shape .*, \([a-z]*\) tier; home:.*/\1/p' "${SC_APPEND_ARGS[i+1]}" 2>/dev/null
+    done | head -1 )
+}
+check "bare: an opus child's rails read at its row's condensed tier" "condensed" "$(appended_tier bare claude-opus-5-5)"
+check "pointer: a fable child's rails read at its row's minimal tier" "minimal" "$(appended_tier pointer claude-fable-5-2)"
+check "hookless full: a sonnet child's rails read at its row's detailed tier" "detailed" "$(appended_tier full claude-sonnet-5-5 1)"
+check "hookless full: an opus child's rails read at its row's condensed tier" "condensed" "$(appended_tier full claude-opus-5-5 1)"
 check "an omitted kind assembles no guards" "refused" \
       "$( ( SC_TRANSPORT=codex; . "$LIB" >/dev/null 2>&1; SC_MODEL=luna SC_SHAPE='' SC_DISCLOSURE=bare SC_WORKDIR="$(cd "$HERE/../.." && pwd)"
            ( sc_resolve_model && sc_build_disclosure ) >/dev/null 2>&1 && echo built || echo refused ) )"

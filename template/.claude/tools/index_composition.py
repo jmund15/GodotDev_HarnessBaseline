@@ -21,6 +21,9 @@ import os
 import sqlite3
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+from _checkout_root import harness_root  # noqa: E402
+
 BASELINE_RELPATH = os.path.join(".claude", "index_composition_baseline.json")
 NO_BASELINE = "no baseline set"
 MEMORY_BUCKET = ".claude/auto-memory"
@@ -91,7 +94,7 @@ def set_baseline(root: str, db: str) -> int:
 
 
 def main() -> int:
-    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()
     db = os.path.join(root, ".search-index", "search.db")
     if "--set-baseline" in sys.argv[1:]:
         return set_baseline(root, db)

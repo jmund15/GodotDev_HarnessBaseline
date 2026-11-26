@@ -12,8 +12,7 @@ tonal corrections, the *why* behind a preference, cross-message themes, quiet ap
 This pass closes that gap over the PRE-COMPACTION segments only (live context already holds
 the rest).
 
-Shared by `/autolearn` (Step 0) and `/self_evaluate` (Step 0c). In `/session_end` they run
-back-to-back, so the pass runs once per session and is reused — see Procedure step 0.
+Run by `/autolearn` (Step 0); a second run in the same session reuses the result — see Procedure step 0.
 
 ## Gate — this file owns the condition
 Run when the pre-compaction segments likely hold corrections or decisions that neither live
@@ -25,8 +24,7 @@ Clean sessions: SKIP — the regex digest suffices.
 
 ## Procedure
 0. **Reuse check:** if `logs/nuance_recall_<session_id>.json` exists AND was written this
-   session, load it and skip to step 4. (The b2b `/session_end` path means autolearn Phase 2
-   usually populates it before self_evaluate Phase 3; re-extracting doubles the worker cost.)
+   session, load it and skip to step 4 (re-extracting doubles the worker cost).
 1. From `logs/pre_compact.json`, list the pre-compaction backup `.jsonl` paths for this session_id.
 2. For each backup: `extract_session_chat(session_path=<abs .jsonl path>)`
    → clean user+assistant prose temp path (tool calls stripped by default — correct here).

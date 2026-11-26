@@ -354,7 +354,6 @@ const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__t
 // ENGINE-BLOCK-END TOOLP
 const profileOf = (a) => (a && (TOOLP[a.key] || TOOLP['review:' + a.key])) || null
 const hasTool = (a, t) => (profileOf(a).builtins || []).includes(t)
-const noShell = (a) => !hasTool(a, 'Bash')
 const recordOf = (tp) => tp ? Object.assign({}, tp, { enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }) : null
 const RETIRED_KEYS = { agentType: 'the kind row sets the agent type', shape: 'use kind', readOnly: 'this engine is read-only; the kind sets the tools' }
 const retiredOn = (a) => Object.keys(RETIRED_KEYS).filter(k => !!a && k in a)
@@ -413,17 +412,14 @@ const CONCURRENT = agents.length > 1
 // ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // ENGINE-BLOCK-END RELAY_LINE
-// The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
-// .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock),
-// which arms for any engine carrying the next line.
-// READONLY-FANOUT-ENGINE
+// The read-only line below is prompt-level; no hook backs it.
 const BASE_CONTRACT = (a) => [
   '',
   '=== ENGINE CONTRACT ===',
   RELAY_LINE,
   readOnlyContract(a),
   CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout; your delegate rails name this project\'s) — use Grep/Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (noShell(a) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).')
+    + '; you write no file, by a tool or through the shell; run a proof you cite through `python3 .claude/tools/machine_slots.py run -- <proof command>`.'
     + ' If your mandate requires a single-flight run, STOP and report that it needs a serialized dispatch.' : null,
   'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`, and each Read as `Read:<path>:<first>-<last>`, the lines it returned; a Read entry with no range counts as lines 1-' + READ_WINDOW + ', the Read tool\'s default window. `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Each `gaps` entry is `{"item": <the path you did not read>, "reason": "outside-lens" | "capability" | "missing"}`: another seat\'s lens owns the item, it needs a tool you lack (running code, a shell, the engine), or the path does not exist. Only such a gap excuses a MUST-READ entry; state any other limit (a check you could not run, a file outside the list) in `checked.basis`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
   'MUST-READ: you are done only when your Read ranges in `checked.toolsUsed` together cover every line of each entry below, or a `gaps` item names the entry with a legal reason. Read a file past the default window in ranges. A shell read of the file counts whole; a search covers no line. An entry read only in part fails this seat whatever `checked.stoppedAt` says, and the panel does not re-run a failed seat. Entries: ' + (a.mustRead || []).map(entry => entry.path + ' (' + entry.lines + ' lines)').join(', '),
@@ -597,7 +593,6 @@ if (SPILL_DIR) {
 // cannot read it, and a finding may cite a file absolutely (the findings schema allows it). A citation that is exactly
 // <repoRoot>/<root>/<file> routes to that file; any other absolute citation, or any with no repoRoot, routes nowhere and is flagged.
 // tools/fold_check.py route() re-derives this routing; tests/fold_routing_vectors.json holds both to one rule.
-// hooks/readonly_marker_arm.py allows the fold's writes to each subject's files and newPaths.
 const FOLD = (A.fold === undefined || A.fold === null) ? null : A.fold
 const repoRelative = (value) => {
   const p = typeof value === 'string' ? value.trim().replace(/\\/g, '/') : ''

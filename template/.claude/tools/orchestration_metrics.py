@@ -3264,7 +3264,7 @@ def _pays_per_token(row, entry, data):
 
 
 def archive_facts(rows, side, *, month=None, registry=None):
-    """The numbers behind --archive-summary, for the console and the dashboard alike.
+    """The numbers behind --archive-summary.
 
     `month` ('YYYY-MM') keeps the rows dated in it; rows with no recoverable date are counted in
     `undated` of the population passed in and belong to no month. `cells` and `route_cells` group every row

@@ -1,0 +1,135 @@
+{
+ "read_use": {
+  "type": "assistant",
+  "isSidechain": false,
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_012w1HBbd4tXSNF2bDNt6U58",
+     "name": "Read",
+     "input": {
+      "file_path": "C:/dev/App/.claude/auto-memory/archive/gotcha_godot_scene_reference_traps.md",
+      "offset": 19,
+      "limit": 4
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ]
+  },
+  "timestamp": "2026-11-25T17:47:46.629Z"
+ },
+ "read_result": {
+  "type": "user",
+  "isSidechain": false,
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "tool_use_id": "toolu_012w1HBbd4tXSNF2bDNt6U58",
+     "type": "tool_result",
+     "content": "<system-reminder>This memory is 112 days old. Memories are point-in-time observations, not live state \u2014 claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact.</system-reminder>\n19\t4. **A component that discovers its target via GetPare..."
+    }
+   ]
+  },
+  "timestamp": "2026-11-25T17:48:04.241Z"
+ },
+ "search_use": {
+  "type": "assistant",
+  "isSidechain": false,
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_011jMxwKNS7mHGZG47yuwGwh",
+     "name": "mcp__plugin_semantic-search_semantic-search__search",
+     "input": {
+      "query": "compaction point output reserve inkling local model window",
+      "searchDir": "C:/dev/App",
+      "restrictToDir": ".claude/auto-memory",
+      "limit": 8
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ]
+  },
+  "timestamp": "2026-11-25T17:47:28.304Z"
+ },
+ "search_result": {
+  "type": "user",
+  "isSidechain": false,
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "tool_use_id": "toolu_011jMxwKNS7mHGZG47yuwGwh",
+     "type": "tool_result",
+     "content": [
+      {
+       "type": "text",
+       "text": "1. .claude/auto-memory/archive/gotcha_compaction_trigger_is_window_minus_max_output.md:L1-27 (paragraph ---)\n   scores: pathMatch=1.00 gitRecency=0.77 bm25=0.69 cosine=0.30\n   ---\n   name: gotcha_compaction_trigger_is_window_minus_max_output\n   description: \"The CLI auto-compacts at declared window \u2212 max(max_output + ~3k, ~17\u201320k); a launcher that subtracts it...\n   ... (24 more lines)\n\n2. .claude/auto-memory/archive/evidence_haiku_compaction_point.md:L1-13 (paragraph ---)\n   scores: gitRecency=0.87 pathMatch=0.67 bm25=0.49 cosine=0.35\n   ---\n   name: evidence-haiku-compaction-point\n   description: Evidence behind the Haiku 250000/217000 compaction operating point in reference/external_models.json\n   ... (10 more lines)\n\n[Index: 5510 files, 40761 chunks]"
+      }
+     ]
+    }
+   ]
+  },
+  "timestamp": "2026-11-25T17:47:46.736Z"
+ },
+ "empty_use": {
+  "type": "assistant",
+  "isSidechain": false,
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_014xr2SzpyPoWycrcxTexdm2",
+     "name": "mcp__plugin_semantic-search_semantic-search__search",
+     "input": {
+      "query": "benchmark cell run sealed scoring one cell reps overnight detached run watcher",
+      "searchDir": "C:/dev/App",
+      "restrictToDir": ".claude/auto-memory",
+      "limit": 10
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ]
+  },
+  "timestamp": "2026-11-22T22:28:31.613Z"
+ },
+ "empty_result": {
+  "type": "user",
+  "isSidechain": false,
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "tool_use_id": "toolu_014xr2SzpyPoWycrcxTexdm2",
+     "type": "tool_result",
+     "content": [
+      {
+       "type": "text",
+       "text": "No results found.\n\n[Index: 5588 files, 41278 chunks]"
+      }
+     ]
+    }
+   ]
+  },
+  "timestamp": "2026-11-22T22:28:45.454Z"
+ },
+ "boundary": {
+  "type": "system",
+  "subtype": "compact_boundary",
+  "isSidechain": false,
+  "level": "info",
+  "timestamp": "2026-11-25T17:12:22.793Z"
+ }
+}

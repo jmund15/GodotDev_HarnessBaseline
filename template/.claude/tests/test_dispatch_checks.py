@@ -184,7 +184,7 @@ def main():
     case("without any supplementary field, a row outside the tier keeps today's tier_fit refusal",
          fit(seat("s1", "a-fan", ["m1"]), data=DATA) == [dc.tier_fit("a-fan", "architect", "anthropic", DATA)])
 
-    # cheaper_claimants: the facts the preflight line and the brief hook print for a pin above a cheaper claimant.
+    # cheaper_claimants: the facts the preflight line prints for a pin above a cheaper claimant.
     case("hooks/_dispatch_checks.py exposes cheaper_claimants", callable(getattr(dc, "cheaper_claimants", None)))
     if not callable(getattr(dc, "cheaper_claimants", None)):
         return report(cases)
@@ -446,8 +446,8 @@ def wide_run_cases(case, dc):
     case("the refusal names the gate kind as the next step",
          "gate" in why and "orchestration" in why, why)
     case("a gate job may order the same run", dc.wide_run_refusal("gate", ordered, root) is None)
-    case("a kind without Bash carries no brief-command check",
-         dc.wide_run_refusal("scout", ordered, root) is None)
+    case("a scout's ordered wide run is refused: every kind holds Bash, so every brief's commands are read",
+         bool(dc.wide_run_refusal("scout", ordered, root)))
     case("a negated clause is a prohibition, not an instruction",
          dc.wide_run_refusal("author", "Never run `npm run verify` in this job.\n", root) is None)
     case("a checklist item quoted into the brief is data",

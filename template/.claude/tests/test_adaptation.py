@@ -18,7 +18,9 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "..", "tools")
 sys.path.insert(0, TOOLS)
+sys.path.insert(0, HERE)
 import adaptation  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 
 def _rm(path):
@@ -80,7 +82,7 @@ def main():
         seed = {
             "read_only_commands": ["make"],
             "tests_root": "MyTests",
-            "memory_domains": [{"name": "X", "triggers": ["x"], "memory_keywords": [],
+            "memory_domains": [{"name": "X", "paths": ["x/**"], "memory_keywords": [],
                                  "skills": [], "rules": []}],
         }
         claude_dir = _claude_dir_with(tmp, json.dumps(seed))
@@ -142,7 +144,7 @@ def main():
             cases.append(("a wrong-typed " + key + " falls back to []", result.get(key) == []))
             cases.append(("a wrong-typed " + key + " names itself in one stderr line",
                           key in err and len(err.strip().splitlines()) == 1))
-        # --- instruction_scope: the number check and duplicate scan's scope ----------
+        # --- instruction_scope: the behavior check and duplicate scan's scope ----------
         default_scope = {"paths": [], "rows_dir": None}
         claude_dir = _claude_dir_with(tmp, None)
         cases.append(("instruction_scope defaults to an empty scope",
@@ -427,12 +429,11 @@ def main():
             json.dump({"index_prebuild": [bad_cmd, ok_cmd], "tests_root": "T", "usage_reset": {"weekday": "monday", "hour": 2},
                        "gate_cadence": good}, fh)
         tools_copy = os.path.join(cdir, "tools")
-        os.makedirs(tools_copy)
-        shutil.copy(script, tools_copy)
+        copy_closure(cdir, "tools/adaptation.py", "hooks/_msys.py")
 
-        def cli(*args):
+        def cli(*args, env=None):
             done = subprocess.run([sys.executable, os.path.join(tools_copy, "adaptation.py"), *args],
-                                  capture_output=True, text=True, encoding="utf-8", cwd=tmp)
+                                  capture_output=True, text=True, encoding="utf-8", cwd=tmp, env=env)
             return done.returncode, done.stdout, done.stderr
 
         code, out, _ = cli("get", "index_prebuild")
@@ -462,6 +463,32 @@ def main():
             ran = fh.read()
         cases.append(("run executes every entry once, reports the failing one and exits 0",
                       code == 0 and ran == "x" and "3" in (out + err)))
+
+        if os.name == "nt":
+            # CreateProcess applies no PATHEXT: a .cmd tool named bare is found through the shared resolver, and an
+            # argument cmd.exe would re-parse is refused rather than run as a second command.
+            bin_dir = os.path.join(root, "bin")
+            os.makedirs(bin_dir)
+            planted = os.path.join(root, "planted.txt")
+            with open(os.path.join(bin_dir, "plant_tool.cmd"), "w", newline="\r\n") as fh:
+                fh.write("@echo off\necho tool-ran %1>>\"" + planted + "\"\n")
+            env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""))
+            with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+                json.dump({"index_prebuild": ["plant_tool abc"]}, fh)
+            code, out, err = cli("run", "index_prebuild", env=env)
+            ran = open(planted, encoding="utf-8").read() if os.path.exists(planted) else ""
+            cases.append(("run finds a .cmd entry through PATH", code == 0 and "tool-ran abc" in ran and "failed" not in err))
+            os.remove(planted) if os.path.exists(planted) else None
+            injected = os.path.join(root, "injected.txt")
+            with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+                json.dump({"index_prebuild": ['plant_tool "x&echo INJECTED>%s"' % injected.replace("\\", "/")]}, fh)
+            code, out, err = cli("run", "index_prebuild", env=env)
+            cases.append(("run refuses a .cmd entry whose argument cmd.exe would re-parse",
+                          code == 0 and not os.path.exists(injected) and "plant_tool" in err and "Traceback" not in err))
+            with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+                json.dump({"index_prebuild": ["no_such_tool_xyz a"]}, fh)
+            code, out, err = cli("run", "index_prebuild", env=env)
+            cases.append(("run names a missing command and exits 0", code == 0 and "no_such_tool_xyz" in err and "Traceback" not in err))
 
         with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
             json.dump({"pr_pipeline": {"gate": ["a b", "/c"]}, "instruction_scope": {"paths": [], "rows_dir": None}}, fh)
@@ -594,11 +621,9 @@ def plugin_cases(cases, tmp):
                   [name for name, _ in listed] == ["bench", "other"] and listed[0][1].state == "ready"
                   and listed[1][1].state == "unreadable"))
 
-    import shutil
     import subprocess
     planted = _claude_dir_with(tmp, json.dumps({"plugins": {"bench": ready_root}}))
-    os.makedirs(os.path.join(planted, "tools"), exist_ok=True)
-    shutil.copy(os.path.join(TOOLS, "adaptation.py"), os.path.join(planted, "tools", "adaptation.py"))
+    copy_closure(planted, "tools/adaptation.py", "hooks/_msys.py")
     here = os.path.join(planted, "tools", "adaptation.py")
     done = subprocess.run([sys.executable, here, "plugin", "bench"], capture_output=True, text=True, encoding="utf-8")
     cases.append(("CLI: plugin bench prints a ready state and the root, exit 0",

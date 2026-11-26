@@ -36,6 +36,9 @@ registration walk that cannot run is unknown, not absent, and keeps the authored
 
 CLI:  guard_text.py <kind> <tier> [model]   -> the text on stdout, exit 0; a model appends its
       registry driver notes, as the sidecar launcher's isolated tiers need (no hook fires there)
+      tier `auto`                    -> the model's registry `railTier` (`model_registry.rail_tier`, which
+                                        `workflow_provider_guard._rails_map` also reads for a native seat):
+                                        every route gives one model one tier, and the launcher names none
       bad arguments                  -> the legal set on stderr, exit 2
 """
 import os
@@ -204,11 +207,18 @@ def main() -> int:
     if len(sys.argv) not in (3, 4):
         print("usage: guard_text.py <kind> <tier> [model]", file=sys.stderr)
         print("  kind:  a kind in guards/tool_profiles.json (its `guard` field names the files)", file=sys.stderr)
-        print("  tier:  %s" % ", ".join(VALID_TIERS), file=sys.stderr)
+        print("  tier:  %s, or `auto` with a model: that model's registry railTier" % ", ".join(VALID_TIERS),
+              file=sys.stderr)
         return 2
     try:
         sys.stdout.reconfigure(encoding="utf-8")
-        text = guard_text(sys.argv[1], sys.argv[2])
+        tier = sys.argv[2]
+        if tier == "auto":
+            if len(sys.argv) != 4:
+                raise ValueError("tier auto needs a model: guard_text.py <kind> auto <model>")
+            import model_registry
+            tier = model_registry.rail_tier(sys.argv[3])
+        text = guard_text(sys.argv[1], tier)
         if len(sys.argv) == 4:
             text += _driver_notes(sys.argv[3])
         sys.stdout.write(text)

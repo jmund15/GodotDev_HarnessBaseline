@@ -24,7 +24,7 @@ working copy against that revision's inputs; tracked proofs absent there are not
 Scoped modes run bound proofs on demand and retain their legacy per-file result entries; these
 entries satisfy no commit or push gate. --proofs-for is the no-stamp variant. --all includes excluded
 and heavy proofs; the default battery skips heavy proofs. A cannot-run result (exit 2) is missing
-coverage, never green. --tiers is read-only: one row per proof with its recorded seconds, budget tier, how it runs and its trigger. Every scoped or full run appends a row to
+coverage, never green, and so is a contended one (failed in the pool and alone while the machine had no room). --tiers is read-only: one row per proof with its recorded seconds, budget tier, how it runs and its trigger. Every scoped or full run appends a row to
 harness_runs.json beside the stamp (mode, wall and queue seconds, each proof's run and wait seconds); the newest
 200 rows stay whole, and each older one folds into a per-day total under `folded` (`_fold_runs`).
 A close ends with `tools/gate_growth.py`'s lines over that history: the proofs above their recorded time
@@ -171,6 +171,8 @@ _TIMEOUT_SEC = 120
 # `proof_timeouts` entry in adaptation.json overrides it for the proof it names.
 _PROOF_TIMEOUTS = {}
 _LOAD_FACTOR = 3
+# The wall seconds a run's alone retries wait, in all, for a machine its pool reds found crowded to quiet.
+_ROOM_WAIT_S = 600
 
 
 def _recorded_time(path, known):
@@ -350,7 +352,7 @@ def _run_context(options=None, *, root=None, stop=None, pace=None):
         root=proof_root, deadline=_deadline, pace=pace or _attempt.LivePace(), take=_take_slots,
         release=_slot_pool.release_all, slot_error=SlotStoreError, stop=stop, launch=_default_launch,
         default_timeout=lambda proof: _PROOF_TIMEOUTS.get(os.path.basename(proof), _TIMEOUT_SEC),
-        inherited=_slot_pool.inherited())
+        inherited=_slot_pool.inherited(), room=_slot_pool.Room())
 
 
 # Windows caps a command line at 32,767 characters. `status` and `ls-files` print a per-path union, so a
@@ -672,6 +674,22 @@ def _timed_out(result):
     if isinstance(result, _attempt.AttemptResult):
         return result.status == "fail" and result.timeout
     return result[0] == "fail" and str(result[2] or "").startswith("TIMEOUT")
+
+
+def _crowded(result):
+    """A red that ran while the machine's CPU was saturated (`machine_slots.Room`): its failure may be the load's."""
+    busy = getattr(result, "busy", None)
+    return busy is not None and busy >= _slot_pool.SATURATED
+
+
+def _contended(first, again):
+    """The final answer for a proof that failed in the pool and again alone, both while crowded: no verdict."""
+    def line(result):
+        return "%s (machine %d%% busy)" % (_last_line(result.detail) or result.status, round(100 * result.busy))
+    detail = ("CONTENDED: failed in the pool and again alone while the machine had no room, so this says nothing "
+              "about the proof; rerun it when the machine is quiet.\n  pool: %s\n  alone: %s"
+              % (line(first), line(again)))
+    return again._replace(status="contended", detail=detail)
 
 
 def _timeout_detail(detail):
@@ -2468,15 +2486,19 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     too, and its time, which covers only some cases, is not recorded as the proof's duration.
     Each passing proof feeds the run's live pace (`attempt.LivePace`), which stretches every running proof's deadline.
     After releasing the initial `SERIAL` hold, confirm failures in a pool of the same width, each taking its
-    own lane as a pool proof did. A confirmation runs one at a time instead only where the latch can fire:
-    when a confirmation can fail alone and `options.red` may agree it makes the run red, the order is what
-    stops every later one. `RedRule.never_red()` never stops them, and a run whose confirmations all timed
-    out has no red to latch on, so both confirm in parallel. An assertion failure with a recorded pass is
+    own lane as a pool proof did. Only an assertion confirmation runs one at a time, and only where the latch can
+    fire: it can fail alone, and when `options.red` may agree that makes the run red, the order is what stops
+    every later one. A timeout confirmation adds no red, so the timeouts confirm in parallel once the assertions
+    are judged; `RedRule.never_red()` never stops any, so all of its confirmations run in parallel. An assertion failure with a recorded pass is
     confirmed once: a pass is FLAKY and logged; a second failure is red. A cold assertion failure is not
-    confirmed. A timeout is confirmed even with no recorded pass, at `_LOAD_FACTOR` times its timeout or at
+    confirmed unless it ran crowded (`_crowded`). A timeout is confirmed even with no recorded pass, at `_LOAD_FACTOR` times its timeout or at
     its `proof_timeouts` cap; a pass is FLAKY unless the proof had no recorded duration.
     Assertion failures retry first, shortest recorded first. Once a confirmation fails and `options.red`
-    agrees it makes the run red, no later confirmation runs. Unconfirmed timeouts are `skipped`;
+    agrees it makes the run red, no later confirmation runs.
+    A pool red that ran while the machine's CPU was saturated (`_crowded`) is the exception: its failure may be
+    the load's, so it retries whatever the run's state, after waiting up to `_ROOM_WAIT_S` for the machine to quiet.
+    A proof that fails again alone while crowded is `contended` (exit 2, never FAIL, never a pass). A proof that
+    fails with room stays FAIL. Unconfirmed timeouts are `skipped`;
     unconfirmed assertions keep their first failure and gain a note. A proof in `options.no_retry`
     never retries. Past `HARNESS_DEADLINE` no proof starts or retries, and one the deadline cuts short
     is `skipped`, counted with the indeterminate ones.
@@ -2637,21 +2659,44 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     retrying, red_alone, decided, judged = [], {}, None, 0
     retry_lock = threading.Lock()
 
-    def retry(index, path):
-        nonlocal decided, judged, alone_n, alone_s
-        timed_out = _timed_out(results[path])
-        cold = timed_out and os.path.basename(path) not in known
+    def latch(index):
+        """Judge the reds that failed alone so far, once per new one, before confirmation `index` starts."""
+        nonlocal decided, judged
         if latching and not decided and len(red_alone) > judged:
             judged = len(red_alone)
             decided = options.red.makes_run_red(red_alone)
             if decided:
                 named = ", ".join(sorted(os.path.basename(p) for p in red_alone))
-                rest = [_timed_out(results[p]) for p in retrying[index - 1:]]
+                rest = [_timed_out(results[p]) for p in retrying[index - 1:] if not _crowded(results[p])]
                 for kind, count in (("assertion", rest.count(False)), ("timeout", rest.count(True))):
                     if count:
                         _progress("%d %s retr%s not run: the run is already red (%s failed alone)"
                                   % (count, kind, "y" if count == 1 else "ies", named))
-        if decided:
+
+    room_until = []  # the wall time this phase stops waiting for room, set by its first wait
+
+    def wait_for_room(path, first):
+        """Before the alone retry of a pool red that ran crowded: wait for the machine to quiet, within the phase's
+        `_ROOM_WAIT_S`, so the retry runs where its verdict means something. Past that budget it runs at once."""
+        with retry_lock:
+            if not room_until:
+                room_until.append(time.time() + _ROOM_WAIT_S)
+            left = room_until[0] - time.time()
+        if ctx.room is None or left <= 0:
+            return
+        _progress("%s ran with the machine %d%% busy; waiting up to %ds for room before its alone retry"
+                  % (os.path.basename(path), round(100 * first.busy), left))
+        waited, found = ctx.room.wait(left)
+        _progress("%s: %s after %ds" % (os.path.basename(path), "room" if found else "no room", waited))
+
+    def retry(index, path):
+        nonlocal alone_n, alone_s
+        timed_out = _timed_out(results[path])
+        cold = timed_out and os.path.basename(path) not in known
+        first = results[path]
+        crowded = _crowded(first)
+        latch(index)
+        if decided and not crowded:
             named = ", ".join(sorted(os.path.basename(p) for p in red_alone))
             if timed_out:
                 results[path] = _attempt.AttemptResult(
@@ -2665,7 +2710,11 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         _progress("%s retry %d of %d: %s; first failure: %s"
                   % ("timeout" if timed_out else "alone", index, len(retrying), os.path.basename(path),
                      _last_line(results[path][2])))
+        if crowded:
+            wait_for_room(path, first)
         again = attempt(path, _retry_timeout(path, known, timed_out))
+        if crowded and again.status == "fail" and _crowded(again):
+            again = _contended(first, again)
         with retry_lock:
             if again[0] != "skipped" and not timed_out:
                 alone_n, alone_s = alone_n + 1, alone_s + again[1]
@@ -2691,21 +2740,25 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     pool_s = time.time() - start
     # Try the likely reds first: assertion failures before timeouts, shortest recorded first.
     retrying[:] = sorted((p for p in selected if not cases[p] and results[p][0] == "fail"
-                          and (os.path.basename(p) in known or _timed_out(results[p]))
+                          and (os.path.basename(p) in known or _timed_out(results[p]) or _crowded(results[p]))
                           and p not in no_retry),
                          key=lambda p: (_timed_out(results[p]), expected(p)))
     # A confirmation takes its own lane as a pool proof did, and the batch that starved it has ended. They run
-    # at the pool's width unless the latch can fire: only a confirmation that can fail alone, under a `red`
-    # policy that may stop the run, makes the order load-bearing. Their admission waits are recorded per proof.
+    # at the pool's width except where the latch can fire: only an assertion confirmation can fail alone and, under
+    # a `red` policy that may stop the run, stop every later one, so those run one at a time first. A timeout
+    # confirmation never adds a red, so once the latch has judged the last assertion the timeouts run side by side.
+    # Their admission waits are recorded per proof.
     latching = options.red.order_matters() and any(not _timed_out(results[p]) for p in retrying)
+    ordered = [p for p in retrying if not _timed_out(results[p])] if latching else []
     phases["retry_wait"] = 0.0
     phase_start = time.time()
-    if latching:
-        for index, path in enumerate(retrying, 1):
-            retry(index, path)
-    else:
-        with ThreadPoolExecutor(max_workers=max(1, min(width, len(retrying)))) as confirmations:
-            futures = [confirmations.submit(retry, index, path) for index, path in enumerate(retrying, 1)]
+    for index, path in enumerate(ordered, 1):
+        retry(index, path)
+    side_by_side = list(enumerate(retrying, 1))[len(ordered):]
+    if side_by_side:
+        latch(side_by_side[0][0])
+        with ThreadPoolExecutor(max_workers=max(1, min(width, len(side_by_side)))) as confirmations:
+            futures = [confirmations.submit(retry, index, path) for index, path in side_by_side]
             for future in as_completed(futures):
                 future.result()
     phases["retry"] = time.time() - phase_start
@@ -2718,7 +2771,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         print("harness_tests: %d of %d proofs reused from the pass cache (%s)"
               % (len(reused), len(selected), pass_store_dir()))
     label = {"pass": "OK", "cannot-run": "CANNOT-RUN", "fail": "FAIL", "skipped": "SKIPPED",
-             "platform-skip": "SKIPPED-PLATFORM"}
+             "platform-skip": "SKIPPED-PLATFORM", "contended": "CONTENDED"}
     for path, first_detail in flaky:
         tail = (first_detail or "").strip().splitlines()[-1:] or [""]
         print("FLAKY %s: failed in the pool (%s), passed alone; logged to %s"
@@ -2739,7 +2792,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
             passed += 1
         elif status == "platform-skip":
             pass  # printed SKIPPED-PLATFORM above; a proof this platform cannot run is neither green nor missing
-        elif status in ("cannot-run", "skipped"):
+        elif status in ("cannot-run", "skipped", "contended"):
             indeterminate.append(path)
         else:
             failed += 1
@@ -2748,14 +2801,14 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     behavior_acceptance = 'pass'
     if mode is not None or receipts or options.behavior_out or plan.get('proofs'):
         try:
-            import extract_numbers
+            import rule_units
         except ImportError:
             behavior_report = {'status': 'uncovered', 'counts': {'uncovered': 1}, 'units': [], 'claims': [],
                 'uncovered': [{'status': 'uncovered', 'reason': 'behavior checker unavailable'}],
                 'scope': {'affected': [], 'changedUnits': [], 'initialDebt': [],
                           'errors': ['behavior checker unavailable']}}
         else:
-            behavior_report = extract_numbers.behavior_report(behavior_root, paths=options.paths,
+            behavior_report = rule_units.behavior_report(behavior_root, paths=options.paths,
                 base=options.base or 'HEAD', proof_results={'observations': receipts})
         behavior_report['observations'] = receipts
         if options.behavior_out:
@@ -2824,6 +2877,20 @@ def _input_totals(cache, selected, reused, results, top=30):
     ranked = sorted(totals.items(), key=lambda kv: (-kv[1][0], kv[0]))[:top]
     readers = cache.readers([f for f, _ in ranked])
     return {f: [round(s, 1), n, readers.get(f, 0)] for f, (s, n) in ranked}
+
+
+def _print_incomplete(paths, statuses, tail):
+    """The proofs a run could not judge, grouped by why: `contended` failed twice with no room on the machine,
+    `skipped` was cut off by `HARNESS_DEADLINE`, `cannot-run` could not bind its target (so is a proof with no
+    recorded status). None is a pass or a failure."""
+    for status, why in (("contended", "the machine had no room; rerun when it is quiet"),
+                        ("skipped", "HARNESS_DEADLINE passed first; rerun to finish it"),
+                        ("cannot-run", "the proof could not bind its target")):
+        named = [p for p in paths if statuses.get(p, "cannot-run") == status]
+        if named:
+            print("%s (exit 2: %s; %s):" % (status, why, tail))
+            for p in named:
+                print("    - %s" % p)
 
 
 def _last_line(detail):
@@ -3765,9 +3832,7 @@ def run_all(repo_root, include_excluded=False, verbose=False, behavior_out=None)
     if indeterminate:
         # ASCII only: this runner prints to a Windows console whose default codepage mangles an
         # em-dash, and a summary line nobody can read is a summary line nobody reads.
-        print("cannot-run (exit 2: the proof could not bind its target; not counted as failure):")
-        for p in indeterminate:
-            print("    - %s" % p)
+        _print_incomplete(indeterminate, statuses, "not counted as failure")
 
     if failed:
         return 1
@@ -3862,9 +3927,7 @@ def main(argv=None):
             print("harness_tests: HARNESS_DEADLINE passed before %d proof(s) ran" % len(skipped))
             return 3
         if incomplete:
-            print("cannot-run (exit 2: the proof could not bind its target; the scoped run is incomplete):")
-            for proof in incomplete:
-                print("    - %s" % proof)
+            _print_incomplete(incomplete, statuses, "the scoped run is incomplete")
             return 2
         return 0
     if args.for_paths:

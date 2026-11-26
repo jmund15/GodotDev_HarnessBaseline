@@ -3,7 +3,7 @@
 
   python3 .claude/tools/review_calibration.py [--json FILE]
 
-`build` is what `eval_dashboard.build_facts` stores under `facts["review"]`. It edits nothing: each proposal is
+`build` returns the facts the CLI prints. It edits nothing: each proposal is
 `{kind, subject, evidence, action}` and waits for the owner. `premerge-seat` counts every group whose
 newest reached rows are all zero and prints that run length L; the owner judges whether L is enough evidence.
 `merge-seat` is raised only when the zero streak holds under both orders of rows tied on date and timestamp.

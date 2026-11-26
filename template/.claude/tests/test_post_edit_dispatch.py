@@ -148,13 +148,23 @@ def main():
 
     # --- design_surface_reminder ------------------------------------------
     if _optional_hooks.present("design_surface_reminder"):
-        rc, out, err = run(written(clean_cs, "[Export] public bool Enabled = false;", session="postdsgn"), env)
-        cases.append(("design_surface_reminder fires on an [Export] bool through the dispatcher",
+        # The family is a fact the repo shows: a tracked declaration of the slot's abstract type.
+        plant(os.path.join(tmp, "repo", "Scripts", "Strategies.cs"),
+              "public abstract partial class BaseMovementStrategy3D : Resource { }\n")
+        for git_args in (["init", "-q"], ["add", "."]):
+            subprocess.run(["git", *git_args], cwd=os.path.join(tmp, "repo"), check=True, capture_output=True)
+        slot_cs = plant(os.path.join(tmp, "repo", "Scripts", "Slot.cs"),
+                        "public class Slot\n{\n    [Export] public BaseMovementStrategy3D? EndStrategy { get; set; }\n"
+                        "    [Export] public bool UseHardStop = false;\n}\n")
+        introduced = written(slot_cs, "x", session="postdsgn")
+        introduced["tool_response"] = {"type": "create", "filePath": slot_cs, "originalFile": None}
+        rc, out, err = run(introduced, env)
+        cases.append(("design_surface_reminder fires on a bool introduced beside a family slot through the dispatcher",
                       rc == 0 and "design_litmus" in context(out)))
         rc, out, err = run(written(clean_cs, "public int Value = 2;", session="postdsg2"), env)
         cases.append(("a plain .cs edit draws no design reminder", rc == 0 and "design_litmus" not in context(out)))
-        md = plant(os.path.join(tmp, "repo", "Docs", "n.md"), "[Export] public bool Enabled = false;\n")
-        rc, out, err = run(written(md, "[Export] public bool Enabled = false;", session="postdsg3"), env)
+        md = plant(os.path.join(tmp, "repo", "Docs", "n.md"), open(slot_cs, encoding="utf-8").read())
+        rc, out, err = run(written(md, "x", session="postdsg3"), env)
         cases.append(("the reminder is for .cs text only", rc == 0 and "design_litmus" not in context(out)))
 
     # Resource normalization now belongs to PreToolUse.
@@ -171,7 +181,7 @@ def main():
 
     # --- dispatcher contract, synthetic chain ------------------------------
     cases.append(("E8: one sub-hook import fault cannot prevent the dispatcher from loading",
-                  load_dispatch_module("harness_growth_guard") is not None))
+                  load_dispatch_module("check_logger_tag_prefix") is not None))
     module = load_dispatch_module()
     noisy = ("noisy", lambda payload: {"context": "advisory-from-noisy"})
     blocker = ("blocker", lambda payload: {"block": "BLOCKED: planted"})
@@ -214,7 +224,7 @@ def main():
     original_import_module = module.importlib.import_module
 
     def fail_import(name):
-        if name == "harness_growth_guard":
+        if name == "check_logger_tag_prefix":
             raise ImportError("planted import fault")
         return original_import_module(name)
 
@@ -222,13 +232,13 @@ def main():
     try:
         rc, out, err = module.dispatch(
             payload,
-            chain=(("harness_growth_guard", "advisory"), noisy),
+            chain=(("check_logger_tag_prefix", "advisory"), noisy),
         )
     finally:
         module.importlib.import_module = original_import_module
     cases.append(("E8: an import fault preserves later output and names its hook",
                   rc == 0 and "advisory-from-noisy" in context(out)
-                  and "harness_growth_guard" in err))
+                  and "check_logger_tag_prefix" in err))
 
     def slow(payload):
         time.sleep(2.0)

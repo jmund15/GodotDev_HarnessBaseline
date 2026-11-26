@@ -38,12 +38,15 @@ _ALLOWED_TOOLS = frozenset({"Read", "Glob", "Grep"})
 
 
 def _allowed_kinds():
-    """The public kinds in guards/tool_profiles.json whose built-ins stay inside the read set: a
-    `-G` the auto-approval may pass. `author` carries Edit, Write and Bash, so it keeps the normal checks."""
+    """The public kinds in guards/tool_profiles.json that survey and never write: a `-G` the auto-approval
+    may pass. Each holds every `requiredReadTools` built-in and no `writes` row flag. Every such kind also holds
+    Bash, so a read-only job can write through the shell (the owner's accepted risk); `author` (`writes`) and
+    `gate` (no Glob: it runs commands as its job) keep the normal checks."""
     import tool_profiles
     table = tool_profiles.load_table()
     return frozenset(name for name in tool_profiles.public_kinds(table)
-                     if set(table["kinds"][name]["builtins"]) <= _ALLOWED_TOOLS)
+                     if not table["kinds"][name].get("writes")
+                     and set(table["requiredReadTools"]) <= set(table["kinds"][name]["builtins"]))
 _DIGEST_OPTIONS = frozenset({
     "--session", "--prompt-tail", "--project-dir", "--brief", "--handoff", "--full",
     "--digest-file", "--workflow-dir", "--workflow-kind", "--workflow-manifest",
@@ -718,7 +721,7 @@ def sidecar_launch_shape(command, root):
         if letter in sidecar_argv.SIDECAR_VALUE_FLAGS and not isinstance(value, str):
             return False, "sidecar flag `-%s` is missing its value" % letter
         if letter == "G" and value not in (kinds := _allowed_kinds()):
-            return False, "`-G` must be a read-only kind: %s" % ", ".join(sorted(kinds))
+            return False, "`-G` must be a surveying kind (no writing tool): %s" % ", ".join(sorted(kinds))
         if letter == "t":
             tools = set(value.split(",")) if isinstance(value, str) else set()
             if not tools or not tools <= _ALLOWED_TOOLS:
@@ -741,43 +744,6 @@ def sidecar_launch_shape(command, root):
     if "G" not in {letter for letter, _ in pairs}:
         return False, "`-G <kind>` is required: the launcher refuses a launch without it"
     return True, ""
-
-
-def sidecar_bash_ask_shape(command, root):
-    """A whole, project-contained review command whose sole extra grant is Bash."""
-    argv, why = simple_argv(command)
-    if argv is None:
-        return False, why
-    if len(argv) < 2 or argv[0] != "bash":
-        return False, "the launcher is not a simple Bash command"
-    import sidecar_argv
-    try:
-        pairs, operand_index = sidecar_argv.sidecar_flag_pairs(argv[2:])
-    except Exception:
-        return False, "the sidecar flags could not be parsed"
-    if operand_index != len(argv) - 2:
-        return False, "an operand follows the sidecar flags"
-    required = set("meGtfSRPld")
-    allowed = required | {"C"}
-    seen = {}
-    for letter, value in pairs:
-        if letter not in allowed or not isinstance(value, str) or not value:
-            return False, "an unreviewed sidecar flag or value"
-        if letter != "C" and letter in seen:
-            return False, "a sidecar flag is repeated"
-        seen[letter] = value
-    if set(seen) != required and set(seen) != allowed:
-        return False, "the review needs a model, effort, kind, prompt, schema, record and progress"
-    if seen["t"] != "+Bash" or seen["G"] != "reviewer":
-        return False, "only `-G reviewer` with exactly `-t +Bash` can request consent"
-    root = Path(root).resolve()
-    if os.path.normcase(str(Path(native_path(seen["d"])).resolve())) != os.path.normcase(str(root)):
-        return False, "the review workdir must be the project root"
-    ordinary = argv[:2]
-    for letter, value in pairs:
-        if letter != "t":
-            ordinary.extend(("-" + letter, value))
-    return sidecar_launch_shape(shlex.join(ordinary), root)
 
 
 def _candidate_contracts(command, root):

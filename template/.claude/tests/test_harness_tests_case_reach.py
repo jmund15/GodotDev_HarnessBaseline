@@ -21,6 +21,7 @@ os.environ.pop("HARNESS_REUSE_PASSES", None)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 import harness_tests  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 FAILS = []
 
@@ -87,9 +88,9 @@ def main():
         write(repo, ".claude/data/%s.json" % name, "{}\n")
     proof = write(repo, ".claude/tests/test_two.py", PROOF)
     # The case pool and the machine-slot admission it takes its width from (tools/machine_slots.py and its hooks).
-    for rel in ("tests/_case_pool.py", "tools/machine_slots.py", "hooks/_file_lock.py", "hooks/_hook_state.py"):
-        os.makedirs(os.path.join(repo, ".claude", os.path.dirname(rel)), exist_ok=True)
-        shutil.copyfile(os.path.join(HERE, "..", rel), os.path.join(repo, ".claude", rel))
+    os.makedirs(os.path.join(repo, ".claude", "tests"), exist_ok=True)
+    shutil.copyfile(os.path.join(HERE, "_case_pool.py"), os.path.join(repo, ".claude", "tests", "_case_pool.py"))
+    copy_closure(os.path.join(repo, ".claude"), "tools/machine_slots.py")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "seed")
     harness_tests.EXCLUDED, harness_tests.SERIAL = {}, {}

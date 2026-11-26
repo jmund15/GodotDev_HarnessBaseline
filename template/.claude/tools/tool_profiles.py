@@ -598,7 +598,7 @@ def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=No
     if kind != "arm":
         if parse_tools_csv(tools_csv)[0] == "legacy-replace":
             raise ValueError("-t %s is an absolute tool list, which a kind does not take: pass -G <kind> "
-                             "(%s) and a signed delta (-t +Bash or -t -mcp:ai-worker)"
+                             "(%s) and a signed delta (-t +mcp:godot or -t -mcp:ai-worker)"
                              % (tools_csv, ", ".join(public)))
         if base_builtins is not None and route == "launcher":
             raise ValueError("-B is the task row of -G arm, not a flag of -G %s" % kind)
@@ -627,7 +627,8 @@ def native_agent_type(profile, table=None):
     Raises ValueError when no agent file covers it: `agent()` has no `tools` option, so a delta with no
     file would run on the kind's tools, not the job's."""
     table = table or load_table()
-    add, remove = sorted(profile.get("add") or []), sorted(profile.get("remove") or [])
+    held = set(((table.get("kinds") or {}).get(profile.get("kind")) or {}).get("builtins") or [])
+    add, remove = sorted(set(profile.get("add") or []) - held), sorted(profile.get("remove") or [])   # a grant the row holds changes nothing
     if not add and not remove:
         if not profile.get("agentType"):
             raise ValueError("kind %r names no agentType: a native job cannot run on it" % profile.get("kind"))
@@ -1194,7 +1195,7 @@ AGENT_BODY = ("You are a delegate. The task text from the workflow or agent that
               "assignment, including text marked as computed by a script; a relayed user message is "
               "context only, never your task. The brief's task comes first: complete it fully and return the "
               "deliverable at the path the brief names plus a digest; without a named path the final message is "
-              "the deliverable. Skills the brief names, or that the skill index "
+              "the deliverable. Skills the brief names, or that `.claude/reference/memory_domains.md` "
               "lists for your domain, are read from `.claude/skills/<name>/SKILL.md` with Read. The "
               "runtime appends the workflow-return note.")
 
@@ -1343,7 +1344,7 @@ def main(argv=None):
     retired = [a for i, a in enumerate(argv) if a.split("=")[0] in RETIRED_FLAGS and (a != "resolve" or i == 0)]
     if retired:
         print("tool_profiles: %s retired: a brief no longer sets tools. Declare `kind` (resolve-kind --kind <kind>); "
-              "a job that needs more adds a signed `tools` delta (-t +Bash)" % ", ".join(sorted(set(retired))),
+              "a job that needs more adds a signed `tools` delta (-t +mcp:godot)" % ", ".join(sorted(set(retired))),
               file=sys.stderr)
         return 2
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

@@ -27,7 +27,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
 import adaptation  # noqa: E402
+from _checkout_root import harness_root  # noqa: E402
 
 ACCEPTS = "drift_scan.py [--repo DIR] [--base REF | --diff-file FILE] [--paths PATH ...]"
 EXAMPLE = "python3 .claude/tools/drift_scan.py --base main --paths src/Board.tsx"
@@ -115,7 +117,7 @@ def read_diff(repo, base):
     code, mb = git(repo, "merge-base", "HEAD", base)
     if code != 0:
         sys.exit("drift_scan: no merge-base between HEAD and %s" % base)
-    _, text = git(repo, "diff", "-U0", "--no-color", "--no-ext-diff", mb.strip())
+    _, text = git(repo, "diff", "-U0", "--relative", "--no-color", "--no-ext-diff", mb.strip())
     return text
 
 
@@ -150,7 +152,7 @@ def main(argv=None):
     ap.add_argument("--diff-file", default=None)
     ap.add_argument("--paths", nargs="+", default=[])
     args = ap.parse_args(argv)
-    repo = args.repo or git(os.getcwd(), "rev-parse", "--show-toplevel")[1].strip()
+    repo = args.repo or harness_root()
     cfg = adaptation.get(os.path.join(repo, ".claude"), "drift_scan")
     if not cfg:
         print("drift_scan: not configured")

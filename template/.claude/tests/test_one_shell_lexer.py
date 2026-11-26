@@ -1,7 +1,8 @@
 """One shell lexer: no hook reads shell text with its own splitter (`hooks/_shell_lex.py` owns it).
 
-An `ast` scan of `hooks/*.py` fails on `shlex.split`, on `re.split` whose pattern names a shell operator, and on
-`str.split` of a literal `&&`, `|` or `;`. `shlex.quote` and `shlex.join` build text and stay allowed.
+An `ast` scan of `hooks/*.py` fails on `shlex.split`, and, in a module that reads a tool call's command, on `re.split`
+whose pattern names a shell operator and on `str.split` of a literal `&&`, `|` or `;`. `shlex.quote` and `shlex.join`
+build text and stay allowed.
 """
 import ast
 from pathlib import Path
@@ -17,13 +18,9 @@ ALLOWED: dict[str, str] = {
                             "(2cacd3e), which v1's main() member does not take",
     "foreground_wait_guard": "splits commands into stages and wait conditions with re/shlex; v2 migrated it with "
                              "its check(payload) form (2cacd3e), and b1 merged two callers' contract into v1's",
-    "hand_pricing_advisory": "unwired by M1 (pre_bash_dispatch UNWIRED); its deletion waits on an origin check",
     "merge_build_check": "splits the configured build command into argv to run it; it judges no tool call",
     "model_ladder_gate": "splits a Bash call at operators to find a dispatch launch (the sidecar dispatch gate)",
-    "model_name_guard": "splits a model-name list in written content at spaces, `|` and commas; not shell text",
-    "rail_probe_guard": "splits a Bash call at operators to find a rail probe; a v1 process guard, not a loss check",
     "running_script_edit_guard": "splits process-table rows and their command lines; v2 migrated it (0c57747)",
-    "task_brief_facts": "splits a brief's fact line at `;`; not shell text",
     "unbounded_scan_guard": "its volume and scope advisories read scan paths with shlex; its recursive-grep deny "
                             "reads through the lexer",
 }
@@ -44,27 +41,51 @@ def _literal(node):
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _reads_command(tree):
+    """True when the module reads a tool call's command: `x["command"]` or `x.get("command")`."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and _literal(node.slice) == "command":
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and node.args and _literal(node.args[0]) == "command":
+            return True
+    return False
+
+
 def parsers(source):
-    """(line, what) of each hand-rolled shell split in `source`."""
+    """(line, what) of each hand-rolled shell split in `source`. `shlex.split` is shell parsing wherever it runs. A
+    split at an operator is shell parsing only in a module that reads a tool call's command; one that never does
+    (a markdown table row, a model list) splits some other text."""
+    tree = ast.parse(source)
+    shell = _reads_command(tree)
     found = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _dotted(node.func)
         first = _literal(node.args[0]) if node.args else None
         if name == "shlex.split":
             found.append((node.lineno, name))
-        elif name == "re.split" and first is not None and any(op in first for op in OPERATORS):
+        elif name == "re.split" and shell and first is not None and any(op in first for op in OPERATORS):
             found.append((node.lineno, f"re.split({first!r})"))
-        elif isinstance(node.func, ast.Attribute) and node.func.attr == "split" and first in OPERATORS:
+        elif shell and isinstance(node.func, ast.Attribute) and node.func.attr == "split" and first in OPERATORS:
             found.append((node.lineno, f"str.split({first!r})"))
     return found
 
 
 def test_scan_sees_each_banned_form():
     src = "\n".join(["import shlex, re", "shlex.split(c)", "re.split(r'[;|]', t)", "c.split('&&')", "c.split('|')",
-                     "c.split(';')", "shlex.quote(c)", "shlex.join(c)", "c.split()", "c.split(',')"])
+                     "c.split(';')", "shlex.quote(c)", "shlex.join(c)", "c.split()", "c.split(',')",
+                     "c = payload['tool_input']['command']"])
     assert [line for line, _ in parsers(src)] == [2, 3, 4, 5, 6]
+
+
+def test_a_splitter_is_shell_parsing_only_where_a_command_is_read():
+    table = "\n".join(["row = [cell for cell in line.strip('|').split('|')]", "re.split(r'[;|]', row)",
+                       "parts = text.split(';')"])
+    assert parsers(table) == []
+    assert [what for _, what in parsers("import shlex\nshlex.split(row)\n" + table)] == ["shlex.split"]
+    assert len(parsers(table + "\nc = tool_input.get('command')")) == 3
 
 
 def test_no_hook_parses_shell_text_outside_the_lexer():

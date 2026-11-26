@@ -1655,16 +1655,24 @@ def sibling_worktree(repo, branch="sib"):
     return path
 
 
+WAIT_FOR_MOVE = ("for _ in range(2400):\n    if os.path.exists(%r + '.moved'):\n        break\n    time.sleep(0.05)\n")
+
+
 def commit_during_run(sibling, marker, message="moved"):
-    """A thread that lands an empty commit in `sibling` once the check's proof has started (`marker` exists). A
-    proof writes the marker first, so the run's git snapshot is already taken when the ref moves."""
+    """A thread that lands an empty commit in `sibling` once the check's proof has started (`marker` exists), then
+    writes `marker.moved`. A proof writes the marker first, so the run's git snapshot is already taken when the
+    ref moves, and it ends only after `marker.moved` (`WAIT_FOR_MOVE`). A proof that starts late or a commit
+    that takes seconds under peer load still lands inside the run, never before its snapshot or after its end."""
     def commit():
-        for _ in range(500):
-            if os.path.exists(marker):
-                break
+        deadline = time.time() + 120
+        while not os.path.exists(marker) and time.time() < deadline:
             time.sleep(0.01)
-        subprocess.run(["git", "-C", sibling, "commit", "-q", "--allow-empty", "-m", message],
-                       check=True, capture_output=True)
+        try:
+            if os.path.exists(marker):
+                subprocess.run(["git", "-C", sibling, "commit", "-q", "--allow-empty", "-m", message],
+                               check=True, capture_output=True)
+        finally:
+            open(marker + ".moved", "w").close()
     thread = threading.Thread(target=commit, daemon=True)
     thread.start()
     return thread
@@ -1678,7 +1686,7 @@ def case_a_commit_in_another_worktree_keeps_a_proof_that_reads_only_this_checkou
     marker = os.path.join(tempfile.mkdtemp(prefix="harnesspassstarted_"), "started")
     child_proof(repo, counter, "import time\nopen(%r, 'w').close()\n"
                                "subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=%r, capture_output=True)\n"
-                               "time.sleep(1.0)\n" % (marker, repo))
+                               "%s" % (marker, repo, WAIT_FOR_MOVE % marker))
     thread = commit_during_run(sibling, marker)
     run(repo, [proof])
     thread.join()
@@ -1697,7 +1705,7 @@ def case_a_ref_the_proof_read_still_drops_its_key_when_another_worktree_moves_it
     marker = os.path.join(tempfile.mkdtemp(prefix="harnesspassstarted_"), "started")
     child_proof(repo, counter, "import time\nopen(%r, 'w').close()\n"
                                "subprocess.run(['git', 'rev-parse', 'sib'], cwd=%r, capture_output=True)\n"
-                               "time.sleep(1.0)\n" % (marker, repo))
+                               "%s" % (marker, repo, WAIT_FOR_MOVE % marker))
     thread = commit_during_run(sibling, marker)
     run(repo, [proof])
     thread.join()

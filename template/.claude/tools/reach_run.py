@@ -84,8 +84,8 @@ def collect(base):
     if not point:
         found = git_lines("merge-base", "main", "HEAD")
         point = found[0] if found else "HEAD"
-    paths = git_lines("diff", "--name-only", "%s...HEAD" % point)
-    paths += git_lines("diff", "--name-only", "HEAD")
+    paths = git_lines("diff", "--relative", "--name-only", "%s...HEAD" % point)
+    paths += git_lines("diff", "--relative", "--name-only", "HEAD")
     paths += git_lines("ls-files", "--others", "--exclude-standard")
     return list(dict.fromkeys(paths))
 

@@ -1,19 +1,12 @@
 {
   "read_only_commands": [],
   "git_submodules": [],
-  "high_risk_patterns": [],
-  "drive_commands": [],
   "teardown_helpers": [],
   "tests_root": "Tests",
   "test_quarantine_filter": "",
   "memory_domains": [
     {
       "name": "Obsidian/Docs",
-      "triggers": [
-        "Obsidian",
-        "design doc",
-        "vault"
-      ],
       "memory_keywords": [
         "Obsidian"
       ],

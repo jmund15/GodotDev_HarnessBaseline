@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from _module_closure import copy_closure  # noqa: E402
 
 TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "guard_text.py")
 
@@ -35,11 +36,9 @@ def planted_tool(tmp):
     guards = os.path.join(tmp, ".claude", "guards")
     os.makedirs(tools)
     os.makedirs(guards)
-    shutil.copyfile(TOOL, os.path.join(tools, "guard_text.py"))
     # guard_text reads the kind table (tool_profiles.py, with plugin_registry.py) from its own tree.
     real_tools = os.path.dirname(TOOL)
-    for module in ("tool_profiles.py", "plugin_registry.py"):
-        shutil.copyfile(os.path.join(real_tools, module), os.path.join(tools, module))
+    copy_closure(os.path.join(tmp, ".claude"), "tools/guard_text.py", "tools/tool_profiles.py")
     shutil.copyfile(os.path.join(os.path.dirname(real_tools), "guards", "tool_profiles.json"),
                     os.path.join(guards, "tool_profiles.json"))
     for name, text in PLANTED.items():
@@ -58,8 +57,7 @@ def planted_cadence_tool(tmp, cadence):
     real_guards = os.path.join(os.path.dirname(os.path.dirname(TOOL)), "guards")
     for name in ("common.md", "author.md", "gate.md", "review.md"):
         shutil.copyfile(os.path.join(real_guards, name), os.path.join(guards, name))
-    shutil.copyfile(os.path.join(os.path.dirname(TOOL), "adaptation.py"),
-                    os.path.join(tmp, ".claude", "tools", "adaptation.py"))
+    copy_closure(os.path.join(tmp, ".claude"), "tools/adaptation.py")
     subsystems = os.path.join(tmp, ".claude", "skills", "project_subsystems")
     os.makedirs(subsystems)
     with open(os.path.join(subsystems, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
@@ -259,6 +257,17 @@ def main():
     rc5, none_out, _ = run(TOOL, "review", "none", "vendor-noted-1", env=env)
     cases.append(("tier none suppresses shape rails, not model corrections",
                   rc5 == 0 and "[delegate rails" not in none_out and "PLANTED-NOTE" in none_out))
+
+    # Tier `auto` is the launcher's: the registry row's `railTier` for the model, the tier the native Workflow
+    # route gives the same model (`workflow_provider_guard._rails_map`). The launcher names no tier of its own.
+    for model, want in (("claude-opus-5-5", "condensed"), ("claude-fable-5-2", "minimal"),
+                        ("claude-sonnet-5-5", "detailed"), ("no-such-model-9", "detailed")):
+        rc_a, auto_out, _ = run(TOOL, "review", "auto", model)
+        rc_e, explicit, _ = run(TOOL, "review", want, model)
+        cases.append(("tier auto reads %s for %s as the row's tier does" % (want, model),
+                      rc_a == 0 and ("%s tier; home:" % want) in auto_out and auto_out == explicit))
+    rc_n, _, err_n = run(TOOL, "review", "auto")
+    cases.append(("tier auto without a model exits 2 naming the missing model", rc_n == 2 and "model" in err_n))
 
     # Caller contract: run the invocation lib/sidecar_common.sh actually writes, so an argument
     # added on either side of the shell/Python boundary fails here instead of at dispatch.

@@ -68,9 +68,9 @@ sf.model_registry.load = lambda *a, **k: DATA
 SOURCE = json.load(open(os.path.join(ROOT, "guards", "single_flight.json"), encoding="utf-8"))
 
 
-def rendered(shell):
+def rendered(writes):
     return (SOURCE["header"] + "\n" + SOURCE["rule"]
-            + (SOURCE["withShell"] if shell else SOURCE["noShell"]) + SOURCE["stop"] + "\n")
+            + (SOURCE["writer"] if writes else SOURCE["readOnly"]) + SOURCE["stop"] + "\n")
 
 
 def plan(job):
@@ -184,9 +184,9 @@ def guard_files(out, label):
 
 case("a two-job parallel run hands both children one guard -C file",
      lambda: len(guard_files(_wrap_out, "w1")) == 1 and len(guard_files(_wrap_out, "w2")) == 1)
-case("the author child's guard is the shell variant rendered from the shared source",
+case("the author child's guard is the writer variant rendered from the shared source",
      lambda: open(guard_files(_wrap_out, "w1")[0], encoding="utf-8").read() == rendered(True))
-case("the survey child's guard is the no-shell variant rendered from the shared source",
+case("the survey child holds a shell and its guard is the read-only variant (no write through it) rendered from the shared source",
      lambda: open(guard_files(_wrap_out, "w2")[0], encoding="utf-8").read() == rendered(False))
 
 _serial_code, _serial_out = run_main(WRAP, "serial", "--max-parallel", "1")

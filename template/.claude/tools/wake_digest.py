@@ -243,6 +243,8 @@ def _scan_row(raw, pos, scan):
     result = row.get("toolUseResult")
     if isinstance(result, dict) and result.get("task_id") and str(result.get("message", "")).startswith("Successfully stopped"):
         scan["ended"].add(result["task_id"])
+    if row.get("type") not in ("assistant", "user"):
+        return  # an `api-request-blob` row copies an answered call with no timestamp; only the turns themselves count
     content = (row.get("message") or {}).get("content")
     for item in content if isinstance(content, list) else ():
         if not isinstance(item, dict):

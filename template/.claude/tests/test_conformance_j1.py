@@ -21,8 +21,8 @@ atexit.register(shutil.rmtree, _STAMP_DIR, True)
 os.environ["HARNESS_TEST_STAMP"] = os.path.join(_STAMP_DIR, "harness_tests_stamp.json")
 sys.path.insert(0, str(CLAUDE / "tools"))
 sys.path.insert(0, str(CLAUDE / "tests"))
-import extract_numbers as en
-from test_extract_numbers import git, write, mkrepo, _rm
+import rule_units as en
+from test_rule_units import git, write, mkrepo, _rm
 
 DOC = ".claude/rules/claim.md"
 IMPL = ".claude/tools/emitter.py"
@@ -71,7 +71,7 @@ class ClaimTracer(unittest.TestCase):
         return en.behavior_report(self.repo, paths=[DOC], **kw)
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, str(CLAUDE / "tools/extract_numbers.py"),
+        return subprocess.run([sys.executable, str(CLAUDE / "tools/rule_units.py"),
                                "--repo", str(self.repo), *args],
                               capture_output=True, text=True, encoding="utf-8")
 
@@ -83,16 +83,7 @@ class ClaimTracer(unittest.TestCase):
         receipt.update(kw)
         return {"observations": [receipt]}
 
-    def hook(self, command="git commit -m fixture", extra=None):
-        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(self.repo), PYTHONIOENCODING="utf-8")
-        env.pop("GIT_INDEX_FILE", None)
-        env.update(extra or {})
-        return subprocess.run([sys.executable, str(CLAUDE / "hooks/duplicate_commit_check.py")],
-                              input=json.dumps({"tool_name": "Bash", "cwd": str(self.repo),
-                                                "tool_input": {"command": command}}),
-                              capture_output=True, text=True, encoding="utf-8", cwd=self.repo, env=env)
-
-    def test_census_and_numeric_compatibility(self):
+    def test_census_classifies_each_unit_and_shares_the_prose_hash(self):
         text = ('---\nname: review-seat\n'
                 'description: Workflow engine delegate for the review tool profile; engines select it, '
                 'never pick it for a manual Agent call.\n---\n'
@@ -109,14 +100,11 @@ class ClaimTracer(unittest.TestCase):
         self.assertEqual(en.behavior_units(DOC, "It never silently accepts them.\n")[0].hash,
                          en.units(DOC, "It never silently accepts them.\n")[0].hash)
         write(str(self.repo), DOC, text)
-        p = self.cli("check", "--claims", "behavior", "--paths", DOC, "--json")
+        p = self.cli("check", "--paths", DOC, "--json")
         self.assertEqual(p.returncode, 1, p.stderr)
         result = json.loads(p.stdout)
         self.assertEqual(result["counts"]["units"], len(result["units"]))
         self.assertEqual(result["counts"]["uncovered"], len(result["units"]))
-        numeric = self.cli("check", "--paths", DOC, "--json")
-        self.assertEqual(numeric.returncode, 0, numeric.stderr)
-        self.assertEqual(json.loads(numeric.stdout)["counts"]["flagged_tokens"], 0)
 
     def test_source_extraction_is_conservative_and_honest(self):
         source = ('"""The checker rejects empty input.\nAnd emits a diagnostic."""\n'
@@ -253,21 +241,21 @@ class ClaimTracer(unittest.TestCase):
         self.assertEqual(self.report()["status"], "uncovered")
         write(str(self.repo), ".claude/skills/project_subsystems/adaptation.json", "{}")
         self.assertEqual(self.report()["status"], "uncovered")
-        self.assertEqual(self.cli("check", "--claims", "behavior", "--json").returncode, 2)
+        self.assertEqual(self.cli("check", "--json").returncode, 2)
 
     def test_cli_add_list_stub_and_staged_bytes(self):
         write(str(self.repo), DOC, SENTENCE + "\n")
-        p = self.cli("stub", "--claims", "behavior", "--paths", DOC)
+        p = self.cli("stub", "--paths", DOC)
         self.assertEqual(p.returncode, 0, p.stderr)
         stub = json.loads(p.stdout.strip())
         self.assertEqual(stub["class"], None)
         self.assertEqual(stub["hash"], self.row()["hash"])
         candidate = Path(self.tmp) / "candidate.jsonl"
         candidate.write_text(json.dumps(self.row(section="__module__")) + "\n", encoding="utf-8")
-        p = self.cli("add", "--claims", "behavior", str(candidate))
+        p = self.cli("add", str(candidate))
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertEqual(self.cli("add", "--claims", "behavior", str(candidate)).returncode, 1)
-        p = self.cli("list", "--claims", "behavior", DOC, "--json")
+        self.assertEqual(self.cli("add", str(candidate)).returncode, 1)
+        p = self.cli("list", DOC, "--json")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(json.loads(p.stdout)["units"][0]["class"], "behavior")
         git(str(self.repo), "add", "-A")
@@ -352,21 +340,6 @@ class ClaimTracer(unittest.TestCase):
         finally:
             runner.STAMP_PATH = previous
 
-    def test_commit_controls_are_not_denied(self):
-        from _must_allow_cases import must_allow_cases
-        fixtures, cleanup = must_allow_cases("duplicate_commit_check")
-        try:
-            for label, payload, cwd, _allow in fixtures:
-                env = dict(os.environ, CLAUDE_PROJECT_DIR=cwd, PYTHONIOENCODING="utf-8")
-                env.pop("GIT_INDEX_FILE", None)
-                p = subprocess.run([sys.executable, str(CLAUDE / "hooks/duplicate_commit_check.py")],
-                                   input=json.dumps(payload), capture_output=True, text=True,
-                                   encoding="utf-8", env=env, cwd=cwd)
-                self.assertEqual(p.returncode, 0, (label, p.stderr))
-                self.assertNotIn("permissionDecision", p.stdout, label)
-        finally:
-            cleanup()
-
     def test_metadata_only_census_does_not_load_proof_runner(self):
         from unittest.mock import patch
         with patch.object(en, "_proof_runner", side_effect=AssertionError("unnecessary proof inventory")):
@@ -409,29 +382,12 @@ class ClaimTracer(unittest.TestCase):
         self.assertEqual(reached, [Path(PROOF).name])
 
     def test_unavailable_receipt_file_preserves_typed_report_shape(self):
-        p = self.cli("check", "--claims", "behavior", "--paths", DOC, "--proof-results",
+        p = self.cli("check", "--paths", DOC, "--proof-results",
                      str(Path(self.tmp) / "missing.json"), "--json")
         self.assertEqual(p.returncode, 2)
         result = json.loads(p.stdout)
         self.assertTrue(all(k in result for k in ("status", "counts", "units", "claims", "uncovered", "scope")))
         self.assertEqual(result["status"], "uncovered")
-
-    def test_number_guard_allows_uncovered_scan_and_does_not_deny_behavior(self):
-        write(str(self.repo), DOC, "An unclassified implicit behavior claim.\n")
-        git(str(self.repo), "add", DOC)
-        payload = json.dumps({"tool_name": "Bash", "cwd": str(self.repo),
-                              "tool_input": {"command": "git commit -m fixture"}})
-        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(self.repo))
-        env.pop("GIT_INDEX_FILE", None)
-        guard = str(CLAUDE / "hooks/rule_number_guard.py")
-        p = subprocess.run([sys.executable, guard], input=payload, capture_output=True, text=True,
-                           cwd=self.repo, env=env)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        write(str(self.repo), ".claude/skills/project_subsystems/adaptation.json", "{}")
-        git(str(self.repo), "add", "-A")
-        p = subprocess.run([sys.executable, guard], input=payload, capture_output=True, text=True,
-                           cwd=self.repo, env=env)
-        self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_unittest_assertion_must_belong_to_named_case(self):
         self.rows(self.row())
@@ -444,16 +400,6 @@ class ClaimTracer(unittest.TestCase):
         bindings = en.behavior_proofs(self.repo, [DOC])
         self.assertEqual(bindings["proofs"], [])
         self.assertTrue(bindings["unresolved"])
-
-    def test_advisory_missing_scope_and_mentions_are_silent(self):
-        write(str(self.repo), DOC, "A new assertion.\n")
-        git(str(self.repo), "add", DOC)
-        write(str(self.repo), ".claude/skills/project_subsystems/adaptation.json", "{}")
-        git(str(self.repo), "add", "-A")
-        p = self.hook()
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(json.loads(p.stdout), {})
-        self.assertEqual(json.loads(self.hook("git log --grep commit").stdout), {})
 
 
 if __name__ == "__main__":

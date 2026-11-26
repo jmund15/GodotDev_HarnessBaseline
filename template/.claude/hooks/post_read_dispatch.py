@@ -10,13 +10,9 @@ One settings entry runs these sub-hooks in order:
   3. skill_load_marker.process — a full SKILL.md Read records that skill as loaded
   4. harness_read_notice — one line at the first Read of a harness-edit-governed file in a window where
      `instruction_quality` is absent. It runs after 3, so the Read that loads the skill never gets it.
-     most_fixed_notice — one line per path, agent and compaction window at the first Read of a path the newest
-     census reading lists as most-fixed, whether or not the skill is loaded; silent where no reading exists.
-     The reading file is written by `mechanism_census.py --record` (step in
-     `commands/reference/harness_prune_census.md`), which commits `.claude/census_readings.jsonl`.
 
 Output contract:
-- Reaper, skill, harness-read and most-fixed notes share one `hookSpecificOutput.additionalContext` payload and exit 0.
+- Reaper, skill and harness-read notes share one `hookSpecificOutput.additionalContext` payload and exit 0.
 - One sub-hook fault stays fail-open and does not disable later checks.
 
 Wired in: settings.json hooks.PostToolUse with matcher
@@ -32,7 +28,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import model_ladder_gate
-from _claude_scope import harness_tail, normalize
+from _claude_scope import harness_tail
 from _hook_state import _agent_suffix, fire_once_since_compaction, skill_in_context
 
 # The matcher of the standalone runaway_scan_reaper entry in settings.base.json. A tool it covers
@@ -65,36 +61,6 @@ def harness_read_notice(input_data):
     if not fire_once_since_compaction(session_id, "harness_read_notice" + _agent_suffix(agent_id)):
         return ""
     return harness_edit_skill_reminder.advance_notice(path)
-
-
-def most_fixed_notice(input_data):
-    """The fix facts of a Read path the newest census reading lists as most-fixed, with the clause that routes
-    its fix. A reading's rows are repo-relative (`.claude/...`), `harness_tail` strips that prefix, so the
-    tail is matched with it put back. The count's window is the census's own and is not restated here.
-    Advisory only."""
-    if input_data.get("tool_name") != "Read":
-        return ""
-    path = str(((input_data.get("tool_input") or {}).get("file_path")) or "")
-    tail = harness_tail(path)
-    if not tail:
-        return ""
-    key = "most_fixed_notice:" + tail + _agent_suffix(input_data.get("agent_id"))
-    if not fire_once_since_compaction(input_data.get("session_id") or "", key):
-        return ""
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-    import mechanism_census  # imported only on a first Read of a `.claude/` path
-    root = normalize(path)[:-len(tail) - len(".claude/")]
-    reading = mechanism_census.latest_reading(root)
-    if not reading:
-        return ""
-    listed = ".claude/" + tail
-    row = next((r for r in reading.get("mostFixed") or [] if isinstance(r, dict) and r.get("path") == listed), None)
-    if row is None:
-        return ""
-    since = row.get("sinceListing") or {}
-    return ("%s is a most-fixed file: %s fix commits counted by the census (reading %s), %s of %s since listing "
-            "cite a plan. Plan a fix to it as a redesign: reference/mechanism_litmus.md, A fix re-asks the litmus."
-            % (listed, row.get("fixes"), reading.get("date"), since.get("cited"), since.get("fixes")))
 
 
 def main() -> None:
@@ -138,13 +104,6 @@ def main() -> None:
     # never gets told to load it.
     try:
         note = harness_read_notice(input_data)
-        if note:
-            contexts.append(note)
-    except Exception:
-        pass
-
-    try:
-        note = most_fixed_notice(input_data)
         if note:
             contexts.append(note)
     except Exception:

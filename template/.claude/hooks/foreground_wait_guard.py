@@ -109,6 +109,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _background_tasks  # noqa: E402
 import _hook_state  # noqa: E402
 from _command_text import runs_script  # noqa: E402
+from _prompt_provenance import in_delegate  # noqa: E402
 from _win_path import drive_path  # noqa: E402
 
 # Shell syntax, not prose: a bash `until|while <cond>; do ... sleep ... done` whose `; do` follows the
@@ -337,7 +338,7 @@ def wait_clamp_ms():
 
 def never_woken(payload):
     """True when no completion notification reaches this caller for a backgrounded job."""
-    if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "sdk-cli":
+    if in_delegate({}, os.environ):  # this process is a `claude -p` child (launcher or sdk-cli): its session ends at its turn's end
         return True
     if not _caller(payload):
         return False
@@ -824,9 +825,12 @@ def _first_in_window(payload, key):
 
 def _check_in(payload, command, tool_input, note, bounded=False):
     """A woken orchestrator's backgrounded wait loop ends by ORCHESTRATOR_WAIT_MS, so its wake lands inside the prompt
-    cache even when the job it waits on never ends; the wake is the check-in. The client enforces no `timeout` on a
-    background call, so the deadline is the command's own: a Bash loop runs
-    under coreutils `timeout`, exit 124. Remove the wrapper when the client enforces a background call's timeout.
+    cache even when the job it waits on never ends; the wake is the check-in. The deadline is the command's own: a
+    Bash loop runs under coreutils `timeout`, exit 124, because an interactive session's client enforces no `timeout`
+    on a background call. A `claude -p` child's client does kill a background call at its
+    `timeout`, but that caller is never woken and its loop is denied before this point,
+    so the wrapper serves only the woken callers that do not enforce it. It stays: it gives the check-in its own exit
+    status where the client gives none. A runner call's `timeout` is the router's (run_call_router.BACKGROUND_TIMEOUT_MS).
     PowerShell has no such wrapper and keeps its command."""
     seconds = ORCHESTRATOR_WAIT_MS // 1000
     if payload.get("tool_name") == "Bash" and not bounded and not _DEADLINE.match(command):

@@ -38,6 +38,7 @@ class HealthTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+        os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
     def test_roster_and_ladder_banners_render_a_ready_plugin_through_the_entry_row(self):
         claude = plant(self.root, {"roster_summary": "SENTINEL-ROSTER", "ladder_banner": "SENTINEL-LADDER"})
@@ -337,21 +338,6 @@ class HealthTests(unittest.TestCase):
             with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "tools")] + sys.path):
                 self.assertIn("dataviz", scl.skill_listing_banner(root, payload))
             self.assertEqual("", scl.skill_listing_banner(root, {}))
-
-    def test_owner_banners_are_silent_in_a_sidecar_delegate(self):
-        # A delegate can neither rule a listing entry nor run a board sweep; the lines belong to the orchestrator.
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / ".claude" / "reference").mkdir(parents=True)
-            (root / ".claude" / "reference" / "skill_listing_kept.json").write_text('{"kept": {}}', encoding="utf-8")
-            folder = root / "projects"
-            folder.mkdir()
-            row = {"type": "attachment", "attachment": {"type": "skill_listing", "names": ["dataviz"]}}
-            (folder / "old.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
-            payload = {"transcript_path": str(folder / "current.jsonl")}
-            with patch.dict("os.environ", {"CLAUDE_CODE_SIDECAR": "1"}):
-                self.assertEqual("", scl.skill_listing_banner(root, payload))
-                self.assertEqual("", scl.ladder_banner(Path(__file__).resolve().parents[2]))
 
 
 class RealSubmoduleTests(unittest.TestCase):

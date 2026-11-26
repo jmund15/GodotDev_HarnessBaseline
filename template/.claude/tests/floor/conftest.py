@@ -164,3 +164,50 @@ def project_values(tmp_path, monkeypatch):
 
     plant_values(PROJECT_PRE_BASH)
     return plant_values
+
+
+@pytest.fixture
+def create_tools(tmp_path, monkeypatch):
+    """Plant `adaptation.json` `worktree_create_tools` as the floor's reader finds it; returns the setter."""
+    import json
+    import _delete_rule
+    root = tmp_path / "tool_project"
+
+    def plant(*names):
+        target = root / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"worktree_create_tools": list(names)}), encoding="utf-8")
+        monkeypatch.setattr(_delete_rule, "PROJECT_ROOT", root)
+
+    plant("lane_worktree.py")
+    return plant
+
+
+# Live rows cut from a session transcript: a background-start result, the completion
+# notification, and the creating calls with their results. A name, path or id is a `<token>` the case fills in.
+LIVE_BACKGROUND_NOTICE = (
+    "Command running in background with ID: <task>. Output is being written to: <output>. You will be notified when "
+    "it completes \u2014 do not poll that file or sleep while waiting. Read the file only if the user asks for "
+    "progress, or if you need a line it prints before you can go on, such as a server's ready line or port.\n"
+    "Session cwd remains <cwd>; directory changes made by the backgrounded command do not apply to subsequent "
+    "commands.")
+LIVE_TASK_NOTIFICATION = (
+    "<task-notification>\n<task-id><task></task-id>\n<tool-use-id><call></tool-use-id>\n"
+    "<output-file><output></output-file>\n<status>completed</status>\n"
+    "<summary>Background command \"Create two lane worktrees with an asset import\" completed (exit code 0)</summary>\n"
+    "</task-notification>")
+LIVE_LANE_CHAIN = ('cd "<root>" && python3 .claude/tools/lane_worktree.py create <first> --from main --import && '
+                   'python3 .claude/tools/lane_worktree.py create <name> --from main --import')
+LIVE_LANE_HEREDOC = ('cd "<root>" && python3 .claude/tools/lane_worktree.py create <name> --from main 2>&1 | tail -1; '
+                     "python3 - <<'EOF'\nimport json\nj={\"jobs\":[{\"label\":\"wlc-cleanup\"}]}\n"
+                     "open(\".claude/scratch/jobs_cleanup.json\",\"w\",newline=\"\\n\").write(json.dumps(j,indent=1))\n"
+                     "EOF\npython3 .claude/tools/dispatch_size.py .claude/scratch/jobs_cleanup.json 2>&1 "
+                     "| grep -E 'preflight' | cut -c1-300")
+LIVE_LANE_CREATED = "created <path> (branch claude/<name> from main); assets imported"
+
+
+def fill(text, **tokens):
+    """`text` with each `<token>` replaced by its value."""
+    for key, value in tokens.items():
+        text = text.replace("<%s>" % key, str(value))
+    return text

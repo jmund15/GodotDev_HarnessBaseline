@@ -5,25 +5,34 @@ per /codify pass.
 Usage:
     autolearn_outcomes.py record --date YYYY-MM-DD --session S --target T --signal G --recommended R
                                  --outcome applied|declined|recorded --reason TEXT [--fix KIND]
-                                 [--row ID] [--metric KEY] [--cap N] [--file PATH]
+                                 [--row LABEL] [--metric KEY] [--cap N] [--file PATH]
     autolearn_outcomes.py lookup --target T [--file PATH]
     autolearn_outcomes.py history --target T [--target T ...] [--file PATH]
-    autolearn_outcomes.py unswept [--file PATH]
+    autolearn_outcomes.py unswept [--rows] [--file PATH]
+    autolearn_outcomes.py show ID [--file PATH]
     autolearn_outcomes.py swept [--through YYYY-MM-DD] [--file PATH]
 
 `record` validates the row shape, appends it and keeps only the newest `--cap` rows (default 500).
-`recorded` counts a slip that landed nothing. A `recorded` row whose target shares a path with a `recorded` row from the
-last 30 days prints every such row plus every `applied` row on that path since (date, outcome, session, signal) after
-the confirmation, so the agent judges whether the slip is the same choice; an `applied` row closes nothing. `--fix` names what a landing changed: text, reach,
+`recorded` counts a slip that landed nothing. A `recorded` row prints, after the confirmation, the earlier `recorded` and
+`applied` rows nearest its signal (date, outcome, session, shared words and paths, signal), best matches of any date or
+target, so the agent judges whether the slip is the same choice; a path is one shared item, weighed by how few rows name
+it. `--fix` names what a landing changed: text, reach,
 tool, hook, remove (a deletion or narrowing), or none. `metric` is the dashboard metric key the fix is meant to move.
 `lookup` prints, as JSON lines, the declined rows whose target equals T, so the re-proposal check
 is a deterministic read: a decline whose reason still holds is not proposed again.
+Every row has an id: eight hex digits of a digest of the whole row (`row_id`). A row is never edited, only
+appended and dropped by the cap, so its content is its identity: the id survives a rotation and needs no stored
+field, and two rows that differ in any field have different ids. Every listing prints it (`record`, the repeat
+check, `lookup`, `history`, `unswept --rows`), and `show ID` prints the row back. Cite a row by its id, never
+by its line number, which a rotation shifts.
 `history` prints every row, any outcome, whose target names one of the given paths (alone, among
 several joined by `;`, with a `#anchor`, or followed by a section name), so /codify Step 0 reads which fixes a rule's homes already had.
 """
 import argparse
-import datetime
+import collections
+import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -40,13 +49,16 @@ LOCK_TIMEOUT = 5.0
 
 DEFAULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "autolearn_outcomes.jsonl")
 DEFAULT_CAP = 500
-REPEAT_WINDOW_DAYS = 30
+REPEAT_SHOWN = 8
+MIN_SHARED = 2
+STOP_WORDS = frozenset("the an and or of to in on for with without that this it is was be by as at from not no its into "
+                       "which when than then so are were has had have but if one two".split())
 OUTCOMES = ("applied", "declined", "recorded")
 FIXES = ("text", "reach", "tool", "hook", "remove", "none")
 REQUIRED = ("date", "session", "target", "signal", "recommended", "outcome", "reason")
 RECORD_ACCEPTS = ("record --date YYYY-MM-DD --session S --target T --signal G --recommended R "
                   "--outcome applied|declined|recorded --reason TEXT [--fix text|reach|tool|hook|remove|none] "
-                  "[--row ID] [--metric KEY] [--cap N] [--file PATH]")
+                  "[--row LABEL] [--metric KEY] [--cap N] [--file PATH]")
 RECORD_EXAMPLE = ("python3 .claude/tools/autolearn_outcomes.py record --date 2026-10-29 --session navtools "
                   "--target .claude/skills/instruction_quality/reference/skills_and_commands.md "
                   "--signal 'a refusal printed no shape' --recommended 'state the accepts: and example: lines' "
@@ -75,6 +87,17 @@ def read_rows(path):
     return rows, bad
 
 
+def row_id(row):
+    """The id of a ledger row: a digest of the row's content, independent of field order and file position."""
+    text = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
+def listed(row):
+    """The JSON line a listing prints for `row`: its id, then its fields."""
+    return json.dumps({"id": row_id(row), **row}, ensure_ascii=False)
+
+
 def problems(row):
     out = ["missing or blank field: %s" % k for k in REQUIRED if not str(row.get(k) or "").strip()]
     if row.get("outcome") and row["outcome"] not in OUTCOMES:
@@ -100,41 +123,42 @@ def _targets(row):
     return out
 
 
-def open_recorded(rows, target, today):
-    """The earlier rows on a path of `target` the agent judges for a repeat: every `recorded` row from the 30 days
-    before `today`, plus every `applied` row dated on or after the oldest of those. An `applied` row closes nothing."""
-    paths = _targets({"target": target})
-    start = _day(today)
-    if start is None:
-        return []
-    start = start - datetime.timedelta(days=REPEAT_WINDOW_DAYS)
-    recorded = [r for r in rows if paths & _targets(r) and r.get("outcome") == "recorded"
-                and (_day(r.get("date")) or start) >= start]
-    if not recorded:
-        return []
-    oldest = min(str(r.get("date")) for r in recorded)
-    applied = [r for r in rows if paths & _targets(r) and r.get("outcome") == "applied" and str(r.get("date")) >= oldest]
-    return sorted(recorded + applied, key=lambda r: str(r.get("date")))
+def _items(row):
+    """What a row can share with another: the words of its signal and the paths of its target."""
+    words = {w for w in re.findall(r"[a-z][a-z0-9_]+", str(row.get("signal") or "").lower()) if w not in STOP_WORDS}
+    return words | {"path " + p for p in _targets(row)}
 
 
-def _day(text):
-    try:
-        return datetime.date.fromisoformat(str(text))
-    except ValueError:
-        return None
+def nearest_rows(rows, row):
+    """The earlier `recorded` or `applied` rows sharing at least MIN_SHARED items with `row`, best first, at most
+    REPEAT_SHOWN, each with the items it shares. An item weighs its rarity across those rows, so a path that most rows
+    name (`CLAUDE.core.md`) or a word most signals use counts little. Any date and any target qualify: a choice is
+    recognized by its words, and a fix of it may have landed in another file."""
+    earlier = [r for r in rows if r.get("outcome") in ("recorded", "applied")]
+    items = [_items(r) for r in earlier]
+    seen = collections.Counter(i for group in items for i in group)
+    mine = _items(row)
+    scored = []
+    for r, group in zip(earlier, items):
+        shared = mine & group
+        if len(shared) >= MIN_SHARED:
+            scored.append((sum(math.log(1 + len(earlier) / seen[i]) for i in shared), r, sorted(shared)))
+    scored.sort(key=lambda t: -t[0])
+    return [(r, shared) for _, r, shared in scored[:REPEAT_SHOWN]]
 
 
 def repeat_lines(rows, row):
-    """Facts for a `recorded` row on a path with earlier rows: each row's date, outcome, session and signal."""
+    """Facts for a `recorded` row: the nearest earlier rows (id, date, outcome, session, shared items, signal), oldest first."""
     if row["outcome"] != "recorded":
         return []
-    earlier = open_recorded(rows, row["target"], row["date"])
-    if not any(r.get("outcome") == "recorded" for r in earlier):
+    near = nearest_rows(rows, row)
+    if not near:
         return []
-    return (["autolearn_outcomes: repeat: %d earlier row(s) name %s in the last %d days; judge whether this slip is the same choice:"
-             % (len(earlier), row["target"], REPEAT_WINDOW_DAYS)]
-            + ["  %s %s %s %s" % (r.get("date"), r.get("outcome"), str(r.get("session"))[:8], str(r.get("signal"))[:140])
-               for r in earlier])
+    near.sort(key=lambda t: str(t[0].get("date")))
+    return (["autolearn_outcomes: repeat check: %d earlier row(s) share the most with this slip; judge whether any is the same choice:"
+             % len(near)]
+            + ["  %s %s %s %s [%s] %s" % (row_id(r), r.get("date"), r.get("outcome"), str(r.get("session"))[:8],
+                                         ", ".join(shared), str(r.get("signal"))[:140]) for r, shared in near])
 
 
 def cmd_record(args):
@@ -172,7 +196,8 @@ def cmd_record(args):
     finally:
         if temp is not None:
             os.unlink(temp)
-    print("autolearn_outcomes: recorded %s for %s (%d rows kept)" % (row["outcome"], row["target"], len(rows)))
+    print("autolearn_outcomes: recorded %s for %s as %s (%d rows kept)"
+          % (row["outcome"], row["target"], row_id(row), len(rows)))
     for line in repeats:
         print(line)
     return 0
@@ -184,7 +209,7 @@ def cmd_lookup(args):
         print("autolearn_outcomes: %d unreadable row(s) in %s" % (bad, args.file), file=sys.stderr)
     for r in rows:
         if r.get("outcome") == "declined" and r.get("target") == args.target:
-            print(json.dumps(r, ensure_ascii=False))
+            print(listed(r))
     return 0
 
 
@@ -195,8 +220,26 @@ def cmd_history(args):
     paths = _targets({"target": ";".join(args.target)})
     for r in rows:
         if paths & _targets(r):
-            print(json.dumps(r, ensure_ascii=False))
+            print(listed(r))
     return 0
+
+
+def _unread(rows, path):
+    marker = read_swept(path)
+    return [r for r in rows if r.get("outcome") == "recorded" and str(r.get("date") or "") > marker]
+
+
+def cmd_show(args):
+    rows, bad = read_rows(args.file)
+    if bad:
+        print("autolearn_outcomes: %d unreadable row(s) in %s" % (bad, args.file), file=sys.stderr)
+    found = [r for r in rows if row_id(r) == args.id]
+    for r in found:
+        print(listed(r))
+    if not found:
+        print("autolearn_outcomes: no row with id %s in %s (a dropped row has no id)" % (args.id, args.file),
+              file=sys.stderr)
+    return 0 if found else 1
 
 
 def read_swept(path):
@@ -213,8 +256,7 @@ def unswept_summary(path=DEFAULT_FILE):
     rows, _ = read_rows(path)
     if not rows:
         return ""
-    marker = read_swept(path)
-    unread = [r for r in rows if r.get("outcome") == "recorded" and str(r.get("date") or "") > marker]
+    unread = _unread(rows, path)
     if not unread:
         return ""
     oldest = min(str(r.get("date")) for r in unread)
@@ -222,6 +264,10 @@ def unswept_summary(path=DEFAULT_FILE):
 
 
 def cmd_unswept(args):
+    if args.rows:
+        for r in _unread(read_rows(args.file)[0], args.file):
+            print(listed(r))
+        return 0
     line = unswept_summary(args.file)
     if line:
         print(line)
@@ -270,7 +316,7 @@ def build_parser():
         description="Append one validated ledger row.",
         epilog="required: --date YYYY-MM-DD --session S --target T --signal G --recommended R "
                "--outcome applied|declined|recorded --reason TEXT\n"
-               "optional: --fix text|reach|tool|hook|remove|none, --row ID, --metric KEY, --cap N, --file PATH\n"
+               "optional: --fix text|reach|tool|hook|remove|none, --row LABEL, --metric KEY, --cap N, --file PATH\n"
                + cli_usage.refusal(RECORD_ACCEPTS, RECORD_EXAMPLE))
     rec.accepts, rec.example = RECORD_ACCEPTS, RECORD_EXAMPLE
     for k in REQUIRED:
@@ -289,7 +335,12 @@ def build_parser():
     hist.add_argument("--target", action="append", required=True)
     hist.add_argument("--file", default=DEFAULT_FILE)
     hist.set_defaults(fn=cmd_history)
+    show = sub.add_parser("show")
+    show.add_argument("id")
+    show.add_argument("--file", default=DEFAULT_FILE)
+    show.set_defaults(fn=cmd_show)
     unsw = sub.add_parser("unswept")
+    unsw.add_argument("--rows", action="store_true", help="print each unread recorded row, with its id")
     unsw.add_argument("--file", default=DEFAULT_FILE)
     unsw.set_defaults(fn=cmd_unswept)
     sw = sub.add_parser("swept")

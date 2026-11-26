@@ -58,10 +58,12 @@ def plant_agent_tool(session, agent):
 
 
 def call(command, tool="Bash", cwd=REPO, agent="", agent_type="workflow-subagent", entrypoint="cli",
-         background=None, transcript="", state=None):
+         background=None, transcript="", state=None, sidecar="", timeout=None):
     tool_input = {"command": command}
     if background is not None:
         tool_input["run_in_background"] = background
+    if timeout is not None:
+        tool_input["timeout"] = timeout
     payload = {"session_id": "rcr00001", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd,
                "tool_input": tool_input}
     if agent:
@@ -71,7 +73,10 @@ def call(command, tool="Bash", cwd=REPO, agent="", agent_type="workflow-subagent
     # Plant the live-editor probe's answer: the guard chain's floor guard reads this host's Godot
     # processes, so a live editor (another session's, or the owner's) would deny the build cases instead
     # of letting the router decide. A root this proof never builds in makes every checkout read not-live.
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", HARNESS_HOOK_STATE_DIR=os.path.join(TMP, state or uuid.uuid4().hex),
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR"}
+    if sidecar:
+        env["CLAUDE_CODE_SIDECAR"] = sidecar
+    env.update(PYTHONIOENCODING="utf-8", HARNESS_HOOK_STATE_DIR=os.path.join(TMP, state or uuid.uuid4().hex),
                CLAUDE_CODE_ENTRYPOINT=entrypoint, CLAUDE_PROJECT_DIR=REPO,
                HARNESS_LIVE_EDITOR_CHECKOUTS=os.path.join(TMP, "no-live-editor"))
     if GATE_SCRIPT in command:
@@ -97,6 +102,10 @@ def rewritten(out):
 
 def backgrounded(out):
     return (out.get("updatedInput") or {}).get("run_in_background") is True
+
+
+def timeout_of(out):
+    return (out.get("updatedInput") or {}).get("timeout")
 
 
 RESULTS = []
@@ -194,6 +203,9 @@ def main():
     out = call("dotnet test --filter Y", entrypoint="sdk-cli")
     check("a claude -p child's foreground dotnet test starts in the background",
           backgrounded(out) and "until" in (out.get("additionalContext") or ""), out)
+    out = call("dotnet test --filter Y", sidecar="deepseek")
+    check("a seat launcher's child (entrypoint cli, CLAUDE_CODE_SIDECAR set) is a delegate: its foreground dotnet test starts in the background",
+          backgrounded(out) and "until" in (out.get("additionalContext") or ""), out)
     out = call("dotnet build", agent="agent-tool", agent_type="general-purpose",
                transcript=plant_agent_tool("rcr00001", "agent-tool"))
     ctx = out.get("additionalContext") or ""
@@ -204,6 +216,28 @@ def main():
     check("a subagent's worktree run is both redirected to main and backgrounded",
           backgrounded(out) and rewritten(out) == "pwsh -NoProfile -File %s/.claude/scripts/run_test_suite.ps1 -Repo "
                                                   "%s -Filter X" % (MAIN, WT), out)
+
+    # A `claude -p` child's client kills a background call at its own `timeout` (a foreground 600000 would end a run
+    # still waiting for its machine lane), while the runner bounds its own life (Get-SuiteRunBounds): the router
+    # gives every run it backgrounds the Bash tool's ceiling, so the runner's bound is the only one that fires.
+    run = "pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter X -TimeoutMs 1500000"
+    for label, cmd, kw in (
+            ("a delegate's foreground run with a short timeout", run, {"agent": "agent-wf", "timeout": 600000}),
+            ("a delegate's foreground run with no timeout", run, {"agent": "agent-wf"}),
+            ("a delegate's foreground dotnet test", "dotnet test", {"agent": "agent-wf", "timeout": 120000}),
+            ("a delegate's run it already backgrounded with a short timeout", run,
+             {"agent": "agent-wf", "background": True, "timeout": 900000}),
+            ("an orchestrator's foreground non-detached gate", "pwsh -File .claude/scripts/" + GATE_SCRIPT,
+             {"timeout": 600000})):
+        out = call(cmd, **kw)
+        check("%s runs in the background under the tool's ceiling timeout" % label,
+              backgrounded(out) and timeout_of(out) == 7200000, out)
+    for label, cmd, kw in (
+            ("a delegate's quick verify -SelfTest", "pwsh -NoProfile -File .claude/scripts/verify.ps1 -SelfTest", {}),
+            ("a delegate's dotnet --info", "dotnet --info", {}),
+            ("a delegate's grep naming dotnet test", 'grep -n "dotnet test" a.md', {})):
+        out = call(cmd, agent="agent-wf", timeout=100000, **kw)
+        check("%s keeps its own timeout" % label, "crash" not in out and timeout_of(out) in (None, 100000), out)
 
     for label, cmd, kw in (
             ("the orchestrator's foreground dotnet build", "dotnet build", {}),

@@ -84,6 +84,17 @@ class SkillListingReview(unittest.TestCase):
         write_transcript(self.transcripts, "new.jsonl", [{"type": "user"}], 300)  # no listing yet
         self.assertIn("anthropic-skills:pdf", slr.unruled(self.transcripts, claude))
 
+    def test_a_long_session_reads_its_latest_full_listing_not_its_first(self):
+        claude = plant_claude(self.root, {})
+        first = dict(LIVE_ROW, attachment=dict(LIVE_ROW["attachment"], names=["dataviz", "gone-bench"]))
+        delta = dict(LIVE_ROW, attachment=dict(LIVE_ROW["attachment"], isInitial=False, names=["added-later"]))
+        filler = [{"type": "user", "pad": "x" * 200}] * 600
+        write_transcript(self.transcripts, "s.jsonl", [first] + filler + [LIVE_ROW] + filler + [delta], 100)
+        unruled = slr.unruled(self.transcripts, claude)
+        self.assertNotIn("gone-bench", unruled)
+        self.assertNotIn("added-later", unruled)
+        self.assertIn("anthropic-skills:pdf", unruled)
+
     def test_no_transcript_with_a_listing_is_silent(self):
         claude = plant_claude(self.root, {})
         self.assertEqual("", slr.banner(self.transcripts, claude))

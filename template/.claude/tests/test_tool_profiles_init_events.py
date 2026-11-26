@@ -7,8 +7,9 @@ launcher ever hands a child tools its kind does not grant (or drops one), the re
 argv is the whole enforcement, so this is its check.
 
 A row may carry `stale` when a profile change landed while its launcher's plan could not run
-(a plan quota exhausted): the missing-server direction is skipped and named, because only a
-fresh capture can answer it, and the extra-server direction still runs.
+(a plan quota exhausted, or the plan unavailable to run `-P` at all): the missing direction (a built-in or
+MCP server the kind now grants that the old event lacks) is skipped and named, because only a fresh
+capture can answer it, and the extra direction (a tool the kind does not grant) still runs for both.
 """
 import json
 import os
@@ -58,7 +59,10 @@ for run in runs:
     check(f"{name}: the event is a system init", ("system", "init"), (run["type"], run["subtype"]))
     profile, _spec, _keys = tp.resolve_kind(run["kind"], route="fanout", walk_mcp=False)
     builtins, servers = split_tools(run["tools"])
-    check(f"{name}: built-ins equal the kind's", sorted(profile["builtins"]), sorted(builtins))
+    if run.get("stale"):
+        check(f"{name}: every built-in is one the kind grants", [], sorted(builtins - set(profile["builtins"])))
+    else:
+        check(f"{name}: built-ins equal the kind's", sorted(profile["builtins"]), sorted(builtins))
     check(f"{name}: every MCP server is one the kind grants", [],
           sorted(s for s in servers if not server_granted(s, profile["mcpServers"])))
     if run.get("stale"):
@@ -78,9 +82,9 @@ for run in runs:
               sorted(t for t in ("mcp__ai-worker__write_doc",) if t not in run["tools"]))
 
 for run in runs:
-    if run["kind"] != "author":
-        check(f"{run['launcher']} {run['kind']}: a non-author holds no write tool", [],
-              sorted({"Edit", "Write", "Bash"} & set(run["tools"])))
+    if not tp.load_table()["kinds"][run["kind"]].get("writes"):
+        check(f"{run['launcher']} {run['kind']}: a kind that does not write holds no writing tool", [],
+              sorted({"Edit", "Write", "NotebookEdit"} & set(run["tools"])))
 
 # a planted drift is caught: an Edit slipped into a scout's list
 planted = dict(runs[0], tools=runs[0]["tools"] + ["Edit"])
@@ -94,6 +98,13 @@ stale_profile, _s, _k = tp.resolve_kind(stale_row["kind"], route="fanout", walk_
 _stale_builtins, stale_servers = split_tools(stale_row["tools"])
 check("a stale row still fails when it carries a server the kind does not grant", ["nosuch"],
       sorted(s for s in stale_servers if not server_granted(s, stale_profile["mcpServers"])))
+stale_gone = dict(runs[0], stale="planted", tools=[t for t in runs[0]["tools"] if t != "Read"])
+stale_gone_builtins = split_tools(stale_gone["tools"])[0]
+check("a stale row missing a built-in the kind grants is skipped, not failed", [],
+      sorted(stale_gone_builtins - set(stale_profile["builtins"])))
+stale_extra = dict(runs[0], stale="planted", tools=runs[0]["tools"] + ["Edit"])
+check("a stale row still fails when it carries a built-in the kind does not grant", ["Edit"],
+      sorted(split_tools(stale_extra["tools"])[0] - set(stale_profile["builtins"])))
 check("a stale row is named, never silently dropped", True, bool(skipped) or not any(
     r.get("stale") for r in runs))
 

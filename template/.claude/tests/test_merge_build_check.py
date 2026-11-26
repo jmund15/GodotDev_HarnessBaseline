@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from _hook_call import _writable, copy_repo  # the tests folder is this script's folder, on sys.path first
+from _module_closure import copy_closure
 
 ROOT = Path(__file__).resolve().parents[2]
 FAILS = []
@@ -67,10 +68,8 @@ def build_repo(repo):
                     ignore=shutil.ignore_patterns("__pycache__", "commit-msg"))
     for hook in (repo / ".claude" / "githooks").iterdir():
         hook.chmod(0o755)  # git ignores a non-executable hook; a checkout from a Windows-authored tree is 644
-    for name in ("merge_build_check.py", "editor_live_build_guard.py", "_git_run.py"):
-        src = ROOT / ".claude" / "hooks" / name
-        if src.is_file():
-            shutil.copy2(src, repo / ".claude" / "hooks" / name)
+    copy_closure(repo / ".claude", *(entry for entry in ("hooks/merge_build_check.py", "hooks/editor_live_build_guard.py")
+                                     if (ROOT / ".claude" / entry).is_file()))
     git(repo, "init", "-q", "-b", "main")
     for key, value in (("user.email", "t@t"), ("user.name", "t"), ("core.autocrlf", "false"),
                        ("core.hooksPath", ".claude/githooks")):

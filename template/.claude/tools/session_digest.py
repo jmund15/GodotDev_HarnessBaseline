@@ -41,6 +41,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
 from _transcript_summary import TranscriptSummaryBuilder, owner_line  # noqa: E402
@@ -120,9 +121,9 @@ def project_dirs(cwd: str) -> list[Path]:
 
 
 def sibling_stores(pdir: Path, cwd: str | None = None) -> list[Path]:
-    """`pdir` and, when it is a store of the repo at `cwd` (default the process cwd), the stores of that
+    """`pdir` and, when it is a store of the repo at `cwd` (default the harness root), the stores of that
     repo's other checkouts. A store of any other project stands alone."""
-    stores = project_dirs(cwd or os.getcwd())
+    stores = project_dirs(cwd or harness_root())
     return [pdir] + [store for store in stores if store != pdir] if pdir in stores else [pdir]
 
 
@@ -342,7 +343,7 @@ def merge_recovered_prompts(user_messages: list[dict], recovered: list[dict]) ->
 
 def _digest_dict(path: Path) -> dict:
     """The full builder dictionary for one transcript (`full_evidence`, so no collection is cut to
-    a preview). The digest header and `session_facts` both read it."""
+    a preview). The digest header reads it."""
     b = TranscriptSummaryBuilder(path.stem, str(path), full_evidence=True)
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -386,46 +387,6 @@ def last_owner_timestamp(messages: list[dict]) -> str | None:
     """The timestamp of the owner's last substantive prompt: the line the agent's own work is counted from."""
     stamps = [m["timestamp"] for m in messages if is_substantive_owner_prompt(m) and m.get("timestamp")]
     return max(stamps, key=lambda stamp: _aw_epoch(stamp) or 0) if stamps else None
-
-
-SYNTHETIC_MODEL = "<synthetic>"
-
-
-def session_facts(path: Path) -> dict:
-    """The store-derived facts a self-evaluation row carries (`facts`, /self_evaluate §5d).
-
-    The store derives them rather than the model, so the reader has one definition of the
-    denominator and of the session's cell:
-
-    * `driver` — the `(model, effort)` pair with the most assistant turns. A `<synthetic>` turn is
-      client-generated with no model, and a sidechain turn is a subagent's, not this session's, so
-      neither is a driver. `driver_mixed` marks a session that spans more than one pair.
-    * `owner_prompts` — the shared owner-row predicate over the merged owner rows, the same list
-      `owner_prompts()` returns: harness plumbing and a bare control command are not owner prompts.
-    * `duration_min` — the digest header's `(duration_seconds or 0) // 60`, whole minutes.
-    """
-    path = Path(path)
-    d = _digest_dict(path)
-    messages = owner_prompts(path)
-    turns: dict = {}
-    for row in _rows(path, "assistant"):
-        model = (row.get("message") or {}).get("model")
-        if not isinstance(model, str) or not model.strip() or model == SYNTHETIC_MODEL:
-            continue
-        effort = row.get("effort")
-        if not isinstance(effort, str) or not effort.strip():
-            effort = None
-        turns[(model, effort)] = turns.get((model, effort), 0) + 1
-    ranked = sorted(turns.items(), key=lambda item: (-item[1], item[0][0], item[0][1] or ""))
-    model, effort = ranked[0][0] if ranked else (None, None)
-    facts = {
-        "driver": {"model": model, "effort": effort},
-        "owner_prompts": sum(1 for message in messages if is_substantive_owner_prompt(message)),
-        "duration_min": (d["metadata"]["duration_seconds"] or 0) // 60,
-    }
-    if len(turns) > 1:
-        facts["driver_mixed"] = True
-    return facts
 
 
 # ---- Agent work: what the agent itself did, for the handoff packet -------------------------------------
@@ -2139,7 +2100,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--session", help="session id or unique prefix")
     ap.add_argument("--prompt-tail", help="text the session's latest real prompt must contain (e.g. session_end)")
-    ap.add_argument("--project-dir", default=os.getcwd(), help="repo root the session ran in (default cwd)")
+    ap.add_argument("--project-dir", default=harness_root(), help="repo root the session ran in (default: the harness root)")
     presentation = ap.add_mutually_exclusive_group()
     presentation.add_argument("--brief", action="store_true",
                               help="bounded 2,048-byte identity card; not sufficient for pickup")

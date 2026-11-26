@@ -2,12 +2,10 @@
   "memory_domains": [
     {
       "name": "HSM/States",
-      "triggers": [
-        "HSM",
-        "transition",
-        "state machine",
-        "compoundstate",
-        "statebase"
+      "paths": [
+        "**/HSM/**",
+        "**/States/**",
+        "**/BehaviorTree/**"
       ],
       "memory_keywords": [
         "HSM",
@@ -18,13 +16,8 @@
     },
     {
       "name": "AI/Critters",
-      "triggers": [
-        "critter",
-        "BT",
-        "perception",
-        "steering",
-        "behavior tree",
-        "blackboard"
+      "paths": [
+        "**/AI/**"
       ],
       "memory_keywords": [
         "critter",
@@ -36,13 +29,9 @@
     },
     {
       "name": "VFX",
-      "triggers": [
-        "VFX",
-        "particle",
-        "Modulate",
-        "tint",
-        "sprite3d",
-        "visualeffect"
+      "paths": [
+        "**/VFX/**",
+        "**/*Decal*.cs"
       ],
       "memory_keywords": [
         "VFX",
@@ -55,12 +44,9 @@
     },
     {
       "name": "Testing",
-      "triggers": [
-        "GdUnit4",
-        "TestSuite",
-        "ISceneRunner",
-        "[TestCase]",
-        "fixture"
+      "paths": [
+        "**/Tests/**",
+        "**/*Tests.cs"
       ],
       "memory_keywords": [
         "testing",
@@ -73,13 +59,9 @@
     },
     {
       "name": "Physics",
-      "triggers": [
-        "physics",
-        "collision",
-        "hitbox",
-        "Area3D",
-        "CollisionShape",
-        "RigidBody"
+      "paths": [
+        "**/*MovementProcessor*.cs",
+        "**/*Body3D*.cs"
       ],
       "memory_keywords": [
         "physics",
@@ -90,12 +72,6 @@
     },
     {
       "name": "Pooling",
-      "triggers": [
-        "pool",
-        "spawn",
-        "acquire",
-        "return"
-      ],
       "memory_keywords": [
         "pool",
         "spawn"
@@ -105,15 +81,6 @@
     },
     {
       "name": "Status Effects",
-      "triggers": [
-        "status effect",
-        "stun",
-        "freeze",
-        "burn",
-        "DoT",
-        "tickrunner",
-        "tickeffect"
-      ],
       "memory_keywords": [
         "status",
         "status effect"
@@ -126,14 +93,6 @@
     },
     {
       "name": "Refactoring",
-      "triggers": [
-        "refactor",
-        "deprecate",
-        "migrate",
-        "rename",
-        "extract",
-        "consolidate"
-      ],
       "memory_keywords": [
         "refactor"
       ],
@@ -144,13 +103,9 @@
     },
     {
       "name": "Data Files",
-      "triggers": [
-        ".tres",
-        ".tscn",
-        "UID",
-        "ext_resource",
-        "ScriptClass",
-        "sub_resource"
+      "paths": [
+        "**/*.tscn",
+        "**/*.tres"
       ],
       "memory_keywords": [
         "UID",
@@ -167,10 +122,6 @@
     },
     {
       "name": "Prototyping",
-      "triggers": [
-        "provisional",
-        "probe mode"
-      ],
       "memory_keywords": [
         "provisional",
         "probe mode"
@@ -182,7 +133,6 @@
     },
     {
       "name": "Exports",
-      "triggers": [],
       "memory_keywords": [
         "Inspector",
         "RequiredExport"
@@ -192,7 +142,6 @@
     },
     {
       "name": "MCP Tools",
-      "triggers": [],
       "memory_keywords": [
         "MCP",
         "UID"
@@ -202,7 +151,6 @@
     },
     {
       "name": "Godot Lifecycle",
-      "triggers": [],
       "memory_keywords": [
         "disposal",
         "lifecycle"
@@ -212,11 +160,6 @@
     },
     {
       "name": "Stat Modifiers",
-      "triggers": [
-        "modifier",
-        "stat",
-        "affinity"
-      ],
       "memory_keywords": [
         "modifier"
       ],
@@ -227,9 +170,6 @@
     },
     {
       "name": "Game Lore",
-      "triggers": [
-        "lore"
-      ],
       "memory_keywords": [
         "lore"
       ],

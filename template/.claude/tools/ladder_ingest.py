@@ -43,6 +43,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "hooks"))
+from _checkout_root import harness_root  # noqa: E402
 import session_digest as digest  # noqa: E402
 sys.path.insert(0, str(HERE.parent / "scripts" / "lib"))
 import cli_envelope  # noqa: E402
@@ -650,7 +652,7 @@ def main(argv=None) -> int:
     if slug in (".", "..") or slug != os.path.basename(slug.replace("\\", "/")):
         sys.exit("--slug %r names this run's output folder: no path separator and no `..`" % a.slug)
     outdir = Path(a.out) / slug
-    pdir = Path(a.projects_dir) if a.projects_dir else digest.session_store(os.getcwd())
+    pdir = Path(a.projects_dir) if a.projects_dir else digest.session_store(harness_root())
 
     if a.apply:
         comparison = outdir / "COMPARISON.md"

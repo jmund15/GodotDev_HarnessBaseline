@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = json.dumps({'folders': ['Proj'], 'gitDirName': 'vault-git-test', 'taskName': 'VaultSyncTest'})
@@ -20,10 +21,7 @@ def stage_shared(base, config=CONFIG):
     hooks, tools = base / '.claude/hooks', base / '.claude/tools'
     hooks.mkdir(parents=True)
     tools.mkdir(parents=True)
-    for name in ('vault_mirror_start.py', '_bounded_run.py', '_claude_scope.py'):
-        shutil.copy(ROOT / '.claude/hooks' / name, hooks / name)
-    for name in ('vault_sync.py', 'vault_read.py'):
-        shutil.copy(ROOT / '.claude/tools' / name, tools / name)
+    copy_closure(base / '.claude', 'hooks/vault_mirror_start.py', 'tools/vault_sync.py')
     if config is not None:
         (tools / 'vault_sync.project.json').write_text(config, encoding='utf-8')
     return hooks / 'vault_mirror_start.py'

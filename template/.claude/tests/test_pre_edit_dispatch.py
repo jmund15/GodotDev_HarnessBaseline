@@ -44,7 +44,7 @@ DISPATCH = os.path.join(HOOKS, "pre_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
 SUBHOOKS = ("pattern_enforcer", "harness_edit_skill_reminder", "model_name_guard", "provenance_label_guard",
-            "running_script_edit_guard")
+            "running_script_edit_guard", "repeat_fix_notice")
 
 # Assembled, never spelled: pattern_enforcer denies any Write whose content carries it.
 EXPORT_NULL_VIOLATION = "[Export] public Node Thing = " + "null" + "!;"
@@ -409,6 +409,8 @@ def main():
                   rc == 0 and "advisory-from-noisy" in (ctx or "")
                   and "running_script_edit_guard" in err))
 
+    cases.append(("the repeat-fix notice is a chain member with advisory fault posture",
+                  dict(module.CHAIN).get("repeat_fix_notice") == "advisory"))
     cases.append(("S7: the harness skill reminder has advisory fault posture",
                   dict(module.CHAIN)["harness_edit_skill_reminder"] == "advisory"))
     rc, out, err = module.dispatch(payload, chain=(("harness_edit_skill_reminder", boom), noisy))

@@ -105,7 +105,7 @@ def added_classes(repo, prev_head, units):
     def git(*args):
         r = git_run(args, cwd=repo)
         return r.text.splitlines() if r.returncode == 0 else None
-    added = git("diff", "--name-only", "--diff-filter=A", prev_head, "--", "Tests/Integration")
+    added = git("diff", "--relative", "--name-only", "--diff-filter=A", prev_head, "--", "Tests/Integration")
     if added is None:
         return {}
     added += git("ls-files", "--others", "--exclude-standard", "--", "Tests/Integration") or []

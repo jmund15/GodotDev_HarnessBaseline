@@ -81,7 +81,7 @@ RESCAN_SEC = 300
 STALE_STREAM_MIN = 10
 
 # The nearest ancestor name that means "this is a Claude Code session root". Mirrors
-# activity_registry.py's SESSION_PROC_NAMES — same identity question, same answer.
+# scripts/PeerActivity.ps1 Get-OwnerRoot's node|claude test — same identity question, same answer.
 SESSION_PROC_NAMES = ("node.exe", "node", "claude.exe", "claude")
 _WALK_LIMIT = 12
 _OWN_ROOT_KEY = "shell_census_own_root"

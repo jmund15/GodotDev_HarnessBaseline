@@ -1,0 +1,561 @@
+{
+ "counts": {
+  "seats": 1,
+  "completed": 1,
+  "partial": 0,
+  "failed": 0,
+  "uncovered": 0,
+  "received": 5,
+  "valid": 5,
+  "rejected": 0
+ },
+ "coverage": [
+  {
+   "label": "sa-sa-harness-quality",
+   "mandates": [
+    "Neutral mandate text 1."
+   ],
+   "model": "sonnet[1m]",
+   "modelObserved": true,
+   "identityBasis": "servedModel",
+   "record": "C:\\dev\\proj\\.claude\\scratch\\audit_run\\sa-sa-harness-quality.record.json",
+   "tier": "executor",
+   "effort": "high",
+   "uncoveredMandates": [],
+   "status": "completed",
+   "received": 5,
+   "valid": 5,
+   "rejected": 0,
+   "checked": {
+    "toolsUsed": [
+     "Neutral tool text 1.",
+     "Neutral tool text 2.",
+     "Neutral tool text 3.",
+     "Neutral tool text 4.",
+     "Neutral tool text 5.",
+     "Neutral tool text 6.",
+     "Neutral tool text 7.",
+     "Neutral tool text 8.",
+     "Neutral tool text 9.",
+     "Neutral tool text 10.",
+     "Neutral tool text 11.",
+     "Neutral tool text 12.",
+     "Neutral tool text 13.",
+     "Neutral tool text 14.",
+     "Neutral tool text 15.",
+     "Neutral tool text 16.",
+     "Neutral tool text 17.",
+     "Neutral tool text 18.",
+     "Neutral tool text 19.",
+     "Neutral tool text 20.",
+     "Neutral tool text 21.",
+     "Neutral tool text 22.",
+     "Neutral tool text 23.",
+     "Neutral tool text 24.",
+     "Neutral tool text 25.",
+     "Neutral tool text 26.",
+     "Neutral tool text 27.",
+     "Neutral tool text 28.",
+     "Neutral tool text 29.",
+     "Neutral tool text 30.",
+     "Neutral tool text 31.",
+     "Neutral tool text 32.",
+     "Neutral tool text 33.",
+     "Neutral tool text 34.",
+     "Neutral tool text 35."
+    ],
+    "stoppedAt": "exhausted-leads",
+    "basis": "Neutral basis text 1.",
+    "mandates": {
+     "per-hunk checks 1-8": "Neutral mandate text 2.",
+     "per-commit and decision": "Neutral mandate text 3.",
+     "per-file table": "Neutral mandate text 4.",
+     "hot set": "Neutral mandate text 5."
+    }
+   },
+   "issues": [],
+   "capabilityPartial": false,
+   "gaps": [],
+   "gapNotes": [],
+   "unread": [],
+   "mustReadEvidence": "observed",
+   "mustReadSpans": [
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/doctrine-commits.md",
+     "lines": 3,
+     "read": [
+      [
+       1,
+       3
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/decisions.json",
+     "lines": 1,
+     "read": [
+      [
+       1,
+       1
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/restate-groups.txt",
+     "lines": 363,
+     "read": [
+      [
+       1,
+       363
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-0.diff",
+     "lines": 115,
+     "read": [
+      [
+       1,
+       115
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-1.diff",
+     "lines": 86,
+     "read": [
+      [
+       1,
+       86
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-2.diff",
+     "lines": 33,
+     "read": [
+      [
+       1,
+       33
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-3.diff",
+     "lines": 19,
+     "read": [
+      [
+       1,
+       19
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-4.diff",
+     "lines": 15,
+     "read": [
+      [
+       1,
+       15
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-5.diff",
+     "lines": 92,
+     "read": [
+      [
+       1,
+       92
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-6.diff",
+     "lines": 25,
+     "read": [
+      [
+       1,
+       25
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-7.diff",
+     "lines": 22,
+     "read": [
+      [
+       1,
+       22
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-8.diff",
+     "lines": 15,
+     "read": [
+      [
+       1,
+       15
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-9.diff",
+     "lines": 224,
+     "read": [
+      [
+       1,
+       224
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-10.diff",
+     "lines": 366,
+     "read": [
+      [
+       1,
+       366
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-11.diff",
+     "lines": 230,
+     "read": [
+      [
+       1,
+       230
+      ]
+     ]
+    },
+    {
+     "path": "C:/dev/proj/.claude/scratch/audit_run/inputs/subject-12.diff",
+     "lines": 185,
+     "read": [
+      [
+       1,
+       185
+      ]
+     ]
+    }
+   ]
+  }
+ ],
+ "sources": [
+  {
+   "id": "F1",
+   "seat": "sa-sa-harness-quality",
+   "index": 0,
+   "finding": {
+    "agent": "sa-harness-quality",
+    "action": "FIX",
+    "category": "bug",
+    "description": "Neutral description text 1.",
+    "rationale": "Neutral rationale text 1.",
+    "evidence": [
+     {
+      "file": ".claude/area/file_05.md:20",
+      "quote": "(`ui_ledger.py index`, `SKILL.md` §The loop step 2, *Brief*)"
+     },
+     {
+      "file": ".claude/area/file_01.md:87",
+      "quote": "neutral quote 2 cited at file_01"
+     }
+    ],
+    "file": ".claude/area/file_05.md:20",
+    "old": "Neutral old text 1.",
+    "new": "Neutral new text 1.",
+    "minRigor": "normal",
+    "id": "F1"
+   }
+  },
+  {
+   "id": "F2",
+   "seat": "sa-sa-harness-quality",
+   "index": 1,
+   "finding": {
+    "agent": "sa-harness-quality",
+    "action": "FIX",
+    "category": "bug",
+    "description": "Neutral description text 2.",
+    "rationale": "Neutral rationale text 2.",
+    "evidence": [
+     {
+      "file": ".claude/area/file_13.md:163",
+      "quote": "neutral quote 3 cited at file_13"
+     },
+     {
+      "file": ".claude/area/file_13.md:164",
+      "quote": "neutral quote 4 cited at file_13"
+     },
+     {
+      "file": ".claude/area/file_10.md:213",
+      "quote": "neutral quote 5 cited at file_10"
+     },
+     {
+      "file": ".claude/area/file_12.md:172",
+      "quote": "neutral quote 6 cited at file_12"
+     }
+    ],
+    "file": ".claude/area/file_13.md:163",
+    "old": "Neutral old text 2.",
+    "new": "Neutral new text 2.",
+    "minRigor": "light",
+    "id": "F2"
+   }
+  },
+  {
+   "id": "F3",
+   "seat": "sa-sa-harness-quality",
+   "index": 2,
+   "finding": {
+    "agent": "sa-harness-quality",
+    "action": "PLAN",
+    "category": "rule",
+    "description": "Neutral description text 3.",
+    "rationale": "Neutral rationale text 3.",
+    "evidence": [
+     {
+      "file": ".claude/area/file_06.md:136",
+      "quote": "neutral quote 7 cited at file_06"
+     },
+     {
+      "file": ".claude/area/file_14.md:118",
+      "quote": "neutral quote 8 cited at file_14"
+     }
+    ],
+    "file": ".claude/area/file_06.md:136",
+    "scope": [
+     ".claude/area/file_06.md",
+     "area/extra_1.txt",
+     "area/extra_2.txt",
+     "area/extra_3.txt (branch-a)",
+     "branch-b"
+    ],
+    "options": [
+     "Neutral options text 1.",
+     "Neutral options text 2.",
+     "Neutral options text 3."
+    ],
+    "minRigor": "normal",
+    "id": "F3"
+   }
+  },
+  {
+   "id": "F4",
+   "seat": "sa-sa-harness-quality",
+   "index": 3,
+   "finding": {
+    "agent": "sa-harness-quality",
+    "action": "FIX",
+    "category": "rule",
+    "description": "Neutral description text 4.",
+    "rationale": "Neutral rationale text 4.",
+    "evidence": [
+     {
+      "file": ".claude/area/file_03.md:12",
+      "quote": "whose fix job writes pieces with separate write sets, or which launches from a session that cannot publish (`SKILL.md` §The loop, *Where a round runs*)."
+     },
+     {
+      "file": ".claude/area/file_01.md:57",
+      "quote": "neutral quote 10 cited at file_01"
+     }
+    ],
+    "file": ".claude/area/file_03.md:12",
+    "old": "Neutral old text 3.",
+    "new": "Neutral new text 3.",
+    "minRigor": "thorough",
+    "id": "F4"
+   }
+  },
+  {
+   "id": "F5",
+   "seat": "sa-sa-harness-quality",
+   "index": 4,
+   "finding": {
+    "agent": "sa-harness-quality",
+    "action": "FIX",
+    "category": "bug",
+    "description": "Neutral description text 5.",
+    "rationale": "Neutral rationale text 5.",
+    "evidence": [
+     {
+      "file": ".claude/area/file_01.md:101",
+      "quote": "neutral quote 11 cited at file_01"
+     }
+    ],
+    "file": ".claude/area/file_01.md:101",
+    "old": "Neutral old text 4.",
+    "new": "Neutral new text 4.",
+    "minRigor": "thorough",
+    "id": "F5"
+   }
+  }
+ ],
+ "view": [
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "bug",
+   "description": "Neutral description text 1.",
+   "rationale": "Neutral rationale text 1.",
+   "evidence": [
+    {
+     "file": ".claude/area/file_05.md:20",
+     "quote": "(`ui_ledger.py index`, `SKILL.md` §The loop step 2, *Brief*)"
+    },
+    {
+     "file": ".claude/area/file_01.md:87",
+     "quote": "neutral quote 2 cited at file_01"
+    }
+   ],
+   "file": ".claude/area/file_05.md:20",
+   "old": "Neutral old text 1.",
+   "new": "Neutral new text 1.",
+   "minRigor": "normal",
+   "id": "F1",
+   "merged_from": [
+    "F1"
+   ],
+   "verdict": "VERIFIED",
+   "confidence": "verified"
+  },
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "bug",
+   "description": "Neutral description text 2.",
+   "rationale": "Neutral rationale text 2.",
+   "evidence": [
+    {
+     "file": ".claude/area/file_13.md:163",
+     "quote": "neutral quote 3 cited at file_13"
+    },
+    {
+     "file": ".claude/area/file_13.md:164",
+     "quote": "neutral quote 4 cited at file_13"
+    },
+    {
+     "file": ".claude/area/file_10.md:213",
+     "quote": "neutral quote 5 cited at file_10"
+    },
+    {
+     "file": ".claude/area/file_12.md:172",
+     "quote": "neutral quote 6 cited at file_12"
+    }
+   ],
+   "file": ".claude/area/file_13.md:163",
+   "old": "Neutral old text 2.",
+   "new": "Neutral new text 2.",
+   "minRigor": "light",
+   "id": "F2",
+   "merged_from": [
+    "F2"
+   ],
+   "verdict": "VERIFIED",
+   "confidence": "verified"
+  },
+  {
+   "agent": "sa-harness-quality",
+   "action": "PLAN",
+   "category": "rule",
+   "description": "Neutral description text 3.",
+   "rationale": "Neutral rationale text 3.",
+   "evidence": [
+    {
+     "file": ".claude/area/file_06.md:136",
+     "quote": "neutral quote 7 cited at file_06"
+    },
+    {
+     "file": ".claude/area/file_14.md:118",
+     "quote": "neutral quote 8 cited at file_14"
+    }
+   ],
+   "file": ".claude/area/file_06.md:136",
+   "scope": [
+    ".claude/area/file_06.md",
+    "area/extra_1.txt",
+    "area/extra_2.txt",
+    "area/extra_3.txt (branch-a)",
+    "branch-b"
+   ],
+   "options": [
+    "Neutral options text 1.",
+    "Neutral options text 2.",
+    "Neutral options text 3."
+   ],
+   "minRigor": "normal",
+   "id": "F3",
+   "merged_from": [
+    "F3"
+   ],
+   "verdict": "VERIFIED",
+   "confidence": "verified"
+  },
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "rule",
+   "description": "Neutral description text 4.",
+   "rationale": "Neutral rationale text 4.",
+   "evidence": [
+    {
+     "file": ".claude/area/file_03.md:12",
+     "quote": "whose fix job writes pieces with separate write sets, or which launches from a session that cannot publish (`SKILL.md` §The loop, *Where a round runs*)."
+    },
+    {
+     "file": ".claude/area/file_01.md:57",
+     "quote": "neutral quote 10 cited at file_01"
+    }
+   ],
+   "file": ".claude/area/file_03.md:12",
+   "old": "Neutral old text 3.",
+   "new": "Neutral new text 3.",
+   "minRigor": "thorough",
+   "id": "F4",
+   "merged_from": [
+    "F4"
+   ],
+   "verdict": "VERIFIED",
+   "confidence": "verified"
+  },
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "bug",
+   "description": "Neutral description text 5.",
+   "rationale": "Neutral rationale text 5.",
+   "evidence": [
+    {
+     "file": ".claude/area/file_01.md:101",
+     "quote": "neutral quote 11 cited at file_01"
+    }
+   ],
+   "file": ".claude/area/file_01.md:101",
+   "old": "Neutral old text 4.",
+   "new": "Neutral new text 4.",
+   "minRigor": "thorough",
+   "id": "F5",
+   "merged_from": [
+    "F5"
+   ],
+   "verdict": "VERIFIED",
+   "confidence": "verified"
+  }
+ ],
+ "merge": {
+  "mode": "exact",
+  "candidates": [],
+  "issues": []
+ },
+ "errors": [],
+ "flags": [
+  {
+   "kind": "tier-shape",
+   "detail": "alternative-without-wins-when: 1 finding (F3)"
+  }
+ ],
+ "status": "complete"
+}

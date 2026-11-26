@@ -698,5 +698,44 @@ def test_a_slice_of_the_new_ladder_replaces_the_tiers_held_from_the_old_one(tmp_
     assert hooks_state.ladder_slice_tiers(sid) == ['fanout']
 
 
+def _notice_session(tmp_path, monkeypatch, sid, skill, ladder, digest=None):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, sid, [], skill=skill)
+    if ladder:
+        assert hooks_state.mark_ladder_slice(sid, ['executor'], digest=digest)
+    return gate, hooks_state, payload
+
+
+def test_advance_notice_names_the_unmet_loads_once_per_window(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _notice_session(tmp_path, monkeypatch, 'prep0001', False, False)
+    line = gate.advance_notice(payload)
+    assert 'Skill(skill="orchestration")' in line and SLICE_CMD in line
+    assert gate.advance_notice(payload) == ''
+    hooks_state.clear_compaction_keys('prep0001')
+    assert gate.advance_notice(payload)
+
+
+def test_advance_notice_names_only_the_missing_load(tmp_path, monkeypatch):
+    gate, _, payload = _notice_session(tmp_path, monkeypatch, 'prep0002', True, False)
+    line = gate.advance_notice(payload)
+    assert SLICE_CMD in line and 'Skill(skill=' not in line
+    gate, _, payload = _notice_session(tmp_path, monkeypatch, 'prep0003', False, True)
+    line = gate.advance_notice(payload)
+    assert 'Skill(skill="orchestration")' in line and SLICE_CMD not in line
+
+
+def test_advance_notice_is_silent_with_both_loads_held_and_for_an_unidentified_session(tmp_path, monkeypatch):
+    gate, _, payload = _notice_session(tmp_path, monkeypatch, 'prep0004', True, True)
+    assert gate.advance_notice(payload) == ''
+    assert gate.advance_notice({'cwd': payload['cwd']}) == ''
+
+
+def test_advance_notice_agrees_with_the_deny_on_every_state(tmp_path, monkeypatch):
+    for index, (skill, ladder, digest) in enumerate([(False, False, None), (True, False, None), (False, True, None),
+                                                      (True, True, None), (True, True, 'older-ladder-text')]):
+        gate, _, payload = _notice_session(tmp_path, monkeypatch, 'agree%03d' % index, skill, ladder, digest)
+        denied = gate.doctrine_check(payload, tiers=lambda: ['executor'])[0] is not None
+        assert bool(gate.advance_notice(payload)) is denied, (skill, ladder, digest)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -23,8 +23,8 @@ Definitions:
   file changed among the files, nothing else: the proof file is among them and no other file is), `both` (the proof
   file and other files changed), `other-only` (the proof file did not change). Facts about the clearing range, never
   its cause.
-- fix commit: a commit with subject `fix(` or `fix:` on the ref, no merges, touching a path of the item. A commit whose
-  scope names `review`, `audit` or `fold` is excluded from every item's fix count (C53): those are workflow artifacts.
+- fix commit: a commit with subject `fix(` or `fix:` on the ref, no merges, touching a path of the item. Every one counts,
+  whatever its scope text: no field of a commit records which pass made it.
 - commit-cause classes (judged by a reader, not computed here; churn/context.md E1): (a) sibling instance: the same
   failure class an earlier fix on that mechanism already addressed for another instance; (b) unaccounted variable:
   a value the author's runs held fixed that varies in use (platform, machine load or timing, concurrent sessions or
@@ -33,7 +33,7 @@ Definitions:
   recent fix: repairs or reverts a fix made within the window; (e) new requirement or owner-directed change, not a
   defect; (f) one-off defect. A commit that fits two names both.
 - fix-commit sampling rule (the baseline of 205 that class b's share is measured against, Milestone C): every fix
-  commit on the ref in the window (no merges, the baseline's population: review, audit and fold commits included).
+  commit on the ref in the window (no merges, the baseline's population).
   Per harness code file (`.py .ps1 .sh .js .mjs`, outside `tests/` and `scratch/`) fixed 6 or more times, take
   commits evenly spaced over that file's list, k = 15 for the 8 most-fixed files and 2 for the rest; each commit once,
   listed with every file it touched among the sampled set. The judge classifies the sample; the tool lists it.
@@ -85,12 +85,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
 import adaptation  # noqa: E402
 import _file_lock  # noqa: E402
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
 
 STALE_DAYS = 32
 CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs")
 FIX_RE = re.compile(r"^fix(\(|:)")
-EXCLUDED_SCOPE_RE = re.compile(r"review|audit|fold")
 PROOF_RE = re.compile(r"(^|/)(test_[^/]+\.(py|sh|ps1)|[^/]+_test\.\w+)$")
 CLEARING_KINDS = ("proof-only", "other-only", "both", "same-head", "unpaired")
 HOOK_PAYLOAD = {"session_id": "census-probe", "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -99,6 +99,8 @@ DENY_RE = re.compile(r"(PreToolUse|PostToolUse|PermissionDenied|\[command hook)"
 CITE_RE = re.compile(r"\[[a-z][a-z0-9-]* [A-Z0-9][A-Za-z0-9]*\]")
 TRAILER_RE = re.compile(r"^(Redesigns|Plan):[ \t]*(\S+)[ \t]*$", re.M)
 TOP_SHARE = 0.05
+MIN_REPEAT_FIXES = 2  # counted fixes that make a file a repeat: the floor for listing it and for the edit notice
+DEFAULT_WINDOW_DAYS = 30  # the fix window the census, the edit notice and the lens briefs count over
 HARNESS_ROOTS = (".claude", "template/.claude")
 RUNTIME_OUTSIDE_HARNESS_ROOTS = frozenset({
     ".github/ruleset-main.json",
@@ -228,10 +230,9 @@ def clearing_kind(proof, head, next_head, files):
 
 
 def fix_index(repo, ref, days):
-    """Fix commits on `ref` in the window, no merges, touching `.claude` or `.github`: sha, date, subject, files,
-    and whether the scope is excluded from counts."""
+    """Fix commits on `ref` in the window, no merges, touching `.claude` or `.github`: sha, date, subject, files."""
     log = git(repo, "log", ref, "--no-merges", "--since=%d.days" % days, "--format=@@%H%x09%ad%x09%s", "--date=short",
-              "--name-only", "--", ".claude", ".github")
+              "--name-only", "--relative", "--", ".claude", ".github")
     commits = []
     cur = None
     for line in log.splitlines():
@@ -239,8 +240,6 @@ def fix_index(repo, ref, days):
             sha, date, subj = line[2:].split("\t", 2)
             cur = {"sha": sha, "date": date, "subject": subj, "files": []} if FIX_RE.match(subj) else None
             if cur:
-                scope = re.match(r"^fix\(([^)]*)\)", subj)
-                cur["excluded"] = bool(scope and EXCLUDED_SCOPE_RE.search(scope.group(1)))
                 commits.append(cur)
         elif cur and line.strip():
             cur["files"].append(line.strip())
@@ -413,13 +412,13 @@ def latest_reading(root):
 
 
 def _exists_at(repo, rev, path):
-    return git_run(["cat-file", "-e", "%s:%s" % (rev, path)], cwd=repo).returncode == 0
+    return git_run(["cat-file", "-e", "%s:./%s" % (rev, path)], cwd=repo).returncode == 0
 
 
-def _log_commits(repo, ref, since):
-    """Commits on `ref` since a git --since value touching a harness root, newest first, merges excluded."""
+def _log_commits(repo, ref, since, paths=HISTORY_PATHS):
+    """Commits on `ref` since a git --since value touching `paths` (a harness root by default), newest first, merges excluded."""
     raw = git(repo, "log", ref, "--no-merges", "--since=" + since, "--date=short",
-              "--format=%x1e%H%x09%ad%x1f%B%x1d", "--name-only", "--", *HISTORY_PATHS)
+              "--format=%x1e%H%x09%ad%x1f%B%x1d", "--name-only", "--relative", "--", *paths)
     commits = []
     for block in raw.split("\x1e")[1:]:
         meta, _, files = block.partition("\x1d")
@@ -431,12 +430,14 @@ def _log_commits(repo, ref, since):
     return commits
 
 
-def counted_fixes(repo, ref, since):
+def counted_fixes(repo, ref, since, paths=HISTORY_PATHS):
     """Counted fix commits per path since a git --since value, newest first, and each restarted path's redesign date.
-    A fix commit scoped to review, audit or fold is not counted (C53). A redesign commit carrying `Redesigns: <path>`
+    `paths` narrows the log to the files asked about (a redesign commit changes the path it restarts, so it stays in view).
+    Names are relative to `repo`, which may be a checkout root below the git root (the baseline's `template/`).
+    Every fix commit counts. A redesign commit carrying `Redesigns: <path>`
     and a `Plan:` trailer whose file exists at that commit restarts the path: only fix commits newer than it count
     (D3). A `Redesigns:` with no valid `Plan:` restarts nothing."""
-    commits = _log_commits(repo, ref, since)
+    commits = _log_commits(repo, ref, since, paths)
     restart = {}
     for i, c in enumerate(commits):
         trailers = TRAILER_RE.findall(c["message"])
@@ -448,9 +449,6 @@ def counted_fixes(repo, ref, since):
     fixes = {}
     for i, c in enumerate(commits):
         if not FIX_RE.match(c["subject"]):
-            continue
-        scope = re.match(r"^fix\(([^)]*)\)", c["subject"])
-        if scope and EXCLUDED_SCOPE_RE.search(scope.group(1)):
             continue
         entry = {"sha": c["sha"][:9], "date": c["date"], "subject": c["subject"],
                  "citesPlan": bool(CITE_RE.search(c["subject"]))}
@@ -468,8 +466,9 @@ def _tracked_harness_files(repo, ref):
 
 def fix_history(repo, paths, ref, days, reading, date=None):
     """Counted fix history for runtime harness paths; unresolved paths never get a count."""
-    return _fix_history(repo, paths, ref, reading, date, _tracked_harness_files(repo, ref),
-                        *counted_fixes(repo, ref, "%d.days" % days))
+    scoped = tuple(p for p in paths if runtime_harness_path(p))  # also the only paths a git pathspec may carry here
+    fixes, redesigned = counted_fixes(repo, ref, "%d.days" % days, paths=scoped) if scoped else ({}, {})
+    return _fix_history(repo, paths, ref, reading, date, _tracked_harness_files(repo, ref), fixes, redesigned)
 
 
 def _fix_history(repo, paths, ref, reading, date, tracked, fixes, redesigned):
@@ -500,13 +499,13 @@ def _fix_history(repo, paths, ref, reading, date, tracked, fixes, redesigned):
 
 
 def most_fixed(repo, ref, days, prior, today):
-    """Top `ceil(TOP_SHARE x population)` of tracked runtime files with counted fixes; at least two fixes,
+    """Top `ceil(TOP_SHARE x population)` of tracked runtime files with counted fixes; at least `MIN_REPEAT_FIXES`,
     ties at the cut included."""
     fixes, redesigned = counted_fixes(repo, ref, "%d.days" % days)
     tracked = _tracked_harness_files(repo, ref)
     counts = {p: len(v) for p, v in fixes.items() if p in tracked}
     cut = math.ceil(TOP_SHARE * len(counts))
-    eligible = sorted((p for p in counts if counts[p] >= 2), key=lambda p: -counts[p])
+    eligible = sorted((p for p in counts if counts[p] >= MIN_REPEAT_FIXES), key=lambda p: -counts[p])
     if not eligible or cut == 0:
         return []
     cutoff = counts[eligible[min(cut, len(eligible)) - 1]]
@@ -630,7 +629,7 @@ def build(args):
             if nxt and head and nxt[1] and nxt[1][:12] != head[:12]:
                 key = (head, nxt[1])
                 if key not in diff_cache:
-                    out = git_run(["diff", "--name-only", head, nxt[1]], cwd=repo)
+                    out = git_run(["diff", "--relative", "--name-only", head, nxt[1]], cwd=repo)
                     diff_cache[key] = out.text.split() if out.returncode == 0 else None
                 files = diff_cache[key]
             clearing[name][clearing_kind(name, head, nxt[1] if nxt else None, files)] += 1
@@ -647,11 +646,10 @@ def build(args):
 
     # Git history.
     fixes = fix_index(repo, args.ref, args.days)
-    fixes_counted = [c for c in fixes if not c["excluded"]]
 
     def fixes_for(path):
         return [{"sha": c["sha"][:9], "date": c["date"], "subject": c["subject"]}
-                for c in fixes_counted if path in c["files"]]
+                for c in fixes if path in c["files"]]
 
     proofs_live = [f for f in list_items(repo, args.ref, ".claude/tests", PROOF_RE) if f.count("/") == 2]
     proof_names = {os.path.basename(p): p for p in proofs_live}
@@ -721,7 +719,7 @@ def build(args):
     changed = changed_since_rulings(repo, args, now, flaky_rows, deny_by_hook, events)
 
     # Totals (G1-G5 groupings, measured on this reading's window).
-    totals = totals_block(repo, args, now, fixes, fixes_counted, proof_rows, hook_rows, tool_rows, ledger,
+    totals = totals_block(repo, args, now, fixes, proof_rows, hook_rows, tool_rows, ledger,
                           run_records, checkouts_read, len(tpaths), spawn, deny_by_hook)
 
     index = collections.defaultdict(list)
@@ -748,11 +746,11 @@ def build(args):
     }
 
 
-def totals_block(repo, args, now, fixes, fixes_counted, proof_rows, hook_rows, tool_rows, ledger, run_records,
+def totals_block(repo, args, now, fixes, proof_rows, hook_rows, tool_rows, ledger, run_records,
                  checkouts_read, transcript_count, spawn, deny_by_hook):
     ref = args.ref
     since = "--since=%d.days" % args.days
-    first_parent = git(repo, "log", "--first-parent", ref, since, "--format=@@%H%x09%s", "--name-only")
+    first_parent = git(repo, "log", "--first-parent", ref, since, "--format=@@%H%x09%s", "--relative", "--name-only")
     harness_only = game = 0
     types = collections.Counter()
     added_tests = []
@@ -773,7 +771,7 @@ def totals_block(repo, args, now, fixes, fixes_counted, proof_rows, hook_rows, t
             harness_only += 1
         else:
             game += 1
-    added = git(repo, "log", "--first-parent", ref, since, "--diff-filter=A", "--name-only", "--format=@@%h %s")
+    added = git(repo, "log", "--first-parent", ref, since, "--diff-filter=A", "--relative", "--name-only", "--format=@@%h %s")
     cur_subj = ""
     cur_files = []
     blocks = []
@@ -796,14 +794,13 @@ def totals_block(repo, args, now, fixes, fixes_counted, proof_rows, hook_rows, t
             if f.startswith(".claude/hooks/") and f.endswith(".py") and not os.path.basename(f).startswith("_"):
                 added_hooks.append(os.path.basename(f))
     code_index = collections.defaultdict(int)
-    for c in fixes_counted:
+    for c in fixes:
         for f in c["files"]:
             if f.endswith(CODE_EXT) and not re.search(r"/(tests|scratch)/", f):
                 code_index[f] += 1
     fixed_files = len(code_index)
     three_plus = sum(1 for v in code_index.values() if v >= 3)
     fix_all = len(fixes)
-    fix_excl = sum(1 for c in fixes if c["excluded"])
     deny_total = sum(h["count"] for h in deny_by_hook.values())
     # G4 groupings, as census.py printed them.
     groups = collections.Counter(); hours = collections.Counter()
@@ -831,7 +828,7 @@ def totals_block(repo, args, now, fixes, fixes_counted, proof_rows, hook_rows, t
     g5 = {"plainBashHookSpawnMs": spawn, "denies": deny_total}
     return {
         "G1": {"commitsFirstParent": {"harness-only": harness_only, "game": game}, "commitTypes": dict(types.most_common(6)),
-               "fixCommitsTouchingClaudeOrGithub": fix_all, "fixCommitsExcludedReviewAuditFold": fix_excl,
+               "fixCommitsTouchingClaudeOrGithub": fix_all,
                "fixedCodeFiles": fixed_files, "fixedCodeFilesThreeOrMore": three_plus,
                "proofFilesNow": len(proof_rows)},
         "G2": {"proofFilesAdded": len(added_tests), "byAddingCommit": dict(by_kind), "hooksAdded": len(added_hooks)},
@@ -898,7 +895,7 @@ def read_main_check(repo, args, now):
                 continue
             files = []
             if r.get("commit") and r.get("clearedBy"):
-                files = git(repo, "diff", "--name-only", r["commit"], r["clearedBy"]).split()
+                files = git(repo, "diff", "--relative", "--name-only", r["commit"], r["clearedBy"]).split()
             cleared.append({"name": r.get("name"), "kind": r.get("kind"), "platform": r.get("platform"),
                             "commit": r.get("commit"), "clearedBy": r.get("clearedBy"), "clearedAt": r.get("clearedAt"),
                             "files": files})
@@ -1084,9 +1081,9 @@ def render(census, kind, sort_col, desc=True):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--repo", default=".")
+    p.add_argument("--repo", default=None, help="default: the harness root the cwd lies in")
     p.add_argument("--ref", default="main")
-    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--days", type=int, default=DEFAULT_WINDOW_DAYS)
     p.add_argument("--now", default=None)
     p.add_argument("--checkout", action="append")
     p.add_argument("--transcripts", action="append")
@@ -1102,6 +1099,7 @@ def main(argv=None):
     p.add_argument("--line", nargs="?", const="", default=None,
                    help="print the /session_end census line for this census file; with no value, read the state ref")
     args = p.parse_args(argv)
+    args.repo = args.repo or harness_root()
     if args.record:
         readings = args.readings or os.path.join(os.path.abspath(args.repo), ".claude", "census_readings.jsonl")
         return record(args.record, readings)

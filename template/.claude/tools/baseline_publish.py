@@ -1657,7 +1657,7 @@ def main(argv=None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default=".")
+    parser.add_argument("--root", help="the project root (default: the nearest directory holding .claude/)")
     parser.add_argument("--from-commit")
     parser.add_argument("--from-worktree")
     parser.add_argument("--rows")
@@ -1673,7 +1673,7 @@ def main(argv=None) -> int:
     parser.add_argument("--over-upstream", action="append", default=[], metavar="RELPATH",
                         help="publish this row over the baseline copy that changed since its base; recorded on the row")
     args = parser.parse_args(argv)
-    root = Path(args.root).resolve()
+    root = Path(args.root).resolve() if args.root else sync.project_root()
     if args.sweep or args.abandon:
         if args.from_commit or args.from_worktree or args.resume or args.rows or (args.sweep and args.abandon):
             parser.error("--sweep and --abandon take no source, rows or --resume, and not together")

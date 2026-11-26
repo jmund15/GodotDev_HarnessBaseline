@@ -119,6 +119,9 @@ def main():
         scl._STEP_FAULTS.clear()
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), patch.dict(os.environ, env or {}), contextlib.ExitStack() as stack:
+            for fact in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT"):  # a proof run from a delegate is not one
+                if fact not in (env or {}):
+                    os.environ.pop(fact, None)
             for name, value in base.items():
                 stack.enter_context(patch.object(scl, name, value))
             for name, value in godot.items():
