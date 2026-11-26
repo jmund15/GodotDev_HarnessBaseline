@@ -56,6 +56,11 @@ function New-ScratchRepo {
     return $tmp
 }
 
+# Invoke-Isolated runs a case file in a fresh runspace of this process. A case that decides what a process writes to its
+# own stdout, stderr or exit code spawns instead (Invoke-InChildProcess).
+. (Join-Path $here '_isolated.ps1')
+function Get-IsolatedText { param([string] $File) $r = Invoke-Isolated $File; (@($r.out, $r.err) | Where-Object { $_ }) -join "`n" }
+
 function Invoke-InChildProcess {
     # Runs Get-AdaptationValue in a fresh pwsh process against $Repo, exactly as a consumer
     # would see it: stdout carries the value, stderr carries whatever the function itself
@@ -150,7 +155,7 @@ $($restoreMatch.Value)
 Restore-PriorGreens -Plan `$plan -StatePath '$state' -TreeDigest '$Digest'
 Write-Output ('STATUS=' + (`$plan.status -join ','))
 "@
-    try { return (& pwsh -NoProfile -File $wrapper) -join "`n" }
+    try { return Get-IsolatedText $wrapper }
     finally { Remove-Item -Force $wrapper, $state -ErrorAction SilentlyContinue }
 }
 if ($restoreMatch.Success) {
@@ -185,7 +190,7 @@ function Show(`$plan) { `$v = Get-IntegrationVerdict -Plan `$plan -Baseline 8 -S
 Write-Output ('CRASH=' + (Show @([pscustomobject]@{ label = 'B1'; status = 'GREEN'; passed = 5; failed = 0 }, [pscustomobject]@{ label = 'B2'; status = 'RED'; passed = 3; failed = 0 })))
 Write-Output ('FAILED=' + (Show @([pscustomobject]@{ label = 'B1'; status = 'GREEN'; passed = 5; failed = 0 }, [pscustomobject]@{ label = 'B2'; status = 'RED'; passed = 2; failed = 1 })))
 "@
-    try { $vOut = (& pwsh -NoProfile -File $vWrap) -join "`n" } finally { Remove-Item -Force $vWrap -ErrorAction SilentlyContinue }
+    try { $vOut = Get-IsolatedText $vWrap } finally { Remove-Item -Force $vWrap -ErrorAction SilentlyContinue }
     $crashLine = ($vOut -split "`n" | Where-Object { $_ -like 'CRASH=*' }) -join ''
     $failedLine = ($vOut -split "`n" | Where-Object { $_ -like 'FAILED=*' }) -join ''
     $cases += @{ label = "verdict: a RED batch with failed=0 is named RED_NO_FAILED_TEST and exits 1 ($crashLine)"
@@ -256,7 +261,7 @@ Set-Stamp `$reused `$foreignPid '2001-01-01T00:00:00.0000000Z'
 Remove-OldRunDirs -RunsRoot `$root
 Write-Output ('LEFT=' + ((Get-ChildItem -LiteralPath `$root -Directory | Sort-Object Name | ForEach-Object Name) -join ','))
 "@
-        $out = (& pwsh -NoProfile -File $wrapper 2>&1) -join "`n"
+        $out = Get-IsolatedText $wrapper
     } finally {
         Remove-Item -Force $wrapper -ErrorAction SilentlyContinue
         Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
@@ -299,7 +304,7 @@ $cases += @{ label = 'gate: joins each FAILED_TEST with its FAILED_MSG in the de
 
 # --- A6: IntegrationBatches.ps1 owns units, plan/state/manifest writes, retry selection and diagnosis ------------------
 function Invoke-IbChild {
-    # Dot-sources the shipped IntegrationBatches.ps1 into a fresh pwsh, after $Prelude (which may shadow a cmdlet with a
+    # Dot-sources the shipped IntegrationBatches.ps1 into a fresh runspace, after $Prelude (which may shadow a cmdlet with a
     # counting function), then runs $Body. Returns stdout joined.
     param([string] $Prelude = '', [string] $Body)
     $f = Join-Path ([System.IO.Path]::GetTempPath()) ("ribib_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
@@ -309,7 +314,7 @@ $Prelude
 . '$ibPath'
 $Body
 "@
-    try { return ((& pwsh -NoProfile -File $f 2>&1) -join "`n") } finally { Remove-Item -Force $f -ErrorAction SilentlyContinue }
+    try { return Get-IsolatedText $f } finally { Remove-Item -Force $f -ErrorAction SilentlyContinue }
 }
 
 $planJson = '[{"label":"Integration_B1","segs":["A"],"expectedSec":50,"filter":"(FullyQualifiedName~Tests.Integration.A.)&","status":"GREEN","passed":4,"failed":0,"elapsed":0,"workWall":0},' +

@@ -3,7 +3,7 @@
 
 USAGE
     python3 .claude/tools/dispatch_result.py take <fan-out out dir | <label>.record.json> --label <label>
-        [--workdir DIR] [--base REF] [--root DIR] [--run-proofs] [--proof-timeout S] [--created]
+        [--workdir DIR] [--base REF] [--root DIR] [--run-proofs] [--proof-timeout S]
 
 `consume` judges a job against its brief's checks. `take` serves the session's return loop for a job that
 worked in its own worktree on its own branch, and needs no brief. It prints facts only; which commits land,
@@ -21,8 +21,9 @@ the rating and whether to retire stay the session's judgment (`instruction_quali
     PROOF        each changed proof file; `not-run`, or PASS/FAIL/TIMEOUT with `--run-proofs` (run in the worktree)
     RUNNING      jobs of the same out dir that have not ended, and WATCHER: whether this session's watcher is armed
                  (with the re-arm call when it is not and a job runs)
-    RETIRE       the delete guard's verdict for the worktree (`hooks/_delete_rule.py` `is_retired_worktree`), asked once
-                 every commit is on --base; before that, how many are not
+    RETIRE       the delete guard's verdict for the worktree (`hooks/_delete_rule.py` `is_retired_worktree`), with
+                 ownership read from this session's transcript as the guard reads it, asked once every commit is on
+                 --base; before that, how many are not
 
 EXIT 0 facts printed; 1 a removed assert is MISSING, a proof failed or timed out, or the worktree holds
 uncommitted work; 2 refused (the job has not ended, or its record is unreadable).
@@ -230,7 +231,7 @@ def _watcher_lines(out_dir, label, session):
 
 
 def take(source, label, root, base_ref="main", workdir=None, run_proofs=False,
-         proof_timeout=DEFAULT_PROOF_TIMEOUT, created=False, session=None):
+         proof_timeout=DEFAULT_PROOF_TIMEOUT, session=None):
     """The printed facts as (lines, finding). Raises Refused when the job has not ended."""
     import dispatch_result
     import watch_records
@@ -264,18 +265,25 @@ def take(source, label, root, base_ref="main", workdir=None, run_proofs=False,
         out.append(f"RETIRE not yet: {unlanded} commit(s) are not on {base_ref}; take again after they land")
     elif unlanded == 0:
         # The delete guard's own walk of the worktree, about ten seconds: asked only when it can answer yes.
-        from _delete_rule import is_retired_worktree
+        from _delete_rule import is_retired_worktree, session_owns
         reasons = []
-        retired = is_retired_worktree(str(work), os.getcwd(), str(root), reasons=reasons, own=created)
+        retired = is_retired_worktree(str(work), os.getcwd(), str(root), reasons=reasons, own=session_owns(str(work)))
         why = "; ".join(reasons)
         out.append(f"RETIRE {work}: " + ("retired: safe to delete" if retired else
                                          "blocked: " + (why if len(why) <= RETIRE_CHARS else why[:RETIRE_CHARS] + " ...")))
     return out, finding
 
 
+ACCEPTS = ("<fan-out out dir | <label>.record.json> --label <label> [--workdir DIR] [--base REF] [--root DIR] "
+           "[--run-proofs] [--proof-timeout S]")
+EXAMPLE = "python3 .claude/tools/dispatch_result.py take .claude/scratch/<fan-out out dir> --label <label>"
+
+
 def main(argv):
     import argparse
-    ap = argparse.ArgumentParser(prog="dispatch_result.py take", description=__doc__.split("\n\n")[0])
+    import cli_usage
+    ap = cli_usage.ShapeParser(prog="dispatch_result.py take", description=__doc__.split("\n\n")[0])
+    ap.accepts, ap.example = ACCEPTS, EXAMPLE
     ap.add_argument("source", help="a sidecar fan-out out dir or a <label>.record.json")
     ap.add_argument("--label", required=True)
     ap.add_argument("--workdir", default=None, help="the job's worktree (default: its fan-out inventory's)")
@@ -283,11 +291,13 @@ def main(argv):
     ap.add_argument("--root", default=None, help="the main checkout the retire verdict is judged from")
     ap.add_argument("--run-proofs", action="store_true", help="run each changed proof file in the worktree")
     ap.add_argument("--proof-timeout", type=float, default=DEFAULT_PROOF_TIMEOUT)
-    ap.add_argument("--created", action="store_true", help="this session created the worktree (retire verdict)")
+    ap.add_argument("--created", action="store_true", help=argparse.SUPPRESS)  # retired; refused below with its replacement
     args = ap.parse_args(argv)
+    if args.created:
+        ap.error("--created is retired: take reads ownership from this session's transcript, so drop the flag")
     try:
         lines, finding = take(args.source, args.label, args.root or REPO, args.base, args.workdir, args.run_proofs,
-                              args.proof_timeout, args.created, os.environ.get("CLAUDE_CODE_SESSION_ID"))
+                              args.proof_timeout, os.environ.get("CLAUDE_CODE_SESSION_ID"))
     except Refused as exc:
         print("refused: " + str(exc), file=sys.stderr)
         return 2

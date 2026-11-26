@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -115,6 +116,28 @@ def c_mixed():
     traffic(root, "s1", "000001-codex-a", "low", "medium")
     traffic(root, "s1", "000002-codex-b", "low", None, with_upstream=False)
     r = cep.probe("s1")
+    return r["attested"] and r["upstreamEffort"] == "medium"
+
+
+@case("a request dir removed between its check and its stat is skipped, never a crash")
+def c_removed_mid_scan():
+    root = tempfile.mkdtemp(prefix="cep_")
+    cep.TRAFFIC = root
+    traffic(root, "s1", "000001-codex-a", "low", "medium")
+    gone = traffic(root, "s1", "000002-codex-b", "low", "high")
+    real = cep._upstream
+
+    def upstream_then_removed(d):
+        found = real(d)
+        if os.path.normcase(d) == os.path.normcase(gone):
+            shutil.rmtree(gone)
+        return found
+
+    cep._upstream = upstream_then_removed
+    try:
+        r = cep.probe("s1")
+    finally:
+        cep._upstream = real
     return r["attested"] and r["upstreamEffort"] == "medium"
 
 

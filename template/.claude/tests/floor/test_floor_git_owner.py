@@ -174,7 +174,7 @@ def test_saving_the_bytes_makes_the_same_discard_pass(dirty):
 
 def test_checkout_from_head_deny_names_a_next_step_that_passes(dirty):
     got = run(dirty, 'git checkout HEAD -- %s %s 2>&1 | tail -3; git status --short | grep -v "^??"' % (A, B))
-    assert got.denied and PRESERVE_STEP in got.reason and "git restore --source=HEAD -- <path>" in got.reason
+    assert got.denied and PRESERVE_STEP in got.reason and "git restore --source=HEAD --" in got.reason
     for path in (A, B):
         git(dirty, "hash-object", "-w", path)
     assert run(dirty, "git restore --source=HEAD -- %s %s" % (A, B)).kind == "allow"

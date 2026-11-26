@@ -2004,9 +2004,10 @@ def checkin_lines(grouped, now=None):
                            for c in ".-")
             try:
                 started = os.path.getmtime(record + ".pid")
-                written = max(os.path.getmtime(os.path.join(folder, name)) for name in os.listdir(folder)
-                              if (name.startswith(label + ".") or name.startswith(label + "-"))
-                              and not name.startswith(longer) and not name.endswith(".pid"))
+                written = max(st.st_mtime for _, st in _hook_state.stat_present(
+                    os.path.join(folder, name) for name in os.listdir(folder)
+                    if (name.startswith(label + ".") or name.startswith(label + "-"))
+                    and not name.startswith(longer) and not name.endswith(".pid")))
             except (OSError, ValueError):
                 out.append("RUNNING %s (age unreadable)" % label)
                 continue

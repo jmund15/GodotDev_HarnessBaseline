@@ -1,5 +1,6 @@
 """Coverage clause 10: a row covers a request only at the rigor it was recorded at or above."""
 import contextlib
+import functools
 import json
 import os
 import subprocess
@@ -12,16 +13,13 @@ ROOT = TESTS_DIR.parent.parent
 sys.path.insert(0, str(TESTS_DIR))
 sys.path.insert(0, str(ROOT / ".claude" / "tools"))
 
+import _git_fixture  # noqa: E402
 import _hook_call  # noqa: E402
 import review_ledger  # noqa: E402
 
 PATH, MANDATE = "a.py", "bar.plain"
 CATALOG = {MANDATE: {"home": "tools/review_ledger.py", "interaction": False}}
 review_ledger.load_catalog = lambda claude_dir=None: CATALOG
-
-TEMPLATE = None
-BASE = None
-_HOLDER = []
 
 
 def git(repo, *args):
@@ -30,35 +28,24 @@ def git(repo, *args):
 
 def build_template(repo):
     """The one repository every case is a copy of: an empty base commit, then `PATH` committed on top."""
-    repo.mkdir(parents=True)
     git(repo, "init", "-q")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
-    base = git(repo, "rev-parse", "HEAD")
     (repo / PATH).write_text("a\n", encoding="utf-8")
     git(repo, "add", PATH)
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "file")
-    return base
 
 
-def setUpModule():
-    global TEMPLATE, BASE
-    holder = tempfile.mkdtemp(prefix="ledger_bar_template_")
-    _HOLDER.append(holder)
-    TEMPLATE = Path(holder) / "repo"
-    BASE = build_template(TEMPLATE)
-
-
-def tearDownModule():
-    import shutil
-    for holder in _HOLDER:
-        shutil.rmtree(holder, ignore_errors=True)
+@functools.cache
+def _base_of(template):
+    return git(template, "rev-parse", "HEAD~1")
 
 
 def clone(tmp):
     """A fresh copy of the template repository, with no commit, ref or index state from another case."""
+    template = _git_fixture.built("review_ledger_bar.template", build_template)
     repo = Path(tmp) / "repo"
-    _hook_call.copy_repo(str(TEMPLATE), str(repo))
-    return repo, BASE
+    _hook_call.copy_repo(str(template), str(repo))
+    return repo, _base_of(template)
 
 
 @contextlib.contextmanager
@@ -184,18 +171,14 @@ TESTS = (
 
 
 def main():
-    setUpModule()
     failures = []
-    try:
-        for test in TESTS:
-            try:
-                test()
-                print("PASS", test.__name__)
-            except Exception as exc:
-                failures.append(test.__name__)
-                print("FAIL", test.__name__, repr(exc))
-    finally:
-        tearDownModule()
+    for test in TESTS:
+        try:
+            test()
+            print("PASS", test.__name__)
+        except Exception as exc:
+            failures.append(test.__name__)
+            print("FAIL", test.__name__, repr(exc))
     print(f"{'FAIL' if failures else 'PASS'} test_review_ledger_bar ({len(TESTS) - len(failures)}/{len(TESTS)})")
     return 1 if failures else 0
 

@@ -15,6 +15,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _git_fixture  # noqa: E402
 TOOL = os.path.normpath(os.path.join(HERE, "..", "tools", "mechanism_census.py"))
 NOW = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
 
@@ -35,20 +37,14 @@ def _git(repo, *args, date=None):
 
 
 def _repo():
+    """An initialized empty repository in a new folder: a copy of the skeleton `_git_fixture` holds, no spawn."""
     d = tempfile.mkdtemp(prefix="census_case_")
-    _git(d, "init", "-q")
+    _git_fixture.init_repo(d)
     return d
 
 
 def _commit(repo, files, subject, when=None):
-    for path, text in files.items():
-        full = os.path.join(repo, path)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "--allow-empty", "-m", subject, date=_iso(when) if when else None)
-    return _git(repo, "rev-parse", "HEAD")
+    return _git_fixture.history(repo, (files, subject, when))[0]
 
 
 def _checkout_logs(root, runs, flaky=()):
@@ -111,11 +107,13 @@ def case_a_proof_copy_inside_a_fixture_tree_is_no_proof_row():
 
 def case_clearing_kinds_land_in_their_buckets():
     repo = _repo()
-    base = _commit(repo, {".claude/tests/test_a.py": "a1", ".claude/tests/test_b.py": "b1", ".claude/tests/test_c.py": "c1",
-                          ".claude/tests/test_d.py": "d1", ".claude/tests/test_e.py": "e1", ".claude/hooks/h.py": "h1"}, "base")
-    c_test = _commit(repo, {".claude/tests/test_a.py": "a2"}, "fix(tests): a proof edit")
-    c_code = _commit(repo, {".claude/hooks/h.py": "h2"}, "fix(hooks): a code edit")
-    c_both = _commit(repo, {".claude/tests/test_c.py": "c2", ".claude/hooks/h.py": "h3"}, "fix(hooks): both edits")
+    base, c_test, c_code, c_both = _git_fixture.history(
+        repo,
+        ({".claude/tests/test_a.py": "a1", ".claude/tests/test_b.py": "b1", ".claude/tests/test_c.py": "c1",
+          ".claude/tests/test_d.py": "d1", ".claude/tests/test_e.py": "e1", ".claude/hooks/h.py": "h1"}, "base"),
+        ({".claude/tests/test_a.py": "a2"}, "fix(tests): a proof edit"),
+        ({".claude/hooks/h.py": "h2"}, "fix(hooks): a code edit"),
+        ({".claude/tests/test_c.py": "c2", ".claude/hooks/h.py": "h3"}, "fix(hooks): both edits"))
     runs = [
         _run(1.0, "close", base, [("test_a.py", "fail"), ("test_b.py", "fail"), ("test_c.py", "fail"),
                                   ("test_d.py", "fail"), ("test_e.py", "fail")]),
@@ -150,20 +148,17 @@ def case_proof_red_and_flaky_in_two_checkouts_count_both():
 
 def case_every_fix_commit_counts_whatever_its_scope_text():
     repo = _repo()
-    _commit(repo, {".claude/hooks/h.py": "1"}, "base")
-    _commit(repo, {".claude/hooks/h.py": "2"}, "fix(hooks): a real fix")
-    _commit(repo, {".claude/hooks/h.py": "3"}, "fix(review): a review artifact")
-    _commit(repo, {".claude/hooks/h.py": "4"}, "fix(audit): an audit artifact")
-    _commit(repo, {".claude/hooks/h.py": "5"}, "fix(review-fold): a fold artifact")
-    _commit(repo, {".claude/hooks/h.py": "6"}, "fix(fold): a fold artifact")
+    _git_fixture.history(repo, *[({".claude/hooks/h.py": str(n)}, subject) for n, subject in enumerate((
+        "base", "fix(hooks): a real fix", "fix(review): a review artifact", "fix(audit): an audit artifact",
+        "fix(review-fold): a fold artifact", "fix(fold): a fold artifact"), 1)])
     census, _ = _census(repo, "--checkout", _checkout_logs(repo, []))
     assert _hook(census, "h.py")["fixCommits"] == 5, "fix count: %s" % _hook(census, "h.py")["fixCommits"]
 
 
 def case_cleared_row_lists_files_and_names_no_cause():
     repo = _repo()
-    c1 = _commit(repo, {".claude/tests/test_a.py": "a1", "other.py": "p1"}, "base")
-    c2 = _commit(repo, {".claude/tests/test_a.py": "a2", "other.py": "p2"}, "a fix and an unrelated peer edit")
+    c1, c2 = _git_fixture.history(repo, ({".claude/tests/test_a.py": "a1", "other.py": "p1"}, "base"),
+                      ({".claude/tests/test_a.py": "a2", "other.py": "p2"}, "a fix and an unrelated peer edit"))
     state = os.path.join(repo, "main_check.json")
     row = {"name": "test_a.py", "kind": "proof", "platform": "windows", "commit": c1, "session": None,
            "firstSeen": _iso(NOW), "clearedAt": _iso(NOW), "clearedBy": c2}
@@ -194,9 +189,9 @@ def case_output_carries_no_verdict_column():
 def case_items_changed_since_a_ruling_are_listed_and_unchanged_are_not():
     repo = _repo()
     old = NOW - datetime.timedelta(days=10)
-    _commit(repo, {".claude/hooks/k.py": "k1"}, "fix(hooks): an old fix", when=old)
-    _commit(repo, {".claude/hooks/h.py": "h1"}, "fix(hooks): an earlier fix", when=old)
-    _commit(repo, {".claude/hooks/h.py": "h2"}, "fix(hooks): a fix after the ruling")
+    _git_fixture.history(repo, ({".claude/hooks/k.py": "k1"}, "fix(hooks): an old fix", old),
+             ({".claude/hooks/h.py": "h1"}, "fix(hooks): an earlier fix", old),
+             ({".claude/hooks/h.py": "h2"}, "fix(hooks): a fix after the ruling"))
     rulings = os.path.join(repo, "census_reviews.jsonl")
     day = (NOW - datetime.timedelta(days=2)).date().isoformat()
     with open(rulings, "w", encoding="utf-8") as fh:
@@ -379,12 +374,11 @@ def case_a_helper_or_sibling_edit_is_not_the_proofs_own():
     """The proof file is the exact file: a fix touching a `tests/_*` helper or a sibling proof beside it is another
     file, so the clearing kind is `both`, never `proof-only`."""
     repo = _repo()
-    base = _commit(repo, {".claude/tests/test_a.py": "a1", ".claude/tests/_helper.py": "h1",
-                          ".claude/tests/test_ab.py": "x1"}, "base")
-    c_helper = _commit(repo, {".claude/tests/test_a.py": "a2", ".claude/tests/_helper.py": "h2"},
-                       "fix(tests): proof and helper")
-    c_sibling = _commit(repo, {".claude/tests/test_a.py": "a3", ".claude/tests/test_ab.py": "x2"},
-                        "fix(tests): proof and sibling")
+    base, c_helper, c_sibling = _git_fixture.history(
+        repo,
+        ({".claude/tests/test_a.py": "a1", ".claude/tests/_helper.py": "h1", ".claude/tests/test_ab.py": "x1"}, "base"),
+        ({".claude/tests/test_a.py": "a2", ".claude/tests/_helper.py": "h2"}, "fix(tests): proof and helper"),
+        ({".claude/tests/test_a.py": "a3", ".claude/tests/test_ab.py": "x2"}, "fix(tests): proof and sibling"))
     runs = [
         _run(1.0, "close", base, [("test_a.py", "fail")]),
         _run(2.0, "close", c_helper, [("test_a.py", "pass")]),
@@ -534,9 +528,9 @@ def case_record_cli_names_already_recorded_on_a_second_run():
 def _fixed_history(repo, targets):
     """Each path gets as many fix commits as its target: one base commit, then round i touches every path whose target
     is at least i."""
-    _commit(repo, {p: "base\n" for p in targets}, "chore: base")
-    for i in range(1, max(targets.values()) + 1):
-        _commit(repo, {p: "round %d\n" % i for p, t in targets.items() if t >= i}, "fix(hooks): round %d" % i)
+    _git_fixture.history(repo, ({p: "base\n" for p in targets}, "chore: base"),
+             *[({p: "round %d\n" % i for p, t in targets.items() if t >= i}, "fix(hooks): round %d" % i)
+               for i in range(1, max(targets.values()) + 1)])
 
 
 def _most_fixed(repo):
@@ -578,9 +572,7 @@ def case_runtime_files_share_the_redesign_population_but_records_do_not():
     _fixed_history(repo, {p: 2 for p in runtime + excluded})
     assert _most_fixed(repo) == dict.fromkeys(runtime, 2), _most_fixed(repo)
     removed = runtime[0]
-    os.unlink(os.path.join(repo, removed))
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", "chore: retire an old file")
+    _commit(repo, {removed: None}, "chore: retire an old file")
     assert _most_fixed(repo) == dict.fromkeys(runtime[1:], 2), _most_fixed(repo)
 
 
@@ -594,10 +586,9 @@ def _redesign_repo(body):
     """One file with three fixes, then a commit with commit-message `body` that carries the redesign."""
     x = ".claude/hooks/x.py"
     repo = _repo()
-    _commit(repo, {x: "base\n"}, "chore: base")
-    for i in range(3):
-        _commit(repo, {x: "fix %d\n" % i}, "fix(hooks): round %d" % i)
-    _commit(repo, {x: "redesigned\n", ".claude/plans/x-plan.md": "plan\n"}, "refactor(hooks): x\n\n" + body)
+    _git_fixture.history(repo, ({x: "base\n"}, "chore: base"),
+             *[({x: "fix %d\n" % i}, "fix(hooks): round %d" % i) for i in range(3)],
+             ({x: "redesigned\n", ".claude/plans/x-plan.md": "plan\n"}, "refactor(hooks): x\n\n" + body))
     return repo, x
 
 
@@ -620,11 +611,9 @@ def case_plan_trailer_naming_a_missing_file_restarts_nothing():
 def case_plan_cited_share_since_listing():
     x = ".claude/hooks/x.py"
     repo = _repo()
-    _commit(repo, {x: "base\n"}, "chore: base")
     listed_day = (NOW - datetime.timedelta(days=3)).date().isoformat()
-    _commit(repo, {x: "1\n"}, "fix(hooks): one")
-    _commit(repo, {x: "2\n"}, "fix(hooks): [abc S1] two")
-    _commit(repo, {x: "3\n"}, "fix(hooks): three")
+    _git_fixture.history(repo, ({x: "base\n"}, "chore: base"), ({x: "1\n"}, "fix(hooks): one"),
+             ({x: "2\n"}, "fix(hooks): [abc S1] two"), ({x: "3\n"}, "fix(hooks): three"))
     reading = {"date": listed_day, "head": "0" * 40,
                "mostFixed": [{"path": x, "fixes": 3, "listedSince": listed_day, "sinceListing": {"fixes": 0, "cited": 0}}]}
     hist = _fix_hist(repo, [x], reading)[x]
@@ -634,9 +623,9 @@ def case_plan_cited_share_since_listing():
 def case_share_since_listing_reaches_past_the_window():
     x = ".claude/hooks/x.py"
     repo = _repo()
-    _commit(repo, {x: "base\n"}, "chore: base", when=NOW - datetime.timedelta(days=50))
-    _commit(repo, {x: "a\n"}, "fix(hooks): old", when=NOW - datetime.timedelta(days=40))
-    _commit(repo, {x: "b\n"}, "fix(hooks): newer", when=NOW - datetime.timedelta(days=10))
+    _git_fixture.history(repo, ({x: "base\n"}, "chore: base", NOW - datetime.timedelta(days=50)),
+             ({x: "a\n"}, "fix(hooks): old", NOW - datetime.timedelta(days=40)),
+             ({x: "b\n"}, "fix(hooks): newer", NOW - datetime.timedelta(days=10)))
     listed_day = (NOW - datetime.timedelta(days=45)).date().isoformat()
     reading = {"date": listed_day, "head": "0" * 40,
                "mostFixed": [{"path": x, "fixes": 2, "listedSince": listed_day, "sinceListing": {"fixes": 0, "cited": 0}}]}
@@ -647,19 +636,17 @@ def case_share_since_listing_reaches_past_the_window():
 def case_review_audit_fold_fixes_count():
     x = ".claude/hooks/x.py"
     repo = _repo()
-    _commit(repo, {x: "1\n"}, "base")
-    _commit(repo, {x: "2\n"}, "fix(hooks): real")
-    for i, subj in enumerate(("fix(review): a", "fix(audit): b", "fix(fold): c", "fix(review-fold): d")):
-        _commit(repo, {x: "%d\n" % (i + 3)}, subj)
+    _git_fixture.history(repo, ({x: "1\n"}, "base"), ({x: "2\n"}, "fix(hooks): real"),
+             *[({x: "%d\n" % (i + 3)}, subj)
+               for i, subj in enumerate(("fix(review): a", "fix(audit): b", "fix(fold): c", "fix(review-fold): d"))])
     assert _fix_hist(repo, [x])[x]["count"] == 5, _fix_hist(repo, [x])[x]
 
 
 def case_fix_history_reads_only_the_runtime_paths_it_is_asked_about():
     x, t = ".claude/hooks/x.py", ".claude/tests/t.py"
     repo = _repo()
-    _commit(repo, {x: "0\n", t: "0\n"}, "chore: base")
-    _commit(repo, {x: "1\n", t: "1\n"}, "fix(hooks): one")
-    _commit(repo, {x: "2\n", t: "2\n"}, "fix(hooks): two")
+    _git_fixture.history(repo, ({x: "0\n", t: "0\n"}, "chore: base"), ({x: "1\n", t: "1\n"}, "fix(hooks): one"),
+             ({x: "2\n", t: "2\n"}, "fix(hooks): two"))
     both = _fix_hist(repo, [x, t, ".claude/hooks/*.py"])
     assert both[x]["count"] == 2 and both[t].get("count", 0) == 0 and both[".claude/hooks/*.py"].get("count", 0) == 0, both
     only_proof = _fix_hist(repo, [t])
@@ -671,6 +658,25 @@ def case_unresolved_path_returns_unresolved_flag():
     _commit(repo, {".claude/hooks/x.py": "1\n"}, "base")
     hist = _fix_hist(repo, [".claude/hooks/missing.py"])
     assert hist[".claude/hooks/missing.py"] == {"unresolved": True}, hist
+
+
+def case_transcript_gone_before_its_stat_is_skipped():
+    mod = _module()
+    tdir = tempfile.mkdtemp(prefix="census_tx_")
+    try:
+        kept = os.path.join(tdir, "kept.jsonl")
+        with open(kept, "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        gone = os.path.join(tdir, "gone.jsonl")
+        listed = mod.glob.glob
+        mod.glob.glob = lambda pattern, **kw: listed(pattern, **kw) + ([gone] if not kw else [])
+        try:
+            got = mod.transcript_files([tdir], 0)
+        finally:
+            mod.glob.glob = listed
+    finally:
+        shutil.rmtree(tdir, ignore_errors=True)
+    assert got == [kept], got
 
 
 def case_no_reading_leaves_listing_unknown():
@@ -686,17 +692,11 @@ CASES = [v for k, v in sorted(globals().items()) if k.startswith("case_") and ca
 
 
 def main():
-    failed = 0
-    for fn in CASES:
-        try:
-            fn()
-            print("PASS %s" % fn.__name__)
-        except (Exception, SystemExit) as exc:  # the proof reports every red, not the first; a CLI usage exit is one
-            failed += 1
-            last = (str(exc).strip().splitlines() or ["?"])[-1][:300]
-            print("FAIL %s: %s" % (fn.__name__, last))
-    print("%d passed, %d failed" % (len(CASES) - failed, failed))
-    return 1 if failed else 0
+    """Every case in its own process through the case pool (each builds its own repository and reads only it), so the
+    runner's `HARNESS_CASE_JOBS` set how many run at once."""
+    from _case_pool import run_cases
+    _git_fixture.warm()  # one layout for every case process to copy
+    return run_cases(CASES)
 
 
 if __name__ == "__main__":

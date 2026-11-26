@@ -310,7 +310,8 @@ def test_the_doctrine_prints_once_per_context_and_the_gate_still_credits_every_t
     assert _doctrine_lines(first) and not _doctrine_lines(second)
     assert "for-role: tiers fanout" in second and any(l.startswith("| `fanout` |") for l in second.splitlines())
     assert _hook_state.ladder_slice_tiers(sid) == ["executor", "fanout"]
-    assert model_ladder_gate.tier_in_context(sid, "executor") and model_ladder_gate.tier_in_context(sid, "fanout")
+    credit = model_ladder_gate.ladder_credit(sid)
+    assert credit.covers("executor") and credit.covers("fanout")
     _hook_state.clear_compaction_keys(sid)
     assert _hook_state.ladder_slice_tiers(sid) == []
     assert _doctrine_lines(_print(mr, monkeypatch, tmp_path, sid, "fanout"))

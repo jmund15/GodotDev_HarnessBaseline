@@ -877,6 +877,13 @@ def spend_owner_row(uuid, text):
             "timestamp": "2026-10-11T00:54:07.277Z", "message": {"role": "user", "content": text}}
 
 
+def owner_environ(environ):
+    """`environ` as the owner's own session sees it: every delegate marker a caller's seat carries (`CLAUDE_CODE_*`,
+    the binary path kept, and `SIDECAR_*`) dropped, as the runner drops them, so a direct run decides as the runner."""
+    return {key: value for key, value in environ.items()
+            if not (key.startswith(("CLAUDE_CODE_", "SIDECAR_")) and key != "CLAUDE_CODE_EXECPATH")}
+
+
 class SpendSession:
     """One planted session: a hook-state directory shared by its prompts, and a transcript holding the owner's quote."""
 
@@ -892,19 +899,16 @@ class SpendSession:
             fh.write(json.dumps(spend_owner_row("bptspend-owner-1", SPEND_QUOTE)) + "\n")
 
     def _in_state(self, fn):
-        # The owner's session, not a delegate's: the planted environment drops CLAUDE_CODE_SIDECAR, which
-        # set_spend refuses (a delegate cannot set the owner's posture).
-        saved = {key: os.environ.get(key) for key in ("HARNESS_HOOK_STATE_DIR", "CLAUDE_CODE_SIDECAR")}
-        os.environ["HARNESS_HOOK_STATE_DIR"] = self.state
-        os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+        # The owner's session, not a delegate's: set_spend refuses inside a delegate.
+        saved = dict(os.environ)
+        planted = owner_environ(saved)
+        os.environ.clear()
+        os.environ.update(planted, HARNESS_HOOK_STATE_DIR=self.state)
         try:
             return fn()
         finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+            os.environ.clear()
+            os.environ.update(saved)
 
     def set(self, mode, until=None):
         return self._in_state(lambda: self.sm.set_spend(mode, until=until, session_id=SPEND_SID,
@@ -928,10 +932,9 @@ class SpendSession:
             for name in os.listdir(tmp):
                 if name.startswith("cc-cachestat-"):
                     os.remove(os.path.join(tmp, name))
-        env = dict(os.environ, HARNESS_HOOK_STATE_DIR=self.state, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
+        env = dict(owner_environ(os.environ), HARNESS_HOOK_STATE_DIR=self.state, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
                    PYTHONIOENCODING="utf-8", PROVIDER_CAPACITY_CACHE=write_band_cache(tmp, {"codex": ("Ahead", 1.31)}))
-        for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_TRANSPORT", "CLAUDE_CODE_SIDECAR", "ANTHROPIC_BASE_URL"):
-            env.pop(key, None)
+        env.pop("ANTHROPIC_BASE_URL", None)
         return emit(env, dispatched_prompt(SPEND_SID))
 
 

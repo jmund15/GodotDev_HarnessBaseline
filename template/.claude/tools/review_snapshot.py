@@ -125,6 +125,20 @@ def fact(name, root, ask):
     return _FACTS[key]
 
 
+def facts(name, root, keys, ask_many):
+    """`{key: answer}` for `keys`: inside a `repo_facts()` block `ask_many(keys)` runs once for those not yet
+    answered under `name` and folder, and every call asks all of them outside one."""
+    keys = list(keys)
+    if _FACTS is None:
+        return ask_many(keys)
+    folder = os.path.normcase(os.path.abspath(str(root)))
+    missing = [key for key in keys if (name, folder, key) not in _FACTS]
+    if missing:
+        for key, answer in ask_many(missing).items():
+            _FACTS[(name, folder, key)] = answer
+    return {key: _FACTS[(name, folder, key)] for key in keys}
+
+
 def _in_git(root) -> bool:
     def ask():
         probe = _call(["rev-parse", "--git-dir"], root)
@@ -142,13 +156,16 @@ def _out(args, root, input=None):
 
 
 def submodule_paths(top: Path) -> list[str]:
-    """The gitlink paths (mode 160000) in `top`'s index, longest first."""
-    done = _call(["ls-files", "--stage"], top)
-    if isinstance(done, Unreadable) or done.returncode != 0:
-        return []
-    found = [line.split("\t", 1)[1] for line in _text(done.stdout).splitlines()
-             if line.startswith("160000 ") and "\t" in line]
-    return sorted(found, key=len, reverse=True)
+    """The gitlink paths (mode 160000) in `top`'s index, longest first. Asked once per command: each path of a
+    fill splits against it."""
+    def ask():
+        done = _call(["ls-files", "--stage"], top)
+        if isinstance(done, Unreadable) or done.returncode != 0:
+            return []
+        found = [line.split("\t", 1)[1] for line in _text(done.stdout).splitlines()
+                 if line.startswith("160000 ") and "\t" in line]
+        return sorted(found, key=len, reverse=True)
+    return fact("submodules", top, ask)
 
 
 def split_submodule(top: Path, path: str):
@@ -514,13 +531,18 @@ class Snapshot:
         if not present:
             return
         top = self.toplevel
+        try:
+            # The command's own files do not change while it runs, and a lineage check opens its own snapshot.
+            for path, sha in facts("disk blob", top, present,
+                                   lambda keys: hash_objects(top, keys, write=True)).items():
+                self._cache[path] = Blob(sha)
+            return
+        except OSError as exc:
+            refusal = str(exc)
+        # Only a refusal asks whether git is there at all: a healthy checkout costs no probe.
         if _in_git(top):
-            try:
-                for path, sha in hash_objects(top, present, write=True).items():
-                    self._cache[path] = Blob(sha)
-            except OSError as exc:
-                for path in present:
-                    self._cache[path] = Unreadable(str(exc))
+            for path in present:
+                self._cache[path] = Unreadable(refusal)
         else:
             for path in present:
                 try:
@@ -757,9 +779,10 @@ def range_commits(repo: Path, base: str, rev: str) -> list[dict]:
             meta, _, path = line.partition("\t")
             raws.append((current, meta, path))
     # `--relative` is ignored for a merge's combined diff, so every name arrives toplevel-relative and maps back here.
-    prefix = _call(["rev-parse", "--show-prefix"], repo)
-    prefix = "" if isinstance(prefix, Unreadable) or prefix.returncode != 0 else _text(prefix.stdout).strip()
-    inside = _root_relative(prefix, [path for _, _, path in raws])
+    def ask_prefix():
+        done = _call(["rev-parse", "--show-prefix"], repo)
+        return "" if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
+    inside = _root_relative(fact("prefix", repo, ask_prefix) if raws else "", [path for _, _, path in raws])
     for current, meta, raw in raws:
         if raw not in inside:
             continue

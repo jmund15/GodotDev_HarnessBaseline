@@ -5,6 +5,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 ## detailed
 
 - Run the checks your rails' `Your checks` line names, plus the repo-scan lints your layer names; a wider run is the gate kind's (`orchestration` §4). A scoped suite run and the project's regression gate are your dispatcher's, once at close: report them owed. Any wide run, in your command or in a script you run, is refused. [change_control §Gate cadence]
+- When your change alters what a member does for its callers (what it frees, owns, returns, raises or requires), find the tests that reference that member and run each one before you return. [orchestration reference brief_checks.md §Brief checks]
 - In the shared main checkout you never commit or branch: return every changed path as `changedPaths`, and your dispatcher commits them. In a worktree on its own branch, commit there. [orchestration reference writer_returns.md]
 - Do NOT reduce planned scope mid-execution. If the scope looks wrong, stop and report it — the cut is not yours to make. [feedback_dont_unilaterally_reduce_planned_scope.md]
 - Run the edited unit's proof file in the foreground (RED-first). [rules/harness_tooling.md]
@@ -14,6 +15,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 ## condensed
 
 - Run the checks your rails' `Your checks` line names, plus the repo-scan lints your layer names; a scoped suite run and the regression gate are the dispatcher's at close (`change_control` §Gate cadence): report them owed. A wide run is the gate kind's (`orchestration` §4); any other is refused.
+- A change to what a member does for its callers: run each test that references that member before you return (`orchestration` reference `brief_checks.md`).
 - In the shared main checkout never commit or branch; return `changedPaths` for the dispatcher. A worktree on its own branch commits there (orchestration reference writer_returns.md).
 - Planned scope is not yours to cut (`feedback_dont_unilaterally_reduce_planned_scope.md`).
 - Run the edited unit's proof file in the foreground (RED-first) (`rules/harness_tooling.md`).

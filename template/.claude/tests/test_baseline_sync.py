@@ -14,7 +14,6 @@ import json
 import tarfile
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -29,7 +28,13 @@ atexit.register(shutil.rmtree, _STAMP_DIR, True)
 os.environ["HARNESS_TEST_STAMP"] = os.path.join(_STAMP_DIR, "harness_tests_stamp.json")
 from harness_tests import GIT_REPO_ENV  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _hook_call  # noqa: E402
 from _case_pool import run_cases  # noqa: E402
+from _git_fixture import (  # noqa: E402
+    bare_remote as _remote, branch_sha as _branch_sha, commit_all as _commit, git as _git, init_repo as _init_repo,
+    push_main as _push, scratch as _fixture,
+)
+import _git_fixture  # noqa: E402
 
 
 def _env(root: Path) -> dict[str, str]:
@@ -43,15 +48,19 @@ def _env(root: Path) -> dict[str, str]:
     return env
 
 
-def _git(cwd: Path | None, *args: str) -> bytes:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=_env(cwd or Path.cwd()),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
-    )
-    return result.stdout
-
-
 def _run(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    return _run_env(root, _env(root), *args)
+
+
+def _run_env(root: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[bytes]:
+    """The engine's CLI in this process: its decisions (exit code, streams, the files it writes) do not depend on a
+    fresh interpreter, and the spawn was 40% of the proof's spawn time. `_run_spawned` keeps the interpreter in."""
+    code, out, err, _ = _hook_call.call(ENGINE, "", env=env, cwd=root, argv=args, script=True)
+    return subprocess.CompletedProcess([str(ENGINE), *args], code, out.encode("utf-8"), err.encode("utf-8"))
+
+
+def _run_spawned(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """The engine as the client starts it, for a case whose subject is the process: its raw output stream."""
     return subprocess.run(
         [sys.executable, str(ENGINE), *args], cwd=root, env=_env(root),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -83,47 +92,6 @@ def _seed_project_subsystems(root: Path) -> None:
     afterward, or supplies its own `rows` entry for the exact relpath."""
     _write(root / ".claude" / "skills" / "project_subsystems" / "adaptation.json", b"{}\n")
     _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", _SUBSYSTEMS_SKILL_SEED)
-
-
-def _init_repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-q", "-b", "main")
-    with open(path / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
-        # gc and maintenance off: every commit otherwise spawns `maintenance run --auto` (~20 ms) that never has work here.
-        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n"
-                     "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n")
-
-
-def _commit(path: Path, message: str) -> str:
-    _git(path, "add", "-A")
-    _git(path, "commit", "-q", "-m", message)
-    return _branch_sha(path)
-
-
-def _branch_sha(path: Path) -> str:
-    if (path / ".git").is_dir():  # a linked worktree's `.git` is a file; it takes the spawn below
-        head = (path / ".git" / "HEAD").read_text(encoding="utf-8").strip()
-        ref = path / ".git" / head[5:] if head.startswith("ref: ") else None
-        if ref is not None and ref.is_file():  # a loose branch ref: reading it saves a `rev-parse` spawn
-            return ref.read_text(encoding="utf-8").strip()
-    return _git(path, "rev-parse", "HEAD").decode().strip()
-
-
-def _remote(path: Path) -> Path:
-    remote = path / "remote.git"
-    _git(path, "init", "--bare", "-q", "-b", "main", str(remote))
-    return remote
-
-
-def _push(work: Path, remote: Path) -> None:
-    """Publish `work`'s one-branch history to the empty bare `remote` and name it `origin`. The
-    objects and the branch ref are copied in place of a `git push`: the result is the same repository
-    state, and the push spawn was the most expensive step of every baseline fixture."""
-    shutil.copytree(work / ".git" / "objects", remote / "objects", dirs_exist_ok=True)
-    (remote / "refs" / "heads").mkdir(parents=True, exist_ok=True)
-    (remote / "refs" / "heads" / "main").write_text(_branch_sha(work) + "\n", encoding="utf-8", newline="\n")
-    with open(work / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
-        handle.write('[remote "origin"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' % remote.as_uri())
 
 
 def _baseline_one(path: Path, rel: str, content: bytes) -> tuple[Path, str, Path]:
@@ -184,36 +152,6 @@ def _consumer(path: Path, remote: Path, ref: str, rel: str, content: bytes) -> P
     _lock(root, remote, ref, rel, content)
     _commit(root, "consumer")
     return root
-
-
-def _make_writable(path: Path) -> None:
-    if not path.exists():
-        return
-    for current, dirs, files in os.walk(path, topdown=False):
-        for name in files + dirs:
-            target = Path(current) / name
-            try:
-                os.chmod(target, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            except OSError:
-                pass
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    except OSError:
-        pass
-
-
-def _remove(path: Path) -> None:
-    _make_writable(path)
-    shutil.rmtree(path, ignore_errors=True)
-
-
-@contextlib.contextmanager
-def _fixture():
-    path = Path(tempfile.mkdtemp(prefix="baseline_sync_"))
-    try:
-        yield path
-    finally:
-        _remove(path)
 
 
 def _json_output(result: subprocess.CompletedProcess[bytes]) -> dict:
@@ -401,7 +339,7 @@ def test_stdout_bytes_have_no_crlf() -> None:
             ("ignore", rel, "--force"),
         ]
         for operation in operations:
-            result = _run(root, *operation)
+            result = _run_spawned(root, *operation)
             output = result.stdout + result.stderr
             assert b"\r" not in output, f"CRLF from {' '.join(operation)}"
             assert result.returncode == 0, output.decode("utf-8", errors="replace")
@@ -413,7 +351,7 @@ def test_stdout_bytes_have_no_crlf() -> None:
         _init_repo(root2)
         _write(root2 / rel, content)
         token = "{{" + "PROJECT_NAME" + "}}"
-        result = _run(
+        result = _run_spawned(
             root2, "init", "--baseline-dir", str(checkout), "--repo", remote.as_uri(),
             "--ref", commit, "--sub", token + "=fixture",
         )
@@ -732,13 +670,6 @@ def test_v2_classify_layer_sets_overrides_from_and_refuses_unknown() -> None:
         overridden = _run(root, "classify", rel, "--status", "local", "--from", source, "--layer", "pure", "--relayer")
         assert overridden.returncode == 0, overridden.stderr.decode(errors="replace")
         assert _load_lock(root)["files"][rel]["layer"] == "pure"
-
-
-def _run_env(root: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        [sys.executable, str(ENGINE), *args], cwd=root, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
 
 
 def test_v2_classify_tracked_refuses_planted_home_path() -> None:
@@ -2200,7 +2131,7 @@ def test_migrate_lock_drops_local_rows_under_never_ship_on_load() -> None:
     outside = ".claude/tools/kept.py"
     with _fixture() as path:
         remote, _commit_sha, work = _baseline_one(path, shipped, b"x = 1\n")
-        pin = _git(work, "rev-parse", "HEAD").decode().strip()
+        pin = _branch_sha(work)
         root = path / "root"
         _write(root / policy, b"note\n")
         engine = _load_engine()
@@ -3570,7 +3501,7 @@ def _judged_push(data: bytes) -> dict:
 
 
 def _head(root: Path) -> str:
-    return _git(root, "rev-parse", "HEAD").decode().strip()
+    return _branch_sha(root)
 
 
 def test_carry_walks_the_range_and_leaves_a_peer_row_alone() -> None:
@@ -4329,7 +4260,7 @@ def test_closure_names_the_whole_chain_the_backlog_and_a_peer_commit_in_one_repo
         assert any(line.startswith("backlog:") for line in lines), out
         assert any(line.startswith("since baseline copy:") and _DEP_HELPER in line and peer[:7] in line
                    for line in lines), out
-        assert _git(root, "rev-parse", "HEAD").decode().strip() == head
+        assert _branch_sha(root) == head
 
 
 def test_closure_prints_no_dependency_or_peer_line_for_a_clean_row() -> None:
@@ -4609,7 +4540,7 @@ def test_pull_settles_a_tracked_row_at_the_copy_it_writes() -> None:
         lock = _load_lock(root)
         row = lock["files"][rel]
         assert "judged" not in row and "base" not in row, row
-        assert lock["synced_commit"] == _git(baseline, "rev-parse", "HEAD").decode().strip()
+        assert lock["synced_commit"] == _branch_sha(baseline)
         assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "in-sync"
 
 
@@ -5098,7 +5029,7 @@ def test_legacy_lock_migrates_on_load_and_never_guesses_a_base() -> None:
         _write(work / "template" / orphan, second)
         _commit(work, "add orphan")
         _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
-        pin = _git(work, "rev-parse", "HEAD").decode().strip()
+        pin = _branch_sha(work)
 
         root = path / "root"
         _write(root / rel, second)
@@ -5189,7 +5120,7 @@ def test_migration_drops_a_settled_push_verdict_and_keeps_an_open_one() -> None:
         _write(work / "template" / open_rel, text)
         _commit(work, "add open")
         _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
-        pin = _git(work, "rev-parse", "HEAD").decode().strip()
+        pin = _branch_sha(work)
 
         root = path / "root"
         _write(root / settled, text)
@@ -5227,7 +5158,7 @@ def test_move_pin_follows_an_upstream_relayer_and_keeps_a_local_one() -> None:
             manifest = {"version": 2, "files": [{"path": rel, "layer": layer, "sync": "auto"} for rel in (followed, kept)]}
             _write(baseline / "baseline.manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
             _commit(baseline, "layer " + layer)
-            pins.append(_git(baseline, "rev-parse", "HEAD").decode().strip())
+            pins.append(_branch_sha(baseline))
         lock = {"schema": 2, "synced_commit": pins[0], "files": {
             followed: {"status": "tracked", "layer": "coding"},
             kept: {"status": "tracked", "layer": "godot"},
@@ -5577,6 +5508,7 @@ def main(part: int = 1) -> int:
         test_pull_proves_a_path_it_retires_like_one_it_writes,
         test_a_committed_deletion_leaves_the_pull_journal,
     ]
+    _git_fixture.warm()  # one layout for every case process to copy
     return run_cases(cases[part - 1::PARTS])
 
 

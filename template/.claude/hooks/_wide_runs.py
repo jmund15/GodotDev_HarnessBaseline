@@ -3,7 +3,7 @@
 
 `gate_cadence.wide` in the adaptation files holds one row per wide runner: an invocation regex, the
 arguments that exempt it, an optional narrow rule, and an optional `hint` the deny prints as the form
-to write instead (the data contract is `tools/adaptation.py` `gate_cadence_errors`). This module reads
+to write instead (the data contract is `tools/gate_cadence.py`). This module reads
 that table and answers two questions:
 
     classify(command, cwd, root) -> [{"runner": matched invocation, "reason": why wide}]
@@ -47,6 +47,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import adaptation  # noqa: E402
+import gate_cadence  # noqa: E402
 from sidecar_argv import executable_index, shell_segments_with_comments  # noqa: E402
 from _git_commit import resolve_cd  # noqa: E402
 from _prompt_provenance import in_delegate  # noqa: E402
@@ -407,7 +408,7 @@ def classify(command, cwd="", root=None):
     """The wide runs `command` starts: [{"runner": <matched invocation>, "reason": <why wide>}]."""
     root = os.path.abspath(os.fspath(root)) if root else ROOT
     data = adaptation.get(os.path.join(root, ".claude"), "gate_cadence")
-    errors = adaptation.gate_cadence_errors(data)
+    errors = gate_cadence.errors(data)
     if errors:
         return [{"runner": "<gate_cadence>", "reason": "; ".join(errors)}]
     rows = _compile_rows(data.get("wide") or [])

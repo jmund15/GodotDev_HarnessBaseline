@@ -16,7 +16,6 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from _module_closure import copy_closure  # noqa: E402
-TOOLS = os.path.join(HERE, "..", "tools")
 TMP = tempfile.mkdtemp(prefix="reach_run_")
 failures = []
 
@@ -147,6 +146,14 @@ def case_no_config():
         check(label + " exits 2", code == 2, out)
         check(label + " says so", "reach: not configured" in out, out)
         check(label + " runs nothing", calls == [], str(calls))
+    for key, label, table, needle in (
+            ("globless", "a reach row with no globs", {"reach": [{"name": "app", "paths": [], "cmd": "python3 rec.py app"}]},
+             "reach[0].paths"),
+            ("badwide", "a malformed wide row", dict(TABLE, wide=[{"runner": "[", "exempt": [], "narrow": None}]),
+             "wide[0].runner")):
+        code, out, calls = run(plant("noconfig-" + key, table), "--paths", "src/a.ts")
+        check(label + " is refused naming it", code == 2 and "reach: not configured" in out and needle in out, out)
+        check(label + " runs nothing", calls == [], str(calls))
 
 
 def case_refusal():
@@ -154,20 +161,6 @@ def case_refusal():
     code, out, calls = run(root, "--nonsense")
     check("an unknown flag exits 2", code == 2, out)
     check("the refusal prints accepts: and example:", "accepts:" in out and "example:" in out, out)
-
-
-def case_table_validation():
-    sys.path.insert(0, TOOLS)
-    import adaptation
-    check("a well-formed reach table validates", adaptation.gate_cadence_errors(TABLE) == [],
-          str(adaptation.gate_cadence_errors(TABLE)))
-    for label, bad, needle in (
-            ("a reach entry with no cmd", {"reach": [{"name": "a", "paths": ["x/**"]}]}, "reach[0].cmd"),
-            ("a reach entry with no globs", {"reach": [{"name": "a", "paths": [], "cmd": "c"}]}, "reach[0].paths"),
-            ("a non-list exempt", {"reach": [], "reach_exempt": "docs/**"}, "reach_exempt"),
-            ("a non-string fallback", {"reach": [], "reach_fallback": 3}, "reach_fallback")):
-        errors = adaptation.gate_cadence_errors(bad)
-        check(label + " is named", any(needle in e for e in errors), str(errors))
 
 
 def git(root, *args):
@@ -213,7 +206,7 @@ def case_git_collection():
 if __name__ == "__main__":
     try:
         for fn in (case_matched_entries, case_fallback_and_exempt, case_wide_entries_in_a_dispatched_job, case_failure, case_dry_run,
-                   case_no_config, case_refusal, case_table_validation, case_git_collection):
+                   case_no_config, case_refusal, case_git_collection):
             try:
                 fn()
             except Exception as exc:  # noqa: BLE001 - a crash is a failure

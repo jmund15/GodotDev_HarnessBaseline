@@ -2,12 +2,13 @@
 
 Fixtures use real files and the production snapshot writer. Git writes only inside the temp
 real-git fixture; the live-tree observation reads this checkout through the production TreeDigest.
+Every case runs in one pwsh (`drive_many`), each in its own runspace, so the lexer compiles once, not per case.
 """
 import json
 import subprocess
 from pathlib import Path
 
-from _pwsh_drive import check, pwsh, run_proof
+from _pwsh_drive import ISOLATED, Cases, check, run_proof
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / ".claude/scripts/regression_gate.ps1"
@@ -18,20 +19,26 @@ LIB = r"""
 $ErrorActionPreference = 'Stop'
 $VerbosePreference = 'Continue'
 Set-StrictMode -Version Latest
-$t = $null; $e = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile('@GATE@', [ref]$t, [ref]$e)
-if ($e.Count) { throw ($e | Out-String) }
-foreach ($name in @('Get-Prop', 'Get-ImportStamp', 'Complete-Gate', 'Exit-IfStaticRoute', 'Invoke-LedgerReuse', 'Write-VerdictRow', 'Get-SharedLedgerDir', 'Enter-Stage', 'Stop-Stage', 'Get-StageSummary')) {
-    $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
-    if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
+$fnText = [AppDomain]::CurrentDomain.GetData('gate-fns')
+if (-not $fnText) {
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile('@GATE@', [ref]$t, [ref]$e)
+    if ($e.Count) { throw ($e | Out-String) }
+    $parts = foreach ($name in @('Get-Prop', 'Get-ImportStamp', 'Complete-Gate', 'Exit-IfStaticRoute', 'Invoke-LedgerReuse', 'Write-VerdictRow', 'Get-SharedLedgerDir', 'Enter-Stage', 'Stop-Stage', 'Get-StageSummary')) {
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+        if ($fn) { $fn.Extent.Text }
+    }
+    $vr = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:VerdictRows' }, $true)
+    $fnText = (@($parts) + $vr.Extent.Text) -join "`n"
+    [AppDomain]::CurrentDomain.SetData('gate-fns', $fnText)
 }
-$vr = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:VerdictRows' }, $true)
-. ([scriptblock]::Create($vr.Extent.Text))
+. ([scriptblock]::Create($fnText))
 if (-not (Test-Path -LiteralPath '@HELPER@') -or -not (Get-Command Exit-IfStaticRoute -ErrorAction SilentlyContinue)) {
     Write-Output 'FEATURE=missing'; exit 0
 }
 . '@TREE@'
 . '@HELPER@'
+. '@ISOLATED@'
 function Emit { param([string] $Text) Write-Output $Text }
 function Add-Detail { param([string] $Text) $script:Detail.Add($Text) }
 function Update-ActivityRecord { param($Label) }
@@ -55,6 +62,12 @@ $repo = '@REPO@'
 $ledgerDir = Join-Path $repo '.claude/scratch/gate_ledger'
 $detailPath = Join-Path $ledgerDir 'detail.md'
 $logDir = $ledgerDir
+if (-not $env:COMMENT_GATE_REAL_TREE) {
+    # The fixture dirs are no git repository: these cases stand in for two git reads (shared ledger dir, import stamp) with
+    # what the gate answers when git fails, and for the tree digest below. The real-git case keeps all three live.
+    function Get-SharedLedgerDir { param($Repo) Join-Path $Repo '.claude/scratch/gate_ledger' }
+    function Get-ImportStamp { param($Repo) 'none' }
+}
 $sharedLedgerDir = Get-SharedLedgerDir -Repo $repo
 $script:Stages = [System.Collections.Generic.List[object]]::new()
 $script:OpenStage = $null
@@ -82,10 +95,10 @@ function Assert-TreeStable {
 }
 function Save-Green {
     param($Id = 'producer', $Status = 'PASS', $Mode = 'full')
-    $out = & pwsh -NoProfile -NonInteractive -File $PSCommandPath --seed $Id $Status $Mode 2>&1
-    if ($LASTEXITCODE -ne 0) { throw ($out | Out-String) }
+    $seed = Invoke-Isolated -File $PSCommandPath -ArgumentList @('--seed', $Id, $Status, $Mode)
+    if ($seed.rc -ne 0 -or $seed.err) { throw ($seed.out + $seed.err) }
     $rec = Get-Content -LiteralPath (Join-Path $ledgerDir "$Id.result.json") -Raw | ConvertFrom-Json
-    if ($Status -eq 'PASS' -and -not $rec.fullGreenSnapshot) { throw ('positive-control snapshot failed: ' + ($out | Out-String)) }
+    if ($Status -eq 'PASS' -and -not $rec.fullGreenSnapshot) { throw ('positive-control snapshot failed: ' + $seed.out) }
 }
 if ($args.Count -and $args[0] -eq '--seed') {
     $runId = $args[1]; $script:Mode = $args[3]
@@ -97,6 +110,12 @@ if ($args.Count -and $args[0] -eq '--seed') {
 
 def main(tmp):
     number = 0
+    cases = Cases()
+    outs = {}
+    after_checks = []
+
+    def lib(repo, helper=HELPER):
+        return LIB.replace('@GATE@', str(GATE)).replace('@HELPER@', str(helper)).replace('@TREE@', str(TREE)).replace('@REPO@', str(repo)).replace('@ISOLATED@', ISOLATED)
 
     def case(label, before, after, *, routed, pre="", post="", extra=None, static=False, seed_base=True):
         nonlocal number
@@ -104,7 +123,7 @@ def main(tmp):
         repo = Path(tmp) / f"case{number}"
         repo.mkdir()
         (repo / "Sample.cs").write_text(before, encoding="utf-8", newline="\n")
-        body = LIB.replace("@GATE@", str(GATE)).replace("@HELPER@", str(HELPER)).replace("@TREE@", str(TREE)).replace("@REPO@", str(repo))
+        body = lib(repo)
         body += "\n" + pre + "\n"
         if seed_base:
             body += "Save-Green\n"
@@ -118,26 +137,28 @@ def main(tmp):
         body += "$route = Get-CommentOnlyRoute -Repo $repo -Tree $script:RunTree -LedgerDir $ledgerDir\n"
         body += "Write-Output ('ROUTE=' + ($route | ConvertTo-Json -Depth 8 -Compress))\n"
         body += "Exit-IfStaticRoute -Route $route\nWrite-Output 'FULL_GATE'\n"
-        driver = Path(tmp) / f"driver{number}.ps1"
-        driver.write_text(body, encoding="utf-8", newline="\n")
-        rc, out, err = pwsh(["-File", str(driver)], tmp)
-        text = out + err
-        got_routed = "VERDICT=PASS route=comment-only" in out
-        full = "FULL_GATE" in out
-        ok = rc == 0 and "FEATURE=missing" not in out and got_routed == routed and full == (not routed and not static)
-        if routed:
-            ok = ok and 'Sample.cs' in out and 'reason=tokens-identical' in out
-            record = repo / '.claude/scratch/gate_ledger/current.result.json'
-            if record.exists():
-                rec = json.loads(record.read_text(encoding='utf-8-sig'))
-                ok = ok and rec['status'] == 'PASS' and rec['coverage'] == 'comment-only' and not rec['fullGreenSnapshot']
-            else:
-                ok = False
-        check(label, ok, f"rc={rc} output={text!r}")
-        return repo, text
+
+        def verify(rc, out, err):
+            text = out + err
+            outs[label] = text
+            got_routed = "VERDICT=PASS route=comment-only" in out
+            full = "FULL_GATE" in out
+            ok = rc == 0 and "FEATURE=missing" not in out and got_routed == routed and full == (not routed and not static)
+            if routed:
+                ok = ok and 'Sample.cs' in out and 'reason=tokens-identical' in out
+                record = repo / '.claude/scratch/gate_ledger/current.result.json'
+                if record.exists():
+                    rec = json.loads(record.read_text(encoding='utf-8-sig'))
+                    ok = ok and rec['status'] == 'PASS' and rec['coverage'] == 'comment-only' and not rec['fullGreenSnapshot']
+                else:
+                    ok = False
+            check(label, ok, f"rc={rc} output={text!r}")
+
+        cases.add(body, verify)
+        return repo
 
     base = 'class Sample { int Value = 1; }\n'
-    first_repo, _ = case('D1 comment-only -> accepted static PASS with file list', base, base + '// note\n', routed=True)
+    first_repo = case('D1 comment-only -> accepted static PASS with file list', base, base + '// note\n', routed=True)
     case('D2 whitespace-only -> accepted static PASS', base, '\nclass Sample\n{\n  int Value = 1;\n}\n', routed=True)
     case('D3 string containing // changes -> full', 'class Sample { string S = "a//b"; }', 'class Sample { string S = "a//c"; }', routed=False)
     case('D4 identifier rename -> full', base, base.replace('Value', 'Renamed'), routed=False)
@@ -179,38 +200,32 @@ def main(tmp):
     case('non-green full run is never the base', base, base + '// note', routed=True,
          post="[IO.File]::WriteAllText((Join-Path $repo 'Sample.cs'), 'class Broken {}'); Save-Green -Id 'later-red' -Status 'FAIL'; [IO.File]::WriteAllText((Join-Path $repo 'Sample.cs'), 'class Sample { int Value = 1; }// note')")
     sub_pre = "New-Item -ItemType Directory -Path (Join-Path $repo 'Paired') | Out-Null; [IO.File]::WriteAllText((Join-Path $repo 'Paired/Sub.cs'), 'class Sub {}')"
-    _, sub_out = case('Paired comment-only alongside root comments -> static', base, base + '// note', routed=True,
-                     pre=sub_pre, extra={'Paired/Sub.cs': 'class Sub {} // note'})
-    check('Paired changed file is named in verdict', 'Paired/Sub.cs' in sub_out)
+    sub_label = 'Paired comment-only alongside root comments -> static'
+    case(sub_label, base, base + '// note', routed=True, pre=sub_pre, extra={'Paired/Sub.cs': 'class Sub {} // note'})
+    after_checks.append(lambda: check('Paired changed file is named in verdict', 'Paired/Sub.cs' in outs[sub_label]))
     case('Paired identifier change -> full', base, base + '// note', routed=False,
          pre=sub_pre, extra={'Paired/Sub.cs': 'class Renamed {}'})
 
-    reuse_driver = Path(tmp) / 'reuse.ps1'
-    reuse_body = LIB.replace('@GATE@', str(GATE)).replace('@HELPER@', str(HELPER)).replace('@TREE@', str(TREE)).replace('@REPO@', str(first_repo))
-    reuse_driver.write_text(reuse_body + "\n$runId = 'reused'; Invoke-LedgerReuse; Write-Output 'NOREUSE'\n", encoding='utf-8', newline='\n')
-    rc, out, err = pwsh(['-File', str(reuse_driver)], tmp)
-    check('digest-matched reuse keeps comment reason and file list', rc == 0 and 'REUSE from=current' in out and 'VERDICT=PASS route=comment-only' in out and 'Sample.cs' in out, out + err)
-    reused = first_repo / '.claude/scratch/gate_ledger/reused.result.json'
-    check('reused comment verdict never becomes a full-green base', reused.exists() and json.loads(reused.read_text(encoding='utf-8-sig'))['fullGreenSnapshot'] is None)
+    reuse_body = lib(first_repo) + "\n$runId = 'reused'; Invoke-LedgerReuse; Write-Output 'NOREUSE'\n"
 
-    gate_text = GATE.read_text(encoding='utf-8-sig')
-    docs_at = gate_text.index("Emit 'DOCS=OK'")
-    route_at = gate_text.index('$commentRoute = Get-CommentOnlyRoute')
-    import_at = gate_text.index("Assert-TreeStable -Phase 'import-gate'")
-    check('default gate computes route after DOCS and before import/suites', docs_at < route_at < import_at and 'Exit-IfStaticRoute -Route $commentRoute' in gate_text[route_at:import_at])
+    def verify_reuse(rc, out, err):
+        check('digest-matched reuse keeps comment reason and file list', rc == 0 and 'REUSE from=current' in out and 'VERDICT=PASS route=comment-only' in out and 'Sample.cs' in out, out + err)
+        reused = first_repo / '.claude/scratch/gate_ledger/reused.result.json'
+        check('reused comment verdict never becomes a full-green base', reused.exists() and json.loads(reused.read_text(encoding='utf-8-sig'))['fullGreenSnapshot'] is None)
+
+    cases.add(reuse_body, verify_reuse)
 
     # The production Get-TreeDigest over a real repo with a real submodule: Get-FixtureTree above holds
     # only the author's belief about its entry format.
     real, sub_src = Path(tmp) / 'real', Path(tmp) / 'real-sub-src'
 
     def git(cwd, *args):
-        subprocess.run(['git', '-c', 'protocol.file.allow=always', '-C', str(cwd), *args], check=True, capture_output=True)
+        subprocess.run(['git', '-c', 'protocol.file.allow=always', '-c', 'user.email=proof@example.invalid', '-c', 'user.name=proof',
+                        '-C', str(cwd), *args], check=True, capture_output=True)
 
     for d in (real, sub_src):
         d.mkdir()
         git(d, 'init', '-q')
-        git(d, 'config', 'user.email', 'proof@example.invalid')
-        git(d, 'config', 'user.name', 'proof')
     (sub_src / 'Sub.cs').write_text('class Sub { int A = 1; }\n', encoding='utf-8', newline='\n')
     git(sub_src, 'add', '.')
     git(sub_src, 'commit', '-qm', 'sub')
@@ -220,7 +235,7 @@ def main(tmp):
     git(real, 'commit', '-qm', 'root')
     git(real, 'submodule', 'add', '-q', str(sub_src), 'Paired')
     git(real, 'commit', '-qm', 'submodule')
-    real_body = LIB.replace('@GATE@', str(GATE)).replace('@HELPER@', str(HELPER)).replace('@TREE@', str(TREE)).replace('@REPO@', str(real))
+    real_body = lib(real)
     real_body += ("\nif (-not ($args.Count -and $args[0] -eq '--seed')) {\n"
                   "Save-Green\n"
                   "function Probe { param($Label) $script:RunTree = Get-TreeDigest -Repo $repo; $r = Get-CommentOnlyRoute -Repo $repo -Tree $script:RunTree -LedgerDir $ledgerDir; Write-Output (\"$Label=\" + $r.eligible + '|' + $r.reason + '|' + ($r.files -join ',')) }\n"
@@ -229,23 +244,36 @@ def main(tmp):
                   "Probe 'COMMENTS'\n"
                   "[IO.File]::WriteAllText((Join-Path $repo 'Paired/Sub.cs'), \"class Sub { int A = 2; }`n\")\n"
                   "Probe 'CODE'\n}\n")
-    driver = Path(tmp) / 'real_git.ps1'
-    driver.write_text(real_body, encoding='utf-8', newline='\n')
-    rc, out, err = pwsh(['-File', str(driver)], tmp, {'COMMENT_GATE_REAL_TREE': '1'})
-    check('real TreeDigest and submodule: comment edits in both repos route', rc == 0 and 'COMMENTS=True|tokens-identical|' in out
-          and 'Sample.cs' in out and 'Paired/Sub.cs' in out, out + err)
-    check('real TreeDigest and submodule: a submodule code edit runs the full gate', rc == 0 and 'CODE=False|' in out, out + err)
+
+    def verify_real(rc, out, err):
+        check('real TreeDigest and submodule: comment edits in both repos route', rc == 0 and 'COMMENTS=True|tokens-identical|' in out
+              and 'Sample.cs' in out and 'Paired/Sub.cs' in out, out + err)
+        check('real TreeDigest and submodule: a submodule code edit runs the full gate', rc == 0 and 'CODE=False|' in out, out + err)
+
+    cases.add(real_body, verify_real, {'COMMENT_GATE_REAL_TREE': '1'})
 
     # A real repo read, not a built replica. No assertion on mutable counts or verdict.
-    if HELPER.exists():
-        driver = Path(tmp) / 'live.ps1'
-        driver.write_text("$ErrorActionPreference = 'Stop'\n. '" + str(TREE) + "'\n. '" + str(HELPER) + "'\n"
-                          + "$tree = Get-TreeDigest -Repo '" + str(ROOT) + "'\n"
-                          + "$route = Get-CommentOnlyRoute -Repo '" + str(ROOT) + "' -Tree $tree -LedgerDir '" + str(ROOT / '.claude/scratch/gate_ledger') + "'\n"
-                          + "Write-Output ('LIVE=' + ($route | ConvertTo-Json -Depth 5 -Compress))\n", encoding='utf-8', newline='\n')
-        rc, out, err = pwsh(['-File', str(driver)], tmp)
+    live_body = ("$ErrorActionPreference = 'Stop'\n. '" + str(TREE) + "'\n. '" + str(HELPER) + "'\n"
+                 + "$tree = Get-TreeDigest -Repo '" + str(ROOT) + "'\n"
+                 + "$route = Get-CommentOnlyRoute -Repo '" + str(ROOT) + "' -Tree $tree -LedgerDir '" + str(ROOT / '.claude/scratch/gate_ledger') + "'\n"
+                 + "Write-Output ('LIVE=' + ($route | ConvertTo-Json -Depth 5 -Compress))\n")
+
+    def verify_live(rc, out, err):
         check('classifier runs on actual checkout read-only', rc == 0 and 'LIVE=' in out, out + err)
         print(out.strip())
+
+    if HELPER.exists():
+        cases.add(live_body, verify_live)
+
+    cases.run(tmp)
+    for run in after_checks:
+        run()
+
+    gate_text = GATE.read_text(encoding='utf-8-sig')
+    docs_at = gate_text.index("Emit 'DOCS=OK'")
+    route_at = gate_text.index('$commentRoute = Get-CommentOnlyRoute')
+    import_at = gate_text.index("Assert-TreeStable -Phase 'import-gate'")
+    check('default gate computes route after DOCS and before import/suites', docs_at < route_at < import_at and 'Exit-IfStaticRoute -Route $commentRoute' in gate_text[route_at:import_at])
 
 
 if __name__ == '__main__':

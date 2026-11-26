@@ -14,6 +14,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _git_fixture  # noqa: E402
+import _hook_call  # noqa: E402
+
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "session_audit_inputs.py"
 GIT_IDENTITY = ["-c", "user.name=planted", "-c", "user.email=planted@example.invalid"]
 
@@ -23,20 +27,21 @@ def git(repo, *args):
                           check=True).stdout.strip()
 
 
-def planted_checkout(directory):
+def build_template(repo):
+    """The two-commit checkout every case starts from."""
+    _git_fixture.init_repo(repo)
+    (repo / "planted.txt").write_text("first\n", encoding="utf-8", newline="\n")
+    _git_fixture.commit_all(repo, "planted base")
+    (repo / "planted.txt").write_text("second\n", encoding="utf-8", newline="\n")
+    _git_fixture.commit_all(repo, "planted change")
+
+
+def planted_checkout(directory, template):
     repo = Path(directory) / "repo"
-    repo.mkdir()
-    git(repo, "init", "-q")
-    (repo / "planted.txt").write_text("first\n", encoding="utf-8")
-    git(repo, "add", "planted.txt")
-    git(repo, "commit", "-q", "-m", "planted base")
-    base = git(repo, "rev-parse", "HEAD")
-    (repo / "planted.txt").write_text("second\n", encoding="utf-8")
-    git(repo, "add", "planted.txt")
-    git(repo, "commit", "-q", "-m", "planted change")
+    _hook_call.copy_repo(template[0], repo)
     roster = Path(directory) / "roster.json"
     roster.write_text("[]\n", encoding="utf-8")
-    return repo, base, roster
+    return repo, template[1], roster
 
 
 def run(repo, base, roster, out):
@@ -46,23 +51,23 @@ def run(repo, base, roster, out):
                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
 
 
-def case_unreadable_roster_exits_nonzero(directory):
-    repo, base, _ = planted_checkout(directory)
+def case_unreadable_roster_exits_nonzero(directory, template):
+    repo, base, _ = planted_checkout(directory, template)
     done = run(repo, base, Path(directory) / "absent.json", ".claude/scratch/run/inputs.json")
     assert done.returncode == 1, "an unreadable roster must exit 1"
     assert "cannot read roster" in done.stderr, done.stderr
 
 
-def case_out_path_outside_checkout_exits_nonzero(directory):
-    repo, base, roster = planted_checkout(directory)
+def case_out_path_outside_checkout_exits_nonzero(directory, template):
+    repo, base, roster = planted_checkout(directory, template)
     outside = str(Path(directory) / "elsewhere" / "inputs.json")
     done = run(repo, base, roster, outside)
     assert done.returncode == 1, "an out path outside the checkout must exit 1"
     assert not Path(outside).parent.exists(), "a refused freeze must write nothing"
 
 
-def case_planted_checkout_freezes_inputs(directory):
-    repo, base, roster = planted_checkout(directory)
+def case_planted_checkout_freezes_inputs(directory, template):
+    repo, base, roster = planted_checkout(directory, template)
     done = run(repo, base, roster, ".claude/scratch/run/inputs.json")
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout).get("head"), done.stdout
@@ -70,8 +75,8 @@ def case_planted_checkout_freezes_inputs(directory):
     assert frozen.is_file(), "the frozen packet must be written"
 
 
-def case_must_read_carries_each_admitted_diff_and_links_its_whole_copy(directory):
-    repo, _, roster = planted_checkout(directory)
+def case_must_read_carries_each_admitted_diff_and_links_its_whole_copy(directory, template):
+    repo, _, roster = planted_checkout(directory, template)
     edited = {".claude/commands/doc.md": "rule one\n", ".claude/hooks/guard.py": "'''doc'''\nA = 1\n",
               ".claude/tools/tool.py": "B = 1\n"}
     for name, text in edited.items():
@@ -104,8 +109,8 @@ def case_must_read_carries_each_admitted_diff_and_links_its_whole_copy(directory
         "the hunk-judging mandate's view carries the diff, never the whole source"
 
 
-def case_a_binary_left_on_disk_after_its_deletion_freezes(directory):
-    repo, _, roster = planted_checkout(directory)
+def case_a_binary_left_on_disk_after_its_deletion_freezes(directory, template):
+    repo, _, roster = planted_checkout(directory, template)
     binary = ".claude/tests/__pycache__/x.cpython-314.pyc"
     (repo / binary).parent.mkdir(parents=True, exist_ok=True)
     (repo / binary).write_bytes(b"\xd7\x0d\x0d\x0a\x00binary")
@@ -126,25 +131,26 @@ def case_a_binary_left_on_disk_after_its_deletion_freezes(directory):
 class InOwnFolder:
     """A case as a pool case: it plants its checkout in a folder of its own, removed when it ends."""
 
-    def __init__(self, case):
-        self.case, self.__name__ = case, case.__name__
+    def __init__(self, case, template):
+        self.case, self.template, self.__name__ = case, template, case.__name__
 
     def __call__(self):
         directory = tempfile.mkdtemp(prefix="session-audit-inputs-proof-")
         try:
-            self.case(directory)
+            self.case(directory, self.template)
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
 
 def main():
     # Each case spends its time in git and tool spawns on a checkout of its own, so the cases run beside each other.
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from _case_pool import run_cases
     cases = [case_unreadable_roster_exits_nonzero, case_out_path_outside_checkout_exits_nonzero,
              case_planted_checkout_freezes_inputs, case_must_read_carries_each_admitted_diff_and_links_its_whole_copy,
              case_a_binary_left_on_disk_after_its_deletion_freezes]
-    return run_cases([InOwnFolder(case) for case in cases])
+    folder = _git_fixture.built("session_audit_inputs_contract.checkout", build_template)
+    template = (str(folder), git(folder, "rev-parse", "HEAD~1"))  # the base commit, read once for every case
+    return run_cases([InOwnFolder(case, template) for case in cases])
 
 
 if __name__ == "__main__":

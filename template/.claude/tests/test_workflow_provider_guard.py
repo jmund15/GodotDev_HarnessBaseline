@@ -640,8 +640,9 @@ def channel_cases():
         fh.write('{"type":"user","message":"hi"}\n')
     with open(loaded_tx, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({"type": "tool_result", "content": "orchestration skill text"}) + "\n")
-    ladder_read = (dmg.model_ladder_gate, "claim_loaded", lambda _s: True)
-    ladder_unread = (dmg.model_ladder_gate, "claim_loaded", lambda _s: False)
+    gate = dmg.model_ladder_gate
+    ladder_read = (gate, "ladder_credit", lambda *_a, **_k: gate.LadderCredit(gate.CURRENT, True, frozenset()))
+    ladder_unread = (gate, "ladder_credit", lambda *_a, **_k: gate.LadderCredit(gate.NONE, False, frozenset()))
 
     def with_tx(path):
         payload = jobs([("h-fan", "fanout")])

@@ -55,8 +55,7 @@ from _shell_lex import (OPAQUE_WRAPPERS, POWERSHELLS, SHELLS, PowerShellText, ba
                         command_words, executable_spans, executable_text, lex, options, ps_param, walk)
 from _delete_rule import (ANY_SESSION_ID, empty_leftover, holds_only_ignored_output,  # noqa: E402
                           is_regenerable_clone, is_plant_exhaust, is_proof_plant, is_retired_worktree,
-                          lossless_orphan_worktree, names_ignored_output, project_data, regenerable_segments,
-                          worktree_unstored)
+                          names_ignored_output, project_data, regenerable_segments, worktree_unstored)
 from _own_worktree import session_created_worktree  # noqa: E402
 import _git_commit  # noqa: E402
 if _git_commit.lex is None:
@@ -383,12 +382,7 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
                 reasons.append('it is not a literal path, so it can match another session\'s folder')
             return False
         return _removable_scratch_entry(token, target, cwd, transcript_path, reasons)
-    orphan_loss: list[str] = []
-    if lossless_orphan_worktree(token, cwd or root, root, orphan_loss):
-        return True
     own = session_created_worktree(target, transcript_path)
-    if reasons is not None and not own:
-        reasons.extend(orphan_loss)
     return is_retired_worktree(token, cwd or root, root, reasons=reasons, own=own)
 
 
@@ -754,7 +748,7 @@ def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> st
 
 def _unproved_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
     """The first delete target no exemption admits and no per-class reason above named, or '': an unresolvable
-    path, else one in no exemption. A deny always names which exemption failed."""
+    path, else one in no exemption. The last case names no exemption: the caller's `_CACHE_HINT` lists them."""
     targets = _delete_targets(raw, cwd)
     if targets is None:
         return (' The guard cannot read this delete down to literal targets (it sits inside a loop, `$(...)`, a '
@@ -767,8 +761,7 @@ def _unproved_reason(raw: str, cwd: str | None, transcript_path: str | None) -> 
             return (' %s is not a literal path the guard can resolve (a variable, `~`, `%%` or a glob): '
                     'spell the path out.' % token)
         if not _deletable_by_fact(value, here, transcript_path):
-            return (' %s is outside every exemption: only this project\'s caches and scratch, retired worktrees '
-                    'and the system temp directory go without the owner.' % token)
+            return (' %s is outside every exemption the guard can prove.' % token)
     return ''
 
 
@@ -1266,11 +1259,11 @@ def _checkout_denial(d, ev):
     if not d.paths:
         retry = "then commit or save each edit and switch without `-f`."
     elif d.bulk:
-        retry = "then name each file: `git checkout -- <file>` for one saved edit at a time."
+        retry = "then name the saved files, not a directory or glob: `git checkout -- <file> [<file>...]`."
     elif d.refs:
-        retry = "then run `git restore --source=%s -- <path>`." % d.refs[0]
+        retry = "then run `git restore --source=%s -- <file> [<file>...]`." % d.refs[0]
     else:
-        retry = "then the same command passes."
+        retry = "then rerun this command in its own call: the guard reads the tree before any part of a call runs."
     return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
             "overwrites uncommitted edits to those paths, which may be another session's; another session's "
             "edit needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
@@ -1278,13 +1271,13 @@ def _checkout_denial(d, ev):
 
 def _restore_denial(d, ev):
     if d.bulk:
-        retry = "then name each file: `git restore <file>` for one saved edit at a time."
+        retry = "then name the saved files, not a directory or glob: `git restore <file> [<file>...]`."
     elif {"W", "worktree"} & _git_opts("restore", d.flags).flags:
-        retry = "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
+        retry = "then run it without `--worktree`/`-W` (restore's default), naming the saved files."
     elif "-s" in d.flags:
-        retry = "then spell the source `--source=<ref>` and name one saved file."
+        retry = "then spell the source `--source=<ref>` and name the saved files."
     else:
-        retry = "then the same command passes."
+        retry = "then rerun this command in its own call: the guard reads the tree before any part of a call runs."
     return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
             "discards uncommitted worktree edits, which may be another session's; another session's edit "
             "needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
@@ -1962,7 +1955,9 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
         source = str(exc).removeprefix("cannot resolve push source ")
         if source != str(exc):
             return ("BLOCKED harness push (rules/harness_tooling.md) — cannot resolve push source `%s`; the guard "
-                    "does not expand shell variables, so push the commit by its literal hash or ref." % source)
+                    "resolves it before the call runs, so neither a shell variable nor a commit a fetch in the same "
+                    "call brings is known to it: push a literal hash or ref the repository already holds, in its own "
+                    "call." % source)
         return next_step % "cannot resolve the outgoing harness range"
     except (OSError, ValueError, subprocess.CalledProcessError):
         return next_step % "cannot resolve the outgoing harness range"

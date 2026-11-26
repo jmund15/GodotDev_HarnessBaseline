@@ -250,12 +250,31 @@ def test_a_quarantined_proof_still_runs_and_reports_but_its_failure_is_no_red(tm
 def test_a_proof_with_a_longer_bound_starts_before_the_short_ones(tmp_path):
     """Under `-n` the workers take cases in collection order, so a long proof collected late (`test_r...`) sets the run's
     tail. The `proof_timeouts` rows name the long proofs, so their order is the start order: longest bound first."""
-    tests = plant(tmp_path, {"test_a_short.py": SCRIPT_OK, "test_b_short.py": SCRIPT_OK, "test_z_long.py": SCRIPT_OK,
-                             "test_m_longer.py": SCRIPT_OK},
+    tests = plant(tmp_path, {"test_a_short.py": SCRIPT_OK, "test_0_native.py": "def test_a():\n    pass\n",
+                             "test_b_short.py": SCRIPT_OK, "test_z_long.py": SCRIPT_OK, "test_m_longer.py": SCRIPT_OK},
                   {"proof_timeouts": {"test_z_long.py": 300, "test_m_longer.py": 600}})
     code, out = run_pytest(tests, "-p", "no:xdist", "--collect-only", "-q")
-    order = re.findall(r"<ProofFile (test_\w+\.py)>", out)
-    assert code == 0 and order == ["test_m_longer.py", "test_z_long.py", "test_a_short.py", "test_b_short.py"], out
+    order = re.findall(r"<(?:ProofFile|Module) (test_\w+\.py)>", out)
+    assert code == 0 and order == ["test_m_longer.py", "test_z_long.py", "test_a_short.py", "test_b_short.py",
+                                   "test_0_native.py"], out
+
+
+def test_under_xdist_the_longest_proofs_start_on_different_workers(tmp_path):
+    """xdist's `load` schedule hands every worker two consecutive items up front (its floor), and a case once sent never
+    moves: with the long proofs sorted first, the two longest both went to worker 0 and ran in series. The collection
+    order puts one long proof at the head of each worker's opening pair, so the longest proofs run side by side."""
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    record = ("def test_long(request):\n    open(%r + '/' + __name__, 'w').write(request.config.workerinput['workerid'])\n"
+              % str(marks).replace("\\", "/"))
+    longs = {"test_long_a.py": 600, "test_long_b.py": 500, "test_long_c.py": 400, "test_long_d.py": 300}
+    short = "".join("def test_short_%d():\n    pass\n\n\n" % n for n in range(20))
+    tests = plant(tmp_path / "run", {**{name: record for name in longs}, "test_short.py": short},
+                  {"proof_timeouts": longs})
+    code, out = run_pytest(tests, "-n", "2")
+    worker = {mark.name: mark.read_text() for mark in marks.iterdir()}
+    assert code == 0 and len(worker) == 4, (worker, out)
+    assert worker["test_long_a"] != worker["test_long_b"], (worker, out)
 
 
 def test_a_script_proof_that_outruns_its_bound_is_a_named_red(tmp_path):

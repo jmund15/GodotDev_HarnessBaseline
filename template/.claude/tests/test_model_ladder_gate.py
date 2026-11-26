@@ -259,8 +259,8 @@ def main():
 
         cases = []
         cases.append(("full exact-path Read arms the marker", gate.mark_loaded(payload())))
-        cases.append(("a loaded ladder authorizes a dispatch", gate.claim_loaded(sid)))
-        cases.append(("a dispatch does not consume the marker", gate.claim_loaded(sid)))
+        cases.append(("a loaded ladder authorizes a dispatch", gate.ladder_credit(sid).full))
+        cases.append(("a dispatch does not consume the marker", gate.ladder_credit(sid).full))
         cases.append(("offset Read cannot arm", not gate.mark_loaded(payload(offset=1))))
         cases.append(("limited Read cannot arm", not gate.mark_loaded(payload(limit=20))))
         cases.append(("Grep cannot substitute for a full load", not gate.mark_loaded(payload(tool="Grep"))))
@@ -272,17 +272,17 @@ def main():
 
         gate.mark_loaded(payload())
         hook_state.clear_compaction_keys(sid)
-        cases.append(("the SessionStart(compact) clear drops readiness", not gate.claim_loaded(sid)))
+        cases.append(("the SessionStart(compact) clear drops readiness", not gate.ladder_credit(sid).full))
 
         other = dict(payload())
         other["session_id"] = "subagent02"
         gate.mark_loaded(other)
-        cases.append(("a subagent session cannot arm the parent", not gate.claim_loaded(sid)
-                      and gate.claim_loaded("subagent02")))
+        cases.append(("a subagent session cannot arm the parent", not gate.ladder_credit(sid).full
+                      and gate.ladder_credit("subagent02").full))
 
         gate.mark_loaded(payload())
         with ThreadPoolExecutor(max_workers=2) as pool:
-            claims = list(pool.map(lambda _n: gate.claim_loaded(sid), range(2)))
+            claims = list(pool.map(lambda _n: gate.ladder_credit(sid).full, range(2)))
         cases.append(("two concurrent dispatches both see the loaded ladder", claims == [True, True]))
 
         worktree = project / ".claude" / "worktrees" / "wt1"
@@ -299,7 +299,7 @@ def main():
         abs_sid = "ladderab"
         abs_payload = dict(wt_payload, session_id=abs_sid, tool_input={"file_path": named or "x"})
         cases.append(("a Read of the path the denial names arms the gate",
-                      gate.mark_loaded(abs_payload) and gate.claim_loaded(abs_sid)))
+                      gate.mark_loaded(abs_payload) and gate.ladder_credit(abs_sid).full))
         stale_payload = dict(wt_payload, session_id="ladderst", tool_input={"file_path": str(wt_ladder)})
         cases.append(("a Read of the worktree's stale copy cannot arm",
                       not gate.mark_loaded(stale_payload)))
@@ -308,7 +308,7 @@ def main():
 
         path = Path(hook_state.state_path(sid))
         path.write_text("{not-json", encoding="utf-8")
-        cases.append(("corrupt state fails closed", not gate.claim_loaded(sid)))
+        cases.append(("corrupt state fails closed", not gate.ladder_credit(sid).full))
     finally:
         os.environ.clear()
         os.environ.update(old)
@@ -346,7 +346,7 @@ def test_bounded_full_read_meets_the_ladder_precondition(tmp_path, monkeypatch):
         'file_path': gate.expected_path({}), 'limit': 100}, 'tool_response': {
         'file': {'startLine': 1, 'numLines': 68, 'totalLines': 68}}}
     assert gate.mark_loaded(payload) is True
-    assert gate.claim_loaded('bounded1') is True
+    assert gate.ladder_credit('bounded1').full is True
     hooks_state.mark_skill_in_context('bounded1', 'orchestration')
     assert gate.doctrine_check(payload) == (None, None)
 
@@ -667,7 +667,7 @@ def test_a_warm_session_holding_an_older_ladder_is_denied_until_it_reloads(tmp_p
     assert gate.doctrine_check(payload) == (None, None), 'a current copy must not be denied'
     ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
     reason, _ = gate.doctrine_check(payload)
-    assert reason and 'model_ladder_evidence.md' in reason and gate.claim_loaded(sid) is False, reason
+    assert reason and 'model_ladder_evidence.md' in reason and gate.ladder_credit(sid).full is False, reason
     assert gate.mark_loaded(_ladder_read(gate, sid)) is True
     assert gate.doctrine_check(payload) == (None, None)
 
@@ -680,11 +680,41 @@ def test_a_warm_session_holding_an_older_ladder_slice_is_denied_and_a_current_on
     hooks_state.mark_skill_in_context(sid, 'orchestration')
     assert hooks_state.mark_ladder_slice(sid, ['architect'], digest=gate.ladder_digest(payload))
     assert gate.doctrine_check(payload, tiers=lambda: ['architect']) == (None, None)
-    assert gate.tier_in_context(sid, 'architect') is True
+    assert gate.ladder_credit(sid).covers('architect') is True
     ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
     reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'], embed_slice=False)
     assert reason and 'architect' in reason, reason
-    assert gate.tier_in_context(sid, 'architect') is False
+    assert gate.ladder_credit(sid).covers('architect') is False
+
+
+def test_a_ladder_credit_is_none_current_or_stale_and_the_deny_names_a_stale_one(tmp_path, monkeypatch):
+    _, ladder = _project_with(tmp_path, monkeypatch, '# orchestration\n', '# ladder\nold rows\n')
+    gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
+    sid = 'credit01'
+    payload = {'session_id': sid, 'cwd': str(tmp_path)}
+    hooks_state.mark_skill_in_context(sid, 'orchestration')
+    assert gate.ladder_credit(sid).status == gate.NONE
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'])
+    assert reason and 'since the session started or last compacted' in reason and gate.STALE_CAUSE not in reason, reason
+    assert hooks_state.mark_ladder_slice(sid, ['architect'], digest=gate.ladder_digest(payload))
+    credit = gate.ladder_credit(sid)
+    assert credit.status == gate.CURRENT and credit.covers('architect') and not credit.covers('fanout')
+    ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
+    credit = gate.ladder_credit(sid)
+    assert credit.status == gate.STALE and not credit.covers('architect')
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'])
+    assert reason and gate.STALE_CAUSE in reason and 'since the session started' not in reason, reason
+    assert gate.STALE_CAUSE in gate.advance_notice(payload)
+
+
+def test_a_ladder_credit_read_with_a_root_checks_that_root_not_the_cwd(tmp_path, monkeypatch):
+    _project_with(tmp_path, monkeypatch, '# orchestration\n', '# ladder\nrows\n')
+    gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
+    sid = 'credit02'
+    assert hooks_state.mark_ladder_slice(sid, ['architect'], digest=gate.ladder_digest({'cwd': str(tmp_path)}))
+    monkeypatch.delenv('CLAUDE_PROJECT_DIR')
+    monkeypatch.chdir(tmp_path / '.claude')
+    assert gate.ladder_credit(sid, root=tmp_path).covers('architect')
 
 
 def test_a_slice_of_the_new_ladder_replaces_the_tiers_held_from_the_old_one(tmp_path, monkeypatch):

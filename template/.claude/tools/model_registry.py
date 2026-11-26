@@ -127,12 +127,9 @@ _LEGAL_COST_MODELS = {"marginal-usd", "plan-quota"}
 _LEGAL_API_MODES = {"messages", "chat", "responses"}
 
 # Rail tiers are the guards/*.md section names. A row without `railTier` reads `detailed`: a tier
-# above it is earned by evidence that the model follows the shorter rails, never by capability.
+# above it is earned by evidence that the model follows the shorter rails, never by capability; the
+# row's `_railTierComment` names that basis and the observation that reverts it.
 _LEGAL_RAIL_TIERS = ("detailed", "condensed", "minimal")
-# A tier above `detailed` names its evidence (instruction_quality §3). `unmeasured` is the one kind this tree
-# records; shape is checked on every load.
-_SHORTER_RAIL_TIERS = ("condensed", "minimal")
-_RAIL_EVIDENCE_KINDS = ("unmeasured",)
 
 # `contextSuffix` is the request modifier every native dispatch of the row must carry to be served
 # with the larger context window. Its only legal value is the host client's 1M-window modifier.
@@ -736,16 +733,14 @@ def _validate(data, target):
         if rail is not None and rail not in _LEGAL_RAIL_TIERS:
             raise RegistryError(
                 f"{target}: model {mid} railTier {rail!r} must be one of {', '.join(_LEGAL_RAIL_TIERS)}")
+        if rail in _LEGAL_RAIL_TIERS[1:] and not str(entry.get("_railTierComment") or "").strip():
+            raise RegistryError(
+                f"{target}: model {mid} railTier {rail!r} needs a non-empty _railTierComment: the basis for "
+                f"the shorter rail and the observation that reverts it")
         if "contextSuffix" in entry and entry["contextSuffix"] not in _LEGAL_CONTEXT_SUFFIXES:
             raise RegistryError(
                 f"{target}: model {mid} contextSuffix {entry['contextSuffix']!r} must be one of "
                 f"{', '.join(_LEGAL_CONTEXT_SUFFIXES)}; delete the field to declare none")
-        if rail in _SHORTER_RAIL_TIERS:
-            ev = entry.get("railTierEvidence")
-            if not isinstance(ev, dict) or ev.get("evidence") not in _RAIL_EVIDENCE_KINDS:
-                raise RegistryError(
-                    f"{target}: model {mid} railTier {rail!r} needs railTierEvidence "
-                    f"{{evidence: {'|'.join(_RAIL_EVIDENCE_KINDS)}}}")
         _validate_driver_notes(entry.get("driverNotes"), f"{target}: model {mid}")
         _validate_probation(entry.get("probation"), f"{target}: model {mid}")
 
@@ -3147,7 +3142,8 @@ def _doctrine_in_context():
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
         import model_ladder_gate
-        return model_ladder_gate.ladder_held(session_id)
+        credit = model_ladder_gate.ladder_credit(session_id, root=Path(__file__).resolve().parents[2])
+        return credit.status == model_ladder_gate.CURRENT
     except (ImportError, OSError, ValueError):
         return False
 

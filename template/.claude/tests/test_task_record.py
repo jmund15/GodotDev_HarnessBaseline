@@ -168,6 +168,45 @@ def test_optional_kind_cli(tmp_path, monkeypatch):
     assert r.returncode != 0 and "invalid choice" in r.stderr
 
 
+def _size_bound_record(tmp_path, monkeypatch, task_id):
+    monkeypatch.setenv("HARNESS_TASK_RECORD_DIR", str(tmp_path / "records"))
+    monkeypatch.delenv("HARNESS_TASK_RECORD_BLOCK_BYTES", raising=False)
+    tr = load()
+    tr.open_record(task_id, "size-session", "Size")
+    return tr
+
+
+def test_a_string_past_the_block_is_refused_naming_its_field(tmp_path, monkeypatch):
+    tr = _size_bound_record(tmp_path, monkeypatch, "dump")
+    tr.add_item("dump", "requirement", "kept")
+    try:
+        tr.add_item("dump", "requirement", "x" * (tr.BLOCK_BYTES + 1))
+        refusal = None
+    except tr.RecordTooLarge as exc:
+        refusal = str(exc)
+    assert refusal and "requirements" in refusal, refusal
+    assert tr.load("dump")["requirements"] == ["kept"]
+
+
+def test_a_record_grows_by_rows_without_a_total_cap(tmp_path, monkeypatch):
+    tr = _size_bound_record(tmp_path, monkeypatch, "long")
+    for i in range(100):
+        tr.add_item("long", "decision", "decision %d " % i + "y" * 900)
+    assert len(tr.load("long")["decisions"]) == 100
+
+
+def test_a_stored_long_string_does_not_block_later_writes(tmp_path, monkeypatch):
+    tr = _size_bound_record(tmp_path, monkeypatch, "legacy")
+    path = tr.path_for("legacy")
+    with open(path, encoding="utf-8") as fh:
+        rec = json.load(fh)
+    rec["requirements"] = ["x" * (tr.BLOCK_BYTES * 2)]
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(rec, fh)
+    tr.add_item("legacy", "decision", "short")
+    assert [d["text"] for d in tr.load("legacy")["decisions"]] == ["short"]
+
+
 TASK_SID = "76ed7baa-8baf-4db4-b89f-6f971ca2d5c0"
 
 
@@ -465,14 +504,6 @@ def main():
     check("the self-supersede refusal left the decision live",
           later["id"] in [d["id"] for d in tr.load("s1-drive")["decisions"]])
 
-    big = "x" * (tr.MAX_BYTES + 200)
-    try:
-        tr.add_item("s1-drive", "requirement", big)
-        check("a write past MAX_BYTES is refused and names the field", False, "no refusal")
-    except tr.RecordTooLarge as exc:
-        check("a write past MAX_BYTES is refused and names the field", "requirements" in str(exc), str(exc))
-    check("the refused write left the record unchanged", len(tr.load("s1-drive")["requirements"]) == 1)
-
     # freshness check: fresh -> STALE -> MISSING; a decision without a reproduction is hash-only
     rows = tr.check_record("s1-drive")
     check("check reports fresh rows and hash-only for a decision without a reproduction",
@@ -484,7 +515,7 @@ def main():
     os.remove(evidence)
     rows = tr.check_record("s1-drive")
     check("a removed evidence file reads MISSING", any(r["status"] == "MISSING" for r in rows), rows)
-    # A legacy record's `archived` list and its finished jobs leave the capped record on the next write.
+    # A legacy record's `archived` list and its finished jobs leave the record on the next write.
     tr.open_record("s1-legacy", session_id="s1l", title="Legacy")
     path = os.path.join(root, "s1-legacy.json")
     legacy = json.load(open(path, encoding="utf-8"))
@@ -548,8 +579,6 @@ def main():
         tr.add_item("s1-block", "requirement", "requirement %d" % i)
     for i in range(18):
         tr.add_item("s1-block", "decision", "decision %d " % i + "y" * 60)
-    check("18 decisions of ~75 B fit under the record cap (first data point for the cap)",
-          len(json.dumps(tr.load("s1-block")).encode("utf-8")) <= tr.MAX_BYTES, len(json.dumps(tr.load("s1-block")).encode("utf-8")))
     blk = tr.render_block("s1-block", max_bytes=700)
     check("the block fits its byte cap", len(blk.encode("utf-8")) <= 700, len(blk.encode("utf-8")))
     check("requirements stay whole in a tight block", all(("requirement %d" % i) in blk for i in range(3)), blk)
@@ -956,15 +985,15 @@ def main():
 
     tr.open_record("adm-1", session_id="s1", title="Admissions")
     planted = dict(check="candidate-lenses", admitted=True, width="sized", rigor="normal", reach="local",
-                   kind="decision", size="x" * (tr.MAX_BYTES + 200))
+                   kind="decision", size="x" * (tr.STRING_BYTES + 200))
     refusal = None
     try:
         tr.record_admission("adm-1", planted)
     except tr.RecordTooLarge as exc:
         refusal = str(exc)
     check("an oversized admission is recorded, not refused", refusal is None, refusal)
-    check("the record stays under its byte cap after an oversized admission",
-          len(json.dumps(tr.load("adm-1")).encode("utf-8")) <= tr.MAX_BYTES)
+    check("the record keeps an oversized admission field cut to ADMISSION_FIELD_CHARS",
+          len(tr.load("adm-1")["admissions"][0]["size"]) == tr.ADMISSION_FIELD_CHARS)
     spill = os.path.join(root, "adm-1.admissions.jsonl")
     spilled = []
     if os.path.exists(spill):
@@ -980,8 +1009,6 @@ def main():
             refused_at.append(i)
     check("300 admissions are never refused", not refused_at, refused_at[:3])
     stored = tr.load("adm-1")
-    check("the record stays under its byte cap after 300 admissions",
-          len(json.dumps(stored).encode("utf-8")) <= tr.MAX_BYTES)
     check("the record keeps only the newest 20 admission summaries", len(stored["admissions"]) == 20,
           len(stored["admissions"]))
     spilled_count = sum(1 for line in open(spill, encoding="utf-8") if line.strip()) if os.path.exists(spill) else 0

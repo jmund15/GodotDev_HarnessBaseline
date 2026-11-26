@@ -28,4 +28,4 @@ when the symptom stops being observed independently. A guard is not evidence of 
 
 **Concrete:** the shell-shape workarounds (client 2.1.232, reverted in 2.1.233, measured clean 2026-09-01), their timeline and the sed-backtick denial are in `gotcha_auto_mode_shell_shape_history`.
 
-Related: [[gotcha_workflow_args_permission_control_chars]] (same fail-closed permission layer), [[archive_claude_code_permissions_location]].
+Related: [[archive_claude_code_permissions_location]].

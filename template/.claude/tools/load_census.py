@@ -138,7 +138,7 @@ _HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 if str(_HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(_HOOKS_DIR))
 from _git_run import run as git_run  # noqa: E402
-from _hook_state import SKILL_REATTACH_CHARS, reattach_over_cap  # noqa: E402,F401
+from _hook_state import SKILL_REATTACH_CHARS, reattach_over_cap, stat_present  # noqa: E402,F401
 from amend_delivery import HOOK_TEXT_CAP  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -603,12 +603,12 @@ def oversized_bodies(root: Path) -> list[dict]:
     known = _known_oversized(root)
     rows = []
     seen = set()
-    for p in sorted(list(root.glob("skills/**/*.md")) + list(root.glob("commands/**/*.md"))):
+    for p, st in stat_present(sorted(list(root.glob("skills/**/*.md")) + list(root.glob("commands/**/*.md")))):
         resolved = p.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
-        size = p.stat().st_size
+        size = st.st_size
         if size <= OVERSIZED_THRESHOLD:
             continue
         rel = ".claude/" + str(p.relative_to(root)).replace("\\", "/")

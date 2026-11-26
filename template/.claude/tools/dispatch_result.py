@@ -36,14 +36,17 @@ EXIT 0 every job has its `<label>.md` (`check`: every block present and every ro
 1 some job has none (`check`: a block is missing or a row is bad); 2 the input is unusable.
 
 `consume` runs one label of a Workflow run (a dispatch.js run or a dispatch_chains.js run, whose label is any job of any
-lane), a sidecar fan-out out dir or a `-R` record (which needs `--brief`, since neither holds the brief's path): it writes
+lane), a sidecar fan-out out dir or a `-R` record (pass `--brief` when the source names no brief: a `-R` record never does): it writes
 `<label>.md`, prints a bounded digest, reads the brief's one `task` block, runs each `check` in order from the repo root
 under a deadline and stops at the first failure, so later checks print NOT-RUN, lists changed paths (`git status`
 over `writeSet` and the deliverable's `changedPaths:` line, flagging paths outside `writeSet`, and a gitignored
 file written after the run start), prints the diff, prints `AMEND UNREAD <path>` when the brief's amend file exists,
 no job holds a `hooks/amend_delivery.py` receipt for its current text and the stream holds no successful Read of it (`amend_unread`), and writes `<label>.seed.json` and `<label>.manifest.json`
-beside the deliverable. It prints facts only. EXIT 0 every check passed; 1 a check failed, timed
-out, or was HELD (the brief was written after the run started, so no check ran); 2 refused, with nothing run.
+beside the deliverable. It prints facts only. A brief with no `task` block, or no brief at all, gets every fact but no
+check and a `NO TASK BLOCK` line naming which (with no brief, no amendment is looked for either), and a `changedPaths:` line that is not a JSON list gets a `WARNING` line and no changed paths from it.
+EXIT 0 every check passed; 1 a check failed, timed out, or was HELD (the brief was written after the run started, so no
+check ran), or the job named no check (`NO TASK BLOCK`) or an unreadable `changedPaths:` line; 2 refused, with nothing run
+(an unreadable brief, a malformed task block, a floor-guarded check, a missing deliverable).
 A check matching a floor guard (an index write, a commit, a push, a process kill outside tools/reap.py) is
 refused; the parent runs it in its own Bash call.
 """
@@ -451,6 +454,9 @@ def check_spill(text, blocks):
     return lines, bad
 
 
+TASK_KEYS = "`check`: shell commands or `claims`, `writeSet`: paths; commands/delegate.md step 1"
+
+
 class Refused(Exception):
     """A consume request that runs nothing; the message says why."""
 
@@ -463,20 +469,20 @@ def task_block(text):
     if not found:
         return None
     if len(found) != 1:
-        raise ValueError(f"the brief must hold one task block of one JSON object; found {len(found)} blocks")
+        raise ValueError(f"the brief must hold one task block of one JSON object ({TASK_KEYS}); found {len(found)} blocks")
     try:
         obj = json.loads(found[0])
     except ValueError as exc:
-        raise ValueError(f"the task block is not one JSON object ({exc})")
+        raise ValueError(f"the task block is not one JSON object ({exc}); it holds {TASK_KEYS}")
     if not isinstance(obj, dict):
-        raise ValueError("the task block is not a JSON object")
+        raise ValueError(f"the task block is not a JSON object; it holds {TASK_KEYS}")
     checks = obj.get("check")
     if isinstance(checks, str):
         checks = obj["check"] = [checks]
     if not isinstance(checks, list) or not checks:
-        raise ValueError("the task block has an empty check list")
+        raise ValueError(f"the task block has an empty check list; `check` needs one or more shell commands or the literal `claims` ({TASK_KEYS})")
     if not all(isinstance(c, str) and c.strip() for c in checks):
-        raise ValueError("every check entry must be a non-empty string")
+        raise ValueError(f"every check entry must be a non-empty string ({TASK_KEYS})")
     write_set = obj.get("writeSet", [])
     if not isinstance(write_set, list) or not all(isinstance(p, str) for p in write_set):
         raise ValueError("writeSet must be a list of paths")
@@ -619,6 +625,11 @@ def _resolve(root, path):
     return value if value.is_absolute() else Path(root) / value
 
 
+def _brief_path(root, path):
+    """The brief's path, or None when neither `--brief` nor the run names one (`_judge` then runs no check)."""
+    return _resolve(root, path) if path else None
+
+
 def _workflow_origin(root, run, label, brief):
     record_path = _run_record_path(run)
     try:
@@ -642,7 +653,7 @@ def _workflow_origin(root, run, label, brief):
         raise Refused(f"label {label} has no journal entry")
     return {"out_dir": Path(spill) if Path(spill).is_absolute() else REPO / spill,
             "value": journal.get(label), "start_s": start_ms / 1000,
-            "brief": _resolve(root, brief or seed_jobs[0].get("promptPath")),
+            "brief": _brief_path(root, brief or seed_jobs[0].get("promptPath")),
             "seed_jobs": seed_jobs,
             "session": run.parent.parent.parent, "record_dir": None, "run": run}
 
@@ -650,8 +661,9 @@ def _workflow_origin(root, run, label, brief):
 def _inventory_job(out_dir, label):
     """`label`'s fields merged over every fan-out inventory in `out_dir`, oldest first: the fan-out's own
     inventory names the job's `workdir`, and each launcher's per-job inventory omits it."""
+    from _hook_state import by_mtime
     merged = {}
-    for inv in sorted(Path(out_dir).glob("fanout-*.inventory.json"), key=lambda p: p.stat().st_mtime):
+    for inv in by_mtime(Path(out_dir).glob("fanout-*.inventory.json")):
         try:
             jobs = json.loads(inv.read_text(encoding="utf-8")).get("jobs") or []
         except (OSError, ValueError, AttributeError):
@@ -691,8 +703,6 @@ def _sidecar_origin(root, source, label, brief):
     job = _inventory_job(out_dir, label) if Path(source).is_dir() else {}
     workdir = job.get("workdir")
     brief = brief or job.get("brief")
-    if not brief:
-        raise Refused("a sidecar source needs --brief: its record and inventory hold no brief path")
     try:
         record = json.loads(record_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -706,7 +716,7 @@ def _sidecar_origin(root, source, label, brief):
         raise Refused(f"sidecar {label} has no {pid.name}, so its run start is unknown")
     return {"out_dir": out_dir, "value": final_message_of(stdout_path), "start_s": pid.stat().st_mtime,
             "stdout": stdout_path,
-            "brief": _resolve(root, brief),
+            "brief": _brief_path(root, brief),
             "seed_jobs": [{"label": label, "model": record.get("requestedModel"), "effort": record.get("effort")}],
             "session": None, "record_dir": record_path.parent, "run": None,
             "claims_path": Path(str(record_path) + ".claims.json"),
@@ -714,7 +724,8 @@ def _sidecar_origin(root, source, label, brief):
 
 
 def _read_task(brief_file):
-    """The brief's one task block, refused when it is unreadable, absent, or holds a floor-guarded check."""
+    """The brief's one task block; None when the brief holds none (a hand-written lane brief names no check).
+    Refused when the brief is unreadable, the block is malformed, or a check is floor-guarded."""
     try:
         text = brief_file.read_text(encoding="utf-8")
     except OSError as exc:
@@ -724,7 +735,7 @@ def _read_task(brief_file):
     except ValueError as exc:
         raise Refused(str(exc))
     if task is None:
-        raise Refused("brief has no task block")
+        return None
     for command in task["check"]:
         why = None if command == "claims" else floor_reason(command)
         if why:
@@ -780,7 +791,13 @@ def _sidecar_claims_verdict(path):
 def _judge(root, label, origin, check_timeout, result):
     """Write the deliverable, list changed paths and the diff, then run the brief's checks in order (or
     mark them HELD when the brief is newer than the run start). Shared by every source."""
-    task = _read_task(origin["brief"])
+    brief = origin["brief"]
+    task = _read_task(brief) if brief else None
+    if task is None:
+        result["no_task"] = (f"the brief holds no task fence ({TASK_KEYS})" if brief else
+                             "consume was given no brief and the run names none, so no amendment was looked for "
+                             "either; pass --brief <path> to judge them")
+    commands = task["check"] if task else []
     out_dir = origin["out_dir"]
     status, path = _materialize_one(out_dir, label, origin["value"])
     if status in ("no-result", "spill-missing"):
@@ -792,9 +809,10 @@ def _judge(root, label, origin, check_timeout, result):
         try:
             values = json.loads(raw)
         except ValueError:
-            raise Refused(f"the deliverable's changedPaths line is not a JSON list: {raw[:80]}")
+            values = None
         if not isinstance(values, list) or not all(isinstance(p, str) for p in values):
-            raise Refused("the deliverable's changedPaths line must be a JSON list of paths")
+            result["returned_unreadable"] = raw[:80]
+            continue
         returned.extend(values)
     reply = deliverable_path(out_dir, label + ".reply")
     if reply.is_file():
@@ -806,15 +824,18 @@ def _judge(root, label, origin, check_timeout, result):
             trailing = False
         if trailing:
             result["delivery_flag"] = "the final message answered a later turn after an earlier reply and no report file was kept"
-    if origin.get("stdout"):
-        result["amend_unread"] = amend_unread(origin["brief"], origin["stdout"])
+    if brief and origin.get("stdout"):
+        result["amend_unread"] = amend_unread(brief, origin["stdout"])
     work = origin.get("workdir") or root
     base = "HEAD"
     if origin.get("workdir"):
         base = origin.get("startHead") or _git(work, "rev-list", "-1", f"--before={int(origin['start_s'])}", "HEAD").strip() or "HEAD"
     result.update(deliverable=deliverable.as_posix(),
                   digest="\n".join(text.splitlines()[:DIGEST_LINES])[:DIGEST_CHARS],
-                  changed=_changed_rows(work, task.get("writeSet", []), returned, origin["start_s"], base))
+                  changed=_changed_rows(work, task.get("writeSet", []) if task else [], returned, origin["start_s"], base))
+    if task is None:
+        for row in result["changed"]:
+            row["outside"] = False
     new = [row["path"] for row in result["changed"] if row["status"] in ("??", "!!")]
     tracked = [row["path"] for row in result["changed"] if row["status"] not in ("??", "!!", "unchanged")]
     diff = ""
@@ -828,9 +849,9 @@ def _judge(root, label, origin, check_timeout, result):
         result["diff"] = diff[:DIFF_CHARS]
     manifest, refused = _write_manifest(root, label, origin)
     result.update(manifest=manifest.as_posix() if manifest else None, manifest_refused=refused)
-    if origin["brief"].stat().st_mtime > origin["start_s"]:
+    if brief and brief.stat().st_mtime > origin["start_s"]:
         result["checks"] = [{"n": n, "verdict": "HELD", "command": c, "tail": ""}
-                            for n, c in enumerate(task["check"], 1)]
+                            for n, c in enumerate(commands, 1)]
         return result
     run_bounded, _pub, _writes, _inv, git_bash = _consume_deps()
     try:
@@ -838,7 +859,7 @@ def _judge(root, label, origin, check_timeout, result):
     except RuntimeError as exc:
         raise Refused(str(exc))
     stopped = False
-    for n, command in enumerate(task["check"], 1):
+    for n, command in enumerate(commands, 1):
         if stopped:
             result["checks"].append({"n": n, "verdict": "NOT-RUN", "command": command, "tail": ""})
             continue
@@ -870,9 +891,10 @@ def _consume(source, label, root, check_timeout, brief, result):
 
 def consume(source, label, root, check_timeout, brief=None):
     """Consume one label of a Workflow run. Returns {digest, deliverable, checks, changed, diff, manifest,
-    refused}: `refused` names why nothing ran; `checks` rows are {n, verdict, command, tail}."""
+    refused}: `refused` names why nothing ran; `checks` rows are {n, verdict, command, tail}; `no_task` names why
+    no check ran when there is no task block to read (no brief, or a brief without one), else None."""
     result = {"digest": "", "deliverable": None, "checks": [], "changed": [], "diff": "", "manifest": None,
-              "manifest_refused": None, "refused": None}
+              "manifest_refused": None, "refused": None, "no_task": None, "returned_unreadable": None}
     try:
         return _consume(source, label, Path(root), check_timeout, brief, result)
     except Refused as exc:
@@ -887,7 +909,7 @@ def main_consume(argv):
     ap.add_argument("--label", required=True, help="the job label to consume")
     ap.add_argument("--check-timeout", type=float, default=DEFAULT_CHECK_TIMEOUT,
                     help="seconds each check may run before it reports TIMEOUT")
-    ap.add_argument("--brief", default=None, help="the brief path: required for a sidecar source, optional for a Workflow run whose record names it")
+    ap.add_argument("--brief", default=None, help="the brief path, when the source does not name it (a -R record never does); without one no check runs")
     ap.add_argument("--root", default=None, help="the checkout the job worked in (default: this tool's own)")
     args = ap.parse_args(argv)
     res = consume(args.source, args.label, args.root or REPO, args.check_timeout, brief=args.brief)
@@ -903,6 +925,10 @@ def main_consume(argv):
         print(f"WARNING {res['delivery_flag']}")
     if res.get("amend_unread"):
         print(f"AMEND UNREAD {res['amend_unread']}: the job never read this amendment; its work follows the brief alone")
+    if res["returned_unreadable"]:
+        print(f"WARNING the deliverable's changedPaths line is not a JSON list of paths, so its paths are not listed: {res['returned_unreadable']}")
+    if res["no_task"]:
+        print(f"NO TASK BLOCK: no check ran and no writeSet was judged; {res['no_task']}")
     for row in res["checks"]:
         print(f"CHECK {row['n']} {row['verdict']} {row['command']}")
         if row["tail"]:
@@ -912,7 +938,8 @@ def main_consume(argv):
     print("DIFF")
     print(res["diff"])
     print(f"MANIFEST {res['manifest']}" if res["manifest"] else f"MANIFEST refused: {res['manifest_refused']}")
-    return 1 if any(row["verdict"] in ("FAIL", "TIMEOUT", "HELD", "UNCHECKED") for row in res["checks"]) else 0
+    unjudged = res["no_task"] or res["returned_unreadable"]
+    return 1 if unjudged or any(row["verdict"] in ("FAIL", "TIMEOUT", "HELD", "UNCHECKED") for row in res["checks"]) else 0
 
 
 def _block_spec(value):

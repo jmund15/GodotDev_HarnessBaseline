@@ -21,9 +21,11 @@ TOOL = os.path.join(TOOLS, "rule_units.py")
 sys.path.insert(0, TOOLS)
 sys.path.insert(0, HERE)
 import _hook_call  # noqa: E402
+import adaptation  # noqa: E402
 import rule_units as en  # noqa: E402
 
 SCOPE = {"paths": [".claude/rules/*.md", ".claude/workflows/*.js"], "rows_dir": ".claude/instruction_rows"}
+LAYER = ".claude/skills/project_subsystems/adaptation.pure.defaults.json"
 
 
 def _rm(path):
@@ -152,6 +154,7 @@ def test_revision_binding_ignores_later_proof_and_dependency_inventory(tmp_path)
     cases, dependencies, missing = en._behavior_binding_state(Path(repo), [binding], rev)
     assert not missing
     assert dependency in dependencies[proof]["paths"]
+    assert LAYER in dependencies[proof]["paths"], "a layer defaults file is an input of the merged scope"
     key = dependencies[proof]["inputKey"]
     receipt = [{"proof": proof, "caseId": "bound-case", "inputKey": key, "status": "pass",
                 "evidence": "ok bound-case"}]
@@ -169,6 +172,21 @@ def test_revision_binding_ignores_later_proof_and_dependency_inventory(tmp_path)
     assert dependencies[proof]["inputKey"] == key
     assert dependency in dependencies[proof]["paths"]
     assert ".claude/tools/renamed.py" not in dependencies[proof]["paths"]
+
+
+def test_behavior_scope_reads_the_layered_value_at_its_revision(tmp_path):
+    project = {"instruction_scope": {"paths": [".claude/extra/*.md"]}}
+    repo = mkrepo(str(tmp_path), "layered", {
+        LAYER: json.dumps({"instruction_scope": SCOPE}),
+        ".claude/skills/project_subsystems/adaptation.json": json.dumps(project)}, scope=None)
+    rev = git(repo, "rev-parse", "HEAD").strip()
+    write(repo, LAYER, "{}")
+    at_rev = en._behavior_scope(Path(repo), rev)
+    assert (at_rev.paths, at_rev.rows_dir, at_rev.invalid) == (
+        SCOPE["paths"] + [".claude/extra/*.md"], SCOPE["rows_dir"], []), at_rev
+    live = en._behavior_scope(Path(repo))
+    layered = adaptation.get(os.path.join(repo, ".claude"), "instruction_scope")
+    assert (live.paths, live.rows_dir) == (layered["paths"], layered.get("rows_dir")) == ([".claude/extra/*.md"], None)
 
 
 def test_behavior_check_reports_only_changed_units(tmp_path):

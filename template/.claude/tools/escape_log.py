@@ -145,8 +145,7 @@ def _task_naming(sha):
         names = [os.path.join(directory, n) for n in os.listdir(directory) if n.endswith(".json")]
     except OSError:
         return None
-    for path in sorted(names, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
-                       reverse=True):
+    for path in _hook_state.by_mtime(names, newest_first=True):
         try:
             with io.open(path, encoding="utf-8") as fh:
                 text = fh.read()

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
@@ -331,6 +332,41 @@ def main():
     cases.append(("a --review-close call launches no job of its jobs file", om.sidecar_launches(close) == []))
     cases.append(("the same call without --review-close still reads its jobs as launches",
                   len(om.sidecar_launches(close.replace(" --review-close", ""))) == 1))
+
+    # A `lens_briefs.py prepare` call launches the panel it prepares, so every reader of a fan-out call (the gates,
+    # the dispatch table, the kill guard) reads it as that fan-out call: the jobs file it writes, nothing it does not launch.
+    prep_dir = tempfile.mkdtemp().replace("\\", "/")
+
+    def prep(spec, tail=""):
+        path = prep_dir + "/spec.json"
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh)
+        cmd = "python3 .claude/tools/lens_briefs.py prepare --spec %s --out %s/out%s" % (path, prep_dir, tail)
+        return [c for c in sidecar_argv.launcher_invocations(cmd) if c.kind == "fanout"]
+
+    review = prep({"mode": "plan-check", "prefix": "pc"})
+    cases.append(("a launching prepare call reads as a --review fan-out over its jobs file",
+                  len(review) == 1 and review[0].args[0] == prep_dir + "/out/jobs_pc.json"
+                  and "--review" in review[0].args and "--detach" in review[0].args))
+    cases.append(("the jobs file defaults to the mode's name, as prepare writes it",
+                  [c.args[0] for c in prep({"mode": "session-audit"})] == [prep_dir + "/out/jobs_session-audit.json"]))
+    explore = prep({"mode": "explore", "prefix": "ex", "target": "native"})
+    cases.append(("an explore prepare is the detached fan-out whatever its target says",
+                  len(explore) == 1 and "--review" not in explore[0].args and "--detach" in explore[0].args))
+    cases.append(("--no-launch, the native target and delegate mode launch no fan-out",
+                  not prep({"mode": "plan-check"}, " --no-launch") and not prep({"mode": "plan-check", "target": "native"})
+                  and not prep({"mode": "delegate"})))
+    cases.append(("a prepare whose spec cannot be read is no recognised launch",
+                  not [c for c in sidecar_argv.launcher_invocations(
+                      "python3 .claude/tools/lens_briefs.py prepare --spec %s/absent.json --out %s/out" % (prep_dir, prep_dir))]))
+    cases.append(("a quoted mention of the prepare call launches nothing",
+                  not [c for c in sidecar_argv.launcher_invocations(
+                      "echo 'python3 .claude/tools/lens_briefs.py prepare --spec %s/spec.json --out %s/out'" % (prep_dir, prep_dir))]))
+    prep({"mode": "plan-check", "prefix": "pc"})
+    cases.append(("the dispatch table's launch reader tracks the prepare call's panel, deferred until the jobs file exists",
+                  [(s.get("kind"), s.get("missing")) for s in om.sidecar_launches(
+                      "python3 .claude/tools/lens_briefs.py prepare --spec %s/spec.json --out %s/out" % (prep_dir, prep_dir), prep_dir)]
+                  == [("fanout", True)]))
 
     with open(os.path.join(CLAUDE, "scripts", "lib", "sidecar_common.sh"), encoding="utf-8") as fh:
         optstring = re.search(r'^SC_OPTSTRING="([^"]*)"', fh.read(), re.M).group(1)

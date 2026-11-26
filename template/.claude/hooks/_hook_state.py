@@ -691,6 +691,25 @@ def replace_path(source, target, wait_s=10.0):
             time.sleep(0.1)
 
 
+def stat_present(paths):
+    """[(path, os.stat_result)] for each of `paths` still present when statted, in the given order. Another process
+    can remove a listed entry between the listing and its stat; that entry is skipped, never raised."""
+    present = []
+    for path in paths:
+        try:
+            present.append((path, os.stat(path)))
+        except OSError:
+            continue
+    return present
+
+
+def by_mtime(paths, newest_first=False):
+    """The present entries of `paths` by modification time, oldest first, ties by path (`stat_present` skips the rest)."""
+    ordered = sorted(stat_present(paths), key=lambda entry: (entry[1].st_mtime_ns, str(entry[0])),
+                     reverse=newest_first)
+    return [path for path, _ in ordered]
+
+
 def append_jsonl_rotating(path, records, max_bytes=2_000_000, keep_lines=500):
     """Append one JSON line per record under the file's lock; once the file passes `max_bytes`
     (None: never), keep the newest `keep_lines` first (tail rotation via tempfile + rename).

@@ -455,9 +455,11 @@ def reviewed_blobs(subject):
 
 
 def _common_dir(root):
-    done = _run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(root), input=b"")
-    text = done.stdout.decode("utf-8", errors="replace").strip() if done.returncode == 0 else ""
-    return Path(text).resolve() if text else None
+    def ask():
+        done = _run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(root), input=b"")
+        text = done.stdout.decode("utf-8", errors="replace").strip() if done.returncode == 0 else ""
+        return Path(text).resolve() if text else None
+    return review_snapshot.fact("common dir", root, ask)
 
 
 def ledger_home(subjects, root):
@@ -522,7 +524,7 @@ def review(args, *, independent=None):
         src.record = None
     elif args.ruled:
         raise Unusable('--ruled requires --applied: a fold applies no ruling')
-    rigor = finding_bar.run_rigor(args.task, Path(args.root or REPO))
+    rigor = review_ledger._rigor(args.task, Path(args.root or REPO))
     for job in src.jobs:
         job['bar'] = rigor
     out = Path(args.out)
@@ -975,7 +977,8 @@ def main(argv=None, *, independent=None):
         if any((args.stage, args.subject, args.roster)) and not all((args.stage, args.subject, args.roster)):
             print("post_check: --stage, --subject and --roster go together", file=sys.stderr)
             return 2
-        return review(args, independent=independent)
+        with review_snapshot.repo_facts():  # one command: each repository fact is asked of git once
+            return review(args, independent=independent)
     except (Unusable, OSError, ValueError) as exc:
         if args.command != 'snapshot':
             report = {"status": "unavailable", "counts": {"VERIFIED": 0, "UNVERIFIED": 0, "UNCHECKED": 0},

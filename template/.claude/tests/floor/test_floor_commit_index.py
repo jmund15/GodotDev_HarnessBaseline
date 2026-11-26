@@ -586,7 +586,7 @@ P_ROWS = [
     (LAND, "origin HEAD:land/abcd1234", "allow", None),
     (LAND, "origin HEAD:refs/heads/land/abcd1234", "allow", None),
     (LAND, "origin HEAD:feature/x", "deny", "BLOCKED harness push"),
-    (LAND, "origin $c:refs/heads/main", "deny", "does not expand shell variables"),
+    (LAND, "origin $c:refs/heads/main", "deny", "literal hash or ref"),
     ({}, "origin HEAD:land/abcd1234", "deny", "--close"),
     ({"land_prefix": "ship/"}, "origin HEAD:ship/abcd1234", "allow", None),
     ({"land_prefix": "ship/"}, "origin HEAD:land/abcd1234", "deny", "BLOCKED harness push"),

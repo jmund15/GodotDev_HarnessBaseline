@@ -189,7 +189,8 @@ def build_reminder(file_path: str) -> str:
         f"Harness edit `.claude/{name}`: apply `instruction_quality`. Most-missed gates: "
         "§3 SSOT (link, don't restate), §4 verify every cited path resolves, "
         "§6 cut non-decision rationale, §7 skill triggers, §13-16 for hooks."
-        + f" {READ_CLASS_FILES}: they hold sections 7-18. {PRINCIPLES}"
+        + f" {READ_CLASS_FILES}: they hold sections 7-18. {PRINCIPLES} Whoever commits this edit writes the "
+        "`premises` block its cause, count or ruling needs into the message (`reference/evidence_contract.md`)."
     )
 
 

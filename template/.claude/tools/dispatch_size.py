@@ -70,7 +70,7 @@ fan-out refuses a resident seat whose certain reading is past its window (`over_
 file, `contextFiles`, `mustRead`, the shared context) and nothing a brief only names: naming a file points at it, and the
 brief decides what is read, so named files stay a fact on `fit_lines`. `preflight_lines(spec)` prints every unmet launch precondition
 as a fact: each file the launcher opens (a job's brief, schema or context file, the shared `contextPath`) that does not
-resolve under the launching checkout, each job the fan-out would refuse by `kind` (in the fan-out's own text) or by a `pick`/`spec` outside its enum, each resident seat whose certain reading (not its named files) is past its window, each pinned tier with no ladder slice in this context, and each governing
+resolve under the launching checkout, each job the fan-out would refuse by `kind` (in the fan-out's own text) or by a `pick`/`spec` outside its enum, each resident seat whose certain reading (not its named files) is past its window, each pinned tier its ladder credit does not cover (none loaded, or the ladder file changed since), and each governing
 skill the briefs need that is not in context. Each names its load step and never the ladder itself; a check that
 cannot run prints `preflight: not checked`, and one `preflight: clean` line is the launch's go. The CLI exits 1
 when any `preflight: unmet:` line printed and 0 otherwise (2 is a usage or unreadable-spec error), so a caller
@@ -727,8 +727,9 @@ def _session_transcript(session_id: str):
 
 
 def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
-    """One line per pinned tier with no ladder slice in this context, and one when the orchestration skill is not
-    in context. Each names the load step only; the ladder itself is not printed."""
+    """One line per pinned tier the session's ladder credit does not cover, naming why (none loaded, or the ladder
+    file changed since), and one when the orchestration skill is not in context. Each names the load step only; the
+    ladder itself is not printed."""
     out = []
     jobs = _jobs_of(spec)
     tiers = {}
@@ -741,16 +742,13 @@ def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
             tier = None
         if tier:
             tiers.setdefault(tier, []).append(job.get("label") or "job%d" % (index + 1))
-    if model_ladder_gate is not None:
-        for tier in sorted(tiers):
-            try:
-                credited = model_ladder_gate.tier_in_context(session_id, tier)
-            except Exception:
-                credited = None
-            if credited is False:
-                out.append("preflight: unmet: tier `%s` (%s) has no ladder slice in this context: %s" % (
-                    tier, ", ".join(tiers[tier]),
-                    model_ladder_gate.SLICE_STEP.format(which=tier, tiers=tier)))
+    credit = _ladder_credit(session_id, root)
+    for tier in sorted(tiers) if credit is not None else ():
+        if not credit.covers(tier):
+            cause = (model_ladder_gate.STALE_CAUSE if credit.status == model_ladder_gate.STALE
+                     else "this context holds no ladder slice of it")
+            out.append("preflight: unmet: tier `%s` (%s): %s: %s" % (
+                tier, ", ".join(tiers[tier]), cause, model_ladder_gate.SLICE_STEP.format(which=tier, tiers=tier)))
     if model_ladder_gate is None:
         out.append("preflight: not checked: skill credit (the gate reader did not import)")
         return out
@@ -832,7 +830,7 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
     """Every unmet launch precondition, as facts, in the output `/delegate` already reads before a launch: each
     job the fan-out would refuse by `kind` or by a `pick`/`spec` outside its enum, each brief that orders a wide
     test run, each job whose `codify_*` prompt differs from its render, each UI-round job `ui_round.jobs_refusal`
-    refuses, each job whose reading passes its window, each pinned tier with no ladder slice in this context, and
+    refuses, each job whose reading passes its window, each pinned tier its ladder credit does not cover (none loaded, or the ladder file changed since), and
     the orchestration skill when it is not in context. One `preflight: clean: ...` line means every check
     ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
     checked: ...`, never a pass. Facts only; no check denies on these lines."""
@@ -930,15 +928,15 @@ def _job_tier(job: dict, by_kind: dict):
     return job.get("tier") or (by_kind.get(job["kind"]) if job.get("kind") else None)
 
 
-def _tier_in_context(tier, session_id):
-    """True when `tier`'s ladder rows reached this session's context (`model_ladder_gate.tier_in_context`): the
-    `±` cell then prints once, in that table, not again on every claimant line."""
+def _ladder_credit(session_id, root):
+    """The session's `model_ladder_gate.ladder_credit` against the ladder under `root`, else None when there is no
+    session or the gate reader is unavailable (the caller then states nothing it would have read from it)."""
     if not session_id or model_ladder_gate is None:
-        return False
+        return None
     try:
-        return bool(model_ladder_gate.tier_in_context(session_id, tier))
+        return model_ladder_gate.ladder_credit(session_id, root=Path(root) if root else _project_root())
     except Exception:
-        return False
+        return None
 
 
 def _claimant_text(claimant, lower, upper, drop_sign):
@@ -957,8 +955,8 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, ses
     a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
     A job's tier is its own data: a seat keyed by registry lenses takes `lens.seat_tier`, else its written `tier`,
-    else its kind row (`guards/tool_profiles.json`). The `±` cell is omitted when `tier_in_context` says the
-    tier's rows already reached context. Facts only: no check denies on these lines, and
+    else its kind row (`guards/tool_profiles.json`). The `±` cell is omitted when the session's ladder
+    credit covers the tier, since its rows already reached context. Facts only: no check denies on these lines, and
     `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
     `now`/`read` plant the clock and the capacity reader; both have production defaults. `session_id` is the
     receipt's session, read only when given, so a caller with no session states the `±` cell every time."""
@@ -976,6 +974,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, ses
     except Exception as err:
         return ["cheaper claimants: not compared for this dispatch: %s" % err]
     out, compared = [], []
+    credit = _ladder_credit(session_id, root)
     for job, sized in zip(jobs, size["perJob"]):
         label, model = sized["label"], sized["model"]
         tier = _job_tier(job, by_kind)
@@ -998,7 +997,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, ses
             line = "cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
                 label, model, claimants[0]["pinCost"], tier, transport,
                 "; ".join(_claimant_text(c, sized["lowerTokens"], sized["upperTokens"],
-                                         _tier_in_context(tier, session_id))
+                                         credit is not None and credit.covers(tier))
                           for c in claimants))
             spare = _dispatch_checks.spare_plan_fact(tier, transport, data, now, read)
             out.append(line + ("; " + spare if spare else ""))

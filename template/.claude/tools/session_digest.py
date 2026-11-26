@@ -43,7 +43,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
 from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
-from _hook_state import replace_path  # noqa: E402
+from _hook_state import by_mtime, replace_path, stat_present  # noqa: E402
 from _transcript_summary import TranscriptSummaryBuilder, owner_line  # noqa: E402
 from _owner_text import classify, meta_arguments  # noqa: E402
 import _owner_text  # noqa: E402
@@ -846,7 +846,7 @@ def match_transcript(pdir: Path, text: str, scan: int = MATCH_SCAN) -> tuple[Pat
     want = _tokens(text)
     if len(want) < 8:
         sys.exit(f"match text has {len(want)} distinctive words; paste at least a paragraph")
-    files = sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:scan]
+    files = by_mtime(pdir.glob("*.jsonl"), newest_first=True)[:scan]
     scored = []
     for p in files:
         best = 0.0
@@ -869,10 +869,9 @@ def list_sessions(pdir: Path, n: int) -> str:
     """The newest N transcripts, one line each: prefix, last write, size, first real prompt. The
     listing order is modification time, not session ownership. --previous anchors to active identity."""
     import datetime
-    files = sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:n]
+    files = sorted(stat_present(pdir.glob("*.jsonl")), key=lambda entry: entry[1].st_mtime, reverse=True)[:n]
     out = []
-    for i, p in enumerate(files):
-        st = p.stat()
+    for p, st in files:
         when = datetime.datetime.fromtimestamp(st.st_mtime).strftime("%m-%d %H:%M")
         first = ""
         for row in _rows(p, "user"):
@@ -897,7 +896,7 @@ def pick_transcript(pdir: Path, session: str | None, prompt_tail: str | None, pr
     `session` with no match in `pdir` resolves in the same store of another login, or in the store of
     another checkout of the repo `pdir` belongs to (found from `cwd`, default the process cwd), when
     exactly one transcript there matches."""
-    files = sorted(pdir.glob('*.jsonl'), key=lambda path: path.stat().st_mtime, reverse=True)
+    files = by_mtime(pdir.glob('*.jsonl'), newest_first=True)
     if not files and not session:
         sys.exit(f'no transcripts under {pdir}')
     if session:
