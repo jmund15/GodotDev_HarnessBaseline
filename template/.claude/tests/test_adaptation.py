@@ -112,7 +112,6 @@ def main():
             cases.append((case.__name__, True))
         except (AssertionError, KeyError, AttributeError) as exc:
             cases.append(("%s: %r" % (case.__name__, exc), False))
-    doc = open(os.path.join(TOOLS, "adaptation.py"), encoding="utf-8").read().split('"""')[1]
     tmp = tempfile.mkdtemp(prefix="adaptation_proof_")
     try:
         # --- absent: file missing entirely -----------------------------------
@@ -264,15 +263,12 @@ def main():
         cases.append(("a wrong-typed lens_preloads falls back to {} and names itself",
                       result.get("lens_preloads") == {} and "lens_preloads" in err
                       and len(err.strip().splitlines()) == 1))
-        cases.append(("the module docstring lists lens_preloads with its reader",
-                      "lens_preloads" in doc and "lens.py" in doc))
         # --- gate_cadence: the harness' one cadence data key --------------------------------
         empty = {"slice": [], "merge": [], "close": [], "wide": []}
         claude_dir = _claude_dir_with(tmp, None)
         cases.append(("gate_cadence defaults to the empty table",
                       adaptation.DEFAULTS.get("gate_cadence") == empty
-                      and adaptation.get(claude_dir, "gate_cadence") == empty
-                      and adaptation.gate_cadence_errors(empty) == []))
+                      and adaptation.get(claude_dir, "gate_cadence") == empty))
         good = {"slice": ["run the edited unit's proof file"],
                 "merge": ["npm run verify:merge"],
                 "close": ["python3 .claude/scripts/harness_tests.py --close"],
@@ -286,78 +282,11 @@ def main():
         claude_dir = _claude_dir_with(tmp, json.dumps({"gate_cadence": good}))
         result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
         cases.append(("a valid gate_cadence table loads", result.get("gate_cadence") == good and err == ""))
-        cases.append(("a valid gate_cadence table validates", adaptation.gate_cadence_errors(good) == []))
-        cases.append(("a wide-row hint validates",
-                      adaptation.gate_cadence_errors(
-                          dict(good, wide=[dict(good["wide"][0], hint="name one scenario")])) == []))
-        for label, value, needle in (
-                ("a non-string wide-row hint",
-                 dict(good, wide=[dict(good["wide"][0], hint=5)]), "wide[0].hint"),
-                ("a non-object", ["slice"], "not an object"),
-                ("an unknown key", dict(good, slices=[]), "slices"),
-                ("a non-list slice", dict(good, slice="run"), "slice"),
-                ("an empty command form", dict(good, slice=[""]), "slice[0]"),
-                ("a wide row that is not an object", dict(good, wide=["run"]), "wide[0]"),
-                ("an unknown wide-row key", dict(good, wide=[dict(good["wide"][0], narrowish=None)]), "wide[0]"),
-                ("a runner that does not compile",
-                 dict(good, wide=[{"runner": "[", "exempt": [], "narrow": None}]), "wide[0].runner"),
-                ("an exempt term that does not compile",
-                 dict(good, wide=[{"runner": "x", "exempt": ["("], "narrow": None}]), "wide[0].exempt[0]"),
-                ("a narrow object with neither branch",
-                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {}}]), "wide[0].narrow"),
-                ("a narrow object with both branches",
-                 dict(good, wide=[{"runner": "x", "exempt": [],
-                                   "narrow": {"requires": ["a"], "declared": {}}}]), "wide[0].narrow"),
-                ("a requires term that does not compile",
-                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {"requires": ["["]}}]),
-                 "wide[0].narrow.requires[0]"),
-                ("a declared decl without one group",
-                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {"declared": {
-                     "arg": "Filter", "glob": "**/*.cs", "decl": ["class \\w+"], "admit": []}}}]),
-                 "wide[0].narrow.declared.decl[0]"),
-                ("a declared row missing its glob",
-                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {"declared": {
-                     "arg": "Filter", "decl": ["class (\\w+)"], "admit": []}}}]),
-                 "wide[0].narrow.declared.glob")):
-            errors = adaptation.gate_cadence_errors(value)
-            ok = bool(errors) and any(needle in e for e in errors)
-            cases.append((("gate_cadence rejects " + label) if ok else
-                          ("gate_cadence rejects %s: %s" % (label, errors)), ok))
         claude_dir = _claude_dir_with(tmp, json.dumps({"gate_cadence": good["slice"]}))
         result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
         cases.append(("a wrong-typed gate_cadence falls back to the empty table",
                       result.get("gate_cadence") == empty and "gate_cadence" in err
                       and len(err.strip().splitlines()) == 1))
-        cases.append(("the module docstring names gate_cadence and its three readers",
-                      "gate_cadence" in doc and "guard_text" in doc and "_dispatch_checks" in doc
-                      and "wide_test_guard" in doc))
-        reach_good = dict(good, reach=[{"name": "harness", "paths": [".claude/**"], "cmd": "run {paths}"}],
-                          reach_exempt=["docs/**"], reach_fallback="npm run verify")
-        cases.append(("a reach table validates", adaptation.gate_cadence_errors(reach_good) == []))
-        for label, bad, needle in (
-                ("a reach entry with no cmd", {"reach": [{"name": "a", "paths": ["x/**"]}]}, "reach[0].cmd"),
-                ("a reach entry with no globs", {"reach": [{"name": "a", "paths": [], "cmd": "c"}]}, "reach[0].paths"),
-                ("a non-list exempt", {"reach": [], "reach_exempt": "docs/**"}, "reach_exempt"),
-                ("a non-string fallback", {"reach": [], "reach_fallback": 3}, "reach_fallback")):
-            errors = adaptation.gate_cadence_errors(bad)
-            cases.append(((label + " is named") if any(needle in e for e in errors)
-                          else ("%s is named: %s" % (label, errors)), any(needle in e for e in errors)))
-        main_good = {"main": {"command": ["pwsh", "-File", "g.ps1"], "retry_exits": [7, 8], "outputs": ["a.json"]}}
-        cases.append(("a main gate validates", adaptation.gate_cadence_errors(main_good) == []))
-        cases.append(("a main gate with only a command validates",
-                      adaptation.gate_cadence_errors({"main": {"command": ["x"]}}) == []))
-        for label, bad, needle in (
-                ("a main that is not an object", {"main": "x"}, "main"),
-                ("a main with no command", {"main": {}}, "main.command"),
-                ("a main command that is a string", {"main": {"command": "run it"}}, "main.command"),
-                ("a main command with an empty element", {"main": {"command": ["x", ""]}}, "main.command"),
-                ("a main retry_exits that is not ints", {"main": {"command": ["x"], "retry_exits": ["7"]}}, "main.retry_exits"),
-                ("a main retry_exits holding a bool", {"main": {"command": ["x"], "retry_exits": [True]}}, "main.retry_exits"),
-                ("a main outputs that is not a path list", {"main": {"command": ["x"], "outputs": [1]}}, "main.outputs"),
-                ("an unknown main key", {"main": {"command": ["x"], "retries": 1}}, "main")):
-            errors = adaptation.gate_cadence_errors(bad)
-            cases.append(((label + " is named") if any(needle in e for e in errors)
-                          else ("%s is named: %s" % (label, errors)), any(needle in e for e in errors)))
         cases.append(("drift_scan defaults to {}", adaptation.DEFAULTS.get("drift_scan") == {}
                       and adaptation.get(_claude_dir_with(os.path.join(tmp, "drift_bare"), None), "drift_scan") == {}))
         drift_dir = _claude_dir_with(os.path.join(tmp, "drift_bad"), json.dumps({"drift_scan": ["x"]}))
@@ -477,7 +406,7 @@ def main():
             json.dump({"index_prebuild": [bad_cmd, ok_cmd], "tests_root": "T", "usage_reset": {"weekday": "monday", "hour": 2},
                        "gate_cadence": good}, fh)
         tools_copy = os.path.join(cdir, "tools")
-        copy_closure(cdir, "tools/adaptation.py", "hooks/_msys.py")
+        copy_closure(cdir, "tools/adaptation.py", "tools/gate_cadence.py", "hooks/_msys.py")
 
         def cli(*args, env=None):
             done = subprocess.run([sys.executable, os.path.join(tools_copy, "adaptation.py"), *args],

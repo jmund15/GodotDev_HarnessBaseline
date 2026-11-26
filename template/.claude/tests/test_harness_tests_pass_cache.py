@@ -28,6 +28,8 @@ os.environ.pop("HARNESS_REUSE_PASSES", None)
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
 sys.path.insert(0, _SCRIPTS_DIR)
 import harness_tests  # noqa: E402
+import _git_fixture  # noqa: E402
+import _hook_call  # noqa: E402
 import _file_lock  # noqa: E402  (harness_tests puts .claude/hooks on sys.path)
 
 FAILS = []
@@ -54,28 +56,41 @@ def git(repo, *args):
     subprocess.run(["git"] + list(args), cwd=repo, check=True, capture_output=True)
 
 
+_COUNTER = "<counter>"
+
+
+def _build_seed(path):
+    _git_fixture.init_repo(path)
+    write(path, ".claude/settings.json", "{}\n")
+    write(path, ".claude/tools/alpha.py", ALPHA)
+    write(path, ".claude/tools/beta.py", "B = 1\n")
+    write(path, ".claude/tools/table.json", "{}\n")
+    write(path, ".claude/tools/gamma.py", "G = 1\n")
+    write(path, ".claude/tests/test_alpha.py", proof_text(_COUNTER, 0))
+    _git_fixture.commit_all(path, "seed")
+
+
+def _template():
+    """The seed repository every `make_repo` copies: built once (`_git_fixture.built`; `main` builds it before the case
+    pool starts), so each case copies a built tree instead of paying `git init`, `add` and `commit`."""
+    return str(_git_fixture.built("pass_cache.seed", _build_seed))
+
+
 def make_repo(close=False):
     """tools/alpha.py imports beta and reads table.json; tools/gamma.py is unrelated. The proof
     test_alpha.py imports alpha and counts its own runs in a file outside the repo. `close` names the
-    checkout as a close names its private one."""
+    checkout as a close names its private one. The repository is a copy of `_template` whose seed commit is
+    amended to carry this case's counter path, so each case still starts on one committed, clean tree."""
     repo = tempfile.mkdtemp(prefix="harnesspasscache_")
     os.environ.pop("HARNESS_SLOT_BUDGET", None)
     os.environ["HARNESS_MACHINE_ROOT"] = os.path.join(repo, "slots")
     if close:
         repo = os.path.join(repo, harness_tests._CHECKOUT_PREFIX + "fixture")
         os.makedirs(repo)
-    git(repo, "init", "-q")
-    git(repo, "config", "user.email", "t@t")
-    git(repo, "config", "user.name", "t")
-    write(repo, ".claude/settings.json", "{}\n")
-    write(repo, ".claude/tools/alpha.py", ALPHA)
-    write(repo, ".claude/tools/beta.py", "B = 1\n")
-    write(repo, ".claude/tools/table.json", "{}\n")
-    write(repo, ".claude/tools/gamma.py", "G = 1\n")
+    _hook_call.copy_repo(_template(), repo, overlay=True)
     counter = os.path.join(tempfile.mkdtemp(prefix="harnesspasscount_"), "runs.txt")
     proof = write(repo, ".claude/tests/test_alpha.py", proof_text(counter, 0))
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "seed")
+    git(repo, "commit", "-q", "-a", "--amend", "--no-edit")
     harness_tests.EXCLUDED = {}
     harness_tests.SERIAL = {}
     harness_tests.STAMP_PATH = os.path.join(repo, "stamp.json")
@@ -2517,6 +2532,31 @@ def case_the_behavior_plan_is_built_once_per_cache():
         harness_tests._behavior_plan = real
 
 
+def case_a_run_asks_git_each_distinct_read_of_its_snapshot_once():
+    """The git scopes overlap (`repo` is the union of head, changes and refs), so a snapshot that read every scope
+    alone asked for `status`, `diff`, `for-each-ref` and `rev-parse HEAD` twice per run, the cost of every run."""
+    repo, proof, _counter = make_repo()
+    cache = harness_tests._PassCache(repo)
+    real, asked = harness_tests._git_run.run, []
+
+    def spy(args, **kwargs):
+        asked.append((tuple(args), (kwargs.get("env") or {}).get("GIT_CONFIG_GLOBAL")))
+        return real(args, **kwargs)
+    harness_tests._git_run.run = spy
+    try:
+        cache.snapshot_git()
+        snapshot, held = list(asked), {name: getattr(cache, method)()
+                                       for name, method in harness_tests._GIT_SCOPES.items()}
+        del asked[:]
+        fresh = {name: getattr(cache, method)(fresh=True) for name, method in harness_tests._GIT_SCOPES.items()}
+    finally:
+        harness_tests._git_run.run = real
+    repeated = sorted({" ".join(args) for args, _ in snapshot if snapshot.count((args, _)) > 1})
+    check("a snapshot asks git each distinct read once", not repeated, "asked twice: %s" % repeated)
+    check("a later fresh read asks git again and agrees with the snapshot", len(asked) > 0 and held == fresh,
+          "fresh reads=%d agree=%s" % (len(asked), held == fresh))
+
+
 def case_the_pool_width_defaults_to_the_machines_recorded_slots():
     repo, _proof, _counter = make_repo()
     slots = os.path.join(repo, "slots")
@@ -2632,6 +2672,7 @@ def main(part=1):
         assert os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                            "test_harness_tests_pass_cache_part%d.py" % other)), "missing part %d" % other
     from _case_pool import run_cases
+    _template()
     return run_cases([PoolCase(name) for name in [n for n in list(globals()) if n.startswith("case_")][part - 1::PARTS]])
 
 

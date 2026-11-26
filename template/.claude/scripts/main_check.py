@@ -59,12 +59,14 @@ from xml.etree import ElementTree
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "hooks"))
 from _bounded_run import ProcessTree  # noqa: E402
+from _hook_state import stat_present  # noqa: E402
 from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
 from _msys import resolve_argv  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "tools"))
 import adaptation  # noqa: E402
+import gate_cadence  # noqa: E402
 
 REMOTE = "origin"
 STATE_BRANCH = "main-check-state"
@@ -190,9 +192,9 @@ def sweep_run_dirs(repo, keep):
     if not os.path.isdir(root):
         return
     cutoff = time.time() - RUN_DIR_KEEP_DAYS * 86400
-    for entry in os.scandir(root):
-        if entry.is_dir() and entry.name != keep and entry.stat().st_mtime < cutoff:
-            shutil.rmtree(entry.path, ignore_errors=True)
+    for path, st in stat_present(e.path for e in os.scandir(root) if e.is_dir() and e.name != keep):
+        if st.st_mtime < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def settings_env(repo):
@@ -267,7 +269,7 @@ def gate_declaration(repo):
     main = adaptation.get(os.path.join(repo, ".claude"), "gate_cadence").get("main")
     if main is None:
         return None, None
-    errors = adaptation.gate_cadence_errors({"main": main})
+    errors = gate_cadence.errors({"main": main})
     return (None, "gate_cadence." + "; ".join(errors)) if errors else (main, None)
 
 

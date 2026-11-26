@@ -74,7 +74,8 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import fire_once_since_compaction, read_json_salvage, state_path, update_json_locked  # noqa: E402
+from _hook_state import (  # noqa: E402
+    by_mtime, fire_once_since_compaction, read_json_salvage, state_path, update_json_locked)
 import _session_transport  # noqa: E402 - HOST_TRANSPORT/UNKNOWN are read in main()
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
@@ -290,17 +291,8 @@ def find_state(session_id):
         own = os.path.join(tmp, f"cc-cachestat-{safe}.json")
         if os.path.exists(own):
             return own
-    candidates = glob.glob(os.path.join(tmp, "cc-cachestat-*.json"))
-    # stat per candidate, not `max(key=getmtime)`: these files are written and reaped by other
-    # sessions, so one can vanish between the glob and the stat. That raised out of an advisory
-    # hook and cost the whole posture line over a file nobody needed.
-    dated = []
-    for c in candidates:
-        try:
-            dated.append((os.path.getmtime(c), c))
-        except OSError:
-            continue
-    return max(dated)[1] if dated else None
+    candidates = by_mtime(glob.glob(os.path.join(tmp, "cc-cachestat-*.json")))
+    return candidates[-1] if candidates else None
 
 
 def dedupe_path(session_id):

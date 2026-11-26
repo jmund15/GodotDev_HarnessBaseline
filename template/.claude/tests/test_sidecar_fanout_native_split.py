@@ -212,6 +212,11 @@ code, text, out, _ = run([job("root-and-window", workdir=str(sf.REPO), window="f
 case("a repo-root workdir job kept a sidecar by another field names only that field",
      lambda: read(out, "native.args.json") is None and len(DRIVERS) == 2 and "`window` has no Workflow equivalent" in text
      and "workdir" not in text.split("root-and-window", 1)[1].splitlines()[0])
+code, text, out, _ = run([job("cache-1h", cacheTtl="1h")])
+case("a job on the 1-hour cache stays a sidecar, since a Workflow agent caches 5 minutes",
+     lambda: read(out, "native.args.json") is None and "cache-1h: stays a sidecar (`cacheTtl: 1h`" in text)
+code, text, out, _ = run([job("cache-5m", cacheTtl="5m")])
+case("a job on the 5-minute cache stays native", lambda: read(out, "native.args.json") is not None)
 code, text, out, _ = run([job("scout-nogrep", kind="scout", tools="-Grep"), job("review-sh", kind="reviewer", tools="+Bash")])
 nat = read(out, "native.args.json")
 case("a tools delta no generated agent covers stays a sidecar; a grant the kind already holds changes nothing and routes native",

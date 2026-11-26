@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_HISTORY = (".claude/auto-memory/archive/", ".claude/tests/fixtures/", ".claude/scripts/rail_battery/reports/",
+_HISTORY = (".claude/auto-memory/archive/", ".claude/tests/fixtures/",
             ".claude/plans/", ".claude/scratch/", ".claude/instruction_rows/",
             ".claude/autolearn_outcomes.jsonl", ".claude/orchestration_verdicts.json",
             ".claude/orchestration_metrics.jsonl", ".claude/self_evaluate_archive.json",

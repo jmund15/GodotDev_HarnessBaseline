@@ -241,6 +241,22 @@ def pytest_configure(config):
     # case at a time. A value the caller set stays.
     if _shared(config):
         os.environ.setdefault("HARNESS_CASE_JOBS", "1")
+    # After the opening pair every worker holds (xdist's floor, `_spread_opening_pairs`), `load` tops a worker up by this
+    # many cases as it frees, so the next long proof goes to the first worker to finish. A chunk the caller set stays.
+    if getattr(config.option, "maxschedchunk", 0) is None:
+        config.option.maxschedchunk = 1
+
+
+def _spread_opening_pairs(items, workers):
+    """`items` (longest first) reordered so each worker's opening pair holds one long proof and one from the short end.
+    xdist's `load` schedule sends every worker two consecutive items before any case runs (its floor, whatever
+    `maxschedchunk` says) and a sent case never moves, so with the longest proofs sorted first the two longest both went
+    to worker 0 and ran in series. Fewer than two items per worker are sent one each, and the sort already spreads them."""
+    if len(items) < 2 * workers:
+        return items
+    heads, fillers = items[:workers], items[-workers:]
+    pairs = [case for pair in zip(heads, reversed(fillers)) for case in pair]
+    return pairs + items[workers:-workers]
 
 
 def pytest_collection_modifyitems(config, items):
@@ -250,8 +266,12 @@ def pytest_collection_modifyitems(config, items):
         kept = [item for item in items if _here(item.path) and Path(str(item.path)).name in _POLICY.serial]
         config.hook.pytest_deselected(items=[item for item in items if item not in kept])
         items[:] = kept
-    # Workers take cases in collection order: the proofs with a named bound are the long ones, so they start first.
-    items.sort(key=lambda item: -_timeout(Path(str(item.path))) if _here(item.path) else 0)
+    # Workers take cases in collection order: the proofs with a named bound are the long ones, so they start first, and
+    # within a bound a bridged proof (a whole file) starts before a single pytest case.
+    items.sort(key=lambda item: (-_timeout(Path(str(item.path))), not isinstance(item, ProofItem)) if _here(item.path)
+               else (0, True))
+    if shared:
+        items[:] = _spread_opening_pairs(items, config.workerinput["workercount"])
     for item in items:
         path = Path(str(item.path))
         if not _here(path):

@@ -314,7 +314,8 @@ def main():
         _, out = slip("2026-11-27", "docs/y.md", "armed a watcher in the foreground call", "declined")
         cases.append(("a declined row prints no repeat", "repeat" not in out))
         _, out = slip("2026-11-28", "docs/z.md", "armed a watcher in a foreground call again")
-        cases.append(("a declined row is never named", "declined" not in out))
+        cases.append(("an earlier declined row of the same choice is named: the owner already ruled on its fix",
+                      "2026-11-27" in out and "declined" in out))
         best = os.path.join(tmp, "best.jsonl")
         record_in_process(tool, best, "2026-01-01", "p/best.md", "alpha beta zeta omega", "recorded")
         for i in range(10):

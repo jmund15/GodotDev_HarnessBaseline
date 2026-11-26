@@ -1,7 +1,7 @@
 """T1's worktree and clone deletion rule (`hooks/_delete_rule.py`), ported from v1's three-part
 `test_regenerable_clone.py` (both repos) and the two retirement cases of `test_conformance_j8.py`.
 
-Rows call the rule directly (`is_retired_worktree`, `is_regenerable_clone`, `lossless_orphan_worktree`) or the floor
+Rows call the rule directly (`is_retired_worktree`, `is_regenerable_clone`) or the floor
 the way the client does (`case.bash`). Each group shares one fixture project per module and each row builds its own
 uniquely named worktree or clone in it, so no row reads another's state; a row that changes the project's shared
 state (its submodule store, its `adaptation.json`) builds its own project. A worktree that carries submodules is
@@ -883,14 +883,16 @@ def test_landed_job_worktrees_through_the_floor(at_landed, inner_remote, tmp_pat
     bad_clone = lp.clone("pubcopy", inner_remote, bad / ".claude/scratch")
     write(bad_clone, "i.txt", "unpushed\n")
     git(bad_clone, "commit", "-qam", "only here")
+    verdicts = {}
     for command, want in (("rm -rf .claude/worktrees/f_picked", "allow"), ("rm -rf .claude/worktrees/f_scratch", "allow"),
                           ("rm -rf .claude/worktrees/f_ahead", "deny"), ("rm -rf .claude/worktrees/f_nested_ok", "allow"),
                           ("rm -rf .claude/worktrees/f_nested_bad", "deny"),
                           ("rm -rf .claude/worktrees/f_nested_ok/.claude/scratch/pubcopy", "allow"),
                           ("rm -rf .claude/worktrees/f_nested_bad/.claude/scratch/pubcopy", "deny"),
                           ("rm -rf .claude/worktrees/f_scratch/.claude/scratch", "deny")):
-        assert rm(command, lp).kind == want, command
-    assert "holds a git repository that loses work" in rm("rm -rf .claude/worktrees/f_nested_bad", lp).reason
+        verdicts[command] = rm(command, lp)
+        assert verdicts[command].kind == want, command
+    assert "holds a git repository that loses work" in verdicts["rm -rf .claude/worktrees/f_nested_bad"].reason
     peer_login(tmp_path, monkeypatch, ("peer-landed", "5eed5eed-aaaa-4bbb-8ccc-000000000006", picked))
     assert rm("rm -rf .claude/worktrees/f_picked", lp).denied
 
@@ -906,11 +908,31 @@ def test_landed_job_worktrees_through_the_floor(at_landed, inner_remote, tmp_pat
 ])
 def test_an_orphan_goes_only_when_git_holds_its_content(world, name, edit, want):
     path = world.orphan(name, edit=edit)
-    reasons = []
-    assert decided(rule.lossless_orphan_worktree, str(path), str(world.root), str(world.root), reasons) is want
-    assert world.retired(path)[0] is want
+    got, reasons = world.retired(path)
+    assert got is want
     if name == "o_json":
-        assert len(reasons) == 1 and "x.json" in reasons[0] and "not a regenerable cache" in reasons[0]
+        assert "x.json" in reasons[0] and "not a regenerable cache" in reasons[0]
+
+
+def _ignored_json(p):
+    write(p, ".claude/scratch/%s/x.json" % PEER_SID, "{}\n")
+
+
+def test_an_orphan_deny_names_its_loss_once_and_why_ownership_cannot_clear_it(at):
+    at.orphan("o_once_ignored", edit=_ignored_json)
+    got = rm("rm -rf .claude/worktrees/o_once_ignored", at)
+    assert got.denied and got.reason.count("x.json") == 1
+    assert rule.ORPHAN_OWNERSHIP in got.reason
+    at.orphan("o_once_notes", edit=lambda p: write(p, "notes.md", "unsaved notes\n"))
+    got = rm("rm -rf .claude/worktrees/o_once_notes", at)
+    assert got.denied and got.reason.count("notes.md") == 1
+    assert rule.ORPHAN_OWNERSHIP not in got.reason
+
+
+def test_the_created_hypothetical_judges_an_orphan_as_the_guard_does(at, capsys):
+    path = at.orphan("o_hypothetical", edit=_ignored_json)
+    assert rule.main(["--created", str(path)]) == 1
+    assert "blocked" in capsys.readouterr().out
 
 
 def test_an_orphan_with_a_submodule_needs_the_main_checkouts_store(tmp_path):
@@ -934,12 +956,10 @@ def test_a_gitless_leftover_is_judged_by_the_same_held_content_test(world):
 
 def test_an_orphan_deny_names_every_file_up_to_the_cap(world):
     three = world.orphan("many_o3", edit=lambda p: [write(p, n, "x\n") for n in ("a_notes.md", "b_notes.md", "c_notes.md")])
-    got = []
-    decided(rule.lossless_orphan_worktree, str(three), str(world.root), str(world.root), got)
+    got = world.retired(three)[1]
     assert len(got) == 1 and all(n in got[0] for n in ("a_notes.md", "b_notes.md", "c_notes.md"))
     many = world.orphan("many_cap", edit=lambda p: [write(p, "f%02d.md" % i, "x%d\n" % i) for i in range(11)])
-    got = []
-    decided(rule.lossless_orphan_worktree, str(many), str(world.root), str(world.root), got)
+    got = world.retired(many)[1]
     assert got and "f00.md" in got[0] and "(and 3 more)" in got[0] and "f10.md" not in got[0]
 
 
@@ -1147,12 +1167,14 @@ def test_scratch_folders_holding_no_repository(at, tmp_path, monkeypatch):
     unsaved = _repo(at.scratch / "unsaved_repo", commit="only here", files=("n.txt",))
     write(at.scratch, "peers/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d/out.txt")
     write(at.scratch, "no_ids/f.txt")
+    verdicts = {}
     for command, want in (("rm -rf .claude/scratch/copytree", "allow"), ("rm -rf .claude/scratch/heldtree", "deny"),
                           ("rm -rf .claude/scratch/unsaved_repo", "deny"),
                           ("rm -rf .claude/scratch/peers/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "deny"),
                           ("rm -rf .claude/scratch/peers/*", "deny"), ("rm -rf .claude/scratch/no_ids/*", "allow")):
-        assert rm(command, at).kind == want, command
-    assert "push its commits to a remote" in rm("rm -rf .claude/scratch/unsaved_repo", at).reason
+        verdicts[command] = rm(command, at)
+        assert verdicts[command].kind == want, command
+    assert "push its commits to a remote" in verdicts["rm -rf .claude/scratch/unsaved_repo"].reason
     assert unsaved.is_dir()
     peer_login(tmp_path, monkeypatch, ("peer-scratch", "5eed5eed-aaaa-4bbb-8ccc-000000000007", at.scratch / "copytree"))
     assert "peer-scratch" in rm("rm -rf .claude/scratch/copytree", at).reason

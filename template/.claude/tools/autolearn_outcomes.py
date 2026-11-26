@@ -13,10 +13,10 @@ Usage:
     autolearn_outcomes.py swept [--through YYYY-MM-DD] [--file PATH]
 
 `record` validates the row shape, appends it and keeps only the newest `--cap` rows (default 500).
-`recorded` counts a slip that landed nothing. A `recorded` row prints, after the confirmation, the earlier `recorded` and
-`applied` rows nearest its signal (date, outcome, session, shared words and paths, signal), best matches of any date or
-target, so the agent judges whether the slip is the same choice; a path is one shared item, weighed by how few rows name
-it. `--fix` names what a landing changed: text, reach,
+`recorded` counts a slip that landed nothing. A `recorded` row prints, after the confirmation, the earlier rows of any
+outcome nearest its signal (date, outcome, session, shared words and paths, signal), best matches of any date or
+target, so the agent judges whether the slip is the same choice and sees a fix the owner already declined for it; a path
+is one shared item, weighed by how few rows name it. `--fix` names what a landing changed: text, reach,
 tool, hook, remove (a deletion or narrowing), or none. `metric` is the dashboard metric key the fix is meant to move.
 `lookup` prints, as JSON lines, the declined rows whose target equals T, so the re-proposal check
 is a deterministic read: a decline whose reason still holds is not proposed again.
@@ -49,6 +49,9 @@ LOCK_TIMEOUT = 5.0
 
 DEFAULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "autolearn_outcomes.jsonl")
 DEFAULT_CAP = 500
+# Basis (a replay of the ledger, in commit 3b93f523's message): the cap, floor and stop list list the most earlier
+# partners within a list read whole. A partner sharing fewer than two items is reached by codify Step 5's search by
+# the choice. Dropping the stop list, or replacing it with a frequency cutoff, lists fewer.
 REPEAT_SHOWN = 8
 MIN_SHARED = 2
 STOP_WORDS = frozenset("the an and or of to in on for with without that this it is was be by as at from not no its into "
@@ -130,11 +133,11 @@ def _items(row):
 
 
 def nearest_rows(rows, row):
-    """The earlier `recorded` or `applied` rows sharing at least MIN_SHARED items with `row`, best first, at most
-    REPEAT_SHOWN, each with the items it shares. An item weighs its rarity across those rows, so a path that most rows
-    name (`CLAUDE.core.md`) or a word most signals use counts little. Any date and any target qualify: a choice is
-    recognized by its words, and a fix of it may have landed in another file."""
-    earlier = [r for r in rows if r.get("outcome") in ("recorded", "applied")]
+    """The earlier rows sharing at least MIN_SHARED items with `row`, best first, at most REPEAT_SHOWN, each with the
+    items it shares. An item weighs its rarity across those rows, so a path that most rows name (`CLAUDE.core.md`) or a
+    word most signals use counts little. Any date, target and outcome qualify: a choice is recognized by its words, a
+    fix of it may have landed in another file, and a declined row is the owner's ruling on a fix for it."""
+    earlier = list(rows)
     items = [_items(r) for r in earlier]
     seen = collections.Counter(i for group in items for i in group)
     mine = _items(row)

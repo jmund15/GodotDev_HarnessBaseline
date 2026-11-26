@@ -38,7 +38,7 @@ Invoking `/explore` is this fan-out's authorization (`orchestration` §0). Every
 
 **In a drive with a design job to follow,** a spec that names a `designJob` writes a chains file that runs the design job in the same dispatch: the lenses run first, `explore_result.py`'s consolidation runs as a step inside that dispatch, and the design job receives the checked dossier path with its coverage status, with no session step between (the engine hand-off contract). That join runs only where every lens and the design job are native and the dispatch fits the session's width. When any of them needs a sidecar, or the join does not fit, run the lens-only fan-out below, close it with `explore_result.py`, and launch the design job with the dossier path and status once it passes the gate; the session reads, copies and judges none of it between the two. The fallback costs one launch step. Say at route selection which of the two applies, because a refusal at launch costs more than the sentence.
 
-One `prepare` call (a standalone `/explore`, and the lens-only fallback) writes the briefs, the context and the fan-out's jobs file and prints the next calls. Write `<run dir>/spec.json`:
+One `prepare` call (a standalone `/explore`, and the lens-only fallback) writes the briefs, the context and the fan-out's jobs file and launches it. Write `<run dir>/spec.json`:
 
 ```json
 {
@@ -56,10 +56,9 @@ A seat's `rows` lists every row that meets its bar, each with its effort (`orche
 
 ```bash
 python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
-python3 .claude/tools/sidecar_fanout.py <run dir>/jobs_explore.json --detach
 ```
 
-The fan-out prints one `NATIVE` line holding the `Workflow` call for the lenses it placed on the session's own plan, and hands the rest to its driver; issue the call and keep its `transcriptDir`. Never pass `name`: a named call can run a cached older engine. The session watcher (`reference/sidecar_dispatch.md` step 6) wakes you when the sidecar lenses end. Once every lens has ended, one call consolidates both kinds the same way:
+`prepare` launches the lenses (`reference/sidecar_dispatch.md` owns the recipe). The fan-out prints one `NATIVE` line holding the `Workflow` call for the lenses it placed on the session's own plan, and hands the rest to its driver; issue the call and keep its `transcriptDir`. Never pass `name`: a named call can run a cached older engine. The session watcher (`reference/sidecar_dispatch.md` step 6) wakes you when the sidecar lenses end. Once every lens has ended, one call consolidates both kinds the same way:
 
 ```bash
 python3 .claude/tools/explore_result.py <run dir>/jobs_explore.json [--workflow-dir <transcriptDir> ...]

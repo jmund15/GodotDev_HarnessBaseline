@@ -17,10 +17,11 @@ Dependencies read per file type:
   literals that are wholly a `.md`/`.json` file name or path (a registry's filename; not in a test, whose
   literals are plant data), and bare string literals naming a sibling module (a sub-hook chain imported
   by name). A file importing `_optional_hooks` loads by name through it, so its names count as optional;
-  `OPTIONAL_DATA` lists the sources that tolerate their `.md`/`.json` literals absent. A literal naming a
-  file the source produces is no dependency: a piece of a path placed under a gitignored folder
-  (`IGNORED_DIRS`, such as `HERE / "scratch" / "out.json"`), or a path the source only writes
-  (`open(p, "w")`, `p.write_text(...)`);
+  `OPTIONAL_DATA` lists the sources that read their `.md`/`.json` literals but tolerate them absent. A literal
+  naming a file the source does not read is no dependency: a piece of a path placed under a gitignored folder
+  (`IGNORED_DIRS`, such as `HERE / "scratch" / "out.json"`), a path the source only writes (`open(p, "w")`,
+  `p.write_text(...)`), and a name it only matches or mentions (`p == "x.md"`, `p in NAMES`, `NOTES[p]`, an
+  f-string value), bound once and used no other way;
 - shell, javascript, powershell: script paths outside comments (`#` lines and trailing `# ...`, and
   PowerShell `<# #>` blocks).
 
@@ -83,9 +84,10 @@ GENERATED = (
     "tools/*.project.json", "index_composition_baseline.json",
     "skills/project_subsystems/reference/subsystem_details.md",
 )
-# Python sources whose string literals name a .md/.json file the source tolerates absent (a path it
-# matches, a name in a message, a read behind an existence check, or a list it classifies):
-# {source: (target fnmatch patterns relative to .claude/)}. A row is added only after reading the use.
+# Python sources whose string literals name a .md/.json file the source reads or hands on but tolerates absent
+# (a read behind an existence check, a list it classifies, history pathspecs); a name it only matches or mentions
+# needs no row (`_named_literals`). {source: (target fnmatch patterns relative to .claude/)}. A row is added only
+# after reading the use.
 OPTIONAL_DATA = {
     ".claude/tools/baseline_sync.py": ("*",),
     ".claude/tools/layer_closure.py": ("*",),
@@ -98,9 +100,6 @@ OPTIONAL_DATA = {
     ".claude/tools/review_ledger.py": ("skills/_brainstorm_shared/execution_depth.md",),
     ".claude/tools/workstation_profile.py": ("commands/workstation_setup.md",),
     ".claude/tools/semantic_search_idle_install.py": ("package.json",),
-    ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md", "CLAUDE.coding.md",
-                                                     "CLAUDE.godot.md", "guards/common.godot.md", "harness-goal.md"),
-    ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
     ".claude/tools/vault_sync.py": ("tools/vault_sync.project.json",),
@@ -444,13 +443,73 @@ def _opens_for_write(call: ast.Call) -> bool:
 
 
 FILE_NAME_TEXT = re.compile(r"\.(?:md|json|py|sh|js|ps1)\b")
+MATCH_CALLS = frozenset({"endswith", "startswith", "fnmatch", "fnmatchcase"})
+COLLECTION_CALLS = frozenset({"frozenset", "set", "tuple", "list"})
 
 
-def _output_literals(module: ast.AST, text: str) -> set[int]:
-    """Ids of the string literals that name a file the source produces rather than reads: a piece of a path
-    placed under a gitignored folder (`HERE / "scratch" / "out.json"`), and a path the source only writes
-    (`open(p, "w")`, `p.write_text(...)`). A name is a dependency when the file reads it. A source whose text
-    names no such file has nothing to classify."""
+def _call_name(node) -> str:
+    func = node.func if isinstance(node, ast.Call) else None
+    return func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+
+
+def _matched_use(node, parent: dict, keyed: bool) -> bool:
+    """Whether `node` is only compared against or mentioned where its parent holds it: an operand of `==`, `!=`,
+    `in` or `not in`, an argument of `endswith`/`startswith`/`fnmatch`, an f-string or `%`-format value, and for a
+    dict's keys (`keyed`) a `NAMES[k]` or `NAMES.get(k)` lookup."""
+    up = parent.get(id(node))
+    if isinstance(up, ast.Tuple) and isinstance(parent.get(id(up)), ast.BinOp):
+        node, up = up, parent.get(id(up))
+    if isinstance(up, ast.Compare):
+        operands = [up.left, *up.comparators]
+        at = next(i for i, operand in enumerate(operands) if operand is node)
+        ops = up.ops[max(at - 1, 0):at + 1]
+        return all(isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) for op in ops)
+    if isinstance(up, ast.Call):
+        return _call_name(up) in MATCH_CALLS and node in up.args
+    if isinstance(up, ast.FormattedValue):
+        return True
+    if isinstance(up, ast.BinOp) and isinstance(up.op, ast.Mod) and up.right is node:
+        return isinstance(up.left, ast.Constant) and isinstance(up.left.value, str)
+    if keyed and isinstance(up, ast.Subscript):
+        return up.value is node
+    return keyed and isinstance(up, ast.Attribute) and up.attr == "get"
+
+
+def _named_literals(module: ast.AST, parent: dict, constants: list) -> set[int]:
+    """Ids of the string literals that name a file the source only matches a value against or mentions, never
+    opens: the literal itself, a member of a literal collection (a dict's key), or a name bound once to either,
+    where every use is a `_matched_use`. A name with no use, or with any other use, stays a dependency."""
+    loads: dict[str, list] = {}
+    bound: dict[str, list] = {}
+    for node in ast.walk(module):
+        if isinstance(node, ast.Name):
+            (loads if isinstance(node.ctx, ast.Load) else bound).setdefault(node.id, []).append(node)
+    named: set[int] = set()
+    for constant in constants:
+        node, up, keyed = constant, parent.get(id(constant)), False
+        if isinstance(up, ast.Dict) and any(key is node for key in up.keys):
+            node, up, keyed = up, parent.get(id(up)), True
+        elif isinstance(up, (ast.Tuple, ast.List, ast.Set)) and node in up.elts:
+            node, up = up, parent.get(id(up))
+            if isinstance(up, ast.Call) and _call_name(up) in COLLECTION_CALLS and up.args == [node]:
+                node, up = up, parent.get(id(up))
+        if isinstance(up, ast.Assign) and up.value is node and len(up.targets) == 1 \
+                and isinstance(up.targets[0], ast.Name):
+            name = up.targets[0].id
+            uses = loads.get(name, [])
+            if len(bound.get(name, [])) == 1 and uses \
+                    and all(_matched_use(use, parent, keyed) for use in uses):
+                named.add(id(constant))
+        elif up is not None and _matched_use(node, parent, keyed):
+            named.add(id(constant))
+    return named
+
+
+def _unread_literals(module: ast.AST, text: str) -> set[int]:
+    """Ids of the string literals that name a file the source does not read: one it produces (a piece of a path
+    placed under a gitignored folder, `HERE / "scratch" / "out.json"`, or a path it only writes, `open(p, "w")`,
+    `p.write_text(...)`) and one it only matches against or mentions (`_named_literals`). A name is a dependency
+    when the file may read it. A source whose text names no file has nothing to classify."""
     out: set[int] = set()
     if not FILE_NAME_TEXT.search(text):
         return out
@@ -465,6 +524,7 @@ def _output_literals(module: ast.AST, text: str) -> set[int]:
                 path_nodes.append(child)
             elif isinstance(child, ast.Constant) and isinstance(child.value, str):
                 constants.append(child)
+    out |= _named_literals(module, parent, constants)
     for node in path_nodes:
         if _is_path_node(parent.get(id(node))):
             continue
@@ -499,7 +559,7 @@ def _python_deps(text: str):
 @functools.lru_cache(maxsize=4096)
 def _parsed_python_deps(text: str):
     tree = ast.parse(text)
-    outputs = _output_literals(tree, text)
+    outputs = _unread_literals(tree, text)
     guarded: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Try) and any(_catches_import_error(h) for h in node.handlers):

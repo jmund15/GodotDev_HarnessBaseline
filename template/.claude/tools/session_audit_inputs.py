@@ -123,6 +123,9 @@ def cat_file(root, specs, content=False):
         if line.endswith((b" missing", b" ambiguous")):
             found.append(None)
             continue
+        if line.endswith(b" submodule"):
+            found.append((line.split()[0].decode("ascii"), "submodule", None))
+            continue
         oid, kind, size = line.split()
         body = None
         if content:
@@ -263,9 +266,15 @@ def next_free_out(out: Path) -> Path:
     return parent / f"{stem}_r{n}" / out.name
 
 
-def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=False, committed_only=(),
-           session=None, task=None, plan=None):
-    """Freeze the audit's inputs under `out`'s folder and return the packet dict `main` prints."""
+def freeze(**request):
+    """Freeze the audit's inputs under `out`'s folder and return the packet dict `main` prints. The freeze is one
+    command: the repository facts the ledger asks of git are asked once (`review_snapshot.repo_facts`)."""
+    with review_snapshot.repo_facts():
+        return _freeze(**request)
+
+
+def _freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=False, committed_only=(),
+            session=None, task=None, plan=None):
     root = Path(root).resolve()
     out = Path(out)
     out = (root / out).resolve() if not out.is_absolute() else out.resolve()

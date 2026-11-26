@@ -208,15 +208,15 @@ def test_submodule_of_shared_checkout_denies(own):
 
 
 def test_orphan_worktree_uses_the_explicit_object_store(own):
-    from _delete_rule import lossless_orphan_worktree
+    from _delete_rule import is_retired_worktree
     shutil.rmtree(own.wt / "notes", ignore_errors=True)
     own.dirty(own.wt)
     shutil.rmtree(own.root / ".git/worktrees/mine")
     lost = []
-    assert not lossless_orphan_worktree(".claude/worktrees/mine", str(own.root), str(own.root), lost)
+    assert not is_retired_worktree(".claude/worktrees/mine", str(own.root), str(own.root), lost)
     assert any(".gitignore" in reason for reason in lost)
     g(own.root, "hash-object", "-w", str(own.wt / ".gitignore"))
-    assert lossless_orphan_worktree(".claude/worktrees/mine", str(own.root), str(own.root))
+    assert is_retired_worktree(".claude/worktrees/mine", str(own.root), str(own.root))
 
 
 def _tuple_loop_rows(own, command=None):
@@ -816,6 +816,27 @@ def test_the_preview_of_an_unproven_worktree_blocks_and_names_ownership(own, pre
 def test_the_created_flag_is_a_labelled_hypothetical(own, preview):
     code, out = preview([], "--created")
     assert code == 0 and "retired" in out and "--created" in out
+
+
+def _take_retire_line(own, tmp_path):
+    """`dispatch_result.py take`'s RETIRE line for the own worktree, from an ended job record planted in `tmp_path`."""
+    import sys
+    tools = str(Path(__file__).resolve().parents[2] / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import dispatch_take
+    record = write(tmp_path, "out/job.record.json", '{"label": "job"}')
+    for suffix, text in ((".out", ""), (".exit", "0")):
+        Path(str(record) + suffix).write_text(text, encoding="utf-8")
+    lines, _ = dispatch_take.take(str(record), "job", str(own.root), workdir=str(own.wt))
+    return next(line for line in lines if line.startswith("RETIRE"))
+
+
+def test_take_reads_ownership_from_the_session_as_the_preview_does(own, preview, tmp_path):
+    preview(own.rows())  # plants this session's transcript proving the create
+    assert "retired: safe to delete" in _take_retire_line(own, tmp_path)
+    preview([])
+    assert "blocked" in _take_retire_line(own, tmp_path)
 
 
 def test_a_deny_names_ownership_only_when_ownership_would_have_cleared_the_loss(own):

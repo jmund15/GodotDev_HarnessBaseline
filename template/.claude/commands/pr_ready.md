@@ -118,7 +118,7 @@ Write each seat's brief (its mandate row above, the rubric, and its OLD/NEW or c
 python3 .claude/tools/lens_briefs.py prepare --spec .claude/scratch/pr_ready/spec_<branch>.json --out .claude/scratch/pr_ready/out
 ```
 
-Run the `next:` call it prints: the fan-out places each seat by the ladder's selection line, prints a `NATIVE` Workflow call for the seats it keeps on this session's plan (issue it in the same message as the Step 1a call) and the `--review-close` call that consolidates every seat once they have all ended.
+`prepare` launches the panel (`reference/sidecar_dispatch.md` owns the recipe). Issue the `NATIVE` Workflow call it prints for the seats on this session's plan in the same message as the Step 1a call; the `--review-close` call it prints consolidates every seat once they have all ended.
 
 Every lens runs `git diff`/`git grep` itself. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
 

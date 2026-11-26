@@ -1,4 +1,19 @@
 {
+  "instruction_scope": {
+    "paths": [
+      ".claude/CLAUDE*.md",
+      ".claude/commands/**/*.md",
+      ".claude/skills/**/*.md",
+      ".claude/reference/**/*.md",
+      ".claude/rules/*.md",
+      ".claude/guards/*.md",
+      ".claude/agents/*.md",
+      ".claude/output-styles/*.md",
+      ".claude/workflows/*.prompt.md",
+      ".claude/auto-memory/*.md"
+    ],
+    "rows_dir": ".claude/instruction_rows"
+  },
   "gate_cadence": {
     "slice": ["for `.claude/**` units: the edited unit's proof file, run directly"],
     "merge": [],
@@ -24,8 +39,7 @@
   "proof_timeouts": {
     "test_runtime_slots.ps1": 1560,
     "test_review_ledger.py": 1440,
-    "test_main_check_part2.py": 1380,
-    "test_main_check.py": 1200,
+    "test_main_check.py": 480,
     "test_baseline_publish.py": 1200,
     "test_scratch_prune.py": 600,
     "test_harness_tests_pass_cache.py": 960,
@@ -39,8 +53,6 @@
     "test_script_proofs.py": 600,
     "test_lens_briefs_prepare.py": 600,
     "test_anthropic_console_credentials.sh": 540,
-    "test_sidecar_common_registration_part2.py": 540,
-    "test_sidecar_common_registration.py": 480,
     "test_sidecar_tool_profiles.sh": 480,
     "test_baseline_sync.py": 480,
     "test_regression_gate_reuse.py": 480,

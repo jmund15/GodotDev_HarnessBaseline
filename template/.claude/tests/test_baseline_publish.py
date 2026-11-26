@@ -12,7 +12,6 @@ import io
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -22,6 +21,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _case_pool import run_cases  # noqa: E402
+from _git_fixture import (  # noqa: E402
+    bare_remote as _remote, branch_sha as _branch_sha, commit_all as _commit, git as _git, init_repo as _init_repo,
+    push_main as _push_main, remove as _remove, scratch,
+)
+import _git_fixture  # noqa: E402
 from _runner_fixture import copy_runner_deps  # noqa: E402
 
 _real_sleep = time.sleep
@@ -47,14 +51,6 @@ def _env(root: Path) -> dict[str, str]:
     env["GIT_CEILING_DIRECTORIES"] = str(root.parent)
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
-
-
-def _git(cwd: Path | None, *args: str) -> bytes:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=_env(cwd or Path.cwd()),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
-    )
-    return result.stdout
 
 
 def _run_sync(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -91,58 +87,8 @@ def _seed_project_subsystems(root: Path) -> None:
     _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", _SUBSYSTEMS_SKILL_SEED)
 
 
-def _init_repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-q", "-b", "main")
-    with open(path / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
-        # gc and maintenance off: every commit otherwise spawns `maintenance run --auto` (~20 ms) that never has work here.
-        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n"
-                     "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n")
-
-
-def _commit(path: Path, message: str) -> str:
-    _git(path, "add", "-A")
-    _git(path, "commit", "-q", "-m", message)
-    return _branch_sha(path)
-
-
-def _branch_sha(path: Path) -> str:
-    if (path / ".git").is_dir():  # a linked worktree's `.git` is a file; it takes the spawn below
-        head = (path / ".git" / "HEAD").read_text(encoding="utf-8").strip()
-        ref = path / ".git" / head[5:] if head.startswith("ref: ") else None
-        if ref is not None and ref.is_file():  # a loose branch ref: reading it saves a `rev-parse` spawn
-            return ref.read_text(encoding="utf-8").strip()
-    return _git(path, "rev-parse", "HEAD").decode().strip()
-
-
-def _make_writable(path: Path) -> None:
-    if not path.exists():
-        return
-    for current, dirs, files in os.walk(path, topdown=False):
-        for name in files + dirs:
-            target = Path(current) / name
-            try:
-                os.chmod(target, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            except OSError:
-                pass
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    except OSError:
-        pass
-
-
-def _remove(path: Path) -> None:
-    _make_writable(path)
-    shutil.rmtree(path, ignore_errors=True)
-
-
-@contextlib.contextmanager
 def _fixture():
-    path = Path(tempfile.mkdtemp(prefix="baseline_publish_"))
-    try:
-        yield path
-    finally:
-        _remove(path)
+    return scratch("baseline_publish_")
 
 
 def _field(value, key):
@@ -414,23 +360,6 @@ def _install_fake_gh(path: Path) -> dict[str, str]:
     }
 
 
-def _remote(path: Path) -> Path:
-    remote = path / "remote.git"
-    _git(path, "init", "--bare", "-q", "-b", "main", str(remote))
-    return remote
-
-
-def _push_main(work: Path, remote: Path) -> None:
-    """Publish `work`'s one-branch history to the empty bare `remote` and name it `origin`. The
-    objects and the branch ref are copied in place of a `git push`: the result is the same repository
-    state, and the push spawn was the most expensive step of every baseline fixture."""
-    shutil.copytree(work / ".git" / "objects", remote / "objects", dirs_exist_ok=True)
-    (remote / "refs" / "heads").mkdir(parents=True, exist_ok=True)
-    (remote / "refs" / "heads" / "main").write_text(_branch_sha(work) + "\n", encoding="utf-8", newline="\n")
-    with open(work / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
-        handle.write('[remote "origin"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' % remote.as_uri())
-
-
 def _remote_main_sha(remote: Path) -> str:
     return _git(remote, "show-ref", "-s", "refs/heads/main").decode().strip()
 
@@ -558,7 +487,7 @@ def test_tracer_publishes_one_row_to_fixture_remote() -> None:
     local_content = b"value = 'fixture'\n"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, baseline_content, local_content)
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        source_commit = _branch_sha(root)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -598,7 +527,7 @@ def test_peer_edit_after_the_source_commit_leaves_step_eight_green() -> None:
     with _fixture() as path:
         remote, _baseline_commit, root = _seed_commit_fixture(
             path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        source_commit = _branch_sha(root)
         _write(root / rel, b"value = 'a peer edited this after the commit'\n")
 
         publish = _load_publish()
@@ -683,7 +612,7 @@ def test_materialize_keeps_a_100755_source_entry_executable() -> None:
         _git(root, "add", "-A")
         _git(root, "update-index", "--chmod=+x", exec_rel)
         _git(root, "commit", "-q", "-m", "consumer")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         worktree = path / "publish-worktree"
         records = [{"relpath": rel, "source_path": rel, "dest_path": "template/" + rel,
@@ -782,7 +711,7 @@ def test_no_ci_refuses_when_workflow_exists() -> None:
         _commit(clone, "add ci")
         _git(clone, "push", "-q", "origin", "HEAD:refs/heads/main")
 
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         try:
             publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
@@ -800,7 +729,7 @@ def test_step_failures_1_through_5_leave_fixture_main_unchanged() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         before_main = _remote_main_sha(remote)
         journal_dir = root / ".claude" / ".cache" / "baseline-publish"
 
@@ -859,7 +788,7 @@ def test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed()
     rel = ".claude/commands/fixture.md"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -893,7 +822,7 @@ def test_full_battery_upgrade_refuses_a_published_journal() -> None:
     rel = ".claude/commands/fixture.md"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -919,7 +848,7 @@ def test_a_red_dry_run_is_redone_as_a_dry_run_before_the_owner_confirms() -> Non
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         before_main = _remote_main_sha(remote)
         env = _install_fake_gh(path)
         publish = _load_publish()
@@ -965,7 +894,7 @@ def test_a_journal_red_at_classify_resumes_through_classify() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         env = _install_fake_gh(path)
         def _red(module):
             def _red_classify(*_a, **_k):
@@ -1010,7 +939,7 @@ def test_abbreviated_commit_source_resumes_instead_of_deadlocking() -> None:
         remote, baseline_commit, root = _seed_commit_fixture(
             path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
         short = _git(root, "rev-parse", "--short", "HEAD").decode().strip()
-        full = _git(root, "rev-parse", "HEAD").decode().strip()
+        full = _branch_sha(root)
         assert short != full, "fixture did not produce an abbreviated sha"
 
         publish = _load_publish()
@@ -1040,7 +969,7 @@ def test_repeat_publish_prints_already_published() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -1061,7 +990,7 @@ def test_open_only_opens_the_pr_before_the_land_and_the_merge_waits_for_it() -> 
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         # The project's own origin holds history without the source commit: the land has not happened.
         (path / "project").mkdir()
         project = _remote(path / "project")
@@ -1115,7 +1044,7 @@ def test_repeat_incomplete_same_baseline_refuses_naming_resume() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
 
         def _boom(*_a, **_k):
@@ -1149,7 +1078,7 @@ def test_repeat_incomplete_older_baseline_records_supersedes() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
 
         def _boom(*_a, **_k):
@@ -1187,7 +1116,7 @@ def test_resume_finds_and_reuses_pr_after_crash_before_pr_url_written() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -1222,7 +1151,7 @@ def test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = dict(_install_fake_gh(path))
         env["GH_FAKE_FAIL_AFTER_MERGE"] = "1"
@@ -1255,7 +1184,7 @@ def test_ci_checks_not_yet_registered_are_waited_for() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         env = dict(_install_fake_gh(path))
@@ -1273,7 +1202,7 @@ def test_pending_checks_are_polled_until_green() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         env = dict(_install_fake_gh(path))
@@ -1291,7 +1220,7 @@ def test_unreadable_poll_answers_are_polled_again() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         publish.sync.NETWORK_RETRY_DELAYS = (0, 0)  # the fake gh's timeout stderr reads as transient: no backoff sleeps
@@ -1309,7 +1238,7 @@ def test_unreadable_poll_answers_fail_step_six_after_the_wait() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
@@ -1331,7 +1260,7 @@ def test_ci_on_publish_records_the_ci_run_url() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = dict(_install_fake_gh(path))
         with _patched_env(env):
@@ -1346,7 +1275,7 @@ def test_ci_red_checks_record_the_ci_run_url() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
@@ -1370,7 +1299,7 @@ def test_ci_checks_that_never_register_fail_step_six_after_the_wait() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
@@ -1392,7 +1321,7 @@ def test_a_red_non_required_lane_does_not_refuse_the_merge() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = dict(_install_fake_gh(path))
         env["GH_FAKE_LANE_RED"] = "1"
@@ -1407,7 +1336,7 @@ def test_a_red_required_check_still_refuses_the_merge() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
@@ -1428,7 +1357,7 @@ def test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = dict(_install_fake_gh(path))
         env["GH_FAKE_MAIN_MOVE_ON_CHECKS"] = "1"
@@ -1464,7 +1393,7 @@ def _move_baseline(path: Path, rel: str, content: bytes) -> str:
 
 
 def _publish_dry(publish, root: Path, rel: str, **keywords):
-    commit = _git(root, "rev-parse", "HEAD").decode().strip()
+    commit = _branch_sha(root)
     return publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], True, True, None,
                        **keywords)
 
@@ -1583,7 +1512,7 @@ def test_a_publish_that_reaches_upstream_clears_the_decline() -> None:
         _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
         _move_baseline(path, rel, b"value = 'theirs'\n")
         publish = _load_publish()
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         with _patched_env(_install_fake_gh(path)):
             journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], False,
                                   True, None, over_upstream=[rel])
@@ -1598,7 +1527,7 @@ def _registered_worktrees(root: Path) -> set[str]:
 
 
 def _dry_run_journal(publish, root: Path, rel: str, env: dict):
-    commit = _git(root, "rev-parse", "HEAD").decode().strip()
+    commit = _branch_sha(root)
     with _patched_env(env):
         return publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], True, True, None)
 
@@ -1684,7 +1613,7 @@ def test_resume_redoes_steps_after_deleted_worktree() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -1823,8 +1752,8 @@ def test_from_worktree_refuses_dirty_foreign_sibling_and_nested() -> None:
             assert "no changes" in str(exc), str(exc)  # absorbed, not refused: nothing of its own to publish
         else:
             raise AssertionError("expected a worktree with nothing past the advanced baseline to have no changes")
-        advanced = _git(advance, "rev-parse", "HEAD").decode().strip()
-        assert _git(behind_wt, "rev-parse", "HEAD").decode().strip() == advanced
+        advanced = _branch_sha(advance)
+        assert _branch_sha(behind_wt) == advanced
 
 
 LAYER_FILE = "tools/layer_entries.json"
@@ -1918,7 +1847,7 @@ def test_author_history_never_publishes_ancestor_token() -> None:
         _commit(worktree, "add token")
         _write(target, b"value = 'clean'\n")
         _commit(worktree, "remove token")
-        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(worktree)
 
         # the token really is in the author branch's history, so the assertion below is
         # not vacuously true.
@@ -1948,7 +1877,7 @@ def test_from_worktree_publishes_root_files_and_lock_rows() -> None:
                b"import sys\nsys.exit(0)\n")
         _write(worktree / "tools" / "newtool.py", b"print('hi')\n")
         _commit(worktree, "author change")
-        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(worktree)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -1979,7 +1908,7 @@ def test_publish_strips_memory_provenance_keys_from_the_published_file() -> None
                b"---\nname: rule\ntype: feedback\nmetadata:\n  node_type: memory\n"
                b"  originSessionId: session-one\n  modified: 2026-01-01T00:00:00Z\n---\nBody line\n")
         _commit(worktree, "author memory")
-        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(worktree)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -2054,7 +1983,7 @@ def test_from_worktree_publishes_every_diff_record_including_root_config_files()
         _write(worktree / "baseline.manifest.json",
                b'{"version": 2, "files": [], "note": "s5-defect1"}\n')
         _commit(worktree, "author change: root config files")
-        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(worktree)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -2088,7 +2017,7 @@ def test_publish_does_not_alter_cache_clone_shared_identity() -> None:
 
         _write(worktree / "template" / ".claude" / "tools" / "identity_check.py", b"x = 1\n")
         _commit(worktree, "author change")
-        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(worktree)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -2146,7 +2075,7 @@ def test_worktree_source_leaves_hash_for_consumer_pull_when_out_of_sync() -> Non
         assert pinned == baseline_commit
         _write(worktree / "template" / rel, new_content)
         _commit(worktree, "author change: update existing row")
-        author_commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+        author_commit = _branch_sha(worktree)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -2210,7 +2139,7 @@ def test_publish_refuses_malformed_adaptation_contract_fresh_run() -> None:
         remote, _baseline_commit, root = _seed_commit_fixture(
             path, rel, b"value = 'old'\n", b"value = 'fixture'\n"
         )
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         journal_dir = root / ".claude" / ".cache" / "baseline-publish"
         for label, corrupt, needle in _adaptation_contract_scenarios(root):
@@ -2233,7 +2162,7 @@ def test_publish_resume_refuses_malformed_adaptation_contract() -> None:
         remote, _baseline_commit, root = _seed_commit_fixture(
             path, rel, b"value = 'old'\n", b"value = 'fixture'\n"
         )
-        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -2916,7 +2845,7 @@ def test_publishing_a_binary_row_records_the_sha_of_its_bytes() -> None:
     new = b"\x00asm\x01\x00\x00\x00\r\n\r\xff\xfe\x80" + bytes(range(256))
     with _fixture() as path:
         remote, _baseline_commit, root = _seed_commit_fixture(path, rel, old, new)
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        source_commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         with _patched_env(env):
@@ -3005,7 +2934,7 @@ def test_the_push_runs_no_local_linux_preview_the_prs_ci_is_the_linux_check() ->
 
     with _fixture() as path:
         remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        source_commit = _branch_sha(root)
         publish = _load_publish()
         env = _install_fake_gh(path)
         preview_module.preview = recorded
@@ -3129,6 +3058,7 @@ def main(part: int = 1) -> int:
     slots = tempfile.mkdtemp(prefix="publish_slots_")
     os.environ["HARNESS_SLOT_DIR"] = slots
     try:
+        _git_fixture.warm()  # one layout for every case process to copy
         return run_cases(cases[part - 1::PARTS])
     finally:
         shutil.rmtree(slots, ignore_errors=True)
@@ -3243,7 +3173,7 @@ def test_publish_renames_project_identifiers_without_touching_the_local_file() -
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         lock["substitutions"]["GenericWidget"] = "FixtureWidget"
         _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        source_commit = _branch_sha(root)
 
         publish = _load_publish()
         env = _install_fake_gh(path)
@@ -3297,7 +3227,7 @@ def _assert_published_row_records_tracked(status: str) -> None:
         lock["schema"] = 2
         _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
         _commit(root, "%s row judged push" % status)
-        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        source_commit = _branch_sha(root)
 
         publish = _load_publish()
         env = _install_fake_gh(path)

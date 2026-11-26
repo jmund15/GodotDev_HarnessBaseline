@@ -52,6 +52,7 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 import adaptation  # noqa: E402
 import _git_commit  # noqa: E402
+import _hook_state  # noqa: E402
 from _checkout_root import harness_root  # noqa: E402
 from _claude_scope import is_prose_harness_scope  # noqa: E402
 
@@ -763,7 +764,7 @@ def _task_triage(repo, sha):
     import task_record
     directory = Path(task_record.record_dir(repo))
     try:
-        paths = sorted(directory.glob("*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        paths = _hook_state.by_mtime(directory.glob("*.json"), newest_first=True)
     except OSError as exc:
         print("%s task triage unavailable: %s" % (sha[:9], exc), file=sys.stderr)
         return None

@@ -336,6 +336,7 @@ finally:
 # os.rename, shutil.move, Path.replace, PowerShell Move-Item/[IO.File]::Move, shell mv). A bare rename fails
 # here unless its own line, or a comment line directly above it, carries `bare-rename: <reason>`. The reason
 # sits at the site, so this proof names no file of another layer or project.
+import functools  # noqa: E402
 import re as _re  # noqa: E402
 import shutil  # noqa: E402
 
@@ -346,11 +347,14 @@ PY_RENAME_CALLS = {"os.replace", "os.rename", "shutil.move"}
 PS_RENAME = _re.compile(r"\[(?:System\.)?IO\.File\]::Move\(|(?:^|[;\s])Move-Item\b")
 SH_RENAME = _re.compile(r"^\s*mv\s")
 RENAME_REASON = _re.compile(r"#.*\bbare-rename:\s*\S")
+# The rename and listed-stat scans read one parse per source; cleared after both, since live trees slow every
+# later collection in this proof.
+_parsed = functools.lru_cache(maxsize=None)(ast.parse)
 
 
 def _py_rename_sites(source):
     """(line, enclosing function) for every rename-shaped call in one Python source."""
-    tree = ast.parse(source)
+    tree = _parsed(source)
     owner = {}
 
     def label(node, current):
@@ -384,10 +388,8 @@ def _has_reason(lines, number, pattern=RENAME_REASON):
     return above.lstrip().startswith("#") and bool(pattern.search(above))
 
 
-def _class_rename_sites(root):
-    """["<relative path>:<line> <function>()", ...] for every bare rename under `root`'s class folders that
-    states no reason."""
-    found = {}
+def _class_files(root):
+    """(relative path, text) for each readable file under `root`'s class folders, the owner module excluded."""
     for folder in CLASS_DIRS:
         for dirpath, dirnames, filenames in os.walk(os.path.join(root, folder)):
             dirnames[:] = [n for n in dirnames if n not in ("__pycache__", "node_modules", "vendor")]
@@ -396,26 +398,31 @@ def _class_rename_sites(root):
                 if rel in OWNER_FILES:
                     continue
                 try:
-                    text = io.open(os.path.join(dirpath, name), encoding="utf-8").read()
+                    yield rel, io.open(os.path.join(dirpath, name), encoding="utf-8").read()
                 except (OSError, UnicodeDecodeError):
                     continue
+
+
+def _class_rename_sites(root):
+    """["<relative path>:<line> <function>()", ...] for every bare rename under `root`'s class folders that
+    states no reason."""
+    found = []
+    for rel, text in _class_files(root):
+        sites = []
+        if rel.endswith(".py"):
+            try:
+                sites = _py_rename_sites(text)
+            except SyntaxError:
                 sites = []
-                if name.endswith(".py"):
-                    try:
-                        sites = _py_rename_sites(text)
-                    except SyntaxError:
-                        sites = []
-                elif name.endswith(".ps1"):
-                    sites = [(i + 1, "<file>") for i, line in enumerate(text.splitlines())
-                             if PS_RENAME.search(line) and not line.lstrip().startswith("#")]
-                elif name.endswith(".sh"):
-                    sites = [(i + 1, "<file>") for i, line in enumerate(text.splitlines())
-                             if SH_RENAME.search(line) and not line.lstrip().startswith("#")]
-                lines = text.splitlines()
-                for line, func in sites:
-                    if not _has_reason(lines, line):
-                        found.setdefault(rel, []).append("%s:%d %s()" % (rel, line, func))
-    return sorted(site for sites in found.values() for site in sites)
+        elif rel.endswith(".ps1"):
+            sites = [(i + 1, "<file>") for i, line in enumerate(text.splitlines())
+                     if PS_RENAME.search(line) and not line.lstrip().startswith("#")]
+        elif rel.endswith(".sh"):
+            sites = [(i + 1, "<file>") for i, line in enumerate(text.splitlines())
+                     if SH_RENAME.search(line) and not line.lstrip().startswith("#")]
+        lines = text.splitlines()
+        found += ["%s:%d %s()" % (rel, line, func) for line, func in sites if not _has_reason(lines, line)]
+    return sorted(found)
 
 
 _bare = _class_rename_sites(CLAUDE_DIR)
@@ -451,6 +458,165 @@ check("the rename scan reports an unexplained site in each language and passes a
       _planted == ["hooks/b.py:6 move()", "scripts/c.sh:2 <file>()", "scripts/d.ps1:1 <file>()",
                    "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()", "tools/e.py:2 a()", "tools/e.py:4 b()"],
       repr(_planted))
+
+
+# --- a listed entry is statted where its removal is handled ------------------------------------
+# Another process can remove a directory entry between the listing and a stat of it; a bare stat then raises
+# and crashes the reader (the session watcher did). The decided fact: a value derived from a listing call
+# (glob, listdir, scandir, walk, iterdir, rglob) reaches a stat (stat, lstat, getmtime, getsize, ...) in the
+# same function, through assignments, loops, comprehensions or a sort key, outside a `try` whose handler
+# catches OSError. The fix is always available: `_hook_state.stat_present` / `by_mtime`, or a per-entry handler.
+LISTING_CALLS = {"glob", "iglob", "rglob", "listdir", "iterdir", "scandir", "walk"}
+STAT_CALLS = {"stat", "lstat", "getmtime", "getsize", "getctime", "getatime"}
+STAT_HANDLERS = {"OSError", "FileNotFoundError", "IOError", "EnvironmentError", "Exception", "BaseException"}
+LISTING_WORD = _re.compile(r"\b(?:%s)\b" % "|".join(sorted(LISTING_CALLS)))
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _called(node):
+    func = node.func
+    return func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
+
+
+def _scope_nodes(scope):
+    """Every node of one scope; a nested def or class is its own scope."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, _SCOPES + (ast.ClassDef,)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _stat_handled(node, parent):
+    child, up = node, parent.get(node)
+    while up is not None and not isinstance(up, _SCOPES):
+        if isinstance(up, ast.Try) and child in up.body and any(
+                h.type is None or {n.id for n in ast.walk(h.type) if isinstance(n, ast.Name)} & STAT_HANDLERS
+                for h in up.handlers):
+            return True
+        child, up = up, parent.get(up)
+    return False
+
+
+def _listing_scopes(tree, source):
+    """Each scope (the module or a def) whose own lines name a listing call: the innermost def or class holding
+    each such line, a class body being no scope. Walks statements only; a call's name sits on its own line."""
+    holders, stack = [], [tree]
+    while stack:
+        for child in ast.iter_child_nodes(stack.pop()):
+            if isinstance(child, (ast.stmt, ast.excepthandler, ast.match_case)):
+                stack.append(child)
+                if isinstance(child, _SCOPES + (ast.ClassDef,)):
+                    holders.append(child)
+    scopes = {}
+    for number, line in enumerate(source.splitlines(), 1):
+        if LISTING_WORD.search(line):
+            inner = min((h for h in holders if h.lineno <= number <= h.end_lineno),
+                        key=lambda h: h.end_lineno - h.lineno, default=tree)
+            if not isinstance(inner, ast.ClassDef):
+                scopes[inner] = True
+    return list(scopes)
+
+
+def _listed_stat_lines(source):
+    """Sorted lines of one Python source where a listed entry reaches a stat outside an OSError handler."""
+    sites = set()
+    for scope in _listing_scopes(_parsed(source), source):
+        nodes = list(_scope_nodes(scope))
+        parent = {child: up for up in [scope] + nodes for child in ast.iter_child_nodes(up)}
+        tainted = set()
+
+        def derived(expr):
+            return any((isinstance(n, ast.Call) and _called(n) in LISTING_CALLS)
+                       or (isinstance(n, ast.Name) and n.id in tainted) for n in ast.walk(expr))
+
+        def bind(target):
+            grown = {n.id if isinstance(n, ast.Name) else n.arg for n in ast.walk(target)
+                     if isinstance(n, (ast.Name, ast.arg))} - tainted
+            tainted.update(grown)
+            return bool(grown)
+
+        grew = True
+        while grew:
+            grew = False
+            for node in nodes:
+                if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and node.value is not None \
+                        and derived(node.value):
+                    for target in getattr(node, "targets", [getattr(node, "target", None)]):
+                        grew |= bind(target)
+                elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) and derived(node.iter):
+                    grew |= bind(node.target)
+                elif isinstance(node, ast.NamedExpr) and derived(node.value):
+                    grew |= bind(node.target)
+                elif isinstance(node, ast.Call) and node.args and derived(node.args[0]):
+                    for kw in node.keywords:
+                        if kw.arg == "key" and isinstance(kw.value, ast.Lambda):
+                            grew |= bind(kw.value.args)
+        for node in nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            stat = _called(node) in STAT_CALLS and (
+                any(derived(a) for a in node.args)
+                or (isinstance(node.func, ast.Attribute) and derived(node.func.value)))
+            stat = stat or any(
+                kw.arg == "key" and isinstance(kw.value, (ast.Name, ast.Attribute))
+                and (kw.value.attr if isinstance(kw.value, ast.Attribute) else kw.value.id) in STAT_CALLS
+                for kw in node.keywords) and bool(node.args) and derived(node.args[0])
+            if stat and not _stat_handled(node, parent):
+                sites.add(node.lineno)
+    return sorted(sites)
+
+
+def _class_listed_stats(root):
+    """["<relative path>:<line>", ...] for every listed entry statted outside an OSError handler under `root`'s
+    class folders, and "<relative path>: unparseable" for a Python file the scan could not read."""
+    found = []
+    for rel, text in _class_files(root):
+        if rel.endswith(".py") and LISTING_WORD.search(text):
+            try:
+                found += ["%s:%d" % (rel, line) for line in _listed_stat_lines(text)]
+            except SyntaxError:
+                found.append("%s: unparseable" % rel)
+    return sorted(found)
+
+
+_racy = _class_listed_stats(CLAUDE_DIR)
+_parsed.cache_clear()
+check("a listed entry is statted through stat_present/by_mtime or under an OSError handler",
+      not _racy, "; ".join(_racy))
+
+# The scan on a planted tree: each shape a member took is reported; a handled, owner-routed or unlisted stat is not.
+_plant = tempfile.mkdtemp(prefix="listed_stat_scan_")
+try:
+    for _rel, _body in {
+        "tools/a.py": "import os, glob\nfrom pathlib import Path\n"
+                      "def key_lambda(d):\n    return sorted(Path(d).glob('*'), key=lambda p: p.stat().st_mtime)\n"
+                      "def key_ref(d):\n    found = glob.glob(d)\n    return max(found, key=os.path.getmtime)\n"
+                      "def check_then_stat(d):\n    out = []\n    for n in os.listdir(d):\n"
+                      "        p = os.path.join(d, n)\n        if os.path.isdir(p):\n"
+                      "            out.append(os.path.getmtime(p))\n    return out\n"
+                      "def comp(d, cut):\n    return [p for p in glob.glob(d) if os.path.getmtime(p) > cut]\n",
+        "hooks/b.py": "import os\nfrom _hook_state import stat_present\n"
+                      "def handled(d):\n    for n in os.listdir(d):\n        try:\n"
+                      "            os.stat(os.path.join(d, n))\n        except OSError:\n            continue\n"
+                      "def owner(d):\n    return [st for _, st in stat_present(os.listdir(d))]\n"
+                      "def unlisted(path):\n    return os.stat(path).st_size\n"
+                      "def wrong_handler(d):\n    try:\n        return [os.stat(p) for p in os.scandir(d)]\n"
+                      "    except ValueError:\n        return []\n",
+        "scripts/c.py": "def broken(:\n    os.listdir(d)\n",
+        "hooks/_hook_state.py": "import os\ndef stat_present(paths):\n    return [os.stat(p) for p in os.listdir(paths)]\n",
+    }.items():
+        _path = os.path.join(_plant, _rel)
+        os.makedirs(os.path.dirname(_path), exist_ok=True)
+        with io.open(_path, "w", encoding="utf-8", newline="\n") as _fh:
+            _fh.write(_body)
+    _planted = _class_listed_stats(_plant)
+finally:
+    shutil.rmtree(_plant, ignore_errors=True)
+check("the listed-stat scan reports each member shape and a wrong handler, and passes a handled or owner stat",
+      _planted == ["hooks/b.py:15", "scripts/c.py: unparseable", "tools/a.py:13", "tools/a.py:16", "tools/a.py:4",
+                   "tools/a.py:7"], repr(_planted))
 
 
 # --- one writer per shared JSONL append, or a stated reason ------------------------------------
@@ -652,6 +818,23 @@ _landed = review_ledger._append_rows(_ledger, [{"id": "r1"}])
 check("the review ledger's append lands its row without waiting out a lock",
       _landed is True and time.time() - _started < 1.0 and _ledger.read_text(encoding="utf-8").count("\n") == 1,
       "returned %r after %.1fs" % (_landed, time.time() - _started))
+
+# --- a listed entry another process removes before its stat is skipped, never a crash ------------------------
+_listed = tempfile.mkdtemp(prefix="hookstate_listed_")
+_old, _new, _gone = (os.path.join(_listed, n) for n in ("old.json", "new.json", "gone.json"))
+for _path, _mtime in ((_old, 1_000_000), (_new, 2_000_000)):
+    io.open(_path, "w").write("{}")
+    os.utime(_path, (_mtime, _mtime))
+try:
+    _order = _hook_state.by_mtime([_new, _gone, _old])
+    _newest = _hook_state.by_mtime([_old, _gone, _new], newest_first=True)
+    _present = [p for p, _ in _hook_state.stat_present([_gone, _new])]
+except (AttributeError, OSError) as exc:
+    _order = _newest = _present = repr(exc)
+check("by_mtime orders the entries still present, oldest first, and skips one gone before its stat",
+      _order == [_old, _new], repr(_order))
+check("by_mtime newest_first reverses the order", _newest == [_new, _old], repr(_newest))
+check("stat_present keeps each present entry with its stat", _present == [_new], repr(_present))
 
 print("\n%d/%d checks pass" % (ran - len(failures), ran))
 for f in failures:

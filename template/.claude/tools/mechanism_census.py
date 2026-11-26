@@ -87,6 +87,7 @@ import adaptation  # noqa: E402
 import _file_lock  # noqa: E402
 from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
+from _hook_state import stat_present  # noqa: E402
 
 STALE_DAYS = 32
 CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs")
@@ -264,13 +265,11 @@ def sample_fix_commits(index):
 
 
 def transcript_files(dirs, cutoff):
-    out = []
+    listed = []
     for d in dirs:
-        for p in glob.glob(os.path.join(d, "*.jsonl")) + glob.glob(os.path.join(d, "*", "subagents", "**", "*.jsonl"),
-                                                                   recursive=True):
-            if os.path.getmtime(p) >= cutoff:
-                out.append(p)
-    return out
+        listed += glob.glob(os.path.join(d, "*.jsonl")) + glob.glob(os.path.join(d, "*", "subagents", "**", "*.jsonl"),
+                                                                    recursive=True)
+    return [p for p, st in stat_present(listed) if st.st_mtime >= cutoff]
 
 
 def scan_transcripts(paths, names):

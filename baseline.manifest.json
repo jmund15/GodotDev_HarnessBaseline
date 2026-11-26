@@ -602,11 +602,6 @@
       "sync": "offer"
     },
     {
-      "path": ".claude/auto-memory/archive/gotcha_workflow_args_permission_control_chars.md",
-      "layer": "pure",
-      "sync": "offer"
-    },
-    {
       "path": ".claude/auto-memory/archive/gotcha_workflow_fanout_search_false_absence.md",
       "layer": "pure",
       "sync": "offer"
@@ -3632,12 +3627,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/_git_fixture.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/_harness_repo_case.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/_hook_call.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/_isolated.ps1",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5027,6 +5032,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_dispatch_facts.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_dispatch_lifecycle_replay.py",
       "layer": "pure",
       "sync": "auto"
@@ -5247,6 +5257,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_gate_cadence.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_gate_growth.py",
       "layer": "pure",
       "sync": "auto"
@@ -5278,6 +5293,11 @@
     },
     {
       "path": ".claude/tests/test_git_commit_seam.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_git_fixture.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5713,11 +5733,6 @@
     },
     {
       "path": ".claude/tests/test_main_check_git_calls.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/test_main_check_part2.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6228,6 +6243,11 @@
     },
     {
       "path": ".claude/tests/test_push_command_contract.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_pwsh_drive.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -7617,6 +7637,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/dispatch_facts.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/dispatch_result.py",
       "layer": "pure",
       "sync": "auto"
@@ -7668,6 +7693,11 @@
     },
     {
       "path": ".claude/tools/free_pool.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/gate_cadence.py",
       "layer": "pure",
       "sync": "auto"
     },

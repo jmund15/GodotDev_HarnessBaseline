@@ -1468,7 +1468,7 @@ function Test-SuiteTiers {
     # Parsed failures remain red even when the executor also reports a count shortfall.
     if ($R.passed -ge 0 -and $R.failed -gt 0) { return @{ tier = 'FAILING'; note = "failed=$($R.failed) — genuine test failure, not a count-drift signal" } }
     if ($R.silentSkip)            { return @{ tier = 'INVALID'; note = "silent-skip signature with no parsed failures" } }
-    if ($R.status -in @('LOCK_TIMEOUT', 'LOCKED')) { return @{ tier = 'LOCKED'; note = "lock-wait window expired — a live holder owns this checkout's lock or every runtime slot" } }
+    if ($R.status -in @('LOCK_TIMEOUT', 'LOCKED')) { return @{ tier = 'LOCKED'; note = "lock-wait window expired — a live holder owns this checkout's lock, the machine's local-work lanes or every runtime slot (the wrapper's STATUS=LOCK_TIMEOUT line names which)" } }
     if ($R.status -in $script:IncompleteStatuses) { return @{ tier = 'INCOMPLETE'; note = "status=$($R.status): the child returned no readable result (its output: $($R.outPath)) — NOT a regression signal" } }
     if ($R.passed -lt 0)          { return @{ tier = 'UNPARSED'; note = "no 'Failed: N, Passed: M' line in wrapper output — do NOT treat as green" } }
     if ($R.passed -lt $sentinel)  { return @{ tier = 'INVALID'; note = "passed=$($R.passed) below architectural floor $sentinel — GodotRuntimeExecutor likely failed" } }
@@ -1493,7 +1493,7 @@ function Complete-LockedGate {
     if ($lockedSuite -and $suiteResults[$lockedSuite].t.note) {
         Add-Detail "## $lockedSuite — LOCKED`n`n$($suiteResults[$lockedSuite].t.note)"
     }
-    Add-Detail "## Machine-busy — test lock held`n`nAt least one suite reported LOCK_TIMEOUT/LOCKED: its lock-wait window expired while a live holder owned every runtime slot (the wrapper's STATUS=LOCK_TIMEOUT line names which). Not a regression. The gate ends BUSY and names the slot holders; re-invoke with -RetryOnly once they end."
+    Add-Detail "## Machine-busy — test lock held`n`nAt least one suite reported LOCK_TIMEOUT/LOCKED: its lock-wait window expired while a live holder owned this checkout's lock, the machine's local-work lanes or every runtime slot (the wrapper's STATUS=LOCK_TIMEOUT line names which). Not a regression. The gate ends BUSY and names the slot holders; re-invoke with -RetryOnly once they end."
     $slots = @(Get-SlotHolders)
     Complete-Busy -Site 'locked' -Holders $slots -Next (Get-SlotNext $slots)
 }
@@ -1516,13 +1516,15 @@ function Assert-UnitsAdmitted {
     }
 }
 
-# Runs units as this gate's held children in one pool under its run dir; results land in $script:PoolResults. The
+# Runs units as this gate's held children in one pool under its run dir; results land in $script:PoolResults. The gate
+# first returns its own local-work lane (RuntimeSlots.ps1 Exit-HeldCheckoutLane): each child takes its own. The
 # pool's -OnPoll is the mid-run editor check (every 5 s): a hit ends the pool, which kills every child, before the gate
 # hands off. Afterwards the run dir is reaped of any orphaned Godot and every child's admission is checked.
 $script:PoolResults = @()
 $script:EditorPollSw = [System.Diagnostics.Stopwatch]::StartNew()
 function Invoke-GatePool {
     param([object[]] $Units, [string] $Phase, [switch] $RecompilePass)
+    Exit-HeldCheckoutLane -Lease $script:HeldLease
     $gpRunDir = $script:RunDir
     $gpRecompile = [bool] $RecompilePass
     $w = Get-RunPoolWidth

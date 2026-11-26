@@ -622,6 +622,30 @@ def test_a_fanout_whose_jobs_file_the_call_writes_defers_the_doctrine_to_its_lau
     assert present and "DOCTRINE-UNMET" in present, present
 
 
+def test_a_launching_prepare_call_meets_the_fanout_doctrine_gate(tmp_path, monkeypatch):
+    """`lens_briefs.py prepare` launches its panel, so the doctrine gate reads it as the fan-out call it makes: denied
+    once its jobs file exists (an earlier prep in the run dir), deferred to the fan-out's own foreground check while the
+    call is still to write it, and no launch at all under `--no-launch`."""
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
+    monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check",
+                        lambda payload, tiers=None, embed_slice=False: ("DOCTRINE-UNMET", None), raising=False)
+    (tmp_path / "spec.json").write_text('{"mode": "plan-check", "prefix": "pc"}', encoding="utf-8")
+    here = tmp_path.as_posix()
+    prepare = "python3 .claude/tools/lens_briefs.py prepare --spec %s/spec.json --out %s/out" % (here, here)
+
+    def reason(command, session):
+        return _deny_reason({"tool_name": "Bash", "session_id": session, "cwd": str(tmp_path),
+                             "tool_input": {"command": command}})
+    assert reason(prepare, "prep0001") is None
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "jobs_pc.json").write_text('{"jobs": []}', encoding="utf-8")
+    denied = reason(prepare, "prep0002")
+    assert denied and "DOCTRINE-UNMET" in denied, denied
+    assert reason(prepare + " --no-launch", "prep0003") is None
+
+
 def test_a_fanout_drivers_child_launch_skips_the_doctrine_only_for_a_recorded_admission(tmp_path, monkeypatch, capsys):
     sys.path.insert(0, HOOKS)
     import dispatch_table

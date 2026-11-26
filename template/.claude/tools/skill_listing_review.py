@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 
 CLAUDE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(CLAUDE_DIR / "hooks"))
+from _hook_state import by_mtime  # noqa: E402
 LEDGER = Path("reference") / "skill_listing_kept.json"
 NEWEST_FILES = 8      # transcripts to try, newest first
 CHUNK_BYTES = 1 << 22  # read back from a transcript's end 4 MB at a time
@@ -82,7 +84,7 @@ def listed_names(transcripts: Path):
     """The newest recorded whole skill listing's names, or None when no transcript holds one."""
     if not transcripts.is_dir():
         return None
-    files = sorted(transcripts.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = by_mtime(transcripts.glob("*.jsonl"), newest_first=True)
     for path in files[:NEWEST_FILES]:
         names = _latest_full_listing(path)
         if names is not None:

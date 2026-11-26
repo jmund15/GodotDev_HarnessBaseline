@@ -9,7 +9,8 @@
   Every run (runtime or Logic) takes its checkout lock ($script:CheckoutLockPrefix + Get-WorktreeId),
   so runs from one checkout serialize: they share .godot\mono\temp\bin\Debug\ and TestResults\.
   It then takes a local-work lane through tools/machine_slots.py, unless its parent loaned one.
-  Checkout-only gate coordinators (Enter-HeldCheckout) take no local-work lane.
+  A gate coordinator (Enter-HeldCheckout) holds a local-work lane for its own build and import only, and
+  Exit-HeldCheckoutLane returns it before its held children queue for lanes of their own.
   A runtime (Godot-spawning) run then takes runtime slots. There are $script:RuntimeSlotMax slot
   names. Slot 0 is the legacy machine-global name and slot 1 the legacy '-slot1' name, so an
   old-commit wrapper (which knows only those two) still excludes and is excluded on them.
@@ -618,6 +619,18 @@ function Enter-HeldCheckout {
     } catch { Exit-RunLocks -Lease $lease; throw }
     $lease.Reaped = [int[]] @(Invoke-RuntimeSlotSweep -RecordDir $lease.RecordDir)
     $lease
+}
+
+# Returns a held checkout's local-work lane and keeps its checkout lock. The gate calls it before it launches held
+# children, each of which takes a lane of its own: a coordinator that keeps a lane while its children queue deadlocks
+# against a whole-machine take, which collects every other lane and waits for the coordinator's, while the children
+# wait behind it until their lock-wait expires. Idempotent; $null and a lease without a lane pass through.
+function Exit-HeldCheckoutLane {
+    param($Lease)
+    Set-StrictMode -Version Latest
+    if ($null -eq $Lease -or -not $Lease.PSObject.Properties['MachineWork']) { return }
+    Exit-MachineWorkLease $Lease.MachineWork
+    $Lease.MachineWork = $null
 }
 
 function Set-CheckoutStamp {

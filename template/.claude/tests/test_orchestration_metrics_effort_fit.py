@@ -136,6 +136,21 @@ def main():
                   rc == 0 and got.get("wf_1:review:solo") == "clean" and got.get("wf_1:review:two") == "clean"
                   and all("effort_fit" not in v for v in got.values() if isinstance(v, dict))))
 
+    # --- --accept-rest names every sidecar it leaves, since each needs its own --rate -------
+    real_detail = om.pending_detail
+    left = [(f"sidecar-{i}", f"job-{i}") for i in range(12)]
+    om.pending_detail = lambda *_a, **_k: {"rows": [], "remaining": left, "sidecar_error": None,
+                                           "sampled_out": []}
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            om.accept_rest(wdir)
+        out = buf.getvalue()
+    finally:
+        om.pending_detail = real_detail
+    cases.append(("--accept-rest names all 12 sidecars it leaves unrated, past the first 10",
+                  all(f"sidecar-{i}:job-{i}" in out for i in range(12))))
+
     failed = [name for name, ok in cases if not ok]
     for name, ok in cases:
         print(("PASS " if ok else "FAIL ") + name)

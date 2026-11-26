@@ -2,38 +2,15 @@
 
 Drives the tool through `pwsh -NoProfile` on planted input under its own temp root: one failure outcome
 (a deny or a non-zero exit) and one success outcome. Nothing launches Godot, dotnet or a test run.
+Every case plants its own repo and hooks folder and shares one pwsh (`Cases`, a runspace each).
 """
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
+
+from _pwsh_drive import Cases, check, run_proof
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TOOL = os.path.join(REPO, ".claude", "scripts", "StaticGuards.ps1")
-failures = []
-
-
-def check(name, ok, detail=""):
-    print(("ok   " if ok else "FAIL ") + name + (f" - {detail}" if detail and not ok else ""))
-    if not ok:
-        failures.append(name)
-
-
-def pwsh(args, cwd, extra_env=None):
-    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SIDECAR", "HARNESS_WIDE_RUN_ADMITTED")}
-    env.update(extra_env or {})
-    done = subprocess.run(["pwsh", "-NoProfile", "-NonInteractive", *args], cwd=cwd, env=env,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-    return done.returncode, done.stdout, done.stderr
-
-
-def drive(body, tmp, extra_env=None, tool=TOOL):
-    driver = os.path.join(tmp, "driver.ps1")
-    with open(driver, "w", encoding="utf-8", newline="\n") as f:
-        f.write("$ErrorActionPreference = 'Stop'\n. '" + tool.replace("'", "''") + "'\n" + body + "\n")
-    return pwsh(["-File", driver], tmp, {"PROOF_TMP": tmp, **(extra_env or {})})
-
 
 GUARDS = ("tres_nullstrip_guard.py", "tool_cascade_audit.py", "tres_script_strip_guard.py",
           "test_suite_gate_coverage_guard.py", "duplicate_test_double_guard.py", "refcounted_free_guard.py")
@@ -42,53 +19,56 @@ RUN = ("$r = Invoke-StaticGuards -Repo $env:PROOF_TMP -Hooks (Join-Path $env:PRO
        "if ($r.Unavailable -or $r.Blocked.Count -gt 0) { exit 3 }")
 
 
-def plant(tmp, code_for):
-    hooks = os.path.join(tmp, "hooks")
-    shutil.rmtree(hooks, ignore_errors=True)
-    os.makedirs(hooks)
-    for name in GUARDS:
-        code = code_for(name)
-        if code is not None:
-            with open(os.path.join(hooks, name), "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"def main():\n    return {code}\n")
+def main(tmp):
+    batch = Cases()
+    number = 0
 
+    def case(code_for, body, verify, domain_map=False):
+        """A repo of its own with the guards `code_for` names planted; `PROOF_TMP` for the case is that repo."""
+        nonlocal number
+        number += 1
+        repo = os.path.join(tmp, f"repo{number}")
+        hooks = os.path.join(repo, "hooks")
+        os.makedirs(hooks)
+        for name in GUARDS:
+            code = code_for(name)
+            if code is not None:
+                with open(os.path.join(hooks, name), "w", encoding="utf-8", newline="\n") as f:
+                    f.write(f"def main():\n    return {code}\n")
+        if domain_map:
+            map_path = os.path.join(repo, ".claude", "scripts", "gate_domain_map.json")
+            os.makedirs(os.path.dirname(map_path))
+            with open(map_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write('{"domains": {}, "excluded_namespaces": {}}')
+        batch.add(body, verify, {"PROOF_TMP": repo, "PROOF_PY": sys.executable})
 
-def domain_map_cases(tmp):
-    """The gate's own domain map is the full gate's check: a scope run leaves it out, the full gate runs it."""
-    map_path = os.path.join(tmp, ".claude", "scripts", "gate_domain_map.json")
-    os.makedirs(os.path.dirname(map_path), exist_ok=True)
-    with open(map_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write('{"domains": {}, "excluded_namespaces": {}}')
-    plant(tmp, lambda name: 0)
-    env = {"PROOF_PY": sys.executable}
+    def missing(rc, out, _):
+        check("a missing guard stops the run, exit 3", rc == 3 and "nullstrip=UNAVAILABLE" in out and "unavailable=True" in out, f"rc={rc} {out!r}")
+    case(lambda name: None, RUN, missing)
+
+    def failing(rc, out, _):
+        check("a failing guard is blocked by name, exit 3", rc == 3 and "tool_cascade=FAIL" in out and "blocked=tool_cascade" in out, f"rc={rc} {out!r}")
+    case(lambda name: 1 if name == "tool_cascade_audit.py" else 0, RUN, failing)
+
+    def passing(rc, out, _):
+        check("six passing guards are all OK", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
+    case(lambda name: 0, RUN, passing)
+
+    def targeted(rc, out, _):
+        check("every guard receives the target as --repo", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
+    case(lambda name: "(0 if __import__('sys').argv[1:3] == ['--repo', __import__('os').environ['PROOF_TMP']] else 4)", RUN, targeted)
+
+    # The gate's own domain map is the full gate's check: a scope run leaves it out, the full gate runs it.
     results = ("$r = Invoke-StaticGuards -Repo $env:PROOF_TMP -Hooks (Join-Path $env:PROOF_TMP 'hooks') "
                "-Py $env:PROOF_PY%s; \"results=$($r.Results -join ',')\"")
-    rc, out, _ = drive(results % "", tmp, env)
-    check("a scope run leaves the domain map check out", rc == 0 and "results=" in out
-          and "domain_map" not in out, f"rc={rc} {out!r}")
-    rc, out, _ = drive(results % " -FullGate", tmp, env)
-    check("the full gate runs the domain map check", "domain_map=" in out, f"rc={rc} {out!r}")
 
-
-def main(tmp):
-    env = {"PROOF_PY": sys.executable}
-    plant(tmp, lambda name: None)
-    rc, out, _ = drive(RUN, tmp, env)
-    check("a missing guard stops the run, exit 3", rc == 3 and "nullstrip=UNAVAILABLE" in out and "unavailable=True" in out, f"rc={rc} {out!r}")
-    plant(tmp, lambda name: 1 if name == "tool_cascade_audit.py" else 0)
-    rc, out, _ = drive(RUN, tmp, env)
-    check("a failing guard is blocked by name, exit 3", rc == 3 and "tool_cascade=FAIL" in out and "blocked=tool_cascade" in out, f"rc={rc} {out!r}")
-    plant(tmp, lambda name: 0)
-    rc, out, _ = drive(RUN, tmp, env)
-    check("six passing guards are all OK", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
-    plant(tmp, lambda name: "(0 if __import__('sys').argv[1:3] == ['--repo', __import__('os').environ['PROOF_TMP']] else 4)")
-    rc, out, _ = drive(RUN, tmp, env)
-    check("every guard receives the target as --repo", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
-    domain_map_cases(tmp)
+    def scope_run(rc, out, _):
+        check("a scope run leaves the domain map check out", rc == 0 and "results=" in out and "domain_map" not in out, f"rc={rc} {out!r}")
+    case(lambda name: 0, results % "", scope_run, domain_map=True)
+    case(lambda name: 0, results % " -FullGate", lambda rc, out, _: check("the full gate runs the domain map check", "domain_map=" in out, f"rc={rc} {out!r}"),
+         domain_map=True)
+    batch.run(tmp, TOOL)
 
 
 if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="StaticGuards-proof-") as tmp:
-        main(tmp)
-    print("FAILED: " + ", ".join(failures) if failures else "all passed")
-    sys.exit(1 if failures else 0)
+    run_proof(main, "StaticGuards-proof-")

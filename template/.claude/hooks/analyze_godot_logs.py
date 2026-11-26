@@ -36,6 +36,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from collections import Counter, defaultdict
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import by_mtime  # noqa: E402
+
 # Force UTF-8 stdout on Windows (cp1252 can't handle JmoLogger's → arrows etc.)
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -64,8 +67,8 @@ def newest_test_log() -> Path:
     After a gate or batcher pool, newest means the unit that wrote last, not the failed unit: read a
     named unit's log by its explicit path, TEST_RUNS_DIR/<runId>/<unit>/godot_test.log.
     """
-    found = [p for p in [TEST_LOG_PATH, *TEST_RUNS_DIR.glob("**/godot_test.log")] if p.is_file()]
-    return max(found, key=os.path.getmtime) if found else TEST_LOG_PATH
+    found = by_mtime(p for p in [TEST_LOG_PATH, *TEST_RUNS_DIR.glob("**/godot_test.log")] if p.is_file())
+    return found[-1] if found else TEST_LOG_PATH
 
 
 # --- Log file selection --------------------------------------------------
@@ -110,7 +113,7 @@ def _nth_most_recent_log(n: int) -> Path:
         return DEFAULT_LOG_PATH
     # Glob timestamped logs, sort by mtime descending
     pattern = str(DEFAULT_LOG_DIR / "godot*.log")
-    matches = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    matches = by_mtime(glob.glob(pattern), newest_first=True)
     # Filter out the active `godot.log` so n=1 means "first historical"
     historical = [p for p in matches if Path(p).name != "godot.log"]
     if not historical:

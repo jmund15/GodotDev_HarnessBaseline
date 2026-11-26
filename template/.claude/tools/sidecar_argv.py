@@ -1,6 +1,7 @@
 """The one reader of sidecar launch argv: which `*_sidecar.sh` and `sidecar_fanout.py` calls a shell
 command executes, and the launcher flags each call carries. Stdlib only."""
 import functools
+import json
 import os
 import re
 import shlex
@@ -313,9 +314,51 @@ def launcher_invocations(command):
         script = os.path.basename(path.replace('\\', '/')).lower()
         if script == 'sidecar_fanout.py':
             calls.append(Invocation('fanout', script, path, segment[script_index + 1:]))
+        elif script == 'lens_briefs.py' and segment[script_index + 1:script_index + 2] == ['prepare']:
+            launch = prepare_fanout_args(segment[script_index + 2:])
+            if launch:
+                fanout = os.path.join(os.path.dirname(path), 'sidecar_fanout.py')
+                calls.append(Invocation('fanout', 'sidecar_fanout.py', fanout, launch))
         elif script.endswith('_sidecar.sh'):
             calls.append(Invocation('sidecar', script, path, segment[script_index + 1:]))
     return calls
+
+
+def prepare_fanout_args(args):
+    """The `sidecar_fanout.py` argv a `lens_briefs.py prepare <args>` call launches, or None when it launches nothing:
+    `--no-launch`, delegate mode, the native target, or a spec this reader cannot read. Its jobs file is the one
+    `prepare` writes (`<out>/jobs_<prefix>.json`), so every reader of a fan-out call reads the prepare call as the
+    launch it makes; the `--fold-*` and `--ledger-*` flags the spec adds are not here. Explore runs the fan-out
+    over the spill dir beside the jobs file; every other mode is a `--review` run over the out dir."""
+    spec_path = out = None
+    index = 0
+    while index < len(args):
+        arg, _, inline = args[index].partition('=')
+        if arg == '--no-launch':
+            return None
+        if arg in ('--spec', '--out'):
+            value = inline if inline else (args[index + 1] if index + 1 < len(args) else None)
+            index += 1 if inline else 2
+            if arg == '--spec':
+                spec_path = value
+            else:
+                out = value
+            continue
+        index += 1
+    if not spec_path or not out:
+        return None
+    try:
+        with open(spec_path, encoding='utf-8') as fh:
+            spec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    mode = spec.get('mode') if isinstance(spec, dict) else None
+    if not mode or mode == 'delegate' or (mode != 'explore' and spec.get('target') == 'native'):
+        return None
+    jobs = '%s/jobs_%s.json' % (out.rstrip('/\\'), spec.get('prefix') or mode)
+    if mode == 'explore':
+        return [jobs, '--detach']
+    return [jobs, '--review', '--out-dir', out, '--detach']
 
 
 def launcher_calls(command):

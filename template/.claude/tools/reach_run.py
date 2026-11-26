@@ -3,7 +3,8 @@
 
     python3 .claude/tools/reach_run.py [--base REF] [--dry-run] [--paths PATH [PATH ...]]
 
-The table is `gate_cadence` in the adaptation files (`tools/adaptation.py` owns the layering):
+The table is `gate_cadence` in the adaptation files (`tools/gate_cadence.py` owns its shape, and a table it rejects
+is refused):
   - `reach`: [{"name", "paths": [glob...], "cmd"}]. Each entry whose globs match a changed path runs
     once; `{paths}` in `cmd` becomes its matched paths, double-quoted and space-joined, and a `cmd`
     without it runs once as written. Collected paths that no longer exist are not passed; an entry whose matched
@@ -15,8 +16,8 @@ A glob with no `/` matches a file name at any depth; `**` crosses folders, `*` a
 
 Paths default to `git diff --name-only <merge-base with main>...HEAD` plus uncommitted and untracked
 files; `--base` replaces the merge-base ref, `--paths` replaces collection and is passed as given. Commands run from the
-repo root through the platform shell. Exit 0 on pass, 1 on any failed command, 2 when the table is
-absent or the arguments are refused.
+repo root through the platform shell. Exit 0 on pass, 1 on any failed command, 2 when the table is absent or
+malformed, or the arguments are refused.
 
 A command `gate_cadence.wide` classifies as wide runs only where a wide run may start (`hooks/_wide_runs.py`
 `gate_caller`: the session or a `gate` sidecar). In any other sidecar job it is printed as `owed to the gate` and not
@@ -34,6 +35,7 @@ sys.path.insert(0, HERE)
 
 import adaptation  # noqa: E402
 import cli_usage  # noqa: E402
+import gate_cadence  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
 import _wide_runs  # noqa: E402
@@ -107,21 +109,6 @@ def plan(table, paths):
     return steps, loose
 
 
-def table_errors(table):
-    rows = table.get("reach")
-    if not isinstance(rows, list):
-        return "reach is not a list"
-    for i, row in enumerate(rows):
-        if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
-                or not isinstance(row.get("cmd"), str) or not isinstance(row.get("paths"), list)):
-            return "reach[%d] needs name (str), paths (list) and cmd (str)" % i
-    if not isinstance(table.get("reach_exempt", []), list):
-        return "reach_exempt is not a list"
-    if not isinstance(table.get("reach_fallback", ""), str):
-        return "reach_fallback is not a string"
-    return None
-
-
 def owed(cmd):
     """The wide runs `cmd` starts when this process may not start one (a dispatched job that is not a gate), else []."""
     if _wide_runs.gate_caller({}, os.environ):
@@ -154,9 +141,9 @@ def main(argv):
         sys.stdout.write(cli_usage.refusal("a `gate_cadence.reach` list in adaptation.json",
                                            'gate_cadence.reach: [{"name": "app", "paths": ["src/**"], "cmd": "npx vitest related --run {paths}"}]'))
         return 2
-    error = table_errors(table)
-    if error:
-        print("reach: not configured (%s)" % error)
+    errors = gate_cadence.errors(table)
+    if errors:
+        print("reach: not configured (gate_cadence %s)" % "; ".join(errors))
         return 2
     given = args.paths is not None
     paths = [p.replace("\\", "/") for p in (args.paths if given else collect(args.base))]

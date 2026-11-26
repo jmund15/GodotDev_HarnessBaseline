@@ -989,8 +989,11 @@ def find_session_dir(session_id=None):
             continue
         for s in os.listdir(c):
             p = os.path.join(c, s, 'workflows')
-            if os.path.isdir(p):
-                sessions.append((os.path.getmtime(p), os.path.join(c, s)))
+            try:
+                if os.path.isdir(p):
+                    sessions.append((os.path.getmtime(p), os.path.join(c, s)))
+            except OSError:
+                continue
     if not sessions:
         return None
     return max(sessions)[1]
@@ -1583,8 +1586,9 @@ def accept_rest(session_dir, note=None):
         w(f'skipped {len(pairs)} ({reason}): ' + ', '.join(pairs[:10])
           + (f' +{len(pairs) - 10}' if len(pairs) > 10 else ''))
     if sidecar_left:
-        w(f'left {len(sidecar_left)} sidecar dispatch(es) unrated (rate each by --rate or --rate-batch): '
-          + ', '.join(sidecar_left[:10]) + (f' +{len(sidecar_left) - 10}' if len(sidecar_left) > 10 else ''))
+        w(f'left {len(sidecar_left)} sidecar dispatch(es) unrated (rate each by --rate or --rate-batch):')
+        for pair in sidecar_left:
+            w(f'  {pair}')
     if detail['sidecar_error']:
         w(f"sidecar census unreadable, its debt not shown: {detail['sidecar_error']}")
     if detail['sampled_out']:

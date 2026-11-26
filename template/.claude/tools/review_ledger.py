@@ -923,17 +923,23 @@ def ledger_path(repo: Path) -> Path:
     override = os.environ.get("HARNESS_REVIEW_LEDGER")
     if override:
         return Path(override) if Path(override).is_absolute() else repo / override
-    superproject = _git(repo, ["rev-parse", "--show-superproject-working-tree"])
-    if superproject.returncode == 0 and superproject.stdout.strip():
+    return review_snapshot.fact("ledger path", repo, lambda: _shared_ledger_path(repo))
+
+
+def _shared_ledger_path(repo: Path) -> Path:
+    # One call: the common dir, `repo`'s prefix below its toplevel, then the superproject's work tree when `repo` is
+    # a submodule checkout (git prints nothing for it otherwise).
+    done = _git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-prefix",
+                       "--show-superproject-working-tree"])
+    if done.returncode != 0:
+        return repo / ".claude" / "logs" / "review_ledger.jsonl"
+    git_dir, prefix, *superproject = done.stdout.decode().splitlines() + [""]
+    if any(line.strip() for line in superproject):
         raise ToolError(f"{repo} is a submodule checkout: the review ledger keys superproject paths, so run this "
-                        f"from the superproject {superproject.stdout.decode().strip()}")
+                        f"from the superproject {superproject[0].strip()}")
     # `repo` is the harness root and may sit below its git toplevel (`--show-prefix`): the shared store is the main
     # checkout's copy of that same root, so one ledger serves every worktree.
-    common = _git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-prefix"])
-    if common.returncode == 0:
-        git_dir, _, prefix = common.stdout.decode().strip().partition("\n")
-        return Path(git_dir.strip()).parent / prefix.strip() / ".claude" / "logs" / "review_ledger.jsonl"
-    return repo / ".claude" / "logs" / "review_ledger.jsonl"
+    return Path(git_dir.strip()).parent / prefix.strip() / ".claude" / "logs" / "review_ledger.jsonl"
 
 
 def escape_log_path(repo: Path) -> Path:
@@ -1105,13 +1111,23 @@ class Cover:
         self._default_mode = Mode(seat=seat)
         self.design = design
         self.claude_dir = claude_dir or _claude_dir()
-        self.request_rigor = rigor if rigor is not None else _rigor(task_id, ctx.repo)
+        self._rigor_args = (rigor, task_id)
         self._rules: dict = {}
         self._premise_ancestors: dict = {}
         self._tiers = None
         self._resolved_rows = {}
         self._visiting = set()
         self._registry = None
+
+    @property
+    def request_rigor(self):
+        """The request's rigor, read when a clause first asks: without a task scope it is a `git status`, which a
+        coverage view of a subject no rigor bounds never needs."""
+        if self._rigor_args is not None:
+            rigor, task_id = self._rigor_args
+            self._request_rigor = rigor if rigor is not None else _rigor(task_id, self.ctx.repo)
+            self._rigor_args = None
+        return self._request_rigor
 
     def rule(self, mandate: str):
         if mandate not in self._rules:
@@ -1493,10 +1509,11 @@ def reviewed_blob(cover: Cover, path: str, mandates, seats, *, skip_derived: boo
     return None
 
 
-def _prose_harness_scope(files, subject_kind: str, rigor: str) -> bool:
+def _prose_harness_scope(files, subject_kind: str, cover) -> bool:
     """A session or PR scope of harness paths none of which runs, below thorough rigor. Triage's
-    `candidate-lenses` admission (`execution_depth.md` §Candidate width) applies the same rule."""
-    if subject_kind not in ("session", "pr") or rigor == "thorough":
+    `candidate-lenses` admission (`execution_depth.md` §Candidate width) applies the same rule. Only these two
+    kinds read the request's rigor."""
+    if subject_kind not in ("session", "pr") or cover.request_rigor == "thorough":
         return False
     return _import("_claude_scope", CLAUDE_DIR / "hooks").is_prose_harness_scope(files)
 
@@ -1523,7 +1540,7 @@ class Coverage(NamedTuple):
 
 
 def _applicable_pairs(cover, files, mandates, kind):
-    prose = _prose_harness_scope(files, kind, cover.request_rigor)
+    prose = _prose_harness_scope(files, kind, cover)
     return ((m, path) for path in files for m in mandates if _owes(path, m, prose_scope=prose))
 
 
@@ -3066,7 +3083,7 @@ def whole_scope(cover: Cover, subject: str, files: list[str], mandates: list[str
                 and row.get("reviewer") == "panel" and isinstance(call, str) and call and row.get("head")):
             groups.setdefault((call, row["head"]), []).append(row)
     kind = _subject_kind(subject)
-    if _prose_harness_scope(files, kind, cover.request_rigor) and not any(
+    if _prose_harness_scope(files, kind, cover) and not any(
             _applicable_pairs(cover, files, mandates, kind)):
         return {"wholeScope": True, "call": None, "files": files, "mandates": mandates, "runs": [], "owed": False}
     runs = []

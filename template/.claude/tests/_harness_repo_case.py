@@ -1,11 +1,9 @@
 """Shared fixture for harness_tests.py proofs: a throwaway git repo with an origin/main upstream and
 the runner's module state patched to it, so a proof can plant harness paths and run `close`."""
-import atexit
 import contextlib
 import io
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,29 +13,28 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.claude/scripts'))
 import harness_tests as runner
-from _hook_call import _writable, copy_repo
-
-
-_TEMPLATES = {}  # one built repository per `seed_repo` implementation, shared by every class that inherits it
+from _git_fixture import built
+from _hook_call import copy_repo
 
 
 class RepoCase(unittest.TestCase):
-    """Each `seed_repo` implementation builds its repository once (on a prototype case) and each case resets to it by
+    """Each `seed_repo` implementation builds its repository once (`_git_fixture.built`) and each case resets to it by
     copying the built tree, `.git` included (`_hook_call.copy_repo`). A subclass that plants more files or commits
     extends `seed_repo` and calls super first; its cases then start from that state too."""
 
     @classmethod
     def _template(cls):
-        # Built on first use, not in setUpClass: some proofs construct a case and call setUp directly.
-        if cls.seed_repo not in _TEMPLATES:
-            root = tempfile.mkdtemp(prefix='harness_close_template_')
-            atexit.register(shutil.rmtree, root, onerror=_writable)
+        """(the built repository, its base commit). Built on first use, not in setUpClass: some proofs construct a case and
+        call setUp directly. One tree per `seed_repo` implementation, shared by every class that inherits it."""
+        def build(folder):
             proto = cls('setUp')
-            proto.repo = Path(root) / 'repo'
+            proto.repo = folder / 'repo'
             proto.repo.mkdir()
             proto.seed_repo()
-            _TEMPLATES[cls.seed_repo] = (proto.repo, proto.base)
-        return _TEMPLATES[cls.seed_repo]
+            (folder / 'base').write_text(proto.base, encoding='utf-8')
+
+        folder = built('%s.%s' % (cls.seed_repo.__module__, cls.seed_repo.__qualname__), build)
+        return folder / 'repo', (folder / 'base').read_text(encoding='utf-8')
 
     def seed_repo(self):
         for args in [('init', '-q'), ('config', 'user.email', 't@t'), ('config', 'user.name', 't')]:

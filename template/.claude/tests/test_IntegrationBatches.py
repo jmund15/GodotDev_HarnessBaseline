@@ -2,36 +2,34 @@
 
 Drives the tool through `pwsh -NoProfile` on planted input under its own temp root: one failure outcome
 (a deny or a non-zero exit) and one success outcome. Nothing launches Godot, dotnet or a test run.
+Every case shares one pwsh (`Cases`, a runspace each).
 """
 import os
 
-import _pwsh_drive
-from _pwsh_drive import check, run_proof
+from _pwsh_drive import Cases, check, run_proof
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TOOL = os.path.join(REPO, ".claude", "scripts", "IntegrationBatches.ps1")
 
 
-def drive(body, tmp, extra_env=None, tool=TOOL):
-    return _pwsh_drive.drive(body, tmp, tool, extra_env)
-
-
 def main(tmp):
-    cfg = os.path.join(tmp, ".claude", "skills", "project_subsystems")
-    os.makedirs(cfg)
-    path = os.path.join(cfg, "adaptation.json")
-    body = "$v = Get-AdaptationValue -Repo $env:PROOF_TMP -Key k -Default dflt; \"value=$v\"; if ($v -eq 'dflt') { exit 3 }"
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("{bad")
-    rc, out, err = drive(body, tmp)
-    check("malformed json yields the default and names the file", rc == 3 and "value=dflt" in out and "unparseable" in err, f"rc={rc} {out!r} {err!r}")
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write('{"k": "val"}')
-    rc, out, _ = drive(body, tmp)
-    check("a valid string key is returned", rc == 0 and "value=val" in out, f"rc={rc} {out!r}")
-    reader_and_mode(tmp)
-    plan_cases(tmp)
-    trx_cases(tmp)
+    batch = Cases()
+    body = "$v = Get-AdaptationValue -Repo $env:ADAPT_REPO -Key k -Default dflt; \"value=$v\"; if ($v -eq 'dflt') { exit 3 }"
+    for name, text in (("bad", "{bad"), ("good", '{"k": "val"}')):
+        cfg = os.path.join(tmp, name, ".claude", "skills", "project_subsystems")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "adaptation.json"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+
+    def malformed(rc, out, err):
+        check("malformed json yields the default and names the file", rc == 3 and "value=dflt" in out and "unparseable" in err, f"rc={rc} {out!r} {err!r}")
+    batch.add(body, malformed, {"ADAPT_REPO": os.path.join(tmp, "bad")})
+    batch.add(body, lambda rc, out, _: check("a valid string key is returned", rc == 0 and "value=val" in out, f"rc={rc} {out!r}"),
+              {"ADAPT_REPO": os.path.join(tmp, "good")})
+    reader_and_mode(tmp, batch)
+    plan_cases(tmp, batch)
+    trx_cases(tmp, batch)
+    batch.run(tmp, TOOL)
 
 
 TAGGED_FILE = """namespace Sample.Game.Tests.Integration.Visual;
@@ -93,47 +91,45 @@ def plant_repo(tmp, name="repo"):
     return repo
 
 
-def mode_of(tmp, repo, filter_text, windowed=False):
-    body = (f"$m = Resolve-RunMode -Repo '{repo}' -Filter '{filter_text}'" + (" -Windowed" if windowed else "") +
+def mode_body(repo, filter_text, windowed=False):
+    return (f"$m = Resolve-RunMode -Repo '{repo}' -Filter '{filter_text}'" + (" -Windowed" if windowed else "") +
             "; \"mode=$($m.mode) skipped=$(@($m.skipped) -join ',')\"")
-    rc, out, err = drive(body, tmp)
-    return rc, out.strip(), err
 
 
-def reader_and_mode(tmp):
+def reader_and_mode(tmp, batch):
     repo = plant_repo(tmp)
-    rc, out, err = drive(f"@(Get-RendererTaggedClasses -Repo '{repo}') -join ','", tmp)
-    got = sorted(out.strip().split(",")) if out.strip() else []
-    check("the reader returns exactly the tagged classes, namespaced from file-scoped and block declarations",
-          rc == 0 and got == sorted(TAGGED), f"rc={rc} {out!r} {err!r}")
-    check("the reader ignores an attribute in a comment, a doc comment or a string", bool(out.strip()) and not any(c in out for c in ("CommentedTests", "StringTests", "FakeTests", "PlainTests")), out)
 
+    def reader(rc, out, err):
+        got = sorted(out.strip().split(",")) if out.strip() else []
+        check("the reader returns exactly the tagged classes, namespaced from file-scoped and block declarations",
+              rc == 0 and got == sorted(TAGGED), f"rc={rc} {out!r} {err!r}")
+        check("the reader ignores an attribute in a comment, a doc comment or a string", bool(out.strip()) and not any(c in out for c in ("CommentedTests", "StringTests", "FakeTests", "PlainTests")), out)
+    batch.add(f"@(Get-RendererTaggedClasses -Repo '{repo}') -join ','", reader)
+
+    def mode_case(label, filter_text, want, windowed=False):
+        batch.add(mode_body(repo, filter_text, windowed), lambda rc, out, _: check(label, out.strip() == want, f"rc={rc} {out!r}"))
     v = FQN + "Visual."
-    rc, out, _ = mode_of(tmp, repo, "FullyQualifiedName~Tests.Integration.Visual.TaggedFileScopedTests")
-    check("a filter selecting only tagged classes runs windowed", out == "mode=windowed skipped=", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "FullyQualifiedName~Tests.Integration.Visual.PlainTests")
-    check("a filter selecting an untagged class runs headless", out == "mode=headless skipped=", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "(FullyQualifiedName~Tests.Integration.Visual.TaggedFileScopedTests|FullyQualifiedName~Tests.Integration.Visual.PlainTests)")
-    check("a mixed filter runs headless and names the tagged class it will not render",
-          out == f"mode=headless skipped={v}TaggedFileScopedTests", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "FullyQualifiedName~Tests.Integration.Visual.PlainTests", windowed=True)
-    check("-Windowed forces windowed", out == "mode=windowed skipped=", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "FullyQualifiedName~Tests.Integration.Nothing.Here.")
-    check("a filter selecting no class fails closed to headless", out == "mode=headless skipped=", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "TestCategory=Render")
-    check("a filter on another property fails closed to headless", out == "mode=headless skipped=", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "(" + "|".join(f"FullyQualifiedName~{t}." for t in TAGGED) + ")&")
-    check("the Render unit's own filter (OR of tagged classes, trailing quarantine slot) runs windowed", out == "mode=windowed skipped=", f"rc={rc} {out!r}")
-    rc, out, _ = mode_of(tmp, repo, "FullyQualifiedName~Tests.Integration.Visual.&" + "&".join(f"FullyQualifiedName!~{t}." for t in TAGGED))
-    check("a segment filter that excludes every tagged class runs headless", out == "mode=headless skipped=", f"rc={rc} {out!r}")
+    mode_case("a filter selecting only tagged classes runs windowed", "FullyQualifiedName~Tests.Integration.Visual.TaggedFileScopedTests", "mode=windowed skipped=")
+    mode_case("a filter selecting an untagged class runs headless", "FullyQualifiedName~Tests.Integration.Visual.PlainTests", "mode=headless skipped=")
+    mode_case("a mixed filter runs headless and names the tagged class it will not render",
+              "(FullyQualifiedName~Tests.Integration.Visual.TaggedFileScopedTests|FullyQualifiedName~Tests.Integration.Visual.PlainTests)",
+              f"mode=headless skipped={v}TaggedFileScopedTests")
+    mode_case("-Windowed forces windowed", "FullyQualifiedName~Tests.Integration.Visual.PlainTests", "mode=windowed skipped=", windowed=True)
+    mode_case("a filter selecting no class fails closed to headless", "FullyQualifiedName~Tests.Integration.Nothing.Here.", "mode=headless skipped=")
+    mode_case("a filter on another property fails closed to headless", "TestCategory=Render", "mode=headless skipped=")
+    mode_case("the Render unit's own filter (OR of tagged classes, trailing quarantine slot) runs windowed",
+              "(" + "|".join(f"FullyQualifiedName~{t}." for t in TAGGED) + ")&", "mode=windowed skipped=")
+    mode_case("a segment filter that excludes every tagged class runs headless",
+              "FullyQualifiedName~Tests.Integration.Visual.&" + "&".join(f"FullyQualifiedName!~{t}." for t in TAGGED), "mode=headless skipped=")
     for windowed, want in ((False, "|--headless --fixed-fps 60|"), (True, "|--audio-driver Dummy|")):
-        rc, out, _ = drive(f"$m = Resolve-RunMode -Repo '{repo}' -Filter 'FullyQualifiedName~Tests.Integration.Visual.PlainTests'"
-                           + (" -Windowed" if windowed else "") + "; \"|$($m.engineArgs)|\"", tmp)
-        check(f"a {'windowed' if windowed else 'headless'} run passes the engine {want.strip('|')}: no test run plays sound, headless runs at a fixed 60 fps",
-              out.strip() == want, f"rc={rc} {out!r}")
+        def engine_args(rc, out, _, windowed=windowed, want=want):
+            check(f"a {'windowed' if windowed else 'headless'} run passes the engine {want.strip('|')}: no test run plays sound, headless runs at a fixed 60 fps",
+                  out.strip() == want, f"rc={rc} {out!r}")
+        batch.add(f"$m = Resolve-RunMode -Repo '{repo}' -Filter 'FullyQualifiedName~Tests.Integration.Visual.PlainTests'"
+                  + (" -Windowed" if windowed else "") + "; \"|$($m.engineArgs)|\"", engine_args)
 
 
-def plan_cases(tmp):
+def plan_cases(tmp, batch):
     repo = plant_repo(tmp, "planrepo")
     tagged = ",".join(f"'{t}'" for t in TAGGED)
     body = (f"$man = Read-BatchManifest -Path '{os.path.join(tmp, 'none.json')}'\n"
@@ -141,30 +137,31 @@ def plan_cases(tmp):
             "foreach ($p in $plan) { \"ROW $($p.label) $($p.filter)\" }\n"
             "foreach ($p in $plan) { \"WIN $($p.label) $([bool] $p.windowed)\" }\n"
             f"foreach ($p in $plan) {{ $m = Resolve-RunMode -Repo '{repo}' -Filter $p.filter; \"MODE $($p.label) $($m.mode)\" }}\n")
-    rc, out, err = drive(body, tmp)
-    rows = [l.split(" ", 2) for l in out.splitlines() if l.startswith("ROW ")]
-    windowed = {l.split(" ")[1]: l.split(" ")[2] for l in out.splitlines() if l.startswith("WIN ")}
-    check("the planner marks the Render unit windowed and every batch headless",
-          windowed.get("Render") == "True" and all(v == "False" for k, v in windowed.items() if k != "Render") and len(windowed) >= 2,
-          f"rc={rc} {out!r}")
-    modes = {l.split(" ")[1]: l.split(" ")[2] for l in out.splitlines() if l.startswith("MODE ")}
-    render = [r for r in rows if r[1] == "Render"]
-    others = [r for r in rows if r[1] != "Render"]
-    check("the plan holds exactly one Render row beside the segment batches", rc == 0 and len(render) == 1 and len(others) >= 1, f"rc={rc} {out!r} {err!r}")
-    check("every segment batch excludes every tagged class",
-          bool(others) and all(f"&FullyQualifiedName!~{t}." in r[2] for r in others for t in TAGGED), out)
-    check("the Render row selects every tagged class and excludes none",
-          bool(render) and all(f"FullyQualifiedName~{t}." in render[0][2] for t in TAGGED) and "!~" not in render[0][2], out)
-    check("through the runner's own mode choice the Render row is windowed and every batch headless",
-          modes.get("Render") == "windowed" and all(v == "headless" for k, v in modes.items() if k != "Render") and len(modes) == len(rows), f"{modes} {err!r}")
+
+    def planned(rc, out, err):
+        rows = [l.split(" ", 2) for l in out.splitlines() if l.startswith("ROW ")]
+        windowed = {l.split(" ")[1]: l.split(" ")[2] for l in out.splitlines() if l.startswith("WIN ")}
+        check("the planner marks the Render unit windowed and every batch headless",
+              windowed.get("Render") == "True" and all(v == "False" for k, v in windowed.items() if k != "Render") and len(windowed) >= 2,
+              f"rc={rc} {out!r}")
+        modes = {l.split(" ")[1]: l.split(" ")[2] for l in out.splitlines() if l.startswith("MODE ")}
+        render = [r for r in rows if r[1] == "Render"]
+        others = [r for r in rows if r[1] != "Render"]
+        check("the plan holds exactly one Render row beside the segment batches", rc == 0 and len(render) == 1 and len(others) >= 1, f"rc={rc} {out!r} {err!r}")
+        check("every segment batch excludes every tagged class",
+              bool(others) and all(f"&FullyQualifiedName!~{t}." in r[2] for r in others for t in TAGGED), out)
+        check("the Render row selects every tagged class and excludes none",
+              bool(render) and all(f"FullyQualifiedName~{t}." in render[0][2] for t in TAGGED) and "!~" not in render[0][2], out)
+        check("through the runner's own mode choice the Render row is windowed and every batch headless",
+              modes.get("Render") == "windowed" and all(v == "headless" for k, v in modes.items() if k != "Render") and len(modes) == len(rows), f"{modes} {err!r}")
+    batch.add(body, planned)
     body2 = (f"$man = Read-BatchManifest -Path '{os.path.join(tmp, 'none.json')}'\n"
              "$plan = @(New-IntegrationPlan -Segments @('Visual') -Manifest $man -TargetBatchSec 60 -MaxBatchTests 380)\n"
              "\"labels=$(($plan | ForEach-Object label) -join ',')\"")
-    rc, out, _ = drive(body2, tmp)
-    check("with no tagged class the plan has no Render row", out.strip() == "labels=Integration_B1", f"rc={rc} {out!r}")
+    batch.add(body2, lambda rc, out, _: check("with no tagged class the plan has no Render row", out.strip() == "labels=Integration_B1", f"rc={rc} {out!r}"))
 
 
-def trx_cases(tmp):
+def trx_cases(tmp, batch):
     trx = os.path.join(tmp, "render.trx")
     with open(trx, "w", encoding="utf-8", newline="\n") as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?><TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results>'
@@ -174,16 +171,15 @@ def trx_cases(tmp):
     body = (f"$plan = @([pscustomobject]@{{ label = 'Render'; segs = @('Render'); status = 'GREEN'; ran = $true; trx = '{trx}' }})\n"
             "$f = Get-FreshDurations -Plan $plan\n"
             "\"keys=$(($f.durations.Keys | Sort-Object) -join ',') tests=$($f.durations['Render'].tests) sec=$($f.durations['Render'].seconds) complete=$($f.complete)\"")
-    rc, out, err = drive(body, tmp)
-    check("the Render row's measured durations are keyed Render, never the Visual or Playtest batches' keys",
-          out.strip() == "keys=Render tests=2 sec=5 complete=True", f"rc={rc} {out!r} {err!r}")
+    batch.add(body, lambda rc, out, err: check("the Render row's measured durations are keyed Render, never the Visual or Playtest batches' keys",
+                                               out.strip() == "keys=Render tests=2 sec=5 complete=True", f"rc={rc} {out!r} {err!r}"))
     man = os.path.join(tmp, "m.json")
     body = (f"$fresh = [pscustomobject]@{{ durations = @{{ Render = [pscustomobject]@{{ seconds = 5.0; tests = 2 }} }}; complete = $true; why = '' }}\n"
             f"$plan = @([pscustomobject]@{{ label = 'Render'; segs = @('Render'); status = 'GREEN'; workWall = 6.0 }})\n"
             f"[void](Save-BatchManifest -Path '{man}' -Plan $plan -Counters @{{ Render = 0 }} -Fresh $fresh -AllSegments @('Visual'))\n"
             f"$m = Read-BatchManifest -Path '{man}'; \"units=$(($m.seconds.Keys) -join ',') wall=$($m.batchWall['Render'])\"")
-    rc, out, err = drive(body, tmp)
-    check("the manifest keeps the Render unit though it is not a Tests/Integration segment", out.strip() == "units=Render wall=6", f"rc={rc} {out!r} {err!r}")
+    batch.add(body, lambda rc, out, err: check("the manifest keeps the Render unit though it is not a Tests/Integration segment",
+                                               out.strip() == "units=Render wall=6", f"rc={rc} {out!r} {err!r}"))
 
 
 if __name__ == "__main__":

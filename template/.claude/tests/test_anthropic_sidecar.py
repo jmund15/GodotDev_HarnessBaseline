@@ -21,7 +21,8 @@ def child_ttls(tmp):
     stub = write_stub(tmp / "bin" / "claude", 'echo "${CLAUDE_CODE_PROMPT_CACHE_TTL:-unset}" >> "$STUB_LOG"\n'
                       'echo \'{"type":"result","subtype":"success","is_error":false,"result":"OK",'
                       '"modelUsage":{"stub-model":{"contextWindow":200000}}}\'\n')
-    env = launch_env(tmp, [tmp / "bin"], CLAUDE_BIN=str(stub), STUB_LOG=str(tmp / "ttl.log"))
+    # The preflight `--check` the launch's dispatch hook would run is test_sidecar_dispatch_context's subject.
+    env = launch_env(tmp, [tmp / "bin"], CLAUDE_BIN=str(stub), STUB_LOG=str(tmp / "ttl.log"), HARNESS_SIDECAR_PREFLIGHT="0")
     plan, config_dir, *_ = plan_of(ROOT, LAUNCHER, env)
     env["PROVIDER_CAPACITY_CACHE"] = str(write_cache(tmp / "capacity.json", plan,
                                                      planted_reading(plan, transport_cost_model(ROOT, plan))))

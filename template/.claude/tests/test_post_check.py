@@ -8,12 +8,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / ".claude/tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _git_fixture  # noqa: E402
+import _hook_call  # noqa: E402
 import fold_check  # noqa: E402
 import post_check  # noqa: E402
 import review_ledger  # noqa: E402
@@ -32,6 +36,17 @@ def git(root, *args, input_text=None):
                           capture_output=True, text=True, check=True, input=input_text).stdout
 
 
+def _build_checkout(folder):
+    git(folder, "init", "-q")
+    git(folder, "commit", "-q", "--allow-empty", "-m", "init")
+
+
+def built_checkout():
+    """The checkout every case starts from (`git init` and one empty commit), built once (`_git_fixture.built`) and copied
+    per case."""
+    return _git_fixture.built("post_check.checkout", _build_checkout)
+
+
 class Env:
     """A temp git checkout holding one plan, a scratch ledger and the roster/findings/digest files."""
 
@@ -39,8 +54,7 @@ class Env:
         self.tmp = tempfile.TemporaryDirectory()
         test.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        git(self.root, "init", "-q")
-        git(self.root, "commit", "-q", "--allow-empty", "-m", "init")
+        _hook_call.copy_repo(built_checkout(), self.root)
         self.plan = self.root / "plan.md"
         self.ledger = self.root / "ledger.jsonl"
         self.escape = self.root / "escape.jsonl"
@@ -64,9 +78,13 @@ class Env:
                 os.environ[key] = value
 
     def ledger_tool(self, *args):
-        done = subprocess.run([sys.executable, str(TOOLS / "review_ledger.py"), *args], cwd=self.root,
-                              capture_output=True, text=True)
-        return done
+        """One `review_ledger` command in this checkout, in process (`test_review_ledger` spawns its CLI): a
+        stand-in for the completed process with its exit code and text streams."""
+        # The live `_pick` probes each provider's capacity through subprocesses; `test_review_ledger` drives it.
+        with mock.patch.object(review_ledger, "_pick", lambda tier: {"transport": None, "room": None,
+                                                                      "payOptions": [], "ranked": []}):
+            code, out, err = review_ledger.run([str(arg) for arg in args], self.root)
+        return types.SimpleNamespace(returncode=code, stdout=out, stderr=err)
 
     def plant_panel_row(self, mandate=MANDATE, path="plan.md"):
         done = self.ledger_tool("record", "--stage", "plan-check", "--subject", SUBJECT, "--inline", "panel",

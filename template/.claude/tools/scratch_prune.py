@@ -444,7 +444,7 @@ def archive_entry(path, scratch, vault, files=None):
         dest.parent.mkdir(parents=True, exist_ok=True)
         data, count = vault_sync.mask_bytes(source.read_bytes())
         dest.write_bytes(data)
-        if dest.stat().st_size != len(data) or dest.read_bytes() != data:
+        if dest.read_bytes() != data:
             raise OSError('copy verification failed for ' + str(dest))
         if count:
             masked.append((rel.as_posix(), count))

@@ -10,7 +10,7 @@ names each missing tier with its dispatch consumer. A slice credits when the run
 inside the delivered output: the Bash PostToolUse entry (`--bash-credit`) compares against the text the run
 staged, so a command joined with `&&` earns credit and one cut by a pipe, filter or redirect earns none.
 Each recorded load carries the digest of the text it delivered (the skill's body, the ladder file), so a session
-holding a copy the file has since left behind is denied until it reloads (`held_ladder`, `_hook_state.skill_in_context`).
+holding a copy the file has since left behind is denied until it reloads (`ladder_credit`, `_hook_state.skill_in_context`).
 Class: process guard, blocking because the advisory that replaced it let the skip recur (instruction_quality §3)."""
 import json
 import os
@@ -18,6 +18,7 @@ import re
 import shlex
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import (LADDER_DIGEST_KEY, fire_once_since_compaction, LADDER_READY_KEY, LADDER_SLICE_KEY, adopt_ladder_digest,  # noqa: E402
@@ -40,26 +41,51 @@ def expected_path(payload):
     return os.path.realpath(_root(payload if isinstance(payload, dict) else {}) / RELATIVE_PATH)
 
 
-def ladder_digest(payload):
-    """The digest of the ladder file the session's next Read would deliver (line endings normalized), else None
-    when there is none: a load records it, and a session whose recorded digest differs holds older text."""
+def _digest_under(root):
     try:
-        with open(expected_path(payload if isinstance(payload, dict) else {}), "rb") as fh:
+        with open(Path(root) / RELATIVE_PATH, "rb") as fh:
             return stdout_sha256(fh.read().decode("utf-8", errors="replace"))
     except OSError:
         return None
 
 
-def held_ladder(state, payload=None):
-    """(full ladder Read held, tiers a slice holds) from a session `state` dict, for the ladder file as it is now: a
-    record made against other text (the digest it carries differs) holds nothing, so the session is denied until it
-    reloads. A record with no digest cannot be told stale and stands."""
-    ready, tiers = state.get(STATE_KEY) is True, state.get(LADDER_SLICE_KEY)
-    tiers = {t for t in tiers if isinstance(t, str)} if isinstance(tiers, list) else set()
+def ladder_digest(payload):
+    """The digest of the ladder file the session's next Read would deliver (line endings normalized), else None
+    when there is none: a load records it, and a session whose recorded digest differs holds older text."""
+    return _digest_under(_root(payload if isinstance(payload, dict) else {}))
+
+
+NONE, STALE, CURRENT = "none", "stale", "current"
+STALE_CAUSE = "the ladder file changed since this session loaded it"
+
+
+class LadderCredit(NamedTuple):
+    """`status` is NONE (no load since the session started or last compacted), STALE (every recorded load was cut
+    from text the ladder file has since left behind, so it credits nothing) or CURRENT; `full` is a whole-file Read
+    and `tiers` the tiers a slice printed, both empty unless CURRENT."""
+    status: str
+    full: bool
+    tiers: frozenset
+
+    def covers(self, tier):
+        return self.full or tier in self.tiers
+
+
+def ladder_credit(session_id="", root=None, state=None):
+    """The one reading of a session's ladder loads, for every gate, notice and tool: its `LadderCredit` against the
+    ladder file under `root` (default: the hook's root, `CLAUDE_PROJECT_DIR` else the cwd), so a tool passes the
+    checkout it reads. `state` is the session state a caller already holds, else it is read for `session_id`;
+    unreadable state reads as NONE. A record with no digest cannot be told stale and stands."""
+    if state is None:
+        state = read_json_salvage(state_path(session_id or ""))
+    full, tiers = state.get(STATE_KEY) is True, state.get(LADDER_SLICE_KEY)
+    tiers = frozenset(t for t in tiers if isinstance(t, str)) if isinstance(tiers, list) else frozenset()
+    if not (full or tiers):
+        return LadderCredit(NONE, False, frozenset())
     recorded = state.get(LADDER_DIGEST_KEY)
-    if recorded and recorded != ladder_digest(payload):
-        return False, set()
-    return ready, tiers
+    if recorded and recorded != _digest_under(root if root is not None else _root({})):
+        return LadderCredit(STALE, False, frozenset())
+    return LadderCredit(CURRENT, full, tiers)
 
 
 def _full_read_succeeded(payload):
@@ -281,12 +307,13 @@ def advance_notice(payload):
     session_id = payload.get('session_id') or ''
     if not session_id:
         return ''
-    ready, tiers = held_ladder(read_json_salvage(state_path(session_id)), payload)
+    credit = ladder_credit(session_id, _root(payload))
     unmet = []
     if not _skill_held(session_id, payload):
         unmet.append(skill_step('orchestration', payload, 'orchestration §0'))
-    if not (ready or tiers):
-        unmet.append(SLICE_STEP.format(which='each tier the jobs pin', tiers='<tier>...'))
+    if credit.status != CURRENT:
+        unmet.append(SLICE_STEP.format(which='each tier the jobs pin', tiers='<tier>...')
+                     + (' (%s)' % STALE_CAUSE if credit.status == STALE else ''))
     if not unmet or not fire_once_since_compaction(session_id, NOTICE_ONCE):
         return ''
     return '%s a dispatch is denied until you %s.' % (NOTICE_TAG, ' and '.join(unmet))
@@ -315,17 +342,18 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     written, state = update_json_locked(state_path(session_id), dict)
     if not written:
         return None, FAULT_NOTE
-    ladder_ready, covered = held_ladder(state, payload)
+    credit = ladder_credit(session_id, _root(payload), state)
     unmet, slice_text = [], None
-    if not _skill_held(session_id, payload):
+    skill_held = _skill_held(session_id, payload)
+    if not skill_held:
         unmet.append(skill_step('orchestration', payload, 'orchestration §0'))
-    if not ladder_ready:
+    if not credit.full:
         needed = _call_tiers(tiers)
         if needed is None:
             unmet.append(READ_STEP.format(path=expected_path(payload)))
         else:
             needed, consumers = needed
-            missing = [t for t in needed if t not in covered]
+            missing = [t for t in needed if not credit.covers(t)]
             if missing:
                 named = ', '.join(_tier_phrase(tier, consumers) for tier in missing)
                 slice_text = _embedded_slice(session_id, payload) if embed_slice else None
@@ -333,7 +361,10 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
                              else SLICE_STEP.format(which=named, tiers=' '.join(missing)))
     if not unmet:
         return None, None
-    reason = ('Dispatch DENIED: the dispatch doctrine is not in context since the session started or last compacted. '
+    stale = credit.status == STALE and len(unmet) > (0 if skill_held else 1)
+    causes = ((['is not in context since the session started or last compacted'] if not (stale and skill_held) else [])
+              + (['is out of date: ' + STALE_CAUSE] if stale else []))
+    reason = ('Dispatch DENIED: the dispatch doctrine ' + ' and '.join(causes) + '. '
               'Load it: ' + '; '.join(unmet) + '. Then check this call against it (route, jobs, '
               'models, efforts, reading) and re-issue it with any change it calls for.')
     failure = ladder_receipt_failure(session_id) if session_id else None
@@ -342,26 +373,6 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     if slice_text:
         reason += '\n\n' + slice_text
     return reason, None
-
-
-def ladder_held(session_id):
-    """True while any of the ladder doctrine is in this context: a full Read, or a slice of any tier, of the ladder
-    text now on disk. Unreadable state reads as not held."""
-    ready, tiers = held_ladder(read_json_salvage(state_path(session_id or "")))
-    return bool(ready or tiers)
-
-
-def tier_in_context(session_id, tier):
-    """True while the ladder rows claiming `tier` are in this context: a full Read, or a slice that named the tier,
-    of the ladder text now on disk. Unreadable state reads as not in context."""
-    ready, tiers = held_ladder(read_json_salvage(state_path(session_id or "")))
-    return ready or tier in tiers
-
-
-def claim_loaded(session_id):
-    """True while the ladder is in context; compaction clears it. Unreadable state reads as not loaded."""
-    written, state = update_json_locked(state_path(session_id or ""), dict)
-    return bool(written and held_ladder(state)[0])
 
 
 def main(argv=None):
