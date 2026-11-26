@@ -36,11 +36,7 @@ Sharpened litmus: *"Could a cheap-model summary **silently miss a defect** that 
 
 **Cross-references:** Global CLAUDE.md "Worker Model Delegation" section; project CLAUDE.md §9 Tool Routing — Pre-Call Litmus (the harness-wide enforcement entry); §7 (LSP); §9 (Semantic Search); the language layer's LSP-default memory.
 
-**Hooks (advisory only — never block):**
-- `.claude/hooks/tool_routing_nudge.py` — **PreToolUse** stderr nudge on `Grep` / `mcp__obsidian__obsidian_read_note` / `mcp__obsidian__obsidian_global_search`. Catches single-call shape mismatches at call time.
-- Companion: `.claude/hooks/tool_routing_cumulative_reset.py` — **UserPromptSubmit** `touch`es per-session state file at turn start so the cumulative counter knows the boundary. Stashes user prompt text for K1 cue-word check. Runs a 24h stale-sweep on state files.
-
-State files at `~/.claude/.routing_state/<sid_short>.json`. Atomic writes via tempfile+rename. State-write failures emit one stderr line then continue (visible failure beats silent degradation).
+The routing hooks this note once described (a PreToolUse nudge and its turn-state companion) were deleted; the rule above is carried by the always-loaded tool-routing text.
 
 ---
 
@@ -65,7 +61,7 @@ State files at `~/.claude/.routing_state/<sid_short>.json`. Atomic writes via te
 - *Wrong*: agent loaded LSP schema, called `LSP(operation="workspaceSymbol", filePath=".", line=1, character=1)` with `.` as a placeholder, got `Path is not a file: .`, then silently fell through to Glob+Grep+Read. The rubric scored PASS because the *intent* was LSP, but the functional outcome equalled never reaching for LSP at all.
 - *Right*: `LSP(operation="documentSymbol", filePath="Services/AbilityCrafter.cs", line=1, character=1)` to get the line:column of `ApplyModifiers` (line 403), THEN `LSP(operation="findReferences", filePath="Services/AbilityCrafter.cs", line=403, character=29)` for callers.
 - **Why this is a documented trap**: (a) `filePath` is required on every LSP operation, even workspace-wide ones — it's a language-server routing hint (extension picks the server), not a query target; passing `.` or `""` always fails. (b) MCP LSP `workspaceSymbol` does NOT take a query parameter — it returns 100 unfiltered alphabetical-by-path symbols, useless for targeted lookup. The right "find symbol by name" workflow is **anchor-then-navigate**: Grep on `class FooBar`/`interface FooBar` (legitimate Grep, not the bypass smell) OR `semantic-search("FooBar")` to find the file → `documentSymbol` for the line → `findReferences`/`hover`/`incomingCalls` from the anchored position.
-- **Doctrine update propagated to**: `csharp_lsp.md` worked-example section, `lsp-early-load` SessionStart reminder, CLAUDE.md §9 "PascalCase on .cs" row, `tool_routing_nudge.py` PreToolUse text — all four reference points now say anchor-then-navigate, not `workspaceSymbol(query)`.
+- **Doctrine update propagated to**: `csharp_lsp.md` worked-example section, `lsp-early-load` SessionStart reminder, CLAUDE.md §9 "PascalCase on .cs" row — all three reference points now say anchor-then-navigate, not `workspaceSymbol(query)`.
 
 **Example 5 — J1-style first-call-recovery misinterpretation (added 2026-05-03 from focused-diagnostic re-run).**
 - *Prompt*: "Plan a refactor to consolidate WireSpread duplication across the four *Effect.Apply() methods..."

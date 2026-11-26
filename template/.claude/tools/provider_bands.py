@@ -976,7 +976,7 @@ def _draw_cells(draw, alias, effort, plans):
 
 def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, draw=None, pay=False):
     """{tiers, seat, sessionPlan, groups, payOptions, plansLow, warming, ages, refused}: the one facts computation
-    behind `for-role` and `hooks/task_brief_facts`.
+    behind `for-role`.
 
     A plan `plan_room` drops (`room: None`) is absent from every group and takes
     its route with it; a plan whose reader returned nothing fresh is named in `warming`, never dropped; a

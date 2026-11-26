@@ -21,6 +21,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from unittest.mock import patch
 
@@ -56,9 +57,9 @@ def write_proof(repo, name):
     return path
 
 
-def run_stubbed(repo, paths, outcomes, options=None, serial=(), peer=False):
+def run_stubbed(repo, paths, outcomes, options=None, serial=(), peer=False, on_launch=None):
     """Run planted proof outcomes through real slot admission. Return statuses, details, launches
-    as (proof name, machine held), exclusive takes, and stdout."""
+    as (proof name, machine held), exclusive takes, and stdout. `on_launch(name)` runs inside each launch."""
     launches, takes, holder = [], [], {}
     real_take = harness_tests._take_slots
     real_make = harness_tests._run_context
@@ -71,6 +72,8 @@ def run_stubbed(repo, paths, outcomes, options=None, serial=(), peer=False):
     def stub(proof, timeout=None, root=None, **_):
         name = os.path.basename(proof)
         launches.append((name, holder["ctx"].held))
+        if on_launch:
+            on_launch(name)
         return outcomes[name].pop(0)
 
     def take(exclusive, count=1, split=None):
@@ -185,6 +188,32 @@ def case_a_red_alone_skips_the_timeout_retries():
     check("a red the run's judge excuses (pre-existing) leaves the timeout retries running",
           statuses == {"test_aslow.py": "pass", "test_red.py": "fail", "test_flaky.py": "pass"}
           and seen == [["test_red.py"]], "statuses=%s judge saw %s" % (statuses, seen))
+
+
+def case_timeout_retries_confirm_side_by_side_after_the_assertion_retries():
+    durations = {"test_flaky.py": 1.0, "test_slow_a.py": 1.0, "test_slow_b.py": 1.0}
+    repo = make_repo(durations)
+    paths = [write_proof(repo, name) for name in sorted(durations)]
+    lock, seen, running, overlap = threading.Lock(), Counter(), [0], []
+
+    def hold_the_retry(name):
+        with lock:
+            seen[name] += 1
+            if not (name.startswith("test_slow") and seen[name] == 2):
+                return
+            running[0] += 1
+            overlap.append(running[0])
+        time.sleep(0.5)
+        with lock:
+            running[0] -= 1
+    timeout = ("fail", 3.0, "TIMEOUT after 3s")
+    outcomes = {"test_flaky.py": [("fail", 1.0, "AssertionError: race"), ("pass", 1.0, "")],
+                "test_slow_a.py": [timeout, ("pass", 1.0, "")], "test_slow_b.py": [timeout, ("pass", 1.0, "")]}
+    statuses, _, launches, _, _ = run_stubbed(repo, paths, outcomes, on_launch=hold_the_retry)
+    retries = list(confirmations(launches))
+    check("an assertion retry runs first, alone, and the timeout retries it cannot latch on run side by side",
+          statuses == dict.fromkeys(durations, "pass") and retries[0] == "test_flaky.py" and max(overlap or [0]) == 2,
+          "statuses=%s retries=%s overlap=%s" % (statuses, retries, overlap))
 
 
 def case_a_close_judges_only_new_reds():
@@ -510,6 +539,7 @@ def case_red_rule_refuses_non_callable_judge_and_direct_init():
 def main():
     for case in (case_an_ordinary_confirmation_takes_no_exclusive_lease, case_a_peer_lane_never_stalls_a_confirmation,
                  case_a_serial_proof_keeps_its_own_exclusive_take, case_a_red_alone_skips_the_timeout_retries,
+                 case_timeout_retries_confirm_side_by_side_after_the_assertion_retries,
                  case_a_close_judges_only_new_reds, case_a_red_alone_skips_the_other_assertion_retries,
                  case_reds_rerun_at_base_side_by_side, case_a_ranged_close_runs_the_timeout_retry_after_a_red_fails_alone,
                  case_a_timeout_red_skips_the_first_red_bisect, case_a_proof_whose_own_subprocess_timed_out_is_a_timeout,

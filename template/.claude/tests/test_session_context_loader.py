@@ -67,12 +67,6 @@ def main():
         + f"sys.path.insert(0, {str(real_claude / 'tools')!r})\n"
         + f"runpy.run_path({str(real_claude / 'tools/self_improvement_due.py')!r}, run_name='__main__')\n",
         encoding="utf-8", newline="\n")
-    (claude_dir / "self_evaluate_archive.json").write_text(
-        json.dumps({"structured_entries": [{"session_id": "s1"}, {"session_id": "s2"}]}),
-        encoding="utf-8")
-    (claude_dir / "orchestration_candidates.json").write_text("{}", encoding="utf-8")
-    (claude_dir / "logs" / "eval_dashboard_last.json").write_text(
-        json.dumps({"row_count": 2, "date": "2026-09-14"}), encoding="utf-8")
 
     for source in ("resume", "compact"):
         out = scl.self_improvement_advisory(due_root, source)
@@ -81,9 +75,10 @@ def main():
     out = scl.self_improvement_advisory(due_root, "startup")
     check("startup: nothing due prints nothing", out == "", repr(out))
 
-    (claude_dir / "self_evaluate_archive.json").write_text(
-        json.dumps({"structured_entries": [{"session_id": "s%d" % i} for i in range(12)]}),
-        encoding="utf-8")
+    (claude_dir / "rules").mkdir()
+    for i in range(5):
+        (claude_dir / "rules" / ("r%d.md" % i)).write_text(
+            "Rule.\n\n<!-- retire-when: review-by: 2020-01-01 -->\n", encoding="utf-8")
     out = scl.self_improvement_advisory(due_root, "startup")
     check("startup: a due condition prints one non-empty line",
           out.strip() and "\n" not in out and "Self-improvement" in out, repr(out))
@@ -93,41 +88,27 @@ def main():
         out = scl.self_improvement_advisory(due_root, source)
         check("%r: a due line prints nothing outside startup" % (source,), out == "", repr(out))
 
-    # The due tool waits up to its store's 10 s lock; the loader must outwait it.
-    seen = {}
-    real_run = scl.subprocess.run
-
-    def recording_run(*args, **kwargs):
-        seen["timeout"] = kwargs.get("timeout")
-        return real_run(*args, **kwargs)
-
-    scl.subprocess.run = recording_run
-    try:
-        scl.self_improvement_advisory(due_root, "startup")
-    finally:
-        scl.subprocess.run = real_run
-    check("due-line subprocess timeout is 15 s, above the store's 10 s lock wait",
-          seen.get("timeout") == 15, repr(seen))
-
     # The SessionStart proof must exercise the registered script's main() output path, not only
     # inspect a helper string. Every expensive setup branch is planted so the assertion observes
     # the continuation guidance emitted to stdout. No step module is installed for these runs.
     payload = {"source": "startup", "session_id": "main-proof"}
 
-    def run_main(main_root, patches, source="startup", step_modules=(), sidecar=False):
+    def run_main(main_root, patches, source="startup", step_modules=(), sidecar=False, env=None, extra=None):
         stdout = io.StringIO()
         exit_codes = []
         scl._STEP_FAULTS.clear()
-        with contextlib.redirect_stdout(stdout), patch.dict(os.environ, {}, clear=False):
+        with contextlib.redirect_stdout(stdout), patch.dict(os.environ, env or {}, clear=False):
             if sidecar:
                 os.environ["CLAUDE_CODE_SIDECAR"] = "1"
-            else:
+            elif "CLAUDE_CODE_SIDECAR" not in (env or {}):
                 os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+            if "CLAUDE_CODE_ENTRYPOINT" not in (env or {}):  # a proof launched from a delegate is not one
+                os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
             with contextlib.ExitStack() as stack:
                 for name, value in dict(patches, get_project_root=lambda: main_root).items():
                     stack.enter_context(patch.object(scl, name, value))
                 stack.enter_context(patch.object(scl, "_STEP_MODULES", step_modules))
-                stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(dict(payload, source=source)))))
+                stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(dict(payload, source=source, **(extra or {}))))))
                 try:
                     scl.main()
                 except SystemExit as exc:
@@ -346,6 +327,30 @@ def main():
             check("sidecar %s: still prints the session-context envelope" % sidecar_source,
                   "<session-context>" in delegate_out and "</session-context>" in delegate_out, delegate_out[-300:])
 
+    # A delegate holds neither ToolSearch/LSP nor the owner's /worklog and rebuild commands, so the lines that steer
+    # to them (the step modules' nudge_lines and report_lines, the pending-worklog count) reach an owner session only.
+    # What counts as a delegate is `_prompt_provenance.in_delegate`: the launcher env, entrypoint sdk-cli, agent_id.
+    with tempfile.TemporaryDirectory(prefix="scl_owner_only_") as owner_dir:
+        owner_root = Path(owner_dir)
+        (owner_root / ".claude").mkdir()
+        (owner_root / ".claude" / "worklog-pending.md").write_text("<!-- HEADER -->\n- ADD item\n", encoding="utf-8")
+        advisory = types.SimpleNamespace(nudge_lines=lambda results, cloud: ["", "STEP-NUDGE"],
+                                         report_lines=lambda root: ["", "STEP-REPORT"])
+        banners = dict(patches, ladder_banner=lambda root: "BANNER-LADDER",
+                       free_catalog_line=lambda root, source: "BANNER-CATALOG",
+                       skill_listing_banner=lambda root, data: "BANNER-LISTING")
+        owner_out = run_main(owner_root, banners, step_modules=(advisory,))
+        check("an owner session gets the nudge, the report, the pending-worklog line and the banners",
+              all(text in owner_out for text in ("STEP-NUDGE", "STEP-REPORT", "Cloud worklog: 1 pending",
+                                                 "BANNER-LADDER", "BANNER-CATALOG", "BANNER-LISTING")), owner_out[-500:])
+        for who, env, extra in (("a launcher child", {"CLAUDE_CODE_SIDECAR": "1"}, {}),
+                                ("a claude -p child", {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}, {}),
+                                ("a native subagent", {}, {"agent_id": "a1"})):
+            delegate_out = run_main(owner_root, banners, step_modules=(advisory,), env=env, extra=extra)
+            check("%s gets no nudge, no report, no pending-worklog line and no banner" % who,
+                  not any(text in delegate_out for text in ("STEP-NUDGE", "STEP-REPORT", "Cloud worklog", "BANNER-"))
+                  and "<session-context>" in delegate_out, delegate_out[-500:])
+
     # The local setup stamp reaches the model through the Env: line. The tool is copied into the
     # fixture root and the command's own frontmatter is the declaration under test, so this is the
     # hook's real path resolution reading the real declaration — not an import of the repo's tool.
@@ -381,6 +386,7 @@ def main():
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), patch.dict(os.environ, env_extra):
                 os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+                os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
                 with contextlib.ExitStack() as stack:
                     for name, value in dict(patches, get_project_root=lambda: ws_root, **(extra_patches or {})).items():
                         stack.enter_context(patch.object(scl, name, value))

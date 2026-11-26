@@ -33,7 +33,7 @@ fix(harness): apply the requested edit
 ```
 ````
 
-A commit-time check verifies a present block through `verify_claims.py` and lists each UNVERIFIED item. An absent block asks whether the decision rests on a claim; it is not judged at push.
+No commit-time check reads the block: `verify_claims.py` verifies it when a reviewer or command runs it, and it is not judged at push.
 
 ## Forbidden shapes
 

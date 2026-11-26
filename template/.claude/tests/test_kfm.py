@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "kfm.py"
 
@@ -34,8 +35,7 @@ def planted_root():
     root = Path(tempfile.mkdtemp(prefix="kfm-proof-"))
     (root / ".claude" / "tools").mkdir(parents=True)
     (root / ".claude" / "reference").mkdir(parents=True)
-    shutil.copyfile(TOOL, root / ".claude" / "tools" / "kfm.py")
-    shutil.copyfile(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
+    copy_closure(root / ".claude", "tools/kfm.py")
     (root / ".claude" / "reference" / "known_failure_modes_entries.md").write_text(CATALOG, encoding="utf-8")
     return root
 

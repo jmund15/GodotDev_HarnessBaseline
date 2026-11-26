@@ -1,6 +1,6 @@
 ## Godot Principles
 - **Godot-designer-intuitive authoring** ranks with ideal architecture at EVERY stage (design, plan, execute, review). `game_vision` owns game direction.
-- Runtime logs are `JmoLogger` output, read via `/analyze_godot_logs` after a user playtest.
+- Runtime logs are `JmoLogger` output.
 
 ## Godot Build & Test
 - **C# commits:** the gate cadence is `change_control` §Gate cadence: a drive closes with `verify.ps1 -Scope <its domains>`, and the full `/regression_gate` runs in the main check after the land. Pure documentation is exempt from the C# gate.

@@ -40,3 +40,24 @@ def ps_pid_alive(pid, timeout=10):
     if (r.returncode != 0 and r.stderr.strip()) or not lines:
         return None
     return any(ln.split()[:1] == [str(pid)] for ln in lines[1:])
+
+
+_CMD_META = set('"&|<>^%!\r\n')
+
+
+def resolve_argv(argv):
+    """(argv, error) for a command a caller or config names. CreateProcess applies no PATHEXT, so on Windows a bare
+    `npx` never finds `npx.cmd`: a separator-free name resolves through PATH, and a name PATH lacks is an error line
+    naming it. A .cmd/.bat target runs under cmd.exe, which re-parses its arguments, so an argument carrying a cmd
+    metacharacter is an error, never a quoted pass-through (`x"&echo y` would run `echo y`)."""
+    name = argv[0]
+    if os.name != "nt" or os.sep in name or "/" in name:
+        return argv, None
+    found = shutil.which(name)
+    if not found:
+        return argv, "command not found on PATH: " + name
+    if found.lower().endswith((".cmd", ".bat")):
+        bad = [a for a in argv[1:] if _CMD_META & set(a)]
+        if bad:
+            return argv, "refused: %s runs under cmd.exe, which would re-parse the argument %r" % (name, bad[0])
+    return [found, *argv[1:]], None

@@ -28,7 +28,6 @@ import ast
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +37,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from _case_pool import _jobs  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 REPO = HERE.parents[1]
 TOOL = REPO / ".claude" / "tools" / "index_commit.py"
 sys.path.insert(0, str(TOOL.parent))
@@ -92,11 +92,7 @@ def scene(tmp, name):
     (root / ".claude" / "tools").mkdir(parents=True)
     (root / ".claude" / "hooks").mkdir(parents=True)
     (root / ".claude" / "tests").mkdir(parents=True)
-    shutil.copy2(TOOL, root / ".claude" / "tools" / "index_commit.py")
-    shutil.copy2(TOOL.parent / "lock_merge.py", root / ".claude" / "tools" / "lock_merge.py")
-    shutil.copy2(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
-    for module in ("_git_run.py", "_hook_state.py", "_file_lock.py"):
-        shutil.copy2(HOOKS / module, root / ".claude" / "hooks" / module)
+    copy_closure(root / ".claude", "tools/index_commit.py")
     (root / ".gitignore").write_text(".claude/tests/\n", encoding="utf-8", newline="\n")
     (root / LOCK).write_text(lock_text(LOCK_SCAFFOLD), encoding="utf-8", newline="\n")
     for relpath in sorted(HEAD_ROWS) + ["gone.py", "peer.py"]:

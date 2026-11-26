@@ -24,7 +24,7 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    A fan-out whose jobs file the same call writes is checked by `sidecar_fanout.py` itself, through
    `fanout_fit_refusal`, once it can read the file and before it spawns or detaches.
 0b. WIDE RUN AT LAUNCH (deny path). A job whose brief orders a wide test run is refused before the
-   preflight: each `task` block `check` entry and, when the kind's built-ins hold Bash, each command
+   preflight: each `task` block `check` entry and each command
    `tools/tool_profiles.brief_commands` finds in the brief. A direct launch's brief is its `-f`; a
    fan-out job's is its `promptFile`; `gate` is the one kind that may run one. `_dispatch_checks`
    `wide_run_refusal` owns the match.
@@ -51,13 +51,9 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    writes has no readable contract here: `sidecar_fanout.py --detach` runs `fanout_doctrine_refusal` in the
    foreground over the file it can then read, and each launcher checks at runtime. `--status`, `--dry-run` and `--help` fan-out calls
    dispatch nothing and get no output.
-3. APPROVAL. A validated fan-out or canonical direct launch gets `permissionDecision: allow`.
-   A whole, project-contained full review whose only added tool is Bash emits
-   `permissionDecision: ask` after preflight. The static project
-   `permissions.ask` rule (`bash .claude/scripts/*_sidecar.sh * -t +Bash *`) guarantees a
-   visible prompt for every launch it matches, including shapes this hook does not validate; whether this hook's own `ask` surfaces
-   under auto mode is unmeasured.
-   The wide launch reader never authorizes that ask; shell compounds and extra grants fall through.
+3. APPROVAL. A validated fan-out or canonical direct launch gets `permissionDecision: allow`. A direct
+   launch's `-G` must be a kind that writes nothing (`approving_gates._allowed_kinds`); shell compounds and
+   extra grants fall through to normal permission.
 4. CONTEXT. The hook adds `additionalContext` in two cases: the `pick: owner` lines a tier-fit pass adds, and to
    report that the doctrine gate could not read its state. The advisory never denies; unattended callers reach
    `launcher_launch`, not this branch.
@@ -1067,17 +1063,6 @@ def main():
         if ok:
             output.update(approving_gates.allow(
                 "canonical sidecar launch; preflight passed"))
-        else:
-            asks, _why = approving_gates.sidecar_bash_ask_shape(cmd, approval_root)
-            if asks:
-                flags = sidecar_argv.sidecar_flags(direct.args)
-                output["permissionDecision"] = "ask"
-                output["permissionDecisionReason"] = (
-                    "One-time approval: %s model %s requests +Bash for a full review in %s "
-                    "using prompt %s. Bash can run commands and access project files; "
-                    "approve this exact call only if that shell access is intended."
-                    % (os.path.basename(direct.path), flags["m"], approval_root, flags["f"])
-                )
 
     context = [line for line in (doctrine_fault, *pinned) if line]
     if context:

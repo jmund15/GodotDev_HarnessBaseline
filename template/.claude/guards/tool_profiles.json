@@ -5,7 +5,7 @@
   "repoScopedServers": ["git"],
   "kinds": {
     "scout": {
-      "builtins": ["Read", "Glob", "Grep"],
+      "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "bare",
@@ -16,7 +16,7 @@
       "routes": ["launcher", "fanout", "engine", "agent"]
     },
     "lens": {
-      "builtins": ["Read", "Glob", "Grep"],
+      "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "pointer",
@@ -27,7 +27,7 @@
       "routes": ["launcher", "fanout", "engine", "agent"]
     },
     "reviewer": {
-      "builtins": ["Read", "Glob", "Grep"],
+      "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "full",
@@ -49,7 +49,7 @@
       "routes": ["launcher", "fanout", "engine", "agent"]
     },
     "judge": {
-      "builtins": ["Read", "Glob", "Grep"],
+      "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "full",
@@ -117,7 +117,5 @@
       "routes": ["launcher", "fanout"]
     }
   },
-  "variants": [
-    {"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review-sh"}
-  ]
+  "variants": []
 }

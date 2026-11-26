@@ -18,6 +18,9 @@ import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# The owner-path cases run as a session a person drives: a proof launched from a delegate (entrypoint sdk-cli) must not
+# hand that fact to the hook under test. A case that wants a delegate sets it (`_with_entrypoint`, CLAUDE_CODE_SIDECAR).
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(HERE, "..", "hooks")
@@ -153,7 +156,7 @@ def _registered_commands():
 def _run_args(args, kind, model=UNREGISTERED, planted=None, extra=None):
     """The hook's stdout, decoded as UTF-8, for one registered argument list under one sidecar kind."""
     env = dict(os.environ)
-    for name in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND", "CLAUDE_CODE_SIDECAR_TIER", "ANTHROPIC_BASE_URL"):
+    for name in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND", "ANTHROPIC_BASE_URL"):
         env.pop(name, None)
     env["CLAUDE_CODE_TRANSPORT"] = "anthropic"
     env["CLAUDE_PROJECT_DIR"] = REPO
@@ -455,6 +458,8 @@ CASES = [
      and "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5"}, ledger=False)),
     ("a payload with agent_id gets no sweep line",
      lambda: "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5", "agent_id": "a"}, swept=None)),
+    ("a claude -p child (entrypoint sdk-cli) gets no sweep line",
+     lambda: _with_entrypoint("sdk-cli", lambda: "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5"}, swept=None))),
     ("with CLAUDE_CODE_SIDECAR set no sweep line prints",
      lambda: "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5"}, swept=None, sidecar="1")),
     ("codex with gpt-6.2-sol after compaction fits in two parts with no overflow and keeps the file's last line",
@@ -472,6 +477,16 @@ CASES = [
     ("ROLE -> MODEL names rule 1's bar and not the job's priority",
      lambda: "rule 1's bar" in CODEX and "job's priority" not in CODEX),
 ]
+
+
+def _with_entrypoint(value, run):
+    """`run()` with CLAUDE_CODE_ENTRYPOINT set to `value`, restored after."""
+    saved = os.environ.get("CLAUDE_CODE_ENTRYPOINT")
+    os.environ["CLAUDE_CODE_ENTRYPOINT"] = value
+    try:
+        return run()
+    finally:
+        os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None) if saved is None else os.environ.__setitem__("CLAUDE_CODE_ENTRYPOINT", saved)
 
 
 def _sweep_text(payload, swept=None, ledger=True, sidecar=None):

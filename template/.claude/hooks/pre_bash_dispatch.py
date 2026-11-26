@@ -226,7 +226,6 @@ kill_guard = _load('kill_guard')
 approving_gates = _load('approving_gates')
 unbounded_scan_guard = _load('unbounded_scan_guard')
 harness_shell_write_guard = _load('harness_shell_write_guard')
-rule_number_guard = _load('rule_number_guard')
 foreground_wait_guard = _optional_hooks.load('foreground_wait_guard', on_error=_failed_import)
 run_call_router = _optional_hooks.load('run_call_router', on_error=_failed_import)
 baseline_classification_guard = _load('baseline_classification_guard')
@@ -265,7 +264,6 @@ HOOKS = (
     (kill_guard, ()),
     (editor_live_build_guard, ()),
     *_JUDGES,
-    (rule_number_guard, ()),
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
     (bash_length_guard, ()),
@@ -281,10 +279,6 @@ HOOKS = tuple((module, argv_tail) for module, argv_tail in HOOKS if module is no
 # Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
 # keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
 UNWIRED = (
-    "duplicate_commit_check",
-    "gate_cadence_guard",
-    "hand_pricing_advisory",
-    "routing_audit",
     "triage_commit_check",
     "wide_test_guard",
 )

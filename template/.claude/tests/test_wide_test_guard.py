@@ -77,7 +77,7 @@ def planted_root(name, table, where="adaptation.pure.defaults.json"):
 
 
 def clear_env():
-    for key in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND", "CLAUDE_CODE_SIDECAR_PROMPT_FILE"):
+    for key in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND", "CLAUDE_CODE_SIDECAR_PROMPT_FILE", "CLAUDE_CODE_ENTRYPOINT"):
         os.environ.pop(key, None)
 
 
@@ -174,6 +174,15 @@ def case_sidecar():
           verdict(CLOSE, agent_id=None, agent_type=None) is None)
     os.environ["CLAUDE_CODE_SIDECAR_KIND"] = "author"
     check("a sidecar whose kind is author is refused",
+          bool(verdict(CLOSE, agent_id=None, agent_type=None)))
+    clear_env()
+
+
+def case_print_child():
+    clear_env()
+    check("the root session (no delegate fact) is admitted", verdict(CLOSE, agent_id=None, agent_type=None) is None)
+    os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-cli"
+    check("a claude -p child with no sidecar marker and no agent_id is not the root: refused",
           bool(verdict(CLOSE, agent_id=None, agent_type=None)))
     clear_env()
 
@@ -337,7 +346,7 @@ if __name__ == "__main__":
     guard.ROOT = planted_root("harness", ROW_TABLE)
     try:
         for fn in (case_classifier, case_delegate_verdicts,
-                   case_sidecar, case_reach, case_gate_type_owner, case_unreadable_table,
+                   case_sidecar, case_print_child, case_reach, case_gate_type_owner, case_unreadable_table,
                    case_invalid_rows, case_declared_narrowing, case_must_allow,
                    case_command_mode):
             try:

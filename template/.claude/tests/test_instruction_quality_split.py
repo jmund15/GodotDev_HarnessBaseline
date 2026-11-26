@@ -88,8 +88,7 @@ def main():
     # delivers no reference); an unmapped class names all four with their read-when lines. Which sections apply
     # within a class is still the edit's content (instruction_quality §3), stated by the file itself.
     every = [os.path.basename(r) for r in REFS]
-    tails = {"hooks/README.md": "hooks.md",
-             "commands/some_command.md": "skills_and_commands.md",
+    tails = {"commands/some_command.md": "skills_and_commands.md",
              "skills/orchestration/reference/x.md": "orchestration.md",
              "reference/some_ref.md": "claims_and_wording.md",
              "rules/some_rule.md": None}
@@ -113,7 +112,7 @@ def main():
     skill_load_marker.process({"tool_name": "Skill", "session_id": session,
                                "tool_input": {"skill": "instruction_quality"}})
     out = hesr.process({"tool_name": "Edit", "session_id": session,
-                        "tool_input": {"file_path": "C:/repo/.claude/hooks/README.md"}}) or {}
+                        "tool_input": {"file_path": "C:/repo/.claude/rules/some_rule.md"}}) or {}
     check("the once-per-compaction reminder names the class files after the skill loads",
           all("`%s`" % n in out.get("context", "") for n in every), out)
 

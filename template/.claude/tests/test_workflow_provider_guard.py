@@ -405,9 +405,9 @@ def channel_cases():
     case("S3: a gate job's brief ordering the same run passes",
          run_channel(job_call([job("wide-op", "h-arch", kind="gate", promptPath=wide_brief)]), patches=at_wide),
          "allow")
-    case("S3: a scout brief is not scanned for commands (its kind carries no Bash)",
+    case("S3: a scout brief ordering the same run is denied: every kind but gate holds Bash, so its commands are scanned",
          run_channel(job_call([job("wide-op", "h-arch", kind="scout", promptPath=wide_brief)]), patches=at_wide),
-         "allow")
+         "deny", ("npm run verify", "gate"))
 
     # -- tier declared and legal ------------------------------------------------------------------
     case("On pace: a pinned entry with no tier -> allow; a missing tier never denies",
@@ -823,8 +823,12 @@ def implied_tier_cases():
     case("a dispatch.js job carrying agentType is refused, naming kind",
          run_channel(job_call([job("j0", "h-fan", kind="reviewer", agentType="Explore")])), "deny", ("agentType", "kind"))
     case("a kind delta with no covering agent file is refused before spend",
-         run_channel(job_call([job("j0", "h-fan", kind="scout", tools={"add": ["Bash"]})])), "deny",
+         run_channel(job_call([job("j0", "h-fan", kind="scout", tools={"remove": ["Grep"]})])), "deny",
          ("no covering agent file",))
+    case("a +Bash grant a kind's row already holds changes nothing, so it is not refused",
+         run_channel(job_call([job("j0", TIERS[kind_tier("scout")][0], kind="scout", tier=kind_tier("scout"),
+                            tools={"add": ["Bash"]})])),
+         "allow", absent=("no covering agent file",))
     SINGLE_KIND = ("calibrate_cloud", "cloud_sdf", "mine_sdf_corpus", "rebuild_agentic", "rebuild_sdf",
                    "w13_cloud_ceiling", "w_axis_and_floors", "test_agents_fixtures", "test_skill_pressure")
     MEASUREMENT = ("agenttype_input_cost_probe", "harness_bloat_probe", "w13_cloud_ladder")

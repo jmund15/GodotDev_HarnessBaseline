@@ -148,7 +148,7 @@ def case_proof_red_and_flaky_in_two_checkouts_count_both():
     assert row["flaky"] == 1, "flaky in the other checkout: %s" % row
 
 
-def case_fix_review_audit_and_fold_commits_not_counted():
+def case_every_fix_commit_counts_whatever_its_scope_text():
     repo = _repo()
     _commit(repo, {".claude/hooks/h.py": "1"}, "base")
     _commit(repo, {".claude/hooks/h.py": "2"}, "fix(hooks): a real fix")
@@ -157,7 +157,7 @@ def case_fix_review_audit_and_fold_commits_not_counted():
     _commit(repo, {".claude/hooks/h.py": "5"}, "fix(review-fold): a fold artifact")
     _commit(repo, {".claude/hooks/h.py": "6"}, "fix(fold): a fold artifact")
     census, _ = _census(repo, "--checkout", _checkout_logs(repo, []))
-    assert _hook(census, "h.py")["fixCommits"] == 1, "fix count: %s" % _hook(census, "h.py")["fixCommits"]
+    assert _hook(census, "h.py")["fixCommits"] == 5, "fix count: %s" % _hook(census, "h.py")["fixCommits"]
 
 
 def case_cleared_row_lists_files_and_names_no_cause():
@@ -644,14 +644,26 @@ def case_share_since_listing_reaches_past_the_window():
     assert hist["count"] == 1 and hist["sinceListing"]["fixes"] == 2, hist
 
 
-def case_review_audit_fold_fixes_stay_excluded():
+def case_review_audit_fold_fixes_count():
     x = ".claude/hooks/x.py"
     repo = _repo()
     _commit(repo, {x: "1\n"}, "base")
     _commit(repo, {x: "2\n"}, "fix(hooks): real")
     for i, subj in enumerate(("fix(review): a", "fix(audit): b", "fix(fold): c", "fix(review-fold): d")):
         _commit(repo, {x: "%d\n" % (i + 3)}, subj)
-    assert _fix_hist(repo, [x])[x]["count"] == 1, _fix_hist(repo, [x])[x]
+    assert _fix_hist(repo, [x])[x]["count"] == 5, _fix_hist(repo, [x])[x]
+
+
+def case_fix_history_reads_only_the_runtime_paths_it_is_asked_about():
+    x, t = ".claude/hooks/x.py", ".claude/tests/t.py"
+    repo = _repo()
+    _commit(repo, {x: "0\n", t: "0\n"}, "chore: base")
+    _commit(repo, {x: "1\n", t: "1\n"}, "fix(hooks): one")
+    _commit(repo, {x: "2\n", t: "2\n"}, "fix(hooks): two")
+    both = _fix_hist(repo, [x, t, ".claude/hooks/*.py"])
+    assert both[x]["count"] == 2 and both[t].get("count", 0) == 0 and both[".claude/hooks/*.py"].get("count", 0) == 0, both
+    only_proof = _fix_hist(repo, [t])
+    assert only_proof[t].get("count", 0) == 0 and not only_proof[t].get("fixes"), only_proof
 
 
 def case_unresolved_path_returns_unresolved_flag():

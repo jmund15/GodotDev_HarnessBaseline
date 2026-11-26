@@ -237,7 +237,7 @@ const concurrencyGuard = (j) => jobs.length > 1 ? [
   '',
   '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
   'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your delegate rails name this project\'s others; a build, typecheck or test command they do not name is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (noShell(j) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).')
+    + (!canWrite(j) ? '; you write no file, by a tool or through the shell; run a proof you cite through `python3 .claude/tools/machine_slots.py run -- <proof command>`.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).')
     + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.',
 ].join('\n') : ''
 
@@ -257,7 +257,7 @@ const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
 // ENGINE-BLOCK-END RAILS
 const guardOf = (j) => profileOf(j).guard
 // A job's own `railTier` wins over the map: it holds the model fixed while the tier varies, which is
-// how /rail_battery measures a tier through this exact prompt. `none` sends no rails block.
+// how a tier is measured through this exact prompt. `none` sends no rails block.
 const VALID_RAIL_TIERS = ['detailed', 'condensed', 'minimal', 'none']
 const badTier = jobs.filter(j => j.railTier !== undefined && !VALID_RAIL_TIERS.includes(j.railTier))
 if (badTier.length > 0) {
@@ -348,12 +348,11 @@ const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-
 // omission is REPORTED. `tools/dispatch_result.py` writes their journaled result to the same <spillDir>/<label>.md a spilling job lands at.
 const hasTool = (j, t) => (profileOf(j).builtins || []).includes(t)
 const canWrite = (j) => ['Edit', 'Write', 'NotebookEdit'].some(t => hasTool(j, t))
-const noShell = (j) => !hasTool(j, 'Bash')
 const spills = (j) => !!SPILL_DIR && !j.schema && hasTool(j, 'Write')
 
-// A kind with no Edit/Write that still holds Bash (a reviewer with a +Bash variant) can write through the shell,
-// so its prompt carries the line; the tool set is what keeps the promise for every other no-write kind.
-const shellWriteGuard = (j) => (!canWrite(j) && !noShell(j))
+// Every public kind but `author` holds Bash and no Edit/Write, so it can still write through the shell:
+// its prompt carries the line, because the tool set cannot keep the promise.
+const shellWriteGuard = (j) => (!canWrite(j) && hasTool(j, 'Bash'))
   ? '\n=== READ-ONLY: do NOT modify, create, or delete any file, through the shell either. ==='
   : ''
 

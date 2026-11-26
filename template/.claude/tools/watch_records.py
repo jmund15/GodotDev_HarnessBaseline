@@ -25,7 +25,7 @@ direct launch) ending; or, while work still runs, `CHECKIN_SECONDS` after the la
 timestamped row, `_last_turn`; 50 min by default, inside the orchestrator's one-hour prompt cache and before its idle compaction
 (`_hook_state.ORCHESTRATOR_CHECKIN_SECONDS`); `WATCH_RECORDS_CHECKIN_SEC` overrides it), printing `CHECKIN_RULE`, the sentence that says how
 to judge each clause. Every wake with work still live prints a `RUNNING` line per job with its age and last write, and a `progress:`
-clause line under it (`agent_progress.clause`: the measures its stream shows, `progress unreadable` when the stream cannot be parsed). `--digest <record|stream|transcript>` prints the whole-run view the clause summarizes (`agent_progress.digest`).
+clause line under it (`agent_progress.clause`: the measures its stream shows, `progress unreadable` when the stream cannot be parsed). The wake's closing, before `RE-ARM NOW`, is the `OPEN WORK` line (`OPEN_WORK_LINE`). `--digest <record|stream|transcript>` prints the whole-run view the clause summarizes (`agent_progress.digest`).
 The live set also holds this session's running
 Bash/PowerShell background tasks (a main-session launch row with no `<task-notification>` yet, read by `wake_digest.running_shells`; a task that ran this watcher is skipped), each printed as `RUNNING shell <id>`, and its running
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
@@ -176,6 +176,10 @@ WAKE_CALL = "call"  # the group a fan-out writes on every job that names none: j
 WAKE_ALONE = "alone"  # a job's own `wakeWith` value for "wake me on my end": it is a group of one, however many jobs say it
 REPORTED_ONCE_KINDS = ("end", "shell")  # a non-triggering line of these kinds prints once, then is acknowledged
 PROJECT_ROOT = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(HERE))
+# Printed at every wake with work still live, before the re-arm line: a wake is where the next launch is chosen, and its
+# text names only the re-arm, so the chain's next item reads as the whole next step.
+OPEN_WORK_LINE = ("OPEN WORK: before re-arming, map everything else open in the session's work to jobs and launch each "
+                  "item whose inputs are ready (orchestration §2).")
 # The check-in's judge-and-act rule, printed with every check-in so it is in context where the judgment is made.
 CHECKIN_RULE = (
     "Judge each job now from its progress clause. Converging: new commits, new units reached, results improving. "
@@ -2077,13 +2081,15 @@ def _acknowledge(path, identities):
 
 def _still_running(live, settle=None):
     """The wake's last lines. This watcher exits as it wakes, so with work still live nothing watches until the
-    orchestrator arms the next one: the command closes the output, where the reader acts. `settle` runs between
+    orchestrator arms the next one: the command closes the output, where the reader acts, and the open-work line
+    stands before it because the re-arm is the one step the wake text names. `settle` runs between
     the two lines and ends everything that keeps this watcher registered, so the re-arm the second line asks
     for is not refused as COVERED."""
     print("STILL RUNNING %d" % live, flush=True)
     if settle:
         settle()
     if live:
+        print(OPEN_WORK_LINE, flush=True)
         print("RE-ARM NOW: %s %s" % (ARM_COMMAND, ARM_CALL), flush=True)
 
 

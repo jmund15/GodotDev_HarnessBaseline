@@ -5,7 +5,7 @@ Read in full when the edit changes `.claude/reference/` prose, asserts a fact ab
 ## Reference-content
 
 ### 17. Claim freshness
-Verify the claims the reviewed change's decision rests on against current code, configuration and live tool schemas. Bind each such claim of tool behavior to a case that exercises it; trace the implementing branch and report the checker's typed outcome (`python3 .claude/tools/extract_numbers.py check --claims behavior --paths <surfaces> --json`). Distinguish recorded observations from current facts and versions. Report sampling and unchecked scope; do not turn file existence or zero errors into broad correctness. A comment states only a fact its own file can keep true: `.claude/reference/` prose is read as current, so it never asserts world state another artifact owns, and a negative names the artifact that would falsify it. Multi-file audits return evidence, not unsupported verdicts.
+Verify the claims the reviewed change's decision rests on against current code, configuration and live tool schemas. Bind each such claim of tool behavior to a case that exercises it; trace the implementing branch and report the checker's typed outcome (`python3 .claude/tools/rule_units.py check --paths <surfaces> --json`). Distinguish recorded observations from current facts and versions. Report sampling and unchecked scope; do not turn file existence or zero errors into broad correctness. A comment states only a fact its own file can keep true: `.claude/reference/` prose is read as current, so it never asserts world state another artifact owns, and a negative names the artifact that would falsify it. Multi-file audits return evidence, not unsupported verdicts.
 
 ## Word choice
 

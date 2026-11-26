@@ -94,7 +94,8 @@
 #       the kind's guard file on the child's SessionStart, assembled by
 #       tools/guard_text.py. common.md carries the rules binding every delegate, so
 #       it is concatenated rather than left as a pointer the child may not follow.
-#       Tier is detailed unless CLAUDE_CODE_SIDECAR_TIER says otherwise.
+#       The rails read at the child model's registry `railTier`, the tier a native Workflow seat of
+#       that model gets; no launcher or environment variable names one.
 #   -D  refused: disclosure follows the kind (scout bare, lens pointer, reviewer/author/judge full); only
 #       -G arm takes -D, bare|pointer|full. `bare`: child
 #       runs from an empty scratch run-cwd — vendor prompt + CLI only; user-level

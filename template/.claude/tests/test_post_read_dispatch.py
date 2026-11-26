@@ -127,11 +127,11 @@ def main():
         subprocess.run([sys.executable, marker_hook], input=json.dumps(payload),
                        capture_output=True, text=True, timeout=60, env=env)
 
-    hook_doc = os.path.join(tmp, ".claude", "hooks", "README.md")
+    hook_doc = os.path.join(tmp, ".claude", "rules", "practice.md")
     r, notes = read_ctx("prd0010", hook_doc)
-    check("the first Read of a governed hook doc names the edit gate and reference/hooks.md",
+    check("the first Read of a governed rule names the edit gate",
           r.returncode == 0 and len(notes) == 1 and "instruction_quality" in notes[0]
-          and "hooks.md" in notes[0] and "denies any edit" in notes[0], repr(notes))
+          and "denies any edit" in notes[0], repr(notes))
     check("the notice is one line", bool(notes) and "\n" not in notes[0], repr(notes))
     r, notes = read_ctx("prd0017", os.path.join(tmp, ".claude", "CLAUDE.md"))
     check("an unmapped class's notice names the reference directory",
@@ -148,7 +148,8 @@ def main():
     check("a Read with instruction_quality already loaded is silent", r.returncode == 0 and not notes,
           repr(notes))
     for session, rel in (("prd0012", ("plans", "x.md")), ("prd0015", ("auto-memory", "x.md")),
-                         ("prd0016", ("hooks", "practice.py"))):
+                         ("prd0016", ("hooks", "practice.py")),
+                         ("prd0018", ("hooks", "README.md")), ("prd0019", ("work", "findings.md"))):
         r, notes = read_ctx(session, os.path.join(tmp, ".claude", *rel))
         check("a %s Read emits no notice" % "/".join(rel), r.returncode == 0 and not notes, repr(notes))
     r, notes = read_ctx("prd0014", hook_doc, agent="agent9")
@@ -157,33 +158,6 @@ def main():
     r, notes = read_ctx("prd0014", hook_doc)
     check("the parent thread's first governed Read still fires after the subagent's",
           len(notes) == 1, repr(notes))
-
-    # 3d. Most-fixed notice: the newest census reading lists `.claude/`-prefixed paths; a Read of one routes its fix.
-    with open(os.path.join(tmp, ".claude", "census_readings.jsonl"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(json.dumps({"date": "2026-11-20", "windowDays": 30, "mostFixed": [
-            {"path": ".claude/tools/x.py", "fixes": 7, "listedSince": "2026-11-01",
-             "sinceListing": {"fixes": 3, "cited": 1}}]}) + "\n")
-
-    def fixed_notes(session, path, agent=""):
-        payload = {"tool_name": "Read", "session_id": session, "tool_input": {"file_path": path},
-                   "tool_response": {"content": "x"}}
-        if agent:
-            payload["agent_id"] = agent
-        r = run(json.dumps(payload), env)
-        ctx = (json.loads(r.stdout).get("hookSpecificOutput") or {}).get("additionalContext", "") if r.stdout.strip() else ""
-        return r, [ln for ln in ctx.splitlines() if "most-fixed" in ln]
-
-    listed = os.path.join(tmp, ".claude", "tools", "x.py")
-    r, notes = fixed_notes("prd0020", listed)
-    check("a first Read of a path the newest census lists as most-fixed names it and routes a redesign",
-          r.returncode == 0 and len(notes) == 1 and ".claude/tools/x.py" in notes[0]
-          and "mechanism_litmus.md" in notes[0] and "7" in notes[0], repr(notes))
-    r, notes = fixed_notes("prd0020", listed)
-    check("a repeat Read in the same window is silent", r.returncode == 0 and not notes, repr(notes))
-    r, notes = fixed_notes("prd0021", os.path.join(tmp, ".claude", "tools", "other.py"))
-    check("a path the reading does not list is silent", r.returncode == 0 and not notes, repr(notes))
-    r, notes = fixed_notes("prd0022", os.path.join(tmp, "Docs", "x.py"))
-    check("a path outside .claude is silent", r.returncode == 0 and not notes, repr(notes))
 
     # 3. Malformed payload: the dispatcher fails open.
     r = run("{not json", env)

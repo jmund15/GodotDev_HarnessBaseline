@@ -5,9 +5,14 @@ The rewrite reaches the call as pre_bash_dispatch's updatedInput, with an additi
 - A linked worktree's run_test_suite, verify, regression_gate or run_integration_batched invocation runs
   main's copy of the script with `-Repo <worktree>`: main's code, the target's data.
 - run_in_background is set for a delegate's run (those scripts, engine_run, `dotnet build|test`) and for
-  any regression_gate run without -Detach. A delegate is a subagent (payload agent_id) or a `claude -p`
-  child (CLAUDE_CODE_ENTRYPOINT=sdk-cli). A run with a quick read-only flag, such as
+  any regression_gate run without -Detach. A delegate is what `_prompt_provenance.in_delegate` says: a subagent (payload agent_id), a
+  launcher child (CLAUDE_CODE_SIDECAR) or a `claude -p` child (CLAUDE_CODE_ENTRYPOINT=sdk-cli). A run with a quick read-only flag, such as
   -SelfTest, is not backgrounded.
+- A run it routes to the background carries the Bash tool's ceiling as its `timeout`, whatever the caller sent. A
+  `claude -p` child's client kills a background call at that `timeout`, so a foreground 600000 would end a run still
+  waiting for its machine lane; the runner bounds its own life (`Get-SuiteRunBounds` in scripts/GodotProcess.ps1:
+  lane wait plus attempts, at least 50 minutes), so the call's limit is only a backstop above it and the bound has
+  one owner. An interactive session's client enforces no such limit; the raise costs it nothing.
 Mentions are not actions: quoted text, comments and heredoc bodies that name a script are left alone.
 """
 import os
@@ -17,8 +22,10 @@ from pathlib import Path
 import _git_commit
 import foreground_wait_guard
 from _hook_state import fire_once_since_compaction
+from _prompt_provenance import in_delegate
 
 MAIN = Path(__file__).resolve().parents[2]
+BACKGROUND_TIMEOUT_MS = 7200000  # the Bash tool's ceiling for a background call (the number watch_records.ARM_CALL tells callers)
 ENTRYPOINTS = frozenset(('run_test_suite', 'verify', 'regression_gate', 'run_integration_batched'))
 RUNNERS = ENTRYPOINTS | {'engine_run'}
 _TOKEN = re.compile(r"'[^']*'|\"[^\"]*\"|[^\s;|&]+")
@@ -147,7 +154,7 @@ def route(payload):
     command = str(original.get('command') or '')
     cwd = str(payload.get('cwd') or MAIN)
     edits, contexts = [], []
-    delegate = bool(payload.get('agent_id')) or os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'sdk-cli'
+    delegate = in_delegate(payload, os.environ)
     run = False
     for lo, hi in _spans(command):
         segment = command[lo:hi]
@@ -188,8 +195,9 @@ def route(payload):
     for start, end, replacement in sorted(edits, reverse=True):
         command = command[:start] + replacement + command[end:]
     updated = dict(original, command=command)
-    if run and not original.get('run_in_background'):
-        updated['run_in_background'] = True
-        if delegate and fire_once_since_compaction(payload.get('session_id') or '', 'run_call_router:background'):
+    if run:
+        updated.update(run_in_background=True, timeout=BACKGROUND_TIMEOUT_MS)
+        if (delegate and not original.get('run_in_background')
+                and fire_once_since_compaction(payload.get('session_id') or '', 'run_call_router:background')):
             contexts.append(_background_advice(payload))
     return (updated if updated != original else {}), contexts

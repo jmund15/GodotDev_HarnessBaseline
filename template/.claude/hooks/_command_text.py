@@ -23,9 +23,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _shell_lex import ShellWord, command_words, executable_spans, executable_text, executable_word  # noqa: E402,F401
 
-# A heredoc opener ends its line (`<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`); `hand_pricing_advisory.py` reads it.
-_HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$")
-
 _PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
 _PREFIXES = frozenset(("nohup", "setsid", "exec"))
 _PYTHON_VALUE_OPTIONS = frozenset({"-X", "-W", "-Q"})

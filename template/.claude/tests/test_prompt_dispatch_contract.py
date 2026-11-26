@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 OK_MEMBER = "import json\n\ndef main():\n    print(json.dumps({'hookSpecificOutput': {'additionalContext': 'member ok'}}))\n    return 0\n"
@@ -28,8 +29,8 @@ class PromptDispatchContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         self.hooks = self.temp / ".claude" / "hooks"
         self.hooks.mkdir(parents=True)
-        for name in ("prompt_dispatch.py", "_hook_state.py", "_optional_hooks.py"):
-            shutil.copy(ROOT / ".claude" / "hooks" / name, self.hooks / name)
+        # _hook_state is the dispatcher's lazy import: the timing record is part of the contract
+        copy_closure(self.temp / ".claude", "hooks/prompt_dispatch.py", "hooks/_hook_state.py")
         (self.hooks / "contract_ok_member.py").write_text(OK_MEMBER, encoding="utf-8")
         (self.hooks / "contract_exit_member.py").write_text(EXIT_MEMBER, encoding="utf-8")
         self.timing = self.temp / "logs" / "prompt_dispatch_timing.jsonl"
@@ -52,7 +53,7 @@ class PromptDispatchContract(unittest.TestCase):
         prompt_dispatch = self.load_dispatcher()
 
         chain = (("contract_ok_member", 20), ("contract_exit_member", 20))
-        code, stdout, stderr = prompt_dispatch.dispatch("{}", chain=chain, timing_path=self.timing)
+        code, stdout, stderr = prompt_dispatch.dispatch("{}", chain=chain, timing_path=str(self.timing))  # production passes a str; a Path breaks the locked append
         self.assertEqual(code, 0)
         self.assertIn("member ok", stdout)
         self.assertNotIn("member exit", stdout)
@@ -65,7 +66,7 @@ class PromptDispatchContract(unittest.TestCase):
         prompt_dispatch = self.load_dispatcher()
 
         chain = (("contract_absent_member", 20), ("contract_ok_member", 20))
-        code, stdout, stderr = prompt_dispatch.dispatch("{}", chain=chain, timing_path=self.timing)
+        code, stdout, stderr = prompt_dispatch.dispatch("{}", chain=chain, timing_path=str(self.timing))  # production passes a str; a Path breaks the locked append
         self.assertEqual(code, 0)
         self.assertIn("member ok", stdout)
         self.assertNotIn("contract_absent_member", stderr)

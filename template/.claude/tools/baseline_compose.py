@@ -396,7 +396,7 @@ def settings_equivalent(a: dict, b: dict) -> tuple[bool, list[str]]:
 def render_memory_domains(base_text: str, domains: list[dict]) -> str:
     """§8/§9 `reference/memory_domains.md`: replace the `<!-- memory-domains-table -->` marker in
     `base_text` with a table rendered from `adaptation.json`'s `memory_domains` rows. Each row is
-    `{name, triggers, memory_keywords, skills, rules}`; a row's list fields join with `, `, and an
+    `{name, paths, memory_keywords, skills, rules}`; a row's list fields join with `, `, and an
     absent or empty list renders as `—`. The marker must appear exactly once."""
     count = base_text.count(MEMORY_DOMAINS_MARKER)
     if count != 1:
@@ -406,11 +406,11 @@ def render_memory_domains(base_text: str, domains: list[dict]) -> str:
         values = [v for v in (values or []) if v]
         return ", ".join(values) if values else "\N{EM DASH}"
 
-    lines = ["| Domain | Triggers | Memory keywords | Skills | Rules |", "|---|---|---|---|---|"]
+    lines = ["| Domain | Paths | Memory keywords | Skills | Rules |", "|---|---|---|---|---|"]
     for row in domains:
         lines.append("| {} | {} | {} | {} | {} |".format(
             row.get("name", ""),
-            cell(row.get("triggers")),
+            cell(row.get("paths")),
             cell(row.get("memory_keywords")),
             cell(row.get("skills")),
             cell(row.get("rules")),

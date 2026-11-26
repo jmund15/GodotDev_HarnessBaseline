@@ -138,14 +138,6 @@ def case6():
     check(label, ok, "exit %s: %s" % (code, out.strip()[-300:]))
 
 
-def case7():
-    label = "7 --lookup with no snapshot exits 1"
-    with tempfile.TemporaryDirectory() as tmp:
-        code, out = run([str(CLAUDE / "tools" / "self_eval_archive_store.py"), "--archive",
-                         str(Path(tmp) / "absent.json"), "--lookup", "no-such-session"], cwd=tmp)
-    check(label, code == 1, "exit %s: %s" % (code, out.strip()[-300:]))
-
-
 def case8():
     label = "8 shipped external_models.json holds no account fields (credit, credentialFile)"
     data = json.loads((CLAUDE / "reference" / "external_models.json").read_text(encoding="utf-8"))
@@ -199,7 +191,6 @@ def main():
         case4(json.loads(lock_path.read_text(encoding="utf-8")))
         case5(lock_path)
     case6()
-    case7()
     case8()
     case9()
     print("%d failure(s), %d skip(s)" % (len(FAILURES), len(SKIPS)))

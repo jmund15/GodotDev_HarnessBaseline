@@ -246,31 +246,15 @@ def main():
 
     (root / ".claude" / "scratch").mkdir()
     (root / ".claude" / "scratch" / "msg.txt").write_text("feat: x\n", encoding="utf-8")
-    consent_command = (
-        "bash .claude/scripts/codex_proxy_sidecar.sh -m fake -e high -G reviewer "
-        "-t +Bash -f .claude/reference/prompt.md -S .claude/reference/prompt.md "
-        "-R .claude/scratch/consent.record.json -P .claude/scratch/consent.progress.jsonl "
-        "-l consent -d %s" % root.as_posix()
-    )
-    consent_shape = getattr(approving_gates, "sidecar_bash_ask_shape", lambda *_: (False, "missing"))
-    consent_ok, _ = consent_shape(consent_command, root)
-    cases.append(("a standalone review with only +Bash qualifies for one-time consent", consent_ok))
-    cases.append(("the same +Bash launch is never auto-approved",
-                  not approving_gates.sidecar_launch_shape(consent_command, root)[0]))
-    for label, command in (
-        ("semicolon", consent_command + "; git status"),
-        ("pipe", consent_command + " | git status"),
-        ("newline", consent_command + "\ngit status"),
-        ("subshell", "(" + consent_command + ")"),
-        ("bash -c", "bash -c '" + consent_command + "'"),
-        ("extra tool", consent_command.replace("+Bash", "+Bash,+Write")),
-        ("permission override", consent_command + " -p bypassPermissions"),
-        ("outside context", consent_command + " -C " + outside_match.as_posix()),
-        ("peer context", consent_command + " -C .claude/worktrees/peer/p.md"),
-        ("missing record", consent_command.replace(" -R .claude/scratch/consent.record.json", "")),
-    ):
-        accepted, _ = consent_shape(command, root)
-        cases.append(("consent rejects " + label, not accepted))
+    # The kinds that write nothing pass `-G`; each holds Bash, so the kind row, not the tool set, decides.
+    prompt_flags = " -f .claude/reference/prompt.md"
+    launcher = "bash .claude/scripts/codex_proxy_sidecar.sh -G "
+    for kind, approved in (("scout", True), ("lens", True), ("reviewer", True), ("judge", True),
+                           ("author", False), ("gate", False), ("bench-review", False)):
+        passed, _ = approving_gates.sidecar_launch_shape(launcher + kind + prompt_flags, str(root))
+        cases.append(("-G %s %s" % (kind, "is approved" if approved else "falls through"), passed == approved))
+    cases.append(("a signed +Bash delta is no consent and no approval",
+                  not approving_gates.sidecar_launch_shape(launcher + "reviewer -t +Bash" + prompt_flags, str(root))[0]))
     (root / "m.txt").write_text("feat: x\n", encoding="utf-8")
     msg = "-F .claude/scratch/msg.txt"
     root_posix = root.resolve().as_posix()

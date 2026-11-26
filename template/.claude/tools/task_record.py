@@ -61,7 +61,7 @@ or an explicit id.
 `condition` records an owner deadline or an owner request to add or drop process. The tool finds the last
 owner turn of the caller's session (`CLAUDE_CODE_SESSION_ID`) whose text contains `--quote`, using
 `_owner_text`'s classifier and prompt/answer projections plus typed command arguments. It stores that
-turn's uuid and refuses when none does. A caller with `CLAUDE_CODE_SIDECAR` set is a delegate: its row is stored with `delegate` true so
+turn's uuid and refuses when none does. A caller that `_prompt_provenance.in_delegate` reports (a launcher or `claude -p` child) is a delegate; its row is stored with `delegate` true, so
 `check` reports DELEGATE. `check` re-reads each condition's transcript and reports fresh, UNRESOLVED (no owner
 turn with the stored uuid still holds the quote), MISSING (transcript unreadable) or DELEGATE.
 A `spend` condition is the owner's lean posture (`tools/spend_mode.py`): its effect is `lean` or `normal`, it
@@ -85,7 +85,8 @@ for _d in (os.path.join(HERE, "..", "hooks"), HERE):
         sys.path.insert(0, _d)
 import _hook_state  # noqa: E402
 import review_snapshot  # noqa: E402
-from _checkout_root import linked_main_root  # noqa: E402
+from _prompt_provenance import in_delegate  # noqa: E402
+from _checkout_root import harness_root, linked_main_root  # noqa: E402
 from _git_run import run as _run_git  # noqa: E402
 
 # The per-turn cost is bounded by BLOCK_BYTES (the injected block), never by the file: the file is read
@@ -151,7 +152,7 @@ def record_dir(start=None):
     override = os.environ.get("HARNESS_TASK_RECORD_DIR")
     if override:
         return override
-    return os.path.join(_store_root(str(start or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())),
+    return os.path.join(_store_root(str(start or os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())),
                         ".claude", "logs", "tasks")
 
 
@@ -532,7 +533,7 @@ def add_item(task_id, kind, text, evidence=None, reproduction=None, evidence_ite
         if kind != "decision":
             raise EvidenceRefused("--evidence-item is only for a decision")
         context = {"evidence_items": copy.deepcopy(evidence_items),
-                   "evidence_root": str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()),
+                   "evidence_root": str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()),
                    "evidence_session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None}
         verdict = _check_evidence_items(dict(context, id="decision"))
         if verdict["verdict"] != "VERIFIED":
@@ -583,7 +584,7 @@ def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, b
     import model_registry
     import review_ledger
     import review_snapshot
-    repo = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    repo = Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()
     files = bases = None
 
     def hashes(source, paths):
@@ -605,7 +606,7 @@ def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, b
                     raise KeyError("subject %s is neither present nor tracked" % path)
         bases = head if state == "accepted" else dict(files)
         if state == "accepted":
-            result = _run_git(["diff", "--cached", "--name-only", "-z", "--", *paths], cwd=str(repo))
+            result = _run_git(["diff", "--cached", "--relative", "--name-only", "-z", "--", *paths], cwd=str(repo))
             if result.returncode:
                 raise KeyError("cannot read staged subject paths")
             staged = [p for p in result.stdout.decode("utf-8").split("\0") if p]
@@ -885,7 +886,7 @@ def _owner_turns(transcript):
 
 def _session_transcript(session_id):
     import session_digest
-    return str(session_digest.session_store(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), session_id)
+    return str(session_digest.session_store(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root(), session_id)
                / (session_id + ".jsonl"))
 
 
@@ -905,13 +906,13 @@ def _msys_restored(quote):
 def record_condition(task_id, kind, quote, effect, session_id=None, transcript=None, until=None):
     """Store a run condition against the owner turn that holds `quote`. Refuses an unknown kind, an empty
     quote, an unreadable transcript, or a quote no owner turn of the session holds. A delegate
-    (`CLAUDE_CODE_SIDECAR` set) is stored with `delegate` true, never refused, except for a `spend`
+    (`in_delegate`: a launcher or `claude -p` child) is stored with `delegate` true, never refused, except for a `spend`
     condition: that is the owner's lean posture, so a delegate cannot record one. A `spend` condition
     also needs an effect of lean or normal and an `until` ISO time with a zone."""
     if kind not in CONDITION_KINDS:
         raise ConditionRefused("condition kind must be one of %s" % ", ".join(CONDITION_KINDS))
     if kind == "spend":
-        if os.environ.get("CLAUDE_CODE_SIDECAR"):
+        if in_delegate({}, os.environ):
             raise ConditionRefused("a delegate cannot record a spend condition; the owner sets lean or normal")
         if effect not in SPEND_EFFECTS:
             raise ConditionRefused("a spend condition's effect must be one of %s" % ", ".join(SPEND_EFFECTS))
@@ -939,7 +940,7 @@ def record_condition(task_id, kind, quote, effect, session_id=None, transcript=N
         rows = state.setdefault("conditions", [])
         row = {"id": "C%d" % (len(rows) + 1), "kind": kind, "quote": quote, "effect": effect,
                "message_id": holders[-1], "session_id": session_id, "transcript": str(transcript),
-               "delegate": bool(os.environ.get("CLAUDE_CODE_SIDECAR")), "at": now()}
+               "delegate": in_delegate({}, os.environ), "at": now()}
         if until is not None:
             row["until"] = until
         rows.append(row)
@@ -1007,7 +1008,7 @@ def _review_line(task_id):
     None when it has none or the ledger cannot be read: the pointer is advisory and never fails the block."""
     try:
         import review_ledger
-        rows = review_ledger.read_rows(review_ledger.ledger_path(Path.cwd()))[0]
+        rows = review_ledger.read_rows(review_ledger.ledger_path(Path(harness_root())))[0]
         mine = [row for row in rows if row.get("task") == task_id]
         if not mine:
             return None

@@ -74,6 +74,7 @@ class Fixture:
                         CLAUDE_CODE_SESSION_ID=SID, HARNESS_HOOK_STATE_DIR=self.state_dir,
                         HARNESS_TASK_RECORD_DIR=self.records)
         self.env.pop("CLAUDE_CODE_SIDECAR", None)
+        self.env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
     def plant(self, rows):
         os.makedirs(os.path.dirname(self.transcript), exist_ok=True)
@@ -95,6 +96,7 @@ def fixture():
     with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {}, clear=False):
         f = Fixture(root)
         os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+        os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
         os.environ.update({k: v for k, v in f.env.items() if k.startswith(("CLAUDE_", "HARNESS_"))})
         yield f
 
@@ -115,6 +117,13 @@ def case_refuses_under_sidecar():
     with fixture() as f:
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
         r = f.cli("set", "lean", "--until", FUTURE, extra_env={"CLAUDE_CODE_SIDECAR": "1"})
+        return refused(r) and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
+
+
+def case_refuses_under_print_child():
+    with fixture() as f:
+        f.plant([owner_prompt(OWNER_UUID, QUOTE)])
+        r = f.cli("set", "lean", "--until", FUTURE, extra_env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})
         return refused(r) and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
 
 
@@ -275,6 +284,7 @@ def case_token_passes_both_directions():
 CASES = [
     ("refuses a token only a tool result holds", case_refuses_unheld_quote),
     ("refuses under CLAUDE_CODE_SIDECAR and writes no session record", case_refuses_under_sidecar),
+    ("refuses in a claude -p child (sdk-cli) and writes no session record", case_refuses_under_print_child),
     ("refuses task scope without --until and stores no condition", case_refuses_task_scope_without_until),
     ("refuses --until-reset on an unreadable plan", case_refuses_unreadable_reset),
     ("current() reads normal after expiry with expired true, and lean before it", case_expired_reads_normal),

@@ -41,12 +41,10 @@ import _settings_probe  # noqa: E402
 
 EXPECTED_CHAIN = (
     ("prompt_memory_loader", 30),
-    ("critical_analysis_reminder", 30),
     ("prompt_git_state_delta", 15),
     ("shell_census", 25),
     ("sidecar_watch_rearm", 5),
     ("budget_posture", 15),
-    ("activity_registry", 15),
     ("overnight_ask_guard", 5),
     ("skill_load_marker", 5),
 )
@@ -136,7 +134,8 @@ def planted_machine(state, project, tmp, cwd, timing=None):
     changes = {"HARNESS_HOOK_STATE_DIR": state, "CLAUDE_PROJECT_DIR": project, "TMP": tmp, "TEMP": tmp, "TMPDIR": tmp,
                "HARNESS_PROMPT_DISPATCH_TIMING": timing,
                "PROVIDER_CAPACITY_CACHE": os.path.join(tmp, "provider_capacity.json"), "HARNESS_CAPACITY_WARM": "0",
-               "CLAUDE_CODE_ENTRYPOINT": None, "CLAUDE_CODE_TRANSPORT": None, "ANTHROPIC_BASE_URL": None}
+               "CLAUDE_CODE_ENTRYPOINT": None, "CLAUDE_CODE_SIDECAR": None, "CLAUDE_CODE_TRANSPORT": None,
+               "ANTHROPIC_BASE_URL": None}
     saved_env = {key: os.environ.get(key) for key in changes}
     saved_tempdir, saved_cwd = tempfile.tempdir, os.getcwd()
     for key, value in changes.items():
@@ -199,10 +198,6 @@ def statuses(record):
     return {name: entry.get("status") for name, entry in (record or {}).get("hooks", {}).items()}
 
 
-def suggestion_reminder_emitted(out):
-    return "Suggestion-shape prompt" in out
-
-
 def write_capture(tmp, session, used_pct):
     """The rate_limits snapshot statusline.py writes every turn (half the window elapsed)."""
     now = time.time()
@@ -211,19 +206,12 @@ def write_capture(tmp, session, used_pct):
         "seven_day": {"used_percentage": used_pct, "resets_at": now + 7 * 24 * 3600 / 2}}}))
 
 
-def write_registry_record(tmp, pid, label):
-    """A registry record of the shape regression_gate.ps1 writes."""
-    write_file(os.path.join(tmp, "harness-activity", "gate-%d.json" % pid), json.dumps({
-        "pid": pid, "kind": "gate", "checkout": "C:/other/checkout", "sessionId": None, "label": label,
-        "startedAt": time.time(), "heartbeatAt": time.time(), "expectedSec": 300}))
-
-
 def machine_env(state, project, tmp, timing):
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, CLAUDE_PROJECT_DIR=project, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
                HARNESS_PROMPT_DISPATCH_TIMING=timing, PYTHONUTF8="1",
                # The posture hook reads provider bands from this cache; the live repo's goes Exhausted on its own clock.
                PROVIDER_CAPACITY_CACHE=os.path.join(tmp, "provider_capacity.json"), HARNESS_CAPACITY_WARM="0")
-    for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_TRANSPORT", "ANTHROPIC_BASE_URL"):
+    for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_TRANSPORT", "ANTHROPIC_BASE_URL"):
         env.pop(key, None)
     return env
 
@@ -324,15 +312,9 @@ def main():
             record = (read_records(timing) or [None])[-1]
             return record is not None and all(s == "ok" for s in statuses(record).values())
 
-        _, out, _ = run_dispatcher(env, payload_for("crit0001", "I think we should split this hook, right?"),
-                                   plain)
-        controls["critical_analysis_reminder"] = suggestion_reminder_emitted(out) and last_ok()
-        case("case 2: the reminder control rejects a hook tag that carries no reminder token",
-             not suggestion_reminder_emitted("<user-prompt-submit-hook>\nHIGH-RISK TASK\n</user-prompt-submit-hook>"))
-
         _, out, _ = run_dispatcher(env, payload_for("pml00001", "Debug why the freeze effect is not working on critters"),
                                    plain)
-        controls["prompt_memory_loader"] = "HIGH-RISK TASK" in out and last_ok()
+        controls["prompt_memory_loader"] = "auto-memory" in out and last_ok()
 
         write_capture(tmp, "bpc00001", 40.0)
         _, out, _ = run_dispatcher(env, payload_for("bpc00001", "next slice"), plain)
@@ -341,15 +323,6 @@ def main():
         write_capture(tmp, "bpc00002", 100.0)
         _, out, _ = run_dispatcher(env, payload_for("bpc00002", "next slice"), plain)
         controls["budget_posture"] = "[budget-posture]" in out and "Exhausted" in out and last_ok()
-
-        peer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        try:
-            write_registry_record(tmp, peer.pid, "gate: final")
-            _, out, _ = run_dispatcher(env, payload_for("arc00001", "next slice", cwd="C:/repo"), plain)
-            controls["activity_registry"] = "[activity]" in out and "peer gate live" in out and last_ok()
-        finally:
-            peer.terminate()
-            peer.wait(timeout=30)
 
         night = os.path.join(root, "night")
         marker = os.path.join(night, ".claude", "scratch", "overnight", "active-ovn00001.json")
@@ -436,7 +409,7 @@ def main():
         record = (read_records(fault_timing) or [None])[-1]
         case("case 4: a swallowing member keeps its printed output and is still recorded as a fault",
              out == "kept-partial\ngood-output" and statuses(record).get("pd_swallow") == "fault")
-        case("case 4: the real swallowing members are the ones whose __main__ block swallows", saved_swallow == frozenset({"budget_posture", "activity_registry"}))
+        case("case 4: the real swallowing members are the ones whose __main__ block swallows", saved_swallow == frozenset({"budget_posture"}))
         case("case 4: streams are restored after a faulting chain",
              (sys.stdin, sys.stdout, sys.stderr, list(sys.argv)) == real_streams)
 
@@ -808,6 +781,56 @@ def main():
         case("hardening: the real CHAIN, run in process, calls no os.chdir, redirect_stdout or redirect_stderr "
              "(%s) and leaves sys.stdout as it found it" % (spied or "none seen"),
              spy_code == 0 and not spied and router_intact)
+
+        # ---- A. audience: an owner-facing member runs only for a prompt a person typed ---------
+        audience_chain = (("pd_good", 5), ("pd_fast", 5))
+        real_audience = getattr(pd, "AUDIENCE", None)
+        pd.AUDIENCE = dict(real_audience or {}, pd_fast="owner", pd_good="any")
+        aud_timing = os.path.join(root, "aud.jsonl")
+
+        def audience_run(prompt, environ=None, **extra):
+            with env_set(**dict({"CLAUDE_CODE_SIDECAR": None, "CLAUDE_CODE_ENTRYPOINT": None}, **(environ or {}))):
+                _c, out, _e = pd.dispatch(payload_for("aud00001", prompt, **extra), chain=audience_chain,
+                                          timing_path=aud_timing)
+            return out, (read_records(aud_timing) or [{}])[-1].get("hooks", {})
+
+        out, ran = audience_run("a typed request")
+        case("audience: a typed prompt runs the owner-facing and the any member",
+             out == "good-output\nfast-output" and set(ran) == {"pd_good", "pd_fast"})
+        for label, kwargs in (
+                ("a launcher child (CLAUDE_CODE_SIDECAR)", {"environ": {"CLAUDE_CODE_SIDECAR": "1"}}),
+                ("a claude -p child (entrypoint sdk-cli)", {"environ": {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}}),
+                ("a native subagent (agent_id)", {"agent_id": "a1b2"})):
+            out, ran = audience_run("a delegate brief", **kwargs)
+            case("audience: %s skips the owner-facing member and still runs the any member" % label,
+                 out == "good-output" and set(ran) == {"pd_good"})
+        out, ran = audience_run("<task-notification>done</task-notification>")
+        case("audience: a runtime envelope is not typed, so the owner-facing member is skipped",
+             out == "good-output" and set(ran) == {"pd_good"})
+        out, ran = audience_run('Another Claude session sent a message: <cross-session-message from="x">hi</cross-session-message>')
+        case("audience: a relayed peer message is not typed", out == "good-output")
+        out, ran = audience_run("fix the gate", environ={"CLAUDE_CODE_ENTRYPOINT": "cli"})
+        case("audience: the interactive entrypoint (cli) is typed", out == "good-output\nfast-output")
+        undeclared = (("pd_text", 5),)
+        with env_set(CLAUDE_CODE_SIDECAR="1"):
+            _c, out, _e = pd.dispatch(payload_for("aud00002", "brief"), chain=undeclared, timing_path=aud_timing)
+        case("audience: a member with no AUDIENCE row runs for every prompt", out == "plain text line")
+        with env_set(CLAUDE_CODE_SIDECAR=None, CLAUDE_CODE_ENTRYPOINT=None):
+            _c, out, _e = pd.dispatch("not json", chain=audience_chain, timing_path=aud_timing)
+        case("audience: an unreadable payload fails open to every member", out == "good-output\nfast-output")
+        declared = real_audience
+        case("audience: every CHAIN member has exactly one AUDIENCE row, owner or any",
+             isinstance(declared, dict) and set(declared) == {n for n, _b in EXPECTED_CHAIN}
+             and set(declared.values()) <= {"owner", "any"})
+        case("audience: sidecar_watch_rearm (reads envelopes) and skill_load_marker stay any",
+             isinstance(declared, dict) and declared.get("sidecar_watch_rearm") == "any"
+             and declared.get("skill_load_marker") == "any")
+        pd.AUDIENCE = real_audience if real_audience is not None else {}
+        with planted_machine(state, project, tmp, plain, timing), env_set(CLAUDE_CODE_SIDECAR="1"):
+            _c, out, _e = pd.dispatch(payload_for("aud00003", "Debug why the freeze effect is not working on critters",
+                                                  cwd=plain), timing_path=aud_timing)
+        case("audience: the real chain gives a launcher child no memory nudge (load-design F10)",
+             "auto-memory" not in out)
 
         # ---- 9. registration and CHAIN contract ----------------------------------------------
         literal = chain_source()

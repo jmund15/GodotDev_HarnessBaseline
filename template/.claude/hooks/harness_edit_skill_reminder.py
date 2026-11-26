@@ -18,17 +18,16 @@ What it does:
   first Read of a governed file in a window where the skill is absent, so the deny rarely fires.
 - Once loaded: emits the gates-summary reminder as `hookSpecificOutput.additionalContext`, once per compaction.
 - Adds a maintained artifact's editing note on the first edit of that path in a context window; a compaction
-  re-arms it. An OWNED_NOTES note is its maintaining command's section, read when the edit fires.
+  re-arms it. An OWNED_NOTES note is its owner's `## ` section, read when the edit fires: a maintaining
+  command's, or for an always-loaded layer file `principles.md` §Layers.
 - A fault in this hook reaches the dispatcher, which allows the edit and reports the lost check.
 
-PATH RULES (in .claude/ only):
-- IN:  **/*.md (the CLAUDE chain, skills, commands, rules, references, rails, lens files)
-- OUT: auto-memory/** — governed by consolidate-memory / memory_audit, not this
-       skill (see instruction_quality "Composition with other tools").
-- OUT: scratch/**, tests/**, __pycache__/**, plans/**, .cache/**, hooks/*.py, settings*.json — not agent-facing text.
-- IN (carve-out): pending_harness_edits.md — queued CLAUDE.md/MEMORY.md
-  content awaiting /apply_harness_edits; it IS loaded guidance in transit, and
-  authoring errors there land verbatim in the injected files.
+PATH RULES (in .claude/ only): an allow-list, `is_harness_file`, shared by this gate, `harness_shell_write_guard`
+and the first-Read notice.
+- IN:  `.md` under DOCTRINE_DIRS, the CLAUDE chain (`CLAUDE*.md`) and DOCTRINE_ROOT_FILES.
+- OUT: every other path, including a directory no one has named yet. Code, `settings*.json` (OF6 O1), state,
+  evidence and generated files are not agent-facing text; auto-memory/** is governed by consolidate-memory /
+  memory_audit (see instruction_quality "Composition with other tools").
 - Path scope uses `_claude_scope.harness_tail`, which rebases a worktree root before classifying the checkout's own `.claude/`.
 
 Wired in: pre_edit_dispatch on Write|Edit; `main()` also supports standalone use.
@@ -44,12 +43,21 @@ from amend_delivery import HOOK_TEXT_CAP
 
 # Key in the per-session routing state file that the other routing hooks share.
 STATE_KEY = "harness_edit_reminder"
-# Exact harness-tail paths; each note fires on the first edit of its path in a context window. A maintaining
-# command does not load on a direct edit, so OWNED_NOTES reads the rule's `## ` section from the command when the
-# edit fires (/codify Step 4): one home, nothing to drift. EDIT_NOTES holds rules whose only home is the note.
+# Exact harness-tail paths; each note fires on the first edit of its path in a context window. An owner's rule does
+# not load on a direct edit, so OWNED_NOTES reads the owner's `## ` section when the edit fires (/codify Step 4):
+# one home, nothing to drift. The owner is a maintaining command, or for an always-loaded layer file `principles.md`
+# §Layers. EDIT_NOTES holds rules whose only home is the note.
+LAYERS = ("Layer file edit", "skills/instruction_quality/reference/principles.md", "Layers")
 OWNED_NOTES = {
     "reference/model_ladder_evidence.md": ("Ladder edit", "commands/ladder_ingest.md", "What lands on the ladder"),
     "reference/external_models.json": ("Registry edit", "commands/ladder_ingest.md", "What lands on the ladder"),
+    "CLAUDE.md": LAYERS,
+    "CLAUDE.core.md": LAYERS,
+    "CLAUDE.coding.md": LAYERS,
+    "CLAUDE.godot.md": LAYERS,
+    "CLAUDE.interactive.md": LAYERS,
+    "guards/common.md": LAYERS,
+    "guards/common.godot.md": LAYERS,
 }
 CLAUDE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 EDIT_NOTES = {
@@ -63,43 +71,32 @@ EDIT_NOTES = {
     ),
 }
 
-INCLUDED_MD_ANY_DEPTH = ".md"
-# plans/: execution docs owned by plan_file_format, not doctrine. .cache/: mirrors (baseline-repo);
-# a checkout hosted there is rebased first, so its own .claude/ tail stays gated.
-EXCLUDED_DIRS = ("auto-memory", "scratch", "tests", "__pycache__", "plans", ".cache")
+# The allow-list of agent-facing markdown (a surface an agent reads to decide; principles.md opening). A root
+# not named here stays outside: a directory of state, evidence, generated output or tool docs (work/, logs/,
+# sessions/, scripts/, tools/, hooks/, cache/, plans/, tests/, scratch/, auto-memory/) is never doctrine by default.
+DOCTRINE_DIRS = ("agents", "commands", "guards", "output-styles", "reference", "rules", "skills", "user_scope",
+                 "workflows")
+# Root files: the CLAUDE chain, plus queued CLAUDE.md/MEMORY.md content awaiting /apply_harness_edits (guidance in
+# transit: authoring errors land verbatim in the injected files) and the project's harness goal.
+DOCTRINE_ROOT_FILES = ("pending_harness_edits.md", "harness-goal.md")
 
 
 def is_harness_file(file_path: str) -> bool:
     """
-    True if file_path is a .claude/ surface governed by `instruction_quality`.
-    Path separators are normalized — Edit/Write may deliver either on Windows.
+    True if file_path is agent-facing markdown under `.claude/` that `instruction_quality` governs.
+    Path separators and case are normalized: Edit/Write may deliver either spelling on Windows.
     """
     tail = harness_tail(file_path)
-    if tail is None:
+    if tail is None or not tail.lower().endswith(".md"):
         return False
-    parts = tail.split("/")
-
-    # Queued injected-file content is harness guidance in transit, so the gate
-    # covers it even though it is not under a governed subdirectory.
-    if tail == "pending_harness_edits.md":
-        return True
-
-    # The worklog mirrors are generated by /worklog; their quality is owned by that command.
-    if tail in ("worklog-titles.md", "worklog-pending.md"):
-        return False
-
-    if any(seg in EXCLUDED_DIRS for seg in parts[:-1]):
-        return False
-
-    name = parts[-1]
-    if name.endswith(INCLUDED_MD_ANY_DEPTH):
-        return True
-    return False
+    parts = tail.lower().split("/")
+    if len(parts) == 1:
+        return parts[0].startswith("claude") or parts[0] in DOCTRINE_ROOT_FILES
+    return parts[0] in DOCTRINE_DIRS
 
 
-def is_doctrine_path(file_path: str) -> bool:
-    """The markdown subset of governed harness files: the frozen audit-input packet and the `premises` admission read it."""
-    return str(file_path).endswith(".md") and is_harness_file(file_path)
+# The frozen audit-input packet and the `premises` admission read the same predicate under this name.
+is_doctrine_path = is_harness_file
 
 
 REFERENCE_DIR = "skills/instruction_quality/reference"
@@ -134,8 +131,6 @@ def reference_for(file_path: str) -> str | None:
     if tail is None or not is_harness_file(file_path):
         return None
     parts = tail.split("/")
-    if parts[0] == "hooks":
-        return "hooks.md"
     if parts[0] == "workflows" or parts[:2] == ["skills", "orchestration"]:
         return "orchestration.md"
     if parts[0] in ("commands", "skills"):
@@ -223,7 +218,11 @@ def _note_once(session_id, note_key, room=HOOK_TEXT_CAP):
     note the caller's shared `room` cut to its home line is not spent when it fits a whole cap: the next edit,
     with the cap to itself, carries the section."""
     mark = spent_mark()
-    if note_key is None or not fire_once_since_compaction(session_id, "edit_note:" + note_key):
+    if note_key is None:
+        return ""
+    # An owned note latches per section: several paths share one owner's section, and a window holds it once.
+    latch = "edit_note:owned:%s#%s" % OWNED_NOTES[note_key][1:] if note_key in OWNED_NOTES else "edit_note:" + note_key
+    if not fire_once_since_compaction(session_id, latch):
         return ""
     if note_key not in OWNED_NOTES:
         return EDIT_NOTES[note_key]

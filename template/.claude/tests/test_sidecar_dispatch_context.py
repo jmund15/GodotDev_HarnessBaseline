@@ -2,9 +2,8 @@
 
 PREFLIGHT: a launch whose launcher `--check` exits non-zero is DENIED with the refusal text;
 `-A`, `-U` and `-W` pass through. A passing check is not denied.
-APPROVAL: a canonical read-only launch gets allow. A whole-command, project-contained review
-with only `+Bash` added gets ask after preflight; shell compounds and wider
-grants do not. The real PreToolUse dispatcher preserves that ask over ordinary allow decisions.
+APPROVAL: a canonical launch of a kind that writes nothing gets allow; `author`, `gate`, shell compounds and
+wider grants do not.
 BACKGROUND: a lib launcher is not denied for running in the background. The hook adds no pointer,
 no wake-route line and no background advisory: those facts are in `reference/sidecar_dispatch.md`
 steps 5 and 6 and `/delegate`, read before the call. A mere mention is not a launch.
@@ -1019,9 +1018,6 @@ def fixture():
     os.makedirs(fdir)
     os.makedirs(reference_dir)
     os.makedirs(scratch_dir)
-    for name in ("consent_brief.md", "consent_schema.json"):
-        with open(os.path.join(reference_dir, name), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("review\n")
     with open(os.path.join(REPO, "reference", "sidecar_dispatch.md"), encoding="utf-8") as source:
         reference = source.read()
     with open(os.path.join(reference_dir, "sidecar_dispatch.md"), "w", encoding="utf-8") as target:
@@ -1213,61 +1209,23 @@ def group_doctrine(fx):
 
 
 def group_approval(fx):
-    """A canonical read-only launch is allowed; a +Bash review reaches one ask and nothing wider is."""
+    """A canonical launch of a kind that writes nothing is allowed; nothing wider is."""
     env, project, ok, approved_launch = fx["env"], fx["project"], fx["ok"], fx["approved_launch"]
     cases = []
     approved = run(approved_launch, env, session="sdc01001")
     cases.append(("a tracked canonical direct launch with preflight and ladder is allowed",
                   approved.get("permissionDecision") == "allow"
                   and "canonical sidecar launch" in approved.get("permissionDecisionReason", "")))
-    consent = (
-        "bash .claude/scripts/ok_sidecar.sh -m fake -e high -G reviewer "
-        "-t +Bash -f .claude/reference/consent_brief.md "
-        "-S .claude/reference/consent_schema.json "
-        "-R .claude/scratch/consent.record.json -P .claude/scratch/consent.progress.jsonl "
-        "-l consent -d %s" % project.replace("\\", "/")
-    )
-    asked = run(consent, env, session="sdc01070")
-    cases.append(("a verified +Bash review reaches one user permission ask, not autoapproval",
-                  asked.get("permissionDecision") == "ask"
-                  and "+Bash" in asked.get("permissionDecisionReason", "")
-                  and "fake" in asked.get("permissionDecisionReason", "")))
-    arm_ladder(env, "sdc01071"); arm_skill(env, "sdc01071")
-    dispatch = checked_run(
-        [sys.executable, PRE_BASH_DISPATCH],
-        input=json.dumps({"tool_name": "Bash", "session_id": "sdc01071", "cwd": project,
-                          "tool_input": {"command": consent}}),
-        capture_output=True, text=True, timeout=90, env=env, cwd=project,
-    )
-    dispatch_hso = json.loads(dispatch.stdout or "{}").get("hookSpecificOutput") or {}
-    cases.append(("the real PreToolUse dispatcher passes the +Bash ask through",
-                  dispatch.returncode == 0
-                  and dispatch_hso.get("permissionDecision") == "ask"
-                  and "+Bash" in dispatch_hso.get("permissionDecisionReason", "")))
-    settings = _settings_probe.settings(REPO)
-    ask_rule = "Bash(bash .claude/scripts/*_sidecar.sh * -t +Bash *)"
-    cases.append(("project permissions force a visible +Bash prompt before auto mode",
-                  ask_rule in settings.get("permissions", {}).get("ask", [])))
-    for index, (label, command) in enumerate((
-        ("semicolon", consent + "; git status"),
-        ("pipe", consent + " | git status"),
-        ("newline", consent + "\ngit status"),
-        ("subshell", "(" + consent + ")"),
-        ("bash -c", "bash -c '" + consent + "'"),
-        ("wider tools", consent.replace("+Bash", "+Bash,+Write")),
-        ("permission override", consent + " -p bypassPermissions"),
-    )):
-        result = run(command, env, session="sdc011%02d" % index)
-        cases.append(("an extra-shell review with " + label + " gets no ask",
-                      result.get("permissionDecision") != "ask"))
-    no_preflight_consent = run(consent, dict(env, HARNESS_SIDECAR_PREFLIGHT="0"),
-                               session="sdc01170")
-    cases.append(("a consent request with preflight disabled gets no ask",
-                  no_preflight_consent.get("permissionDecision") != "ask"))
-    without_ladder_consent = run(consent, env, session="sdc01171", ladder=False)
-    cases.append(("a consent request without a ladder Read is denied before any ask",
-                  without_ladder_consent.get("permissionDecision") == "deny"
-                  and names_ladder_route(without_ladder_consent.get("permissionDecisionReason", ""))))
+    # A kind that writes nothing is allowed whatever else it holds (each holds Bash); `author` and `gate` are not.
+    for index, (kind, allowed) in enumerate((("scout", True), ("lens", True), ("reviewer", True), ("judge", True),
+                                             ("gate", False), ("author", False))):
+        decision = run("bash .claude/scripts/ok_sidecar.sh -m fake -G %s" % kind, env,
+                       session="sdc0108%d" % index).get("permissionDecision")
+        cases.append(("a direct -G %s launch %s" % (kind, "is allowed" if allowed else "gets no allow"),
+                      (decision == "allow") == allowed))
+    cases.append(("a launch with a signed +Bash delta gets no decision: Bash is no consent, and no ask rule or hook ask remains",
+                  run("bash .claude/scripts/ok_sidecar.sh -m fake -G reviewer -t +Bash", env,
+                      session="sdc01090").get("permissionDecision") is None))
     preflight_state, preflight_refusal = sidecar.run_preflight(approved_launch, project)
     cases.append(("run_preflight reports passed only after the fake check succeeds",
                   preflight_state == "passed" and preflight_refusal is None))

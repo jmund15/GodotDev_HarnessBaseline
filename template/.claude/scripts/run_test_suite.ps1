@@ -327,7 +327,8 @@ function Get-PeerProtectedPids {
     $script:PeerLabels = @{}
     $roots = [System.Collections.Generic.List[int]]::new()
     $rootLabel = @{}
-    # No ownership axis, deliberately (activity_registry.py): the reaper spares every live record but its own.
+    # No ownership axis, deliberately: the reaper decides what to KILL, so it spares every live record but its own and needs
+    # no owner. Teaching it ownership would let it kill its own session's other runs.
     foreach ($rec in @(Get-LivePeerActivity -OwnRoots @($PID) -Map $Map)) {
         $rpid = [int] $rec.pid
         $roots.Add($rpid)

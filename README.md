@@ -12,8 +12,8 @@ upstream** that keeps that shared core in sync as it evolves across projects.
 
 | Layer | Contents |
 |---|---|
-| `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), machine provisioning (`/workstation_setup` core), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
-| `coding` | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr`, `/pr_pipeline`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
+| `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/autolearn`, `/codify`), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), machine provisioning (`/workstation_setup` core), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
+| `coding` | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr`, `/pr_pipeline`), TDD/debugging/architecture skills, code-hygiene auto-memory |
 | `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-setup.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and the `/workstation_setup` toolchain phases (`commands/reference/workstation_setup_toolchain.md`) |
 
 A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
@@ -192,7 +192,7 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 
 - [pure] `reference/memory_domains.md` — the domain → search-seed → companion-skill table, rendered
   by `compose` from `reference/memory_domains.base.md` (tracked, universal prose) and
-  `adaptation.json` `memory_domains`; `hooks/plan_memory_reminder.py` reads the same key.
+  `adaptation.json` `memory_domains`; `hooks/prompt_memory_loader.py` matches its `triggers` and `hooks/plan_memory_reminder.py` its `paths`.
   Add your project's content domains to `adaptation.json`, never to either file directly.
 - [pure] `commands/doc_start_here_update.md` — the domain-classification table's stack-generic rows
   read `adaptation.json` `content_domains` for your project's central content pipeline row(s).
@@ -270,8 +270,6 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   core-domain-noun check — swap the examples for your domain's when you first touch each file.
 - [pure] `commands/clean_pull.md`, `clean_push.md`, `commit_push.md`, `create_pr.md` — the paired-repo
   steps read `adaptation.json` `paired_repos` for the list; empty skips the step.
-- [pure] `hooks/prompt_memory_loader.py` — `HIGH_RISK_PATTERNS` and `DRIVE_COMMANDS` extend from
-  `adaptation.json` `high_risk_patterns` and `drive_commands`.
 - [pure] `hooks/prompt_git_state_delta.py` — `WATCHED_SUBMODULES` reads `adaptation.json`
   `git_submodules`.
 - [pure] `hooks/compound_cd_approver.py` — `SAFE_SEGMENT_COMMANDS` extends from `adaptation.json`

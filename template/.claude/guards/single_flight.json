@@ -1,7 +1,7 @@
 {
   "header": "=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===",
   "rule": "Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your delegate rails name this project's others; a build, typecheck or test command they do not name is not single-flight, so run your brief's own checks with it. Python and Node proofs under .claude/tests/ are not single-flight",
-  "withShell": "; run the edited unit's proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).",
-  "noShell": "; you have no shell, so cite a proof by path instead of running it.",
+  "writer": "; run the edited unit's proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).",
+  "readOnly": "; you write no file, by a tool or through the shell; run a proof you cite through `python3 .claude/tools/machine_slots.py run -- <proof command>`.",
   "stop": " If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch."
 }

@@ -53,7 +53,7 @@ def _load_tool(name):
 
 if str(HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(HOOKS_DIR))
-from _git_run import run as _run_git  # noqa: E402
+from _git_run import root_relative, run as _run_git  # noqa: E402
 
 
 # The commit summary a shell prints: `[<branch> <hash>] <subject>`, `[<branch> (root-commit) <hash>] <subject>`.
@@ -364,47 +364,6 @@ def predicate_autolearn(ctx):
     return bool(friction or signalled), {"friction": len(friction), "prompt_signals": len(signalled)}
 
 
-def predicate_routing_audit(ctx):
-    """Rows whose `ts` postdates the stats file's `generated_at`; with no stats file yet, every row. A row whose
-    `ts` cannot be read cannot be ordered, so with no newer row it makes the answer null."""
-    aggregate = _load_tool("aggregate_routing_audit")
-    log = aggregate.LOG_PATH.as_posix()
-    path = ctx.repo / aggregate.LOG_PATH
-    if not path.exists():
-        return False, {"log": log, "source": "absent"}
-    since = None
-    stats = ctx.repo / aggregate.STATS_PATH
-    if stats.exists():
-        try:
-            data = json.loads(stats.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            return None, {"log": log, "error": f"{aggregate.STATS_PATH.as_posix()} unreadable: {exc}"}
-        since = _timestamp(data.get("generated_at") if isinstance(data, dict) else None)
-        if since is None:
-            return None, {"log": log, "error": f"{aggregate.STATS_PATH.as_posix()} has no readable generated_at"}
-    try:
-        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    except (OSError, UnicodeDecodeError) as exc:
-        return None, {"log": log, "error": f"unreadable: {exc}"}
-    fresh = undated = 0
-    for line in lines:
-        if since is None:
-            fresh += 1
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            row = None
-        stamp = _timestamp(row.get("ts") if isinstance(row, dict) else None)
-        if stamp is None:
-            undated += 1
-        elif stamp > since:
-            fresh += 1
-    value = True if fresh else (None if undated else False)
-    return value, {"log": log, "source": "present", "rows": len(lines), "rows_since": fresh, "undated": undated,
-                   "since": since.isoformat() if since else None}
-
-
 def predicate_orchestration_metrics(ctx):
     metrics = _load_tool("orchestration_metrics")
     session_dir = metrics.find_session_dir(ctx.session)
@@ -661,7 +620,8 @@ def _git_files(repo, options, specs):
     resolved: the commits it brings in count through their own entries."""
     listed = _git(repo, "log", *options, "--diff-merges=dense-combined", "--name-only", "--format=", "-z", "--stdin",
                   input="".join(f"{s}\n" for s in specs))
-    return {p for p in listed.replace("\n", "\0").split("\0") if p}
+    prefix = _git(repo, "rev-parse", "--show-prefix").strip()
+    return set(root_relative(prefix, {p for p in listed.replace("\n", "\0").split("\0") if p}).values())
 
 
 def _git_hashes(repo, options, specs):
@@ -690,7 +650,6 @@ _ROADMAP_TEXT = "the transcript names a roadmap-bound plan, a vault roadmap.md o
 PREDICATES = {
     "autolearn": (predicate_autolearn,
                   "the Phase 0 digest holds a friction row or a prompt row with signals"),
-    "routing_audit": (predicate_routing_audit, "the routing log holds a row since the last aggregation"),
     "orchestration_metrics": (predicate_orchestration_metrics,
                               "the session has a Workflow run record or an attributable sidecar row"),
     "hot_set_review": (predicate_hot_set_review,

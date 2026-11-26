@@ -27,7 +27,7 @@ import model_registry
 # Longest text before a signature in the captured fixture is 146 chars; 700 keeps quoted text further in from matching.
 SIGNATURE_WINDOW = 700
 
-# The category table `eval_findings` publishes as `denials.<cat>.sessions`; the per-hook rows below do not use it.
+# The denial category table; the per-hook rows below do not use it.
 SIGNATURES = [
     ('index-write', re.compile(r'an index write runs in its own Bash call')),
     ('commit-stamp', re.compile(r'BLOCKED (git )?commit')),
@@ -314,7 +314,7 @@ def transcript_paths(roots, coverage):
 
 
 def scan(roots, cache_path=None, hooks_dir=None):
-    """{'denials': rows with a category (what `eval_findings` reads), 'guards': rows with a hook, 'calls', 'coverage'}."""
+    """{'denials': rows with a category, 'guards': rows with a hook, 'calls', 'coverage'}."""
     signatures = emitted_signatures(hooks_dir)
     coverage = {'files': 0, 'read': 0, 'cached': 0, 'unparseable': 0, 'unreadable': 0, 'roots': 0, 'gaps': []}
     cache = load_cache(cache_path)

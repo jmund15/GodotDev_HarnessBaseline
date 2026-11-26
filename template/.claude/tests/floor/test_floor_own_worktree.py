@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 
 from case import bash, derived
-from conftest import write
+from conftest import (LIVE_BACKGROUND_NOTICE, LIVE_LANE_CHAIN, LIVE_LANE_CREATED, LIVE_LANE_HEREDOC,
+                      LIVE_TASK_NOTIFICATION, fill, write)
 
 ROW = {"type": "assistant", "message": {"role": "assistant", "content": [{
     "type": "tool_use", "id": "toolu_01CsZ5wFhVRWCR8EetcJb7H3", "name": "Bash",
@@ -690,10 +691,166 @@ def test_blank_segment_helpers_return_nothing_not_raise():
         assert ow._visible_git_invocation(segment, "/x") == []
         assert ow._visible_add_target(segment, "/x") == []
     for command in ("", "# note", "a && # c", " && "):
-        assert ow._lane_created_name(command) is None
+        assert ow._first_visible_add(command, "/x") == []
 
 
 def test_a_blank_segment_does_not_hide_a_peer_checkout(own):
     own.dirty(own.root)
     rows = [own.created_row(CREATE + ";\n"), own.result_row()]
     assert own.run("git checkout HEAD -- .gitignore", rows, cwd=own.root).denied
+
+
+# --- a project's create tool is one more visible add (H9) ------------------------------------------------------
+# The commands, notices and result lines are the live rows `conftest` keeps; a case fills in only names and paths.
+SINGLE = 'cd "<root>" && python3 .claude/tools/lane_worktree.py create <name> --from main'
+
+
+def _create_rows(own, command, output=None, background=False, notify=True):
+    """The transcript rows of a call running `command` (live shapes), whose tool result or background
+    notification carries `output`: a foreground call ends at its result, a background one at its notification."""
+    command = fill(command, root=own.root.as_posix(), name="mine", first="wl-leaks")
+    output = fill(LIVE_LANE_CREATED, path=own.wt, name="mine") if output is None else output
+    cwd = str(own.root)
+    rows = [{"type": "assistant", "timestamp": own.started, "cwd": cwd, "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_create", "name": "Bash", "input": {"command": command}}]}}]
+    shown = output
+    if background:
+        done = own.tmp / "tasks" / "blw86ytnu.output"
+        write(done.parent, done.name, output + "\n\n[exited with code 0]\n")
+        shown = fill(LIVE_BACKGROUND_NOTICE, task="blw86ytnu", output=done, cwd=cwd)
+    rows.append({"type": "user", "timestamp": own.started if background else own.finished, "cwd": cwd,
+                 "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_create",
+                                                          "is_error": False, "content": shown}]},
+                 "toolUseResult": {"stdout": shown, "stderr": "", "interrupted": False}})
+    if background and notify:
+        rows.append({"type": "user", "timestamp": own.finished, "cwd": cwd,
+                     "origin": {"kind": "task-notification", "producer": "session-task"},
+                     "message": {"role": "user", "content": fill(LIVE_TASK_NOTIFICATION, task="blw86ytnu",
+                                                                  call="toolu_create", output=done)}})
+    return rows
+
+
+ROOT = Path("/repo/.claude/worktrees")
+
+
+def _names(command):
+    """The worktrees `_first_visible_add` names for `command` run in /repo, under the planted project rows."""
+    import _own_worktree as ow
+    command = fill(command, root="/repo", name="mine", first="wl-leaks")
+    return [p.name for p in ow._first_visible_add(command, "/repo", ROOT)]
+
+
+@pytest.mark.parametrize("command,want", [
+    pytest.param(SINGLE, ["mine"], id="single"),
+    pytest.param("false; " + SINGLE, ["mine"], id="after-false: a `;` never skips"),
+    pytest.param(LIVE_LANE_CHAIN, ["wl-leaks", "mine"], id="chain: the second create is named too"),
+    pytest.param(LIVE_LANE_HEREDOC, ["mine"], id="heredoc after the create"),
+    pytest.param("false && " + SINGLE, [], id="skipped by &&"),
+    pytest.param("exit 1; " + SINGLE, [], id="exit before"),
+    pytest.param(SINGLE + " || true", [], id="masked by ||"),
+    pytest.param(SINGLE.replace("--from main", "--from $BASE"), [], id="expansion"),
+])
+def test_a_listed_create_is_named_by_the_one_visible_add_analysis(create_tools, command, want):
+    assert _names(command) == want
+
+
+def test_a_tool_the_project_does_not_list_is_named_by_nothing(create_tools):
+    create_tools("another_tool.py")
+    assert _names(SINGLE) == []
+    create_tools()
+    assert _names(SINGLE) == []
+
+
+@pytest.mark.parametrize("command,background", [(LIVE_LANE_CHAIN, True), (LIVE_LANE_HEREDOC, False)],
+                         ids=["chain-backgrounded", "heredoc-foreground"])
+def test_a_registered_create_proves_on_the_live_result_shapes(own, create_tools, command, background):
+    assert not own.blocked(_create_rows(own, command, background=background))
+
+
+@pytest.mark.parametrize("command,kwargs", [
+    pytest.param(LIVE_LANE_CHAIN, {"output": "error: lane wl-leaks exists\n" + fill(LIVE_LANE_CREATED, path="x", name="mine")},
+                 id="first-create-failed"),
+    pytest.param(SINGLE.replace("<name>", "other"), {}, id="another-name"),
+    pytest.param(SINGLE, {"background": True, "notify": False}, id="no-completion-notice"),
+])
+def test_a_create_that_failed_or_never_completed_proves_nothing(own, create_tools, command, kwargs):
+    assert own.blocked(_create_rows(own, command, **kwargs))
+
+
+# --- the delete preview reads ownership from the session, and a deny names it when it is unmet --------------------
+@pytest.fixture
+def preview(own, tmp_path, monkeypatch, capsys):
+    """`_delete_rule.main([<own worktree>, ...])` as the session runs it: its id in the environment and its
+    transcript where the client keeps it (`CLAUDE_CONFIG_DIR`)."""
+    import _delete_rule as rule
+    sid = "6f3a2c1e-0b7d-4e55-9a21-3c8d5e7f9a10"
+    config = tmp_path / "login"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    monkeypatch.chdir(own.root)
+
+    def run(rows, *flags):
+        write(config, "projects/p/%s.jsonl" % sid, "".join(json.dumps(r) + "\n" for r in rows))
+        code = rule.main([*flags, str(own.wt)])
+        return code, capsys.readouterr().out
+    run.rule = rule
+    return run
+
+
+def test_the_preview_without_a_flag_proves_ownership_from_the_transcript(own, preview):
+    code, out = preview(own.rows())
+    assert code == 0 and "retired" in out
+
+
+def test_the_preview_of_an_unproven_worktree_blocks_and_names_ownership(own, preview):
+    code, out = preview([])
+    assert code == 1 and preview.rule.OWNERSHIP_UNPROVEN in out
+
+
+def test_the_created_flag_is_a_labelled_hypothetical(own, preview):
+    code, out = preview([], "--created")
+    assert code == 0 and "retired" in out and "--created" in out
+
+
+def test_a_deny_names_ownership_only_when_ownership_would_have_cleared_the_loss(own):
+    import _delete_rule as rule
+    delete = "rm -rf .claude/worktrees/mine"
+    assert rule.OWNERSHIP_UNPROVEN in own.run(delete, rows=[]).reason
+    own.dirty(own.wt)  # a tracked edit no object holds is a loss for the creator too
+    got = own.run(delete, rows=[])
+    assert got.denied and rule.OWNERSHIP_UNPROVEN not in got.reason
+
+
+# --- a deny's retry passes: an edit saved to a preserve ref discards from any directory of a peer's worktree --------
+@pytest.fixture
+def nested(own):
+    """A peer's worktree whose tracked `sub/f.txt` carries an edit, with `sub` its cwd (the checkout's top is above
+    it, as the harness's own `template/` sits below its repository)."""
+    sub = own.wt / "sub"
+    write(own.wt, "sub/f.txt", "tracked\n")
+    g(own.wt, "add", "sub/f.txt")
+    g(own.wt, "commit", "-qm", "track f")
+    write(own.wt, "sub/f.txt", "edited\n")
+    return sub
+
+
+def _save(own, sub):
+    g(sub, "update-ref", "refs/preserve/saved", g(sub, "hash-object", "-w", "f.txt").strip())
+
+
+def test_the_stored_check_reads_a_path_relative_to_a_subdirectory_cwd(own, nested):
+    import _delete_rule
+    assert _delete_rule.worktree_unstored(str(nested), ["f.txt"]) == ["f.txt"]
+    _save(own, nested)
+    assert _delete_rule.worktree_unstored(str(nested), ["f.txt"]) == []
+
+
+@pytest.mark.parametrize("command", ['git -C "{sub}" restore f.txt', 'cd "{sub}" && git checkout -- f.txt'],
+                         ids=["dash-C", "cd"])
+def test_a_saved_edit_discards_from_a_subdirectory_of_a_peers_worktree(own, nested, command):
+    _save(own, nested)
+    assert not own.run(command.format(sub=nested.as_posix()), rows=[]).denied
+
+
+def test_an_unsaved_edit_stays_denied_from_a_subdirectory(own, nested):
+    assert own.run('cd "%s" && git checkout -- f.txt' % nested.as_posix(), rows=[]).denied

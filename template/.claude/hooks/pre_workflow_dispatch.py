@@ -259,12 +259,6 @@ HOOKS = (
     (workflow_provider_guard, ()),
 )
 
-# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
-# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
-UNWIRED = (
-    "readonly_marker_arm",
-)
-
 
 def _once(items):
     seen, kept = set(), []

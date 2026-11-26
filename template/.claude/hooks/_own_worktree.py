@@ -18,6 +18,7 @@ from pathlib import Path
 
 import _git_commit
 import _git_run
+from _delete_rule import project_data
 from _shell_lex import lex, split_at
 from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
                          executable_text, literal_assignments, expand_literal)
@@ -108,45 +109,61 @@ _ADD_SKIPPERS = frozenset({'exit', 'return', 'exec', 'set', 'trap', 'eval', 'sou
                            'elif', 'while', 'until', 'for', 'case', 'function', '{', '(', 'cd', 'pushd', 'popd'})
 _TAIL_FILTER = re.compile(r'\s*tail(?:\s+-n\s*\d+|\s+-\d+)?\s*')
 _FAILURE_LINE = re.compile(r'(?m)^\s*(?:fatal|error):')
+# The notice's tail wording changes between client versions; its id and output path do not, and the path is
+# re-checked against the completion notification's own `output-file`.
 _BACKGROUND_NOTICE = re.compile(r'Command running in background with ID: (\w+)\. Output is being written to: '
-                                r'(.+?)\. You will be notified when it completes\.')
+                                r'(.+?\.output)')
 _EXIT_CODE = re.compile(r'\(exit code (\d+)\)')
+
+
+def _visible_head(segment: str) -> str | None:
+    """A list's command text when its errors reach the call's output (at most the supported tail filter after it,
+    `2>&1` its only redirect, no expansion, comment or escape), else None."""
+    pipeline = split_at(segment, '|')
+    if not pipeline or len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
+        return None  # a blank or comment-only segment lexes to no pipeline stage
+    head = pipeline[0].strip().removesuffix('2>&1').strip()
+    return None if any(c in head for c in '<>$`\\#') else head
 
 
 def _visible_git_invocation(segment: str, cwd: str):
     """A literal git call with visible errors and at most the supported tail filter."""
-    pipeline = split_at(segment, '|')
-    if not pipeline or len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
-        return []  # a blank or comment-only segment lexes to no pipeline stage
-    head = pipeline[0].strip()
-    if head.endswith('2>&1'):
-        head = head[:-4].strip()
-    if any(c in head for c in '<>$`\\#'):
-        return []
-    parsed = git_invocation(head)
-    if not parsed or not cwd:
-        return []
-    args, chdir, env = parsed
-    if env:
-        return []
-    return parsed
+    head = _visible_head(segment)
+    parsed = git_invocation(head) if head is not None and cwd else None
+    return parsed if parsed and not parsed[2] else []
 
 
-def _visible_add_target(segment: str, cwd: str) -> list[Path]:
-    """The target of a literal, visible `git worktree add`, else nothing."""
+def _create_name(head: str) -> str | None:
+    """The `<name>` of `python <tool> create <name> ...` for a tool the project lists in `adaptation.json`
+    `worktree_create_tools`, else None. Such a tool prints `error:` on every failure, as `git worktree add` does."""
+    words = head.split()
+    tools = project_data('worktree_create_tools')
+    if (len(words) < 4 or words[0] not in ('python', 'python3', 'py') or words[2] != 'create'
+            or not isinstance(tools, list) or re.split(r'[/\\]', words[1])[-1] not in tools):
+        return None
+    return words[3] if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', words[3]) else None
+
+
+def _visible_add_target(segment: str, cwd: str, lane_root: Path | None = None) -> list[Path]:
+    """The target of a literal, visible `git worktree add`, or of a listed create tool's call
+    (`<lane_root>/<name>`), else nothing."""
+    head = _visible_head(segment)
+    if head is None or not cwd:
+        return []
+    name = _create_name(head)
+    if name:
+        return [lane_root / name] if lane_root else []
     parsed = _visible_git_invocation(segment, cwd)
-    if not parsed:
+    if not parsed or parsed[0][:2] != ['worktree', 'add']:
         return []
-    args, chdir, _ = parsed
-    if args[:2] != ['worktree', 'add']:
-        return []
-    return _add_target(args, chdir, cwd, {})
+    return _add_target(parsed[0], parsed[1], cwd, {})
 
 
-def _first_visible_add(command: str, cwd: str) -> list[Path]:
+def _first_visible_add(command: str, cwd: str, lane_root: Path | None = None) -> list[Path]:
     """The paths of the adds that run first in their call with their errors in the call's output.
 
-    Accepts `git [-C <dir>] worktree add <args> [2>&1] [| tail -N]` as the first list (after any literal
+    Accepts `git [-C <dir>] worktree add <args> [2>&1] [| tail -N]`, or a listed create tool's
+    `python <tool> create <name> ...` in the same form, as the first list (after any literal
     `cd`, which `&&` makes binding and `;` admits only to the directory it already runs in), and each
     list of the same form joined to it by `&&`, `;` or a newline, followed by anything: what follows
     cannot undo or skip them. A failed add always prints `fatal:` or `error:`, so the caller proves
@@ -160,8 +177,9 @@ def _first_visible_add(command: str, cwd: str) -> list[Path]:
             return []
         moved = cd_target(first) if '$' not in first and '`' not in first else None
         if moved is None:
-            parsed = git_invocation(next(iter(split_at(first, '|')), '').strip().removesuffix('2>&1').strip())
-            if parsed and parsed[0][:2] == ['worktree', 'add']:
+            head = next(iter(split_at(first, '|')), '').strip().removesuffix('2>&1').strip()
+            parsed = git_invocation(head)
+            if (parsed and parsed[0][:2] == ['worktree', 'add']) or _create_name(head):
                 break
             words = first.split()
             # A `;`-joined simple command before the add cannot skip it; one that can end the shell,
@@ -176,12 +194,12 @@ def _first_visible_add(command: str, cwd: str) -> list[Path]:
         if not target or (sep != '&&' and not _same_path(Path(target).resolve(), Path(cwd).resolve())):
             return []
         cwd, command = target, command[match.end():]
-    found = _visible_add_target(first, cwd)
+    found = _visible_add_target(first, cwd, lane_root)
     while found and match:
         command = command[match.end():]
         match = re.search(r'\|\||&&|;|\n', command)
         segment, sep = (command[:match.start()], match.group(0)) if match else (command, '')
-        target = _visible_add_target(segment, cwd) if sep != '||' else []
+        target = _visible_add_target(segment, cwd, lane_root) if sep != '||' else []
         if not target:
             # A submodule init or an expansion-free simple command (an `echo ok`) between literal loop
             # iterations cannot skip or move the next add.
@@ -244,28 +262,6 @@ def _unrolled_loops(command: str) -> str | None:
     return ''.join(out) + text[cursor:] if out else None
 
 
-_LANE_CREATE = re.compile(r'(?:python3?|py)\s+(?:\S*[/\\])?lane_worktree\.py\s+create\s+([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)')
-
-
-def _lane_created_name(command: str) -> str | None:
-    """The name a literal `lane_worktree.py create <name> ...` call adds, else None.
-
-    The tool prints an `error:` line on every failure, so its result text decides success like a visible
-    `git worktree add`'s. Only `&&` may join the call to earlier `cd`s or to anything after it; `;`, `||`, a
-    newline, an expansion or a background `&` make its run unknown. A trailing `2>&1` and `| tail -N` are kept."""
-    if re.search(r'\|\||;|\n|[$`\\<]|(?<![&>])&(?!&)', command):
-        return None
-    for part in (part.strip() for part in split_at(command, '&&')):
-        if cd_target(part) is not None:
-            continue
-        pipeline = split_at(part, '|')
-        if not pipeline or len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
-            return None
-        match = _LANE_CREATE.match(pipeline[0].strip().removesuffix('2>&1').strip())
-        return match.group(1) if match else None
-    return None
-
-
 def _background_add_ran(visible: bool, output: str, summary: str) -> bool:
     """Whether a backgrounded add succeeded: a visible add reads its output file, any other add the exit code."""
     if visible:
@@ -285,7 +281,8 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
     the call's supported literal control flow and successful result. The current .git file's
     timestamp must lie inside that call; removal/recreation cannot inherit old ownership.
     A fully literal `for` loop counts as its unrolled adds, each proven as a visible add (`_unrolled_loops`).
-    A literal `lane_worktree.py create <name>` call counts as a visible add of `<main>/.claude/worktrees/<name>`.
+    A call of a create tool the project lists (`adaptation.json` `worktree_create_tools`) counts as a visible add of
+    `<main>/.claude/worktrees/<name>`.
     A backgrounded add's result is the background notice; its call ends at the completed `<task-notification>`
     for that task id, and success reads the output file (visible add) or the notice's exit code (other add).
     Missing timestamps, results or provable control flow fail closed.
@@ -306,25 +303,21 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
         born = (target / '.git').stat().st_mtime
     except (OSError, ValueError):
         return False
+    lane_root = Path(common.strip()).resolve().parent / '.claude' / 'worktrees'
     for events in session_events(transcript_path):
         pending = {}
         backgrounded = {}  # task id -> (start, visible, output file) of an add still awaiting its notification
         for event in events:
             if isinstance(event, Call):
                 command, cwd, stamp = event.command, event.cwd, event.stamp
-                if stamp is not None and cwd and 'worktree' in command:
+                if stamp is not None and cwd and ('worktree' in command or ' create ' in command):
                     unrolled = _unrolled_loops(command)
-                    lane = _lane_created_name(command)
-                    if lane is not None:
-                        made = Path(common.strip()).resolve().parent / '.claude' / 'worktrees' / lane
-                        if _same_path(made, target):
-                            pending[event.id] = (stamp, True)
-                    elif unrolled is not None:
-                        if any(_same_path(p, target) for p in _first_visible_add(unrolled, cwd)):
+                    if unrolled is not None:
+                        if any(_same_path(p, target) for p in _first_visible_add(unrolled, cwd, lane_root)):
                             pending[event.id] = (stamp, True)
                     elif any(_same_path(p, target) for p in _added_worktrees(command, cwd)):
                         pending[event.id] = (stamp, False)
-                    elif any(_same_path(p, target) for p in _first_visible_add(command, cwd)):
+                    elif any(_same_path(p, target) for p in _first_visible_add(command, cwd, lane_root)):
                         pending[event.id] = (stamp, True)
             elif isinstance(event, Result):
                 start, visible = pending.pop(event.id, (None, False))

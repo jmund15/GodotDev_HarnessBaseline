@@ -22,6 +22,13 @@ Sub-hook contract (what a CHAIN member may assume and must guarantee):
     included, is `fault`; a member still running at its budget is abandoned as `timeout`, and one
     that finishes after its budget is `timeout` too; a timed-out member's output is discarded.
 
+Audience: `AUDIENCE` gives each member one row. An `owner` member speaks to the person typing, so it runs only when
+`_prompt_provenance.human_typed` holds for the payload and the process (not a delegate brief, a launcher child, a
+`claude -p` child or a runtime envelope); an `any` member (and one with no row) runs for every prompt. The decision is
+made once here, so a member carries no delegate or envelope check of its own, and a skipped member is imported and
+timed not at all (the timing record names only the members that ran). An unreadable payload or provenance module runs
+every member, the behaviour before the split.
+
 Output: each member's stdout is normalized (empty and `{}` dropped; a JSON object yields its
 hookSpecificOutput.additionalContext, dropped with a stderr note when absent; anything else
 verbatim), joined in CHAIN
@@ -63,30 +70,30 @@ import _optional_hooks  # noqa: E402 - after the sys.path insert above
 # (module basename, budget seconds). A plain literal: other tools read it with ast.literal_eval.
 CHAIN = (
     ("prompt_memory_loader", 30),
-    ("critical_analysis_reminder", 30),
     ("prompt_git_state_delta", 15),
     ("shell_census", 25),
     ("sidecar_watch_rearm", 5),
     ("budget_posture", 15),
-    ("activity_registry", 15),
     ("overnight_ask_guard", 5),
     ("skill_load_marker", 5),
 )
 
-# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
-# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
-UNWIRED = (
-    "activity_registry",
-    "budget_posture",
-    "prompt_memory_loader",
-    "shell_census",
-    "tool_routing_cumulative_reset",
-    "tool_routing_prompt_synthesis",
-)
+# Who each member speaks to. "owner": the person typing, so it runs only for a human-typed prompt (a delegate brief
+# or a runtime envelope gets nothing); "any": it records state or reads envelopes, so it runs for every prompt. A
+# plain literal, one row per CHAIN member (the proof checks both lists agree).
+AUDIENCE = {
+    "prompt_memory_loader": "owner",     # a nudge to consult memory before the owner's task
+    "prompt_git_state_delta": "owner",   # drift between this session's typed prompts; a one-prompt child has none
+    "shell_census": "owner",             # shells the owner's long-lived session left running
+    "sidecar_watch_rearm": "any",        # reads task-notification envelopes, which are never typed
+    "budget_posture": "owner",           # the quota line an orchestrating session reads before a fan-out
+    "overnight_ask_guard": "owner",      # the owner's `/overnight off`; a delegate has no run to end
+    "skill_load_marker": "any",          # records a typed `/name` skill load as state, text only for orchestration
+}
 
 # Members whose standalone `__main__` block swallows main()'s exceptions and exits 0, so text they
 # printed before the exception is still delivered there.
-_SWALLOWS = frozenset({"budget_posture", "activity_registry"})
+_SWALLOWS = frozenset({"budget_posture"})
 
 DEFAULT_REPORT_RECORDS = 100
 _TIMING_WRITE_BUDGET = 1.5
@@ -172,6 +179,20 @@ def _normalize(text):
     return text, False
 
 
+def _human_typed(payload_text):
+    """Whether a person typed this prompt. Fails open (True): an unreadable payload or provenance module runs every
+    member, as the chain did before members had an audience."""
+    try:
+        payload = json.loads(payload_text)
+        if not isinstance(payload, dict):
+            return True
+        from _prompt_provenance import human_typed
+
+        return human_typed(payload, os.environ)
+    except Exception:  # noqa: BLE001 - a provenance fault must not silence the chain
+        return True
+
+
 def _timing_path():
     from _hook_state import log_path
 
@@ -227,8 +248,10 @@ def dispatch(payload_text, chain=None, timing_path=None):
     """
     started = time.monotonic()
     local = threading.local()
+    typed = _human_typed(payload_text)
     members = [_Member(name, budget, payload_text)
-               for name, budget in _optional_hooks.adopted(CHAIN if chain is None else chain)]
+               for name, budget in _optional_hooks.adopted(CHAIN if chain is None else chain)
+               if typed or AUDIENCE.get(name) != "owner"]
     saved = (sys.stdin, sys.stdout, sys.stderr, sys.argv)
     abandoned = False
     try:

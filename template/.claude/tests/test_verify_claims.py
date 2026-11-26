@@ -518,7 +518,7 @@ def part_two(vc):
               rep["errors"] and rep["status"] == "fail", rep)
 
         # ---- legacy adapter
-        tracked = ["tools/extract_numbers.py", "docs/README.md", "other/README.md"]
+        tracked = ["tools/rule_units.py", "docs/README.md", "other/README.md"]
 
         def adapt(claim, **kw):
             return vc.items_of(claim, root=root, tracked=tracked, **kw)
@@ -538,9 +538,9 @@ def part_two(vc):
               and quotes(adapt(dict(base, evidence="'Alpha line one.', 'Gamma line three.'"))) == ["Alpha line one.", "Gamma line three."])
         check("legacy: a `line N:` label is stripped",
               quotes(adapt(dict(base, evidence="line 3: Gamma line three."))) == ["Gamma line three."])
-        items = adapt(dict(base, evidence="extract_numbers.py:511-512: Delta end."))
+        items = adapt(dict(base, evidence="rule_units.py:511-512: Delta end."))
         check("legacy: a fragment labelled with another file resolves by unique tracked basename",
-              items[0].get("file") == "tools/extract_numbers.py" and items[0].get("quote") == "Delta end.", items)
+              items[0].get("file") == "tools/rule_units.py" and items[0].get("quote") == "Delta end.", items)
         items = adapt(dict(base, evidence="README.md: Delta end."))
         check("legacy: an ambiguous basename label is UNCHECKED, never guessed",
               items[0].get("file") is None and items[0].get("why") == "unresolved-label", items)
@@ -567,10 +567,10 @@ def part_two(vc):
               and len(adapt(dict(base, evidence='odd " quote count | split here'))) == 2)
         check("legacy: a prose label before a fully quoted fragment is stripped",
               quotes(adapt(dict(base, evidence='Reach row: "Gamma line three."'))) == ["Gamma line three."])
-        items = adapt(dict(base, evidence='extract_numbers.py build_rows: "Delta end." and "Alpha line one."'))
+        items = adapt(dict(base, evidence='rule_units.py build_rows: "Delta end." and "Alpha line one."'))
         check("legacy: a file label with a symbol word and quoted runs after it routes every run to that file",
               [(i.get("file"), i.get("quote")) for i in items]
-              == [("tools/extract_numbers.py", "Delta end."), ("tools/extract_numbers.py", "Alpha line one.")], items)
+              == [("tools/rule_units.py", "Delta end."), ("tools/rule_units.py", "Alpha line one.")], items)
         check("legacy: a label naming the claim's own file with a section word keeps that file",
               adapt(dict(base, evidence='doc.md section 2: "Gamma line three."'))[0].get("file") == "doc.md")
         (root / "short.md").write_text("ab cd ab ef. A unique marker line.\n", encoding="utf-8")

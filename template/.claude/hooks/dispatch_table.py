@@ -129,6 +129,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -405,6 +406,12 @@ def _audit_source(entry, session, payload):
             if returned == []:
                 return None  # the engine refused its args before any agent ran: nothing came back to check
         verification = value.get("verification") if isinstance(value, dict) else None
+        if verification is None:
+            # A split review's native seats return no verdict: its `--review-close` left the close's own claims and
+            # verdict in this run's directory, and a run with none there never closed.
+            closed = _read_json(str(directory / "review_close.json"))
+            if isinstance(closed.get("verification"), dict):
+                value, verification = closed, closed["verification"]
         # The close check records the mode and source it read; replaying them keeps the recompute on the
         # same rows and keys. A report from before that record falls back to what the engines' checks read.
         in_run = _in_run_report(verification, payload) if isinstance(verification, dict) else {}
@@ -466,6 +473,11 @@ def _audit_source(entry, session, payload):
                     errors.append("host source count %s differs from %s recovered source findings" % (raw, len(original)))
         report_path = directory / "verification_audit.json"
         specs = ((args.get("fold") or {}).get("subjects") or []) if mode == "review" else []
+        if "--sidecar-dir" in (recorded or []):
+            try:
+                specs = _sidecar_fold_specs(verification, payload)
+            except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                errors.append("fold snapshot audit unavailable: %s" % exc)
     elif kind == "sidecar":
         record = entry.get("record")
         if not record:
@@ -629,9 +641,10 @@ def _verifier_gap(entry, verification, in_run, report_path, payload):
     gap = {"status": status or "absent", "errors": errors}
     if entry.get("kind") == "workflow":
         mode = "review" if (entry.get("name") or "").replace("-", "_") == "review_fanout" else "claims"
-        directory = os.path.dirname(str(report_path))
+        directory = os.path.dirname(str(report_path)).replace("\\", "/")
+        # Forward slashes, quoted: the agent runs this line in bash, which strips an unquoted backslash.
         gap["rerun"] = "python3 .claude/tools/post_check.py %s --workflow-dir %s --out %s" % (
-            mode, directory, os.path.join(directory, "verification_rerun.json"))
+            mode, shlex.quote(directory), shlex.quote(directory + "/verification_rerun.json"))
     return gap
 
 

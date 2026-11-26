@@ -1,5 +1,5 @@
 """Proof for hooks/correction_record_guard.py: a ledger row (`autolearn_outcomes.py record`) is written by the
-pass that decided it, so the call is denied unless /codify, /autolearn or /eval_dashboard is in context.
+pass that decided it, so the call is denied unless /codify or /autolearn is in context.
 
 Decision cases call the hook in process (`_hook_call`); one case spawns the real Bash dispatcher to prove the
 guard is wired and the deny reaches the agent.
@@ -52,14 +52,15 @@ def test_a_hand_record_with_no_pass_loaded_is_denied_with_the_one_next_step(stat
     assert 'Skill(skill="codify")' in reason
 
 
-@pytest.mark.parametrize("skill", ["codify", "autolearn", "eval_dashboard"])
+@pytest.mark.parametrize("skill", ["codify", "autolearn"])
 def test_a_record_inside_a_pass_that_owns_the_ledger_is_allowed(state, skill):
     load(skill)
     assert verdict(RECORD, state)[0] is None
 
 
-def test_a_skill_the_ledger_does_not_belong_to_does_not_unlock_it(state):
-    load("orchestration")
+@pytest.mark.parametrize("skill", ["orchestration", "instruction_quality"])
+def test_a_skill_the_ledger_does_not_belong_to_does_not_unlock_it(state, skill):
+    load(skill)
     assert verdict(RECORD, state)[0] == "deny"
 
 

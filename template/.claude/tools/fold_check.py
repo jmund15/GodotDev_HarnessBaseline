@@ -335,7 +335,7 @@ def _expand_gitlinks(root, base, changed):
         if link not in out:
             continue
         out.discard(link)
-        pin = _git_text(root, "rev-parse", "--verify", "--quiet", f"{base}:{link}")
+        pin = _git_text(root, "rev-parse", "--verify", "--quiet", f"{base}:./{link}")
         inside = Path(root) / link
         if not pin or not (inside / ".git").exists():
             out.add(link)
@@ -411,7 +411,7 @@ class Subject:
         if snap["kind"] == "blobs":
             return sorted(item for item in self.files + [p for p in self.new_paths if p not in self.files]
                           if self.pre_bytes(item) != self.post_bytes(item))
-        done = _git(self.root, "diff", "--name-status", "-z", snap["base"])
+        done = _git(self.root, "diff", "--relative", "--name-status", "-z", snap["base"])
         if done.returncode != 0:
             raise Unusable(f"git diff against rev snapshot base {snap['base']} failed in {self.root}: "
                            f"{done.stderr.decode('utf-8', errors='replace').strip()}")

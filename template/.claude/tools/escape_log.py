@@ -2,16 +2,16 @@
 """The escape log: one row per defect found after it landed.
 
 A landed defect is a defect in a commit made before the current task's work began; for a review
-stage, in an ancestor of the subject's base. Three writers feed the log. `/self_evaluate` and the
-debugging checklist append under their own writer name, and `review_ledger.py record --escaped`
-appends under `review:<stage>`, so no review command gains a step.
+stage, in an ancestor of the subject's base. Two writers feed the log. The debugging checklist
+appends under its own writer name, and `review_ledger.py record --escaped` appends under `review:<stage>`, so no
+review command gains a step.
 
-    escape_log.py add --sha <sha> --writer <self_evaluate|debugging|review:<stage>> [--repo <path>] \
+    escape_log.py add --sha <sha> --writer <debugging|review:<stage>> [--repo <path>] \
         [--paths <path>...] [--should-have-caught <mandate key|none>] [--base-ref <ref>] \
         [--author-model <id|unknown>] [--tier <tier|inline>] [--evidence <path>] [--found-by <call>]
     escape_log.py list [--repo <path>] [--path <path>] [--model <id>] [--tier <tier>] [--since <ISO>] [--json]
 
-`--repo` is the checkout a sha and the log resolve against (default `CLAUDE_PROJECT_DIR`, else the cwd). `add`
+`--repo` is the checkout a sha and the log resolve against (default `CLAUDE_PROJECT_DIR`, else the harness root the cwd lies in). `add`
 computes the row's evidence first, then appends it to that checkout's `.claude/escape_log.jsonl` under
 `_hook_state`'s file lock, which spans only the id and the append, so concurrent writers compose without
 waiting on each other's evidence. `--paths` are stored repo-relative (an absolute, `./` or backslash form is
@@ -36,10 +36,10 @@ evidence and never from the caller:
   `domain`     `triage.domain_keys` over the paths, the function a yield row keys on too.
 
 `--paths` defaults to the files the sha changed, `--author-model` to `unknown` and `--tier` to
-`inline`, so the documented `/self_evaluate` and debugging invocations run as written.
+`inline`, so the documented debugging invocation runs as written.
 
 Refusals (exit 2, nothing written): an unknown mandate key, a `--sha` that is not a commit, an
-empty path list, a `--writer` outside the three forms, and a mandate key when the project has no
+empty path list, a `--writer` outside the two forms, and a mandate key when the project has no
 `review_mandates` catalog to declare it. A write that fails, or a lock that cannot be taken, exits 1 naming the path.
 The tracked row is written first, so an overlay failure leaves it standing and says so. Both files are
 append-only: rows are never dropped or rotated, so each grows one row per escaped defect.
@@ -62,13 +62,14 @@ for _d in (os.path.normpath(os.path.join(HERE, "..", "hooks")), HERE):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 
+import _checkout_root  # noqa: E402
 import _git_commit  # noqa: E402
 import _hook_state  # noqa: E402
 import review_ledger  # noqa: E402
 import review_snapshot as _snapshot  # noqa: E402
 import triage  # noqa: E402
 
-WRITERS = ("self_evaluate", "debugging")
+WRITERS = ("debugging",)
 NO_MANDATE = "none"
 UNRECORDED = "unrecorded"
 VERSION = 1
@@ -79,8 +80,8 @@ _REPO = None
 
 
 def project_root():
-    """The repo a sha and the log resolve against: `--repo`, else `CLAUDE_PROJECT_DIR`, else the cwd."""
-    return _REPO or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    """The repo a sha and the log resolve against: `--repo`, else `CLAUDE_PROJECT_DIR`, else the harness root the cwd lies in."""
+    return _REPO or os.environ.get("CLAUDE_PROJECT_DIR") or _checkout_root.harness_root()
 
 
 def claude_dir():
@@ -184,8 +185,7 @@ def _canonical_sha(sha):
 
 def _repo_paths(paths):
     """`paths` as the repo-relative POSIX form the review ledger and coverage clause 5 compare."""
-    top = _git_commit.run_git(["rev-parse", "--show-toplevel"], project_root())
-    return review_ledger.normalize_files(Path(top.strip() if top else project_root()), paths)
+    return review_ledger.normalize_files(Path(project_root()), paths)
 
 
 def _changed_paths(sha):
@@ -302,11 +302,11 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="escape_log.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     repo = argparse.ArgumentParser(add_help=False)
-    repo.add_argument("--repo", default=None, help="the checkout (default: CLAUDE_PROJECT_DIR, else the cwd)")
+    repo.add_argument("--repo", default=None, help="the checkout (default: CLAUDE_PROJECT_DIR, else the harness root the cwd lies in)")
 
     add = sub.add_parser("add", parents=[repo], help="append one row for a defect found in a landed commit")
     add.add_argument("--sha", required=True, help="the landed commit the defect is in")
-    add.add_argument("--writer", required=True, help="self_evaluate, debugging, or review:<stage>")
+    add.add_argument("--writer", required=True, help="debugging or review:<stage>")
     add.add_argument("--paths", nargs="*", default=[], help="default: the files the sha changed")
     add.add_argument("--should-have-caught", required=True,
                      help="the mandate key whose review would have caught it, or none")

@@ -6,10 +6,11 @@ A checkout (a linked worktree directly under `<project>/.claude/worktrees/`, or 
 `.claude/scratch/` of the project or of one of its worktrees) may go only when every condition holds; each failed one
 is a reason, and one deny names them all:
 - `git status --porcelain --untracked-files=all --ignored=matching` lists nothing but regenerable entries: a tracked
-  file missing from the checkout (HEAD holds its blob), an untracked Godot `.import` file and an ignored Godot import
-  temp file (Godot writes both again on import, `regenerated`), an ignored cache (`regenerable_segments`), an ignored
-  entry the project lists in `adaptation.json` `regenerable_ignored` (`project_patterns`), an ignored directory holding
-  no file, and a job's scratch output (`scratch_problem`);
+  file missing from the checkout (HEAD holds its blob), an untracked Godot `.import` file or `desktop.ini` and an
+  ignored Godot import temp file (the tool writes each again, `regenerated`), an ignored cache or `desktop.ini`
+  (`regenerable_segments`), an ignored `.agents`, `bin` or `obj` folder (`regenerable_when_ignored`; a tracked or
+  unignored one is work), an ignored entry the project lists in `adaptation.json` `regenerable_ignored`
+  (`project_patterns`), an ignored directory holding no file, and a job's scratch output (`scratch_problem`);
 - a standalone clone has one worktree, a remote unless it has no commit, and no stash entry (a linked worktree's stash
   lives in the shared repository and survives it);
 - every submodule is clean and its HEAD pushed; a submodule whose admin directory git cannot read denies;
@@ -76,8 +77,15 @@ def _same_path(a: Path, b: Path) -> bool:
 
 
 # --- What a delete may discard without asking ---------------------------------------------------------------------
-_REGENERABLE_SEGMENTS = frozenset({".godot", "__pycache__", ".pytest_cache", ".search-index", ".cache", "TestResults"})
+_FOLDER_METADATA = "desktop.ini"  # Windows Explorer writes it again; no project holds work in it
+_REGENERABLE_SEGMENTS = frozenset({".godot", "__pycache__", ".pytest_cache", ".search-index", ".cache", "TestResults",
+                                   _FOLDER_METADATA})
 _REGENERABLE_PAIRS = frozenset({(".claude", "cache"), (".claude", "logs")})
+# Names that regenerate only where git observes the entry as ignored output, never by name alone (`bin` and `obj`
+# also name source folders outside C#, `.agents` another tool's tracked skills): an ignored `.agents/` is the
+# Antigravity workspace its launcher rewrites before every run, `bin/` and `obj/` are what `dotnet build` recreates.
+# One data row per name; a project's own outputs are `regenerable_ignored` (root-relative patterns).
+_IGNORED_OUTPUT_NAMES = frozenset({".agents", "bin", "obj"})
 
 
 # Godot writes these again on every import: an untracked `.import` sidecar beside an asset, and an import temp file.
@@ -85,9 +93,14 @@ _REGENERATED_UNTRACKED = (".import",)
 _GODOT_IMPORT_TEMP = re.compile(r"\.import(?:\d+|~RF[0-9a-f]+)\.tmp$", re.I)
 
 
+def _regenerated_untracked(entry: str) -> bool:
+    return entry.endswith(_REGENERATED_UNTRACKED) or entry.rsplit("/", 1)[-1].lower() == _FOLDER_METADATA
+
+
 def regenerated(line: str, entry: str) -> bool:
-    """True for a status line Godot regenerates: an untracked `.import` file or an ignored import temp file."""
-    return ((line.startswith("?? ") and entry.endswith(_REGENERATED_UNTRACKED))
+    """True for a status line a tool regenerates: an untracked `.import` file or `desktop.ini`, or an ignored Godot
+    import temp file."""
+    return ((line.startswith("?? ") and _regenerated_untracked(entry))
             or (line.startswith("!! ") and bool(_GODOT_IMPORT_TEMP.search(entry))))
 
 
@@ -97,6 +110,34 @@ def regenerable_segments(parts) -> bool:
     lowered = [p.lower() for p in parts]
     return (any(seg.lower() in lowered for seg in _REGENERABLE_SEGMENTS)
             or any(pair in _REGENERABLE_PAIRS for pair in zip(lowered, lowered[1:])))
+
+
+def regenerable_when_ignored(parts) -> bool:
+    """`regenerable_segments`, plus the `_IGNORED_OUTPUT_NAMES`, for an entry git already reports ignored (a `!!`
+    status line, an `ls-files --ignored` row): there the ignore is the observed fact."""
+    return regenerable_segments(parts) or names_ignored_output(parts)
+
+
+def _first_output_name(parts) -> int | None:
+    return next((i for i, p in enumerate(parts) if p.lower() in _IGNORED_OUTPUT_NAMES), None)
+
+
+def names_ignored_output(parts) -> bool:
+    """True when a path's parts hold an `_IGNORED_OUTPUT_NAMES` folder: the cheap test before git is asked."""
+    return _first_output_name(parts) is not None
+
+
+def holds_only_ignored_output(root: Path, parts: list[str]) -> bool:
+    """True when `parts` (below checkout `root`) lies in an `_IGNORED_OUTPUT_NAMES` folder and git sees no work under
+    it: no tracked file and no untracked unignored file. An ancestor ignored for its own reasons (scratch, a clone)
+    does not count, so the name's own ignore is what decides; git failing denies."""
+    first = _first_output_name(parts)
+    if first is None:
+        return False
+    if first and _git(["check-ignore", "-q", "--", "/".join(parts[:first])], root) is not None:
+        return False
+    return _git(["--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+                 "/".join(parts)], root) == ""
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -324,7 +365,7 @@ def losses(status: str, root: Path, patterns: tuple[str, ...] = (), project_root
             continue
         if line.startswith("!! "):
             parts = entry.split("/")
-            if (own or regenerable_segments(parts) or _listed(entry, patterns) or _holds_no_file(root / entry)
+            if (own or regenerable_when_ignored(parts) or _listed(entry, patterns) or _holds_no_file(root / entry)
                     or _only_listed_files(root / entry, entry, patterns)):
                 continue
             problem = scratch_problem(entry, root, project_root)
@@ -795,8 +836,15 @@ def unstored_files(files: list[str], run) -> list[str] | None:
 
 
 def worktree_unstored(cwd: str, files: list[str]) -> list[str] | None:
-    """`unstored_files` for the repository checked out at `cwd`."""
-    return unstored_files(files, lambda args, stdin: _git(args, Path(cwd), stdin))
+    """`unstored_files` for the repository checked out at `cwd`; `files` are relative to `cwd`, which may lie below the
+    checkout's top. `_git` cannot read a repository from below its top (its ceiling is the cwd's parent) and
+    `hash-object --stdin-paths` reads paths from the top, so git runs at the top with absolute paths."""
+    top = next((p for p in (Path(cwd), *Path(cwd).parents) if (p / ".git").exists()), None)
+    if top is None:
+        return None
+    absolute = [os.path.join(cwd, f) for f in files]
+    lost = unstored_files(absolute, lambda args, stdin: _git(args, top, stdin))
+    return None if lost is None else [f for f, a in zip(files, absolute) if a in lost]
 
 
 def unstored_losses(status: str, root: Path) -> list[str]:
@@ -851,7 +899,7 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
     for entry in filter(None, ignored.split("\0")):
         if any(entry == sub or entry.startswith(sub + "/") for sub in subs):
             continue
-        if not (own or regenerable_segments(entry.split("/")) or _listed(entry, patterns)
+        if not (own or regenerable_when_ignored(entry.split("/")) or _listed(entry, patterns)
                 or _GODOT_IMPORT_TEMP.search(entry)
                 or (_scratch_start(entry.split("/")) is not None and scratch_problem(entry) is None)):
             found.append(entry + " (ignored, and not a regenerable cache)")
@@ -861,7 +909,7 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
     files = [entry for entry in filter(None, listed.split("\0"))
              if not any(entry == sub or entry.startswith(sub + "/") for sub in subs)]
     found.extend(entry + " (a nested repository)" for entry in files if entry.endswith("/"))
-    files = [entry for entry in files if not entry.endswith("/") and not entry.endswith(_REGENERATED_UNTRACKED)]
+    files = [entry for entry in files if not entry.endswith("/") and not _regenerated_untracked(entry)]
     if not files:
         return found
     missing = unstored_files(files, run)
@@ -1035,6 +1083,11 @@ def _populated_submodules(repo: Path, declared: list[str] | None = None, prefix:
     return rows
 
 
+OWNERSHIP_UNPROVEN = ("this session's transcript shows no literal, visible create of it (a `git worktree add` or a "
+                      "`worktree_create_tools` call run first in its list, its errors in the output), so its ignored "
+                      "files and stored edits count as losses; without them it would be retired")
+
+
 def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None,
                         own: bool = False) -> bool:
     """True only when `token` names a checkout of `project_root` whose deletion loses nothing (the module rule): a
@@ -1083,6 +1136,8 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[s
     found = unstored_losses(status, target) if own else losses(status, target, patterns, root)
     if found:
         failed.append("worktree has local files or changes: " + _format_losses(found))
+        if not own and not unstored_losses(status, target):
+            failed.append(OWNERSHIP_UNPROVEN)  # the files are the loss only because creation is unproven
     _pushed(target, failed, local_default=True, preserved=lambda head: _bundle_preserves(root, target, head))
     for name in broken:
         if not own:
@@ -1119,23 +1174,45 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[s
     return not failed
 
 
+def _session_transcript() -> str | None:
+    """This session's transcript path from its id in the environment, or None (then nothing is proven)."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    tools = str(Path(__file__).resolve().parents[1] / "tools")
+    if not sid:
+        return None
+    if tools not in sys.path:
+        sys.path.append(tools)
+    try:
+        from model_registry import find_session_transcript
+        found = find_session_transcript(sid)
+    except Exception:  # a registry fault leaves the worktree unproven, the safe side
+        return None
+    return str(found) if found else None
+
+
 def main(argv: list[str]) -> int:
     """`[--created] <path>...`: the delete guard's verdict per checkout, `<path>: retired` or `<path>: blocked:
-    <reasons>`; `--created` judges as for a worktree this session created. Exit 1 when any is blocked, 2 with no path.
-    A live session working in it is the guard's check, not this one."""
-    own = "--created" in argv
+    <reasons>`. Ownership is read from this session's transcript as the guard reads it; `--created` instead assumes
+    this session created every path (a hypothetical, labelled in the output). Exit 1 when any is blocked, 2 with no
+    path. A live session working in it is the guard's check, not this one."""
+    hypothetical = "--created" in argv
     argv = [a for a in argv if a != "--created"]
     if not argv:
         print(main.__doc__)
         return 2
     root = (os.environ.get("CLAUDE_PROJECT_DIR") or _git(["rev-parse", "--show-toplevel"], Path.cwd()) or ".").strip()
     blocked = 0
+    transcript = None if hypothetical else _session_transcript()
     with _git_commit.memoized():
         for token in argv:
             reasons: list[str] = []
+            own = hypothetical
+            if not own:
+                from _own_worktree import session_created_worktree
+                own = session_created_worktree(resolve_cd(os.getcwd(), token), transcript)
             if (lossless_orphan_worktree(token, os.getcwd(), root, own=own)
                     or is_retired_worktree(token, os.getcwd(), root, reasons, own=own)):
-                print("%s: retired" % token)
+                print("%s: retired%s" % (token, " (--created: assumed, not proven)" if hypothetical else ""))
             else:
                 blocked += 1
                 print("%s: blocked: %s" % (token, "; ".join(reasons)))

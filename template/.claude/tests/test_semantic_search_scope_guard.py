@@ -25,6 +25,7 @@ sys.path.insert(0, HOOKS_DIR)
 sys.path.insert(0, os.path.join(ROOT, '.claude', 'tools'))
 import adaptation  # noqa: E402
 import semantic_search_scope_guard as guard  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 
 def run_standalone(payload, env=None):
@@ -92,13 +93,11 @@ def main():
         cases.append(('external root remains denied: ' + path, rc == 2 and bool(err)))
 
     # The roots come from the project's own adaptation data: a planted project proves the guard carries none.
-    import shutil
     with tempfile.TemporaryDirectory() as td:
         claude = os.path.join(td, '.claude')
         for sub in ('hooks', 'tools', os.path.join('skills', 'project_subsystems')):
             os.makedirs(os.path.join(claude, sub))
-        shutil.copyfile(GUARD, os.path.join(claude, 'hooks', 'semantic_search_scope_guard.py'))
-        shutil.copyfile(os.path.join(ROOT, '.claude', 'tools', 'adaptation.py'), os.path.join(claude, 'tools', 'adaptation.py'))
+        copy_closure(claude, 'hooks/semantic_search_scope_guard.py')
         planted_guard = os.path.join(claude, 'hooks', 'semantic_search_scope_guard.py')
         planted_root = 'C:/Users/dev/notes/Design'
         stale_root = 'C:/Users/dev/Documents/Vault/Projects/Game'

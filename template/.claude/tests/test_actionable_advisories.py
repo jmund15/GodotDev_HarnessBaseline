@@ -64,19 +64,25 @@ def _budget_input(tmp_path, monkeypatch, **payload_extra):
     return out.getvalue(), capture
 
 
-def test_delegate_budget_is_silent(tmp_path, monkeypatch):
-    text, _ = _budget_input(tmp_path, monkeypatch, agent_id='executor')
-    assert text == ''
+def test_the_dispatcher_skips_the_budget_member_for_a_delegate(tmp_path, monkeypatch):
+    # The audience decision is the dispatcher's alone (`prompt_dispatch.AUDIENCE`); budget_posture.main() holds none.
+    import prompt_dispatch as pd
+    timing = tmp_path / 'timing.jsonl'
 
-
-def test_sdk_child_budget_is_silent(tmp_path, monkeypatch):
-    _budget_input(tmp_path, monkeypatch)
-    monkeypatch.setenv('CLAUDE_CODE_ENTRYPOINT', 'sdk-cli')
-    monkeypatch.setattr(sys, 'stdin', io.StringIO('{"session_id":"sdk"}'))
-    out = io.StringIO()
-    monkeypatch.setattr(sys, 'stdout', out)
-    budget.main()
-    assert out.getvalue() == ''
+    def ran(extra, **env):
+        for key in ('CLAUDE_CODE_SIDECAR', 'CLAUDE_CODE_ENTRYPOINT'):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        payload = {'session_id': 'aud', 'hook_event_name': 'UserPromptSubmit', 'prompt': 'plan the fan-out', **extra}
+        pd.dispatch(json.dumps(payload), chain=(('budget_posture', 15),), timing_path=str(timing))
+        rows = [json.loads(line) for line in timing.read_text(encoding='utf-8').splitlines() if line.strip()]
+        timing.unlink()
+        return set(rows[-1].get('hooks', {}))
+    assert ran({'agent_id': 'executor'}) == set()
+    assert ran({}, CLAUDE_CODE_ENTRYPOINT='sdk-cli') == set()
+    assert ran({}, CLAUDE_CODE_SIDECAR='1') == set()
+    assert ran({}, CLAUDE_CODE_ENTRYPOINT='cli') == {'budget_posture'}
 
 
 def test_spendable_first_turn_speaks_before_any_dispatch(tmp_path, monkeypatch):

@@ -24,6 +24,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _adaptation_fixture as fx  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 HOOK_NAME = "refcounted_free_guard.py"
 REAL_HOOK = os.path.join(fx.REAL_HOOKS, HOOK_NAME)
@@ -41,11 +42,7 @@ def make_repo(seed=None, tests_dir_name="Tests", write_tests_dir=True):
     os.makedirs(hooks_dir, exist_ok=True)
     os.makedirs(tools_dir, exist_ok=True)
     os.makedirs(skill_dir, exist_ok=True)
-    shutil.copy(REAL_HOOK, os.path.join(hooks_dir, HOOK_NAME))
-    shutil.copy(REAL_TOOLS_ADAPTATION, os.path.join(tools_dir, "adaptation.py"))
-    shutil.copy(os.path.join(fx.REAL_HOOKS, "_checkout_root.py"), os.path.join(hooks_dir, "_checkout_root.py"))
-    shutil.copy(os.path.join(fx.REAL_HOOKS, "_git_run.py"), os.path.join(hooks_dir, "_git_run.py"))
-    shutil.copy(os.path.join(fx.REAL_HOOKS, "_cs_files.py"), os.path.join(hooks_dir, "_cs_files.py"))
+    copy_closure(os.path.join(tmp, ".claude"), "hooks/" + HOOK_NAME)
     if seed is not None:
         with open(os.path.join(skill_dir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(seed if isinstance(seed, str) else json.dumps(seed))

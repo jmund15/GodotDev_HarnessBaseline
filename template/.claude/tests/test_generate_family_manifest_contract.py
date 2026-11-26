@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,8 +22,7 @@ class GenerateFamilyManifestContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         hooks = self.temp / ".claude" / "hooks"
         hooks.mkdir(parents=True)
-        for name in ("generate_family_manifest.py", "_cs_files.py"):
-            shutil.copy(ROOT / ".claude" / "hooks" / name, hooks / name)
+        copy_closure(self.temp / ".claude", "hooks/generate_family_manifest.py")
         self.tool = hooks / "generate_family_manifest.py"
         scripts = self.temp / "Scripts"
         scripts.mkdir()

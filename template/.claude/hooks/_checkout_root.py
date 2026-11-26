@@ -8,8 +8,10 @@ worktree, else "". `worktree_chain(start, rev_parse)` yields each working-tree r
 through its superprojects, nearest first (a submodule inside a linked worktree yields both).
 `session_checkout(payload)` is the checkout a hook payload's `cwd` lies in, the root that
 repository-relative paths resolve against. `repo_arg(argv)` pops a `--repo <path>` pair from an argv list and returns
-that checkout resolved, or None. CLI: `_checkout_root.py <dir>` prints `linked_main_root` in posix form.
+that checkout resolved, or None. `harness_root(start)` is the harness root a run belongs to (below). CLI: `_checkout_root.py <dir>` prints
+`linked_main_root` in posix form.
 """
+import os
 import re
 import subprocess
 import sys
@@ -78,6 +80,21 @@ def session_checkout(payload):
     if not cwd:
         return ""
     return _git_line(cwd, "rev-parse", "--show-superproject-working-tree") or _git_line(cwd, "rev-parse", "--show-toplevel")
+
+
+def harness_root(start=None):
+    """The harness root a run belongs to: the nearest ancestor of `start` (default: the cwd) that holds `.claude/`,
+    which is the git toplevel in most projects and a directory below it in a nested one (the baseline's own
+    `template/`). The walk stops at the directory holding `.git`, so a `.claude/` above the repository (a user's
+    `~/.claude`) never answers for it; `start` itself when none is found. A shell's cwd drifts into subdirectories,
+    so a tool whose default root is the cwd calls this, never `Path.cwd()`."""
+    here = Path(start or os.getcwd()).resolve()
+    for found in (here, *here.parents):
+        if (found / ".claude").is_dir():
+            return str(found)
+        if (found / ".git").exists():
+            break
+    return str(here)
 
 
 def repo_arg(argv):

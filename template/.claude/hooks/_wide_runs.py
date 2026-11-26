@@ -27,7 +27,7 @@ finds in the files `glob` matches under the root, or matches an `admit` pattern 
 term that is a namespace prefix, ends in a trailing dot, or whose text is built at run time is wide, as
 is a run with no filter argument.
 
-`gate_caller` admits the root session (no `agent_id`, no `CLAUDE_CODE_SIDECAR`), a native job whose
+`gate_caller` admits the root session (`in_delegate` false), a native job whose
 payload `agent_type` is the gate kind's `agentType`, and a sidecar whose `CLAUDE_CODE_SIDECAR_KIND` is
 `gate`. That `agentType` is read from `guards/tool_profiles.json`'s gate row; a native job is refused
 when the table or the row is absent, never admitted on a copy of the name. Every other caller, an unknown
@@ -49,6 +49,7 @@ if HERE not in sys.path:
 import adaptation  # noqa: E402
 from sidecar_argv import executable_index, shell_segments_with_comments  # noqa: E402
 from _git_commit import resolve_cd  # noqa: E402
+from _prompt_provenance import in_delegate  # noqa: E402
 
 CHDIRS = {"cd", "pushd", "set-location", "sl"}
 
@@ -433,7 +434,7 @@ def gate_caller(payload, environ, table=None):
     payload = payload or {}
     if str(environ.get("CLAUDE_CODE_SIDECAR") or "").strip():
         return str(environ.get("CLAUDE_CODE_SIDECAR_KIND") or "").strip().lower() == GATE_KIND
-    if not str(payload.get("agent_id") or "").strip():
+    if not in_delegate(payload, environ):
         return True
     gate_type = gate_agent_type(table)
     if gate_type is None:

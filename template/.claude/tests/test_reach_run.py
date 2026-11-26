@@ -14,6 +14,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _module_closure import copy_closure  # noqa: E402
 TOOLS = os.path.join(HERE, "..", "tools")
 TMP = tempfile.mkdtemp(prefix="reach_run_")
 failures = []
@@ -48,15 +50,8 @@ def check(name, ok, detail=""):
 
 def plant(name, table):
     root = os.path.join(TMP, name)
-    os.makedirs(os.path.join(root, ".claude", "tools"))
     os.makedirs(os.path.join(root, ".claude", "skills", "project_subsystems"))
-    os.makedirs(os.path.join(root, ".claude", "hooks"))
-    for tool in ("reach_run.py", "adaptation.py", "cli_usage.py", "sidecar_argv.py"):
-        src = os.path.join(TOOLS, tool)
-        if os.path.exists(src):
-            shutil.copy(src, os.path.join(root, ".claude", "tools", tool))
-    for hook in ("_wide_runs.py", "_git_commit.py", "_git_run.py", "_command_text.py"):
-        shutil.copy(os.path.join(HERE, "..", "hooks", hook), os.path.join(root, ".claude", "hooks", hook))
+    copy_closure(os.path.join(root, ".claude"), "tools/reach_run.py")
     if table is not None:
         with open(os.path.join(root, ".claude", "skills", "project_subsystems", "adaptation.json"),
                   "w", encoding="utf-8", newline="\n") as fh:
@@ -67,7 +62,7 @@ def plant(name, table):
 
 
 def run(root, *args, env=None):
-    base = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_SIDECAR")}
+    base = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}  # a delegate's caller env must not leak in
     done = subprocess.run([sys.executable, os.path.join(root, ".claude", "tools", "reach_run.py")] + list(args),
                           cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env={**base, **(env or {})})

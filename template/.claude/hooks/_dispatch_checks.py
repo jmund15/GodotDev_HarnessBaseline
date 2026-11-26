@@ -23,7 +23,7 @@ plan-review pin A/B; its entry then moves to `roles`. A row holding the tier in 
 is admitted alone here, because the ledger's clause 9 (`review_ledger.py`) floors its coverage.
 
 `cheaper_claimants(model, tier, transport, reading_tokens, data, job=job)` is the fact list behind the preflight's claimant line
-(`dispatch_size.fact_lines`) and the brief hook's table: each row on `transport` that claims `tier` in registry `roles`,
+(`dispatch_size.fact_lines`): each row on `transport` that claims `tier` in registry `roles`,
 neither unavailable nor on an owner probation mark, and is cheaper than `model` for this reading. Cheaper means a lower
 `price_reading` (`model_registry.list_price` for the reading, priced with the reading as the request's input so a row's
 long-context multiplier applies past its threshold); when the row or the pin cannot be priced, it means a higher ladder
@@ -36,7 +36,7 @@ in Dd`, from the one `provider_bands.unused_text` clause, read from the capacity
 
 `wide_run_refusal(kind, brief_text, root)` is the deny for a job whose brief orders a wide test run: `gate`
 is the one kind that may, and every other kind's `task` block `check` entries are classified, plus the
-brief's commands when its kind's built-ins hold Bash. `wide_run_refusals(items, root)` is the one
+brief's commands (every kind holds Bash). `wide_run_refusals(items, root)` is the one
 joined launch denial both dispatch hooks print, over `(label, kind, brief_text)` items; each caller
 reads its own job's brief and hands the items here. `hooks/_wide_runs.py` owns the match.
 
@@ -483,14 +483,6 @@ def draw_against(row_id, base_id, data):
     return None if rate is None or base is None else rate / base
 
 
-def draw_ratios(row_ids, data):
-    """{row id: output-rate ratio to the cheapest priced row among `row_ids`, or None}: one plan's draw column."""
-    rates = {rid: output_rate(rid, data) for rid in row_ids}
-    priced = [rate for rate in rates.values() if rate is not None]
-    base = min(priced) if priced else None
-    return {rid: (None if rate is None or not base else rate / base) for rid, rate in rates.items()}
-
-
 def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=None, job=None):
     """[{alias, id, cost, pinCost, sign, usable, fits, thresholdAt, pastLongContext, tierMultiplier, price, pinPrice,
     priced, plan, draw}] (`plan`: the transport spends a plan quota; `draw`: output-rate ratio to the pin, or None), ordered by ladder cost, cheapest first: each row on `transport` claiming `tier` in registry `roles`,
@@ -590,21 +582,8 @@ def _task_checks(brief_text):
         return []
 
 
-def _kind_has_bash(kind):
-    """Whether the kind's resolved built-ins hold Bash (`guards/tool_profiles.json`, variants included).
-    None when the row is unknown or the table cannot be read, so the caller checks the brief anyway."""
-    try:
-        table = _tp().load_table()
-        profile, _spec, _keys = _tp().resolve_kind(str(kind), route="fanout", table=table, walk_mcp=False)
-    except Exception:
-        return None
-    return "Bash" in set(profile.get("builtins") or [])
-
-
-def _brief_commands(kind, brief_text):
-    """The commands the brief orders, when the kind's built-ins hold Bash (or cannot be resolved)."""
-    if _kind_has_bash(kind) is False:
-        return []
+def _brief_commands(brief_text):
+    """The commands the brief orders (`tool_profiles.brief_commands`): every kind holds Bash, so every kind's are read."""
     try:
         return [command for _line, command in _tp().brief_commands(brief_text)]
     except Exception:
@@ -616,13 +595,13 @@ def wide_run_refusal(kind, brief_text, root):
 
     `gate` is the one kind that may run one. Every other kind's `task` block `check` entries are classified
     (a check runs in the dispatcher's process, where no Bash guard sees it), and so is each command the brief
-    orders when the kind's built-ins hold Bash. The denial names the runner, its reason from the cadence row,
+    orders. The denial names the runner, its reason from the cadence row,
     and the next step (`orchestration` §4; `guards/author.md` `Your checks`)."""
     if str(kind or "").strip().lower() == _wide_runs.GATE_KIND:
         return None
     # An empty command still validates the cadence table, so a malformed row fails closed on a brief
     # that orders nothing.
-    for command in _task_checks(brief_text) + _brief_commands(kind, brief_text) or [""]:
+    for command in _task_checks(brief_text) + _brief_commands(brief_text) or [""]:
         wide = _wide_runs.classify(command, str(root), root)
         if wide:
             return ("`%s` is a wide test run (%s). A job's checks come from its kind and the project's "

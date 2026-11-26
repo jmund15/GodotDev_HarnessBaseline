@@ -11,16 +11,15 @@ No arguments → close this session. `resume` → reuse Phases 2–7's current r
 
 Resolve every collected choice before Phase 7. Apply your recommendation to a reversible choice. Ask a genuine owner-only fork as a packet through `AskUserQuestion` per `CLAUDE.interactive.md` §Answering and asking the owner (unless `overnight_ask_guard.py --status` reports `armed`, or `/goal` is active: then `/overnight` §Step 2 decide-or-park owns it), then act on the answer. The close report states what was decided and never ends on open questions. Fix in-scope defects rather than asking about reversible repairs.
 
-A recipe phase whose output a command can check runs as one `/delegate` job once Phase 0 ends: its brief names this session's id, the plans Phase 0 found and each admitted phase's file, and its `task` check lists each admitted phase's artifact assertion from the table below. At brief write, this session runs `close_predicates.py --only <stem>` for each candidate phase and admits the phases §Gated phases runs; this session records each skipped phase, outside the job. Consume it before Phase 3.6 closes dispatch ratings and before any phase that `--depends` on a delegated receipt (Phase 5.5 on `roadmap_atlas`). Phase 7a's full `session_end_check.py --artifacts --stage precommit` stays this session's. The job returns each phase's artifact path and every owner-only choice; this session records the receipts after checking each one's declared inputs against the phase's read and write scope (`## Completion receipts and final check`). Run every other phase here, through Skill where supported; commands marked `disable-model-invocation` run by reading their file and following it under this explicit closeout request.
+A recipe phase whose output a command can check runs as one `/delegate` job once Phase 0 ends: its brief names this session's id, the plans Phase 0 found and each admitted phase's file, and its `task` check lists each admitted phase's artifact assertion from the table below. At brief write, this session runs `close_predicates.py --only <stem>` for each candidate phase and admits the phases §Gated phases runs; this session records each skipped phase, outside the job. Consume it before Phase 3.6 closes dispatch ratings and before any phase that `--depends` on a delegated receipt (Phase 5.5 on `roadmap_atlas`). Phase 7a's full `session_end_check.py --stage precommit` stays this session's. The job returns each phase's artifact path and every owner-only choice; this session records the receipts after checking each one's declared inputs against the phase's read and write scope (`## Completion receipts and final check`). Run every other phase here, through Skill where supported; commands marked `disable-model-invocation` run by reading their file and following it under this explicit closeout request.
 
 | Phase | Artifact the command writes | Assertion a failed or skipped run cannot satisfy |
 |---|---|---|
-| 3.5 Routing Audit Aggregation | `logs/routing_audit_stats.json` (`aggregate_routing_audit.py`) | the file's mtime is later than the job's brief, and it parses as JSON; a stale file from an earlier run fails the mtime test |
 | 5.4 Roadmap Atlas | `logs/roadmap_atlas_<sid8>.json` (the project's roadmap-atlas generator, `--json`) | the file parses as JSON; the shell redirect creates it before the generator succeeds, so an empty or partial file fails the parse |
 
 ## Gated phases
 
-Phases 2, 3.5, 3.6, 3.7, 4, 5, 5.4, 5.5, 5.6, 6 (`worklog`) and 8 (`reindex_search`) open with their predicate: `python3 .claude/tools/close_predicates.py --session <id> --only <stem> --json .claude/scratch/session_end/<sid>/predicate_<stem>.json`. A `false` value skips the phase: record `python3 .claude/tools/session_end_check.py --session <id> --record <stem> --status skipped --predicate <that file> --input <that file> --reason "<the predicate text>"`. A `true` or `null` value runs the phase, and null (an input the predicate could not read) never skips. Every later check, `--resume` included, re-evaluates a false-predicate skip; when the predicate now reads true or null, the receipt shows `stale-skip` and the phase runs. Phases 0, 1, 3 and 7 run every time; Phase 1 records its admitted scope, including no lenses. Phase 8 also keeps its plugin-unavailable skip.
+Phases 2, 3.6, 3.7, 4, 5, 5.4, 5.5, 5.6, 6 (`worklog`) and 8 (`reindex_search`) open with their predicate: `python3 .claude/tools/close_predicates.py --session <id> --only <stem> --json .claude/scratch/session_end/<sid>/predicate_<stem>.json`. A `false` value skips the phase: record `python3 .claude/tools/session_end_check.py --session <id> --record <stem> --status skipped --predicate <that file> --input <that file> --reason "<the predicate text>"`. A `true` or `null` value runs the phase, and null (an input the predicate could not read) never skips. Every later check, `--resume` included, re-evaluates a false-predicate skip; when the predicate now reads true or null, the receipt shows `stale-skip` and the phase runs. Phases 0, 1 and 7 run every time; Phase 1 records its admitted scope, including no lenses. Phase 8 also keeps its plugin-unavailable skip.
 
 ## Phase 0: Session Digest
 
@@ -51,14 +50,6 @@ Run `python3 .claude/tools/triage.py rederive <hash>^!` for each scope commit an
 ## Phase 2: Autolearn
 
 Gate: `--only autolearn` (a friction row or a prompt row with signals in the digest). Run `/autolearn` with the bounded Phase 0 digest, its index counts, selected decisive rows, and Phase 1 results. Preserve its full procedure. Every friction ID must have a disposition.
-
-## Phase 3: Self-Evaluate
-
-Run `/self_evaluate`. Its digest and nuance-recall pass is Phase 2's, not a second dispatch (`.claude/commands/autolearn.md` §Step 0); when Phase 2 recorded a skip, `/self_evaluate` runs that pass itself. Save one structured entry for this exact session and verify it exists. Preserve failed, skipped and partial work as such; green slices do not establish the full goal.
-
-## Phase 3.5: Routing Audit Aggregation
-
-Gate: `--only routing_audit` (the routing log holds a row since the last aggregation). Run the routing-audit aggregation. Its canonical tool is `python3 .claude/tools/aggregate_routing_audit.py`, which owns the rotation and writes `logs/routing_audit_stats.json`. Record coverage and missing inputs. A failed aggregation is non-blocking but must be reported, not counted as completed.
 
 ## Phase 3.6: Orchestration Metrics
 
@@ -104,7 +95,7 @@ Gate: `--only worklog`. Its `basis.completion` admits the completion-sweep again
 
 Use the regression gate's checklist for code work; for meta-only work, assemble the same applicable audit, scope, ownership and verification items without inventing code-test results.
 
-Run `python3 .claude/tools/session_end_check.py --session <id> --artifacts --stage precommit`. This excludes the future commit and reindex phases. Fix missing or stale evidence before committing.
+Run `python3 .claude/tools/session_end_check.py --session <id> --stage precommit`. This excludes the future commit and reindex phases. Fix missing or stale evidence before committing.
 
 Commit the session's categories locally. With a land runner (`/commit_push` step 6), go to 7b: the runner proves
 every session's commits, so no session waits on that close. Otherwise, when another session is open in this checkout
@@ -133,10 +124,10 @@ After each phase, preserve its result artifact and record the exact checked inpu
 
 `python3 .claude/tools/session_end_check.py --session <id> --record <stem> --status completed --input <scope-file> --input <checked-file> --evidence <result-file> --depends <upstream-stem> --reason "<observed result>"`
 
-Repeat `--input`, `--evidence` and `--depends` as needed. Inputs include the phase's command and every mutable file whose change would alter its conclusion, not just a prose list of filenames. Use stable extracted evidence for an append-only archive rather than hashing unrelated peer additions. Upstream phases actually consumed are dependencies: audit consumes digest; autolearn consumes digest/audit; self-evaluate consumes those results; roadmap drift consumes atlas; commit consumes applicable precommit results. Re-record downstream phases after a relevant input changes.
+Repeat `--input`, `--evidence` and `--depends` as needed. Inputs include the phase's command and every mutable file whose change would alter its conclusion, not just a prose list of filenames. Use stable extracted evidence for an append-only archive rather than hashing unrelated peer additions. Upstream phases actually consumed are dependencies: audit consumes digest; autolearn consumes digest/audit; roadmap drift consumes atlas; commit consumes applicable precommit results. Re-record downstream phases after a relevant input changes.
 
 A stale receipt is handled by its delta, which `--resume` names. Refresh it with `python3 .claude/tools/session_end_check.py --session <id> --refresh <stem> --reason "<what the delta changed, or that it changed nothing>"`, and re-run the phase in full only when the delta changes its conclusion.
 
 `skipped` requires checked inputs and the actual conditional predicate; for a gated phase that is its predicate file: a false predicate skips, a null predicate runs the phase, and a phase that ran records any in-body skip with its reason. `blocked` requires the specific failure. The checker verifies freshness only for declared files, so check declaration completeness against the phase's actual read/write scope before accepting its receipt.
 
-Run the checker with `--artifacts --stage final` and report every blocked, failed, skipped or stale phase.
+Run the checker with `--stage final` and report every blocked, failed, skipped or stale phase.

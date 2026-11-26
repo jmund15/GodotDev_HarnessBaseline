@@ -183,7 +183,7 @@ refuses "-D that matches the kind's own disclosure still refuses" "disclosure fo
 accepts "-D rides -G arm" -m m -G arm -D bare -t Read,Glob,Grep
 refuses "-G arm without -D refuses" "-D" -m m -G arm -t Read,Glob,Grep
 for kind in $KINDS; do
-  refuses "an unsigned -t on $kind names -G <kind> and a signed delta" "-t +Bash" -m m -G "$kind" -t Read,Glob,Grep
+  refuses "an unsigned -t on $kind names -G <kind> and a signed delta" "-t -mcp:ai-worker" -m m -G "$kind" -t Read,Glob,Grep
 done
 accepts "a signed +Bash delta on a scout resolves" -m m -G scout -t +Bash
 accepts "a signed removal resolves" -m m -G lens -t -mcp:ai-worker

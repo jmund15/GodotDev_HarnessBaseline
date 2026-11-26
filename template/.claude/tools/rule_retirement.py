@@ -69,8 +69,7 @@ Each source path defaults to its owner's resolver (`escape_log.log_path`, `revie
 
 Exit: 2 when any malformed row exists, 1 when any rule fired, else 0.
 
-Consumers: `/autolearn` (proposes the retirements it lists) and
-`/eval_dashboard` (renders them). The census default is the generated runtime
+Consumer: `/autolearn` (proposes the retirements it lists). The census default is the generated runtime
 report at `logs/load_census.json`, resolved under `--root`. The reader uses the
 canonical `load_census.py --json` fields: `listing.total_bytes`,
 `standing.total_bytes`, `prompt_emission_steady_bytes`,
@@ -88,6 +87,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
 
 PRINT_LIMIT = 20
@@ -381,7 +381,7 @@ def _load_escape(paths):
 def _load_ledger(paths):
     import review_ledger
     from pathlib import Path
-    path = paths.get("ledger") or review_ledger.ledger_path(Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()))
+    path = paths.get("ledger") or review_ledger.ledger_path(Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()))
     return _read_file_source(path, _load_jsonl)
 
 

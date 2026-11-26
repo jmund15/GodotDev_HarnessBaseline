@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-file duplicate-rule scan: candidate groups of rule sentences that may state one decision twice.
 
-Units are `tools/extract_numbers.py`'s sentences and table rows over the `instruction_scope` of the project
+Units are `tools/rule_units.py`'s sentences and table rows over the `instruction_scope` of the project
 adaptation file. Pairs form only across files, through three channels:
   lexical   TF-IDF cosine of content tokens at or above LEXICAL_CUTOFF (units with two or more content tokens);
   anchor    a shared plural-folded content token whose unit frequency is at or below ANCHOR_CAP, with a
@@ -19,9 +19,7 @@ either kind); `--paths` narrows the centers to the files it names, so a pair tou
 formed. A unit is a `--changed` center when the change WROTE its sentence: the sentence is absent from that file
 at `<base>`, read through `git cat-file --batch`. A sentence the paragraph still holds from `<base>` is not a
 center: the change replaced the hunk it sits in, not this sentence. The test reads the text, so an
-insertion that shifts the lines below it changes nothing. `--staged` (with `--changed`) takes the added lines
-from `git diff --cached -U0 <base>` and reads every in-scope unit from the index the environment names,
-`GIT_INDEX_FILE` included, through one `git cat-file --batch` call.
+insertion that shifts the lines below it changes nothing.
 
 A group's `hash` is the unit's key, built from `path` and sentence hash, because a sentence hash alone does not name a
 unit: two files can hold one sentence, and a consumer resolving a pair's endpoints by `hash` then names one
@@ -29,16 +27,20 @@ location twice and never the second home. The pair's `sha` carries the two sente
 by the sorted pair of those, so a pair ruled `distinct` stays suppressed until one of its sentences changes. A pair ruled `mirror` is an
 intended copy: it is suppressed the same way, and the ruling names the test or check that holds it equal (`--held-by`).
 
-  restate_scan.py [--repo DIR] pairs [--changed [--staged] [--base REV]] [--text FILE] [--paths PATH ...] [--json] [--rows-dir DIR]
-  restate_scan.py [--repo DIR] rule GROUP_ID distinct|mirror --reason TEXT [--held-by PATH, mirror only] [--changed [--staged] [--base REV]] [--text FILE] [--paths PATH ...] [--rows-dir DIR]
+  restate_scan.py [--repo DIR] pairs [--changed [--base REV]] [--strong] [--text FILE] [--paths PATH ...] [--json] [--rows-dir DIR]
+  restate_scan.py [--repo DIR] rule GROUP_ID distinct|mirror --reason TEXT [--held-by PATH, mirror only] [--changed [--base REV]] [--strong] [--text FILE] [--paths PATH ...] [--rows-dir DIR]
   restate_scan.py [--repo DIR] selftest
+
+`--strong` keeps only the pairs two or more channels agree on and counts the rest as held back: the sampled `same`
+share of a single-channel pair is 0.20 to 0.27 against 0.40 where channels mix. `/session_audit` reads the strong
+pairs of its subject files; the unfiltered scan stays for `/rule_consistency`'s backlog report.
 
 `selftest` adds two planted files to the live scope, one holding a rule and the other a near-copy of it, and
 exits 0 only when the scan returns that pair as a group: an empty `pairs` result then means no candidates, never a
 blind scan. Exit 1 when the planted copy is missed, 2 when the scan could not run.
 
-Exit 0 done, 1 an unknown group id, 2 the scan could not run (no `instruction_scope`, `--staged` without
-`--changed`, or unreadable staged content), which is reported as uncovered, never as zero candidates.
+Exit 0 done, 1 an unknown group id, 2 the scan could not run (no `instruction_scope`, or an unreadable `<base>`),
+which is reported as uncovered, never as zero candidates.
 """
 from __future__ import annotations
 
@@ -56,7 +58,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
-import extract_numbers as en  # noqa: E402
+import rule_units as en  # noqa: E402
 from _hook_state import append_jsonl_rotating  # noqa: E402
 
 Thresholds = namedtuple("Thresholds", "lexical_cutoff anchor_cap citation_rule stoplist_df")
@@ -279,20 +281,18 @@ def corpus_from_texts(files: dict, known=None, extra=()) -> list:
     return out
 
 
-def scope_files(repo, scope, staged=False):
-    """The in-scope files the worktree holds, or -- with `staged` -- the ones the index the environment
-    names holds, tracked only."""
-    names = en.git(repo, *(("ls-files", "--cached", "-z") if staged
-                           else ("ls-files", "-co", "--exclude-standard", "-z"))).split("\0")
+def scope_files(repo, scope):
+    """The in-scope files the worktree holds."""
+    names = en.git(repo, "ls-files", "-co", "--exclude-standard", "-z").split("\0")
     return sorted(p for p in set(names) if p and en.in_scope(scope, p))
 
 
-def index_texts(repo, paths, rev=None) -> dict:
-    """{path: text} for `paths` as the index the environment names holds them, or as `rev` holds them, read
-    through one `git cat-file --batch` call. A path the store lacks is skipped, never read from the worktree."""
+def revision_texts(repo, paths, rev) -> dict:
+    """{path: text} for `paths` as `rev` holds them, read through one `git cat-file --batch` call. A path the
+    store lacks is skipped, never read from the worktree."""
     if not paths:
         return {}
-    names = [":%s" % p if rev is None else "%s:%s" % (rev, p) for p in paths]
+    names = ["%s:./%s" % (rev, p) for p in paths]
     try:
         r = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch"],
                            input="".join(n + "\n" for n in names).encode("utf-8"), capture_output=True)
@@ -335,20 +335,11 @@ def load_corpus(repo, scope, extra_texts=None) -> list:
     return corpus_from_texts(files, extra=extra)
 
 
-def load_staged_corpus(repo, scope, extra_texts=None) -> list:
-    files = index_texts(repo, scope_files(repo, scope, staged=True))
-    extra = set()
-    for p, t in (extra_texts or {}).items():
-        files[p] = t
-        extra.add(p)
-    return corpus_from_texts(files, extra=extra)
-
-
 def base_sentence_hashes(repo, base, paths) -> dict:
     """{path: frozenset(sentence hash)} for `paths` as `base` holds them. A path `base` lacks is absent from
     the map: the change wrote that whole file, so every unit of it is a changed unit."""
     return {p: frozenset(u.hash for u in en.units(p, text))
-            for p, text in index_texts(repo, paths, rev=base).items()}
+            for p, text in revision_texts(repo, paths, base).items()}
 
 
 def load_fixture_case(fix, case) -> list:
@@ -524,7 +515,7 @@ def _lexical_candidates(corpus, model, cutoff, centers=None):
     return out
 
 
-def scan(corpus, model, thr=THRESHOLDS, ruled=frozenset(), centers=None) -> dict:
+def scan(corpus, model, thr=THRESHOLDS, ruled=frozenset(), centers=None, min_channels=1) -> dict:
     pairs = {}
 
     def add(i, j, channel, via):
@@ -570,11 +561,14 @@ def scan(corpus, model, thr=THRESHOLDS, ruled=frozenset(), centers=None) -> dict
                         pairs[(min(i, j), max(i, j))]["cited"] = j
 
     counts = {"lexical": 0, "anchor": 0, "citation": 0}
-    ruled_n = 0
+    ruled_n = held_back = 0
     live = {}
     for (i, j), p in pairs.items():
         if tuple(sorted((corpus[i].hash, corpus[j].hash))) in ruled:
             ruled_n += 1
+            continue
+        if len(p["channels"]) < min_channels:
+            held_back += 1
             continue
         for c in p["channels"]:
             counts[c] += 1
@@ -602,7 +596,8 @@ def scan(corpus, model, thr=THRESHOLDS, ruled=frozenset(), centers=None) -> dict
                        "_units": units})
     groups.sort(key=lambda g: (g["members"][0]["path"], g["members"][0]["line"], g["id"]))
     return {"groups": groups, "counts": {"units": len(corpus), "files": len(by_path), "pairs": counts,
-                                         "ruled_pairs": ruled_n, "groups": len(groups)}}
+                                         "ruled_pairs": ruled_n, "held_back": held_back,
+                                         "groups": len(groups)}}
 
 
 def star_groups(corpus, keys, centers=None) -> dict:
@@ -688,10 +683,6 @@ def _centers(corpus, extra, changed, paths, base=None):
 
 def _run(args):
     repo = Path(args.repo).resolve()
-    staged = bool(getattr(args, "staged", False))
-    if staged and not getattr(args, "changed", False):
-        print("restate_scan: --staged requires --changed; it names the diff whose added lines are the centers.")
-        return None
     got = en.setup_scope(repo, args.rows_dir, NO_SCOPE)
     if got is None:
         return None
@@ -707,19 +698,19 @@ def _run(args):
     changed = None
     if getattr(args, "changed", False):
         try:
-            changed = en.changed_lines(repo, args.base, scope, staged=staged)
+            changed = en.changed_lines(repo, args.base, scope)
         except RuntimeError as e:
             print("restate_scan: " + str(e))
             return None
     try:
-        corpus = load_staged_corpus(repo, scope, extra) if staged else load_corpus(repo, scope, extra)
+        corpus = load_corpus(repo, scope, extra)
         base = base_sentence_hashes(repo, args.base, sorted(changed)) if changed else {}
     except RuntimeError as e:
         print("restate_scan: " + str(e))
         return None
     centers = _centers(corpus, extra, changed, getattr(args, "paths", None), base)
     ruled, bad = _rulings(rows_dir)
-    out = scan(corpus, corpus_model(corpus), THRESHOLDS, ruled, centers)
+    out = scan(corpus, corpus_model(corpus), THRESHOLDS, ruled, centers, 2 if getattr(args, "strong", False) else 1)
     out["counts"]["unparseable_rows"] = bad
     return out, rows_dir
 
@@ -728,9 +719,9 @@ def _summary(out, shown):
     c = out["counts"]
     p = c["pairs"]
     return ("restate_scan: scope files %d, units %d, candidate pairs lexical %d, anchor %d, citation %d, "
-            "ruled pairs %d, groups %d, shown %d, unparseable rows %d"
-            % (c["files"], c["units"], p["lexical"], p["anchor"], p["citation"], c["ruled_pairs"], c["groups"], shown,
-               c["unparseable_rows"]))
+            "ruled pairs %d, single-channel pairs held back %d, groups %d, shown %d, unparseable rows %d"
+            % (c["files"], c["units"], p["lexical"], p["anchor"], p["citation"], c["ruled_pairs"], c["held_back"],
+               c["groups"], shown, c["unparseable_rows"]))
 
 
 def cmd_pairs(args):
@@ -830,10 +821,10 @@ def main(argv=None):
     common.add_argument("--rows-dir", default=None, help="replaces the scope's rows_dir")
     common.add_argument("--text", default=None, help="adds a file's units (a plan) and centers groups on them")
     common.add_argument("--changed", action="store_true", help="center groups on units changed since --base")
-    common.add_argument("--staged", action="store_true",
-                        help="with --changed: read the added lines and the units from the index the environment "
-                             "names (GIT_INDEX_FILE included), not the worktree")
     common.add_argument("--base", default="HEAD")
+    common.add_argument("--strong", action="store_true",
+                        help="keep only the pairs two or more channels agree on; a single channel is the scan's "
+                             "recall tail (`rule` takes it too, since a group's id follows the pairs it holds)")
     common.add_argument("--paths", nargs="+", default=None,
                         help="narrow the centers to these files or directories")
     p = sub.add_parser("pairs", parents=[common], help="print the unruled candidate groups")

@@ -1,109 +1,30 @@
-"""Planted-violation proof for hooks/file_size_preblock.py: the block must be OBSERVED firing.
+"""Proof for hooks/file_size_preblock.py: an unbounded Read of a file at or over CLAMP_BYTES gets its head
+and a way on; every other Read is left to the native Read tool.
+
+The decision is the file's size and whether the call is bounded, nothing else: no extension list, no
+instruction-directory carve-out, no prompt cue, no per-agent state. The dispatcher's spawned case
+(test_pre_read_dispatch.py) proves it runs from its registered command.
 
 Run: python3 .claude/tests/test_file_size_preblock.py  (pytest-compatible; no pytest needed)
 """
 import importlib.util
-import json
 import os
-import subprocess
 import sys
 import tempfile
 
 HOOKS = os.path.join(os.path.dirname(__file__), "..", "hooks")
-sys.path.insert(0, HOOKS)  # the hook imports its sibling _claude_scope
-HOOK = os.path.join(HOOKS, "file_size_preblock.py")
-spec = importlib.util.spec_from_file_location("file_size_preblock", HOOK)
+spec = importlib.util.spec_from_file_location("file_size_preblock", os.path.join(HOOKS, "file_size_preblock.py"))
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+LINE = b"0123456789" * 7 + b"\n"
 
 
 def _read(path, **extra):
     return {"tool_name": "Read", "tool_input": {"file_path": path, **extra}}
 
 
-def _run_hook(payload):
-    result = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
-                            capture_output=True, text=True, timeout=60)
-    assert result.returncode in (0, 2), result.stderr
-    return result
-
-
-def _file(dirpath, rel, size):
-    p = os.path.join(dirpath, *rel.split("/"))
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "wb") as fh:
-        fh.write(b"x" * size)
-    return p
-
-
-def test_scratch_md_over_threshold_blocks_and_bounded_passes():
-    with tempfile.TemporaryDirectory() as d:
-        big = _file(d, ".claude/scratch/review.md", mod.LARGE_FILE_BYTE_THRESHOLD + 1)
-        assert mod.process(_read(big)) is not None
-        assert mod.process(_read(big, limit=100)) is None
-        blocked = _run_hook(_read(big))
-        assert blocked.returncode == 2 and not blocked.stdout
-        assert "CLAUDE.core.md §9" in blocked.stderr
-        assert "bounded `Read" in blocked.stderr
-
-
-def test_instruction_dirs_and_claude_md_pass_at_any_size():
-    with tempfile.TemporaryDirectory() as d:
-        for rel in (".claude/skills/x/SKILL.md", ".claude/plans/p.md", ".claude/CLAUDE.md", "CLAUDE.md"):
-            p = _file(d, rel, mod.LARGE_FILE_BYTE_THRESHOLD + 1)
-            assert mod.process(_read(p)) is None, rel
-
-
-def test_log_blocks_above_log_threshold_only():
-    with tempfile.TemporaryDirectory() as d:
-        small = _file(d, "run/small.log", mod.LOG_BYTE_THRESHOLD - 1)
-        big = _file(d, "run/build.log", mod.LOG_BYTE_THRESHOLD + 1)
-        assert mod.process(_read(small)) is None
-        msg = mod.process(_read(big))
-        assert msg is not None and "grep-shaped" in msg
-        assert mod.process(_read(big, offset=10, limit=50)) is None
-        blocked = _run_hook(_read(big))
-        assert blocked.returncode == 2 and not blocked.stdout
-        assert "CLAUDE.core.md §9" in blocked.stderr
-        assert "Recover: `Grep" in blocked.stderr
-
-
-def test_worktree_checkout_measures_against_its_own_dot_claude():
-    """A checkout at <root>/.claude/worktrees/<name>/ carries a `.claude` segment in
-    every path inside it, so an inline `/.claude/` prefix test exempts nothing there —
-    an instruction file over the threshold read as an unexempted artifact and blocked."""
-    with tempfile.TemporaryDirectory() as d:
-        wt = ".claude/worktrees/wt"
-        for rel in (f"{wt}/.claude/skills/x/SKILL.md", f"{wt}/.claude/rules/r.md",
-                    f"{wt}/.claude/CLAUDE.md"):
-            p = _file(d, rel, mod.LARGE_FILE_BYTE_THRESHOLD + 1)
-            assert mod.process(_read(p)) is None, rel
-        # ...and the checkout's own artifact dirs stay gated, as they do outside one.
-        art = _file(d, f"{wt}/.claude/scratch/review.md", mod.LARGE_FILE_BYTE_THRESHOLD + 1)
-        assert mod.process(_read(art)) is not None
-
-
-def test_pretooluse_subprocess_blocks_through_stderr_and_exit_code():
-    with tempfile.TemporaryDirectory() as d:
-        big = _file(d, "run/build.log", mod.LOG_BYTE_THRESHOLD + 1)
-        payload = {
-            "hook_event_name": "PreToolUse",
-            "session_id": "file-size-live",
-            "tool_name": "Read",
-            "tool_input": {"file_path": big},
-        }
-        result = _run_hook(payload)
-        assert result.returncode == 2
-        assert "[file-size-block]" in result.stderr
-        assert result.stdout == ""
-
-        payload["tool_input"]["limit"] = 40
-        allowed = _run_hook(payload)
-        assert allowed.returncode == 0
-        assert allowed.stderr == ""
-
-
-def _lines_file(dirpath, rel, size, line=b"0123456789" * 7 + b"\n"):
+def _file(dirpath, rel, size, line=LINE):
     p = os.path.join(dirpath, *rel.split("/"))
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "wb") as fh:
@@ -111,86 +32,71 @@ def _lines_file(dirpath, rel, size, line=b"0123456789" * 7 + b"\n"):
     return p
 
 
-def _profile_env(tier, ai_worker):
-    """Environment where this machine's tier and ai-worker registration read as planted."""
-    root = tempfile.mkdtemp(prefix="fsp_profile_")
-    cfg = os.path.join(root, "cfg")
-    os.makedirs(os.path.join(cfg, "plugins"))
-    servers = {"ai-worker": {"command": "python"}} if ai_worker == "present" else {}
-    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
-        json.dump({"mcpServers": servers}, fh)
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg, SC_WORKDIR=os.path.join(root, "nowhere"),
-               WORKSTATION_PROFILE_PATH=os.path.join(root, "workstation_profile.json"))
-    if tier is not None:
-        with open(env["WORKSTATION_PROFILE_PATH"], "w", encoding="utf-8") as fh:
-            json.dump({"schema": 1, "local_tier": tier}, fh)
-    return env
-
-
-def _with_env(env, fn):
-    saved = dict(os.environ)
-    os.environ.clear()
-    os.environ.update(env)
-    try:
-        return fn()
-    finally:
-        os.environ.clear()
-        os.environ.update(saved)
-
-
-def test_block_message_names_a_route_this_machine_actually_has():
-    """C7: `guards/common.md` and this message both route bulk copyable I/O to ai-worker; on a machine
-    where it is not registered the message must name the route that IS there (bounded Read or a
-    subagent), and it must not lose the bounded Read that always passes this gate."""
+def test_the_clamp_starts_at_the_native_ceiling_not_below_it():
+    """Below 100 KB the clamp only added a call, and the native
+    Read already refuses past 25,000 tokens: the hook acts at the size where it turns a refusal into a head."""
     with tempfile.TemporaryDirectory() as d:
-        big = _file(d, ".claude/scratch/review.md", mod.LARGE_FILE_BYTE_THRESHOLD + 1)
-
-        absent = _with_env(_profile_env("full", "absent"), lambda: mod.process(_read(big)))
-        assert "read_files" not in absent, absent
-        assert "bounded `Read" in absent and "subagent" in absent, absent
-
-        present = _with_env(_profile_env("full", "present"), lambda: mod.process(_read(big)))
-        assert "mcp__ai-worker__read_files" in present, present
-
-        unknown = _with_env(_profile_env(None, "present"), lambda: mod.process(_read(big)))
-        assert unknown == present, (unknown, present)
+        under = _file(d, "a/under.md", mod.CLAMP_BYTES - len(LINE))
+        at = _file(d, "a/at.md", mod.CLAMP_BYTES)
+        assert os.path.getsize(under) < mod.CLAMP_BYTES <= os.path.getsize(at)
+        assert mod.process(_read(under)) is None
+        assert mod.process(_read(at)) is not None
 
 
-def test_clamp_tail_names_a_route_this_machine_actually_has():
+def test_a_log_is_held_to_the_same_size_as_any_file():
     with tempfile.TemporaryDirectory() as d:
-        big = _lines_file(d, ".claude/scratch/review.md", 2 * mod.LARGE_FILE_BYTE_THRESHOLD)
-        absent = _with_env(_profile_env("full", "absent"), lambda: mod.process(_read(big)))
-        assert "read_files" not in absent["additionalContext"], absent
-        assert "subagent" in absent["additionalContext"], absent
-        assert "offset=%d" % (absent["updatedInput"]["limit"] + 1) in absent["additionalContext"]
-
-        present = _with_env(_profile_env("full", "present"), lambda: mod.process(_read(big)))
-        assert "mcp__ai-worker__read_files" in present["additionalContext"], present
+        log = _file(d, "run/build.log", 30 * 1024)
+        assert mod.process(_read(log)) is None
+        assert mod.process(_read(_file(d, "run/big.log", mod.CLAMP_BYTES))) is not None
 
 
-def test_multiline_oversized_read_is_clamped_not_denied():
-    """A file whose lines fit the budget gets a bounded read of its head instead of a denial;
-    a first line over the budget (single-line JSON, the fixtures above) keeps the deny."""
+def test_the_clamp_bounds_the_same_read_to_whole_lines_of_the_head():
     with tempfile.TemporaryDirectory() as d:
-        big = _lines_file(d, ".claude/scratch/review.md", 2 * mod.LARGE_FILE_BYTE_THRESHOLD)
-        got = mod.process(_read(big))
-        assert isinstance(got, dict), got
-        updated = got["updatedInput"]
-        assert updated["file_path"] == big and updated["limit"] > 0
-        assert "offset" not in updated
-        head = open(big, "rb").read().split(b"\n")[:updated["limit"]]
-        assert sum(len(x) + 1 for x in head) <= mod.LARGE_FILE_BYTE_THRESHOLD
-        assert "offset=%d" % (updated["limit"] + 1) in got["additionalContext"]
+        big = _file(d, "a/big.md", 3 * mod.CLAMP_BYTES)
+        got = mod.process(_read(big, pages="1-2"))
+        rewrite = got["rewrite"]
+        assert rewrite["file_path"] == big and rewrite["pages"] == "1-2"
+        assert "offset" not in rewrite and rewrite["limit"] > 0
+        head = open(big, "rb").read().split(b"\n")[:rewrite["limit"]]
+        assert sum(len(x) + 1 for x in head) <= mod.HEAD_BYTES
+        assert "offset=%d" % (rewrite["limit"] + 1) in got["note"]
 
 
-def test_multiline_log_is_clamped_to_the_log_budget():
+def test_an_instruction_file_is_clamped_like_any_other():
+    """The exemption by directory is gone: an agent still holds the head and pages on, and a file this
+    size is refused by the native Read anyway."""
     with tempfile.TemporaryDirectory() as d:
-        big = _lines_file(d, "run/build.log", 3 * mod.LOG_BYTE_THRESHOLD)
-        got = mod.process(_read(big))
-        assert isinstance(got, dict), got
-        head = open(big, "rb").read().split(b"\n")[:got["updatedInput"]["limit"]]
-        assert sum(len(x) + 1 for x in head) <= mod.LOG_BYTE_THRESHOLD
-        assert "Grep" in got["additionalContext"]
+        for rel in (".claude/rules/r.md", ".claude/skills/x/SKILL.md", "CLAUDE.md"):
+            assert mod.process(_read(_file(d, rel, mod.CLAMP_BYTES))) is not None, rel
+
+
+def test_a_subagent_gets_the_same_decision_as_the_main_session():
+    with tempfile.TemporaryDirectory() as d:
+        big = _file(d, "a/big.md", mod.CLAMP_BYTES)
+        main = mod.process(_read(big))
+        sub = mod.process(dict(_read(big), agent_id="agent-9", agent_type="workflow-subagent"))
+        assert main == sub and main is not None
+
+
+def test_reads_the_hook_must_leave_alone():
+    with tempfile.TemporaryDirectory() as d:
+        big = _file(d, "a/big.md", mod.CLAMP_BYTES)
+        assert mod.process(_read(big, limit=100)) is None, "bounded by limit"
+        assert mod.process(_read(big, offset=10)) is None, "bounded by offset"
+        assert mod.process(_read(os.path.join(d, "absent.md"))) is None, "missing file: Read words its own error"
+        assert mod.process({"tool_name": "Grep", "tool_input": {"file_path": big}}) is None
+        assert mod.process({"tool_name": "Read", "tool_input": {}}) is None
+        for name in ("a.pdf", "n.ipynb", "i.png"):
+            assert mod.process(_read(_file(d, "fmt/" + name, 2 * mod.CLAMP_BYTES))) is None, name
+
+
+def test_a_file_with_no_line_in_its_head_is_left_to_the_native_refusal():
+    """Single-line JSON: no line range fits the head, so there is nothing to clamp to; the native Read
+    refuses a file this large with its own advice."""
+    with tempfile.TemporaryDirectory() as d:
+        one_line = _file(d, "a/min.json", 2 * mod.CLAMP_BYTES, line=b"x" * 1000)
+        assert b"\n" not in open(one_line, "rb").read(mod.HEAD_BYTES)
+        assert mod.process(_read(one_line)) is None
 
 
 if __name__ == "__main__":
@@ -200,7 +106,7 @@ if __name__ == "__main__":
             try:
                 fn()
                 print("PASS", name)
-            except AssertionError as e:
+            except Exception as e:  # a crash is a failure, never a pass
                 failed += 1
-                print("FAIL", name, e)
+                print("FAIL", name, type(e).__name__, e)
     sys.exit(1 if failed else 0)

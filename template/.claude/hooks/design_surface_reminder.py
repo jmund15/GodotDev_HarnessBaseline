@@ -1,136 +1,134 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: PostToolUse on Write|Edit — surface the design litmus at INTRODUCTION time.
+Hook: PostToolUse on Write|Edit — surface design litmus #1 when an edit adds a bool beside a family slot.
 
-Why:
-- `rules/design_litmus.md` says "answer before introducing, not after review",
-  but it auto-loads on .cs *reads* — the wrong moment. The three shapes below
-  are the ones the litmus most often catches too late: a behavior bool that is
-  a strategy slot in disguise, a neutered strategy/config seam, and a subclass
-  on an orthogonal axis.
+The litmus says a behavior-selecting bool is a strategy slot in disguise and sends the author to the family that
+already owns the concern; a seam needs a second implementation. This hook reads two facts to find that case:
+- the edit introduced an exported bool (present after the edit, absent before);
+- the class already exports a slot whose type the repo shows to be a family: declared in a tracked `.cs` file as an
+  abstract class or an interface, or as a base of two or more declared types. No type name decides, and a type the
+  repo does not declare (an engine type) is never a family. It names the bool and each slot with its evidence.
 
-What it does:
-- Fires only on a .cs file_path whose written text matches one of three narrow
-  regexes (see SHAPES). Emits at most 3 lines of additionalContext.
-- One fire per file per session (shared ~/.claude/.routing_state/<sid>.json,
-  same convention as critical_analysis_reminder / plan_memory_reminder).
+States read:
+- after: the file on disk (PostToolUse runs once the write has landed).
+- before: `tool_response.originalFile` (null for a create); an Edit without it is undone from
+  `tool_input` (`new_string` back to `old_string`); a Write without it is unknown, so the hook is silent.
+- the repo: one `git grep --recurse-submodules` over the `.cs` files, run only for an edit that introduced a bool
+  (bounded by _SEARCH_SECONDS).A file outside a repository, a missing git or
+  a timeout reads as no family. A declaration whose base list wraps onto a later line counts fewer implementations.
 
-Boundaries:
-- Advisory only. Never blocks, never exits 2, fails open on any internal error.
+Not decided here: an orthogonal axis (litmus #2) is a judgment no member settles; `rules/design_litmus.md` loads on
+every .cs read, which an edit requires first.
+
+Advisory only. Never blocks, never exits 2, fails open on any internal error.
 """
 
 import json
 import os
 import re
+import subprocess
 import sys
 
-from _hook_state import state_path, update_json_locked
-
-FILES_FIELD = "design_surface_reminder_files"
-FILES_CAP = 100  # bounded state — oldest entries drop off
-
-# (shape_label, litmus_number, pattern)
-SHAPES = [
-    (
-        "an [Export] bool",
-        1,
-        # An exported behavior flag. Bounded look-ahead keeps this to the
-        # attribute's own statement rather than any bool later in the file.
-        re.compile(r"\[Export[^\]]*\][^;{}]{0,80}?\bbool\b"),
-    ),
-    (
-        "a null strategy/config argument",
-        1,
-        # Named-argument form only — `strategy: null` / `config: null`.
-        # Positional nulls are too noisy to detect textually.
-        re.compile(r"\b\w*(?:strategy|config)\s*:\s*null\b", re.IGNORECASE),
-    ),
-    (
-        # abstract only: a concrete leaf impl IS the sanctioned family extension (994 of them
-        # live in the manifest) — firing on those is crying wolf. Axis-fusing happens in new
-        # INTERMEDIATE rungs, which are abstract by shape.
-        "a new abstract rung under a strategy-family base",
-        2,
-        re.compile(
-            r"\babstract\s+(?:partial\s+)?class\s+\w+\s*:\s*\w*(?:Effect|Runner|Strategy|Behavior|State)\b"
-        ),
-    ),
-]
-
-LITMUS_TEXT = {
-    1: ("name the family that already owns the concern — a behavior bool is a "
-        "strategy slot in disguise, and a literal null into a strategy/config "
-        "parameter is a neutered seam."),
-    2: ("name the axis the base varies on — if the new behavior could co-occur "
-        "independently, it composes as a config slot instead of a subclass."),
-}
+# [Export] / [Export(...)] / [Export, RequiredExport], more attribute lists, modifiers, type, name.
+_EXPORTED_MEMBER = re.compile(
+    r"\[\s*Export\b[^\]]*\](?:\s*\[[^\]]*\])*"
+    r"(?:\s+(?:public|protected|internal|private|static|new|virtual|override|required|readonly))*"
+    r"\s+(?P<type>[\w.]+(?:<[^<>;{}]*>)?(?:\[\])?\??)\s+(?P<name>\w+)\s*(?:[;={]|$)",
+    re.MULTILINE,
+)
+_WORD = re.compile(r"[A-Za-z_]\w*")
+_DECLARED = re.compile(r"\b(class|interface|record|struct)\s+(\w+)")
+_DERIVED = re.compile(r"\b(?:class|record)\s+(\w+)[^{;=:]*:([^{;]*)")
+_MAX_TYPES = 40       # names in one search pattern
+_SEARCH_SECONDS = 3.0  # the dispatcher gives a sub-hook 5 s
 
 
-def _state_path(session_id: str) -> str:
-    return state_path(session_id)
+def exported_members(text):
+    """{name: type} of every [Export] member in `text`."""
+    return {m["name"]: m["type"].rstrip("?") for m in _EXPORTED_MEMBER.finditer(text or "")}
 
 
-def _claim_file(session_id: str, file_key: str) -> bool:
-    """True the first time this session sees `file_key`. Fail-open on I/O error."""
-    def claim(state):
-        seen = state.get(FILES_FIELD)
-        seen = list(seen) if isinstance(seen, list) else []
-        if file_key in seen:
-            return False
-        seen.append(file_key)
-        state[FILES_FIELD] = seen[-FILES_CAP:]
-        return True
+def _family_evidence(path, types):
+    """{type: evidence} for each of `types` the repo shows to be a family: declared abstract or as an interface, or the
+    base of two or more declared types. One search for every candidate; any failure of it reads as no family."""
+    if not types:
+        return {}
+    names = "|".join(types)
+    declared = rf"\b(class|interface|record|struct)[[:space:]]+({names})\b"
+    derived = rf"\b(class|record)[[:space:]]+[A-Za-z0-9_]+[^{{;=]*:[^{{;]*\b({names})\b"
+    try:
+        found = subprocess.run(
+            ["git", "grep", "--recurse-submodules", "-h", "-E", "-e", declared, "-e", derived, "--", ":/*.cs"],
+            cwd=os.path.dirname(os.path.abspath(path)), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=_SEARCH_SECONDS).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    kind, bases = {}, {name: set() for name in types}
+    for line in found.splitlines():
+        head = _DECLARED.search(line)
+        if head and head.group(2) in bases:
+            abstract = re.search(r"\babstract\b", line[:head.start()])
+            kind[head.group(2)] = "abstract" if abstract else head.group(1)
+        child = _DERIVED.search(line)
+        if child:
+            for base in _WORD.findall(re.split(r"\bwhere\b", child.group(2))[0]):
+                if base in bases and base != child.group(1):
+                    bases[base].add(child.group(1))
+    evidence = {}
+    for name in types:
+        if kind.get(name) in ("abstract", "interface"):
+            evidence[name] = kind[name]
+        elif name in kind and len(bases[name]) >= 2:
+            evidence[name] = f"{len(bases[name])} implementations"
+    return evidence
 
-    written, claimed = update_json_locked(_state_path(session_id), claim)
-    return claimed if written else True
 
-
-def detect_shape(text: str):
-    """Return (shape_label, litmus_number) for the first matching shape, else None."""
-    for label, litmus_no, pattern in SHAPES:
-        if pattern.search(text):
-            return label, litmus_no
+def _text_before(input_data, tool_input, after):
+    response = input_data.get("tool_response")
+    if isinstance(response, dict) and "originalFile" in response:
+        return response["originalFile"] or ""
+    if input_data.get("tool_name") == "Edit" and "new_string" in tool_input:
+        return after.replace(str(tool_input["new_string"]), str(tool_input.get("old_string", "")), 1)
     return None
 
 
-def build_reminder(label: str, litmus_no: int) -> str:
-    return (
-        f"[design-litmus] This edit adds {label}. Before proceeding:\n"
-        f".claude/rules/design_litmus.md #{litmus_no} — {LITMUS_TEXT[litmus_no]}\n"
-        "Answer it now, or record \"no existing family\" explicitly."
-    )
-
-
 def process(input_data):
-    """Dispatcher entry: `{"context": reminder}` on a first-seen design shape, else None.
-
-    `post_edit_dispatch.py` calls this; `main()` keeps the standalone channel.
-    """
+    """Dispatcher entry: `{"context": reminder}` when the edit introduced an exported bool beside a family slot, else None."""
     if input_data.get("tool_name") not in ("Write", "Edit"):
         return None
-
-    tool_input = input_data.get("tool_input") or {}
+    tool_input = input_data.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
-
-    file_path = str(tool_input.get("file_path", ""))
-    if not file_path.lower().endswith(".cs"):
+    path = str(tool_input.get("file_path", ""))
+    if not path.lower().endswith(".cs"):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            after = fh.read()
+    except OSError:
+        return None
+    before = _text_before(input_data, tool_input, after)
+    if before is None:
         return None
 
-    text = tool_input.get("content") or tool_input.get("new_string") or ""
-    if not text:
+    members, earlier = exported_members(after), exported_members(before)
+    added = [n for n, t in members.items() if t == "bool" and n not in earlier]
+    if not added:
         return None
-
-    hit = detect_shape(text)
-    if not hit:
+    others = {n: t for n, t in members.items() if t != "bool"}
+    types = list(dict.fromkeys(w for t in others.values() for w in _WORD.findall(t)))[:_MAX_TYPES]
+    family = _family_evidence(path, types)
+    slots = {n: [f"{w}: {family[w]}" for w in _WORD.findall(t) if w in family] for n, t in others.items()}
+    slots = {n: shown for n, shown in slots.items() if shown}
+    if not slots:
         return None
-
-    file_key = file_path.replace("\\", "/")
-    if not _claim_file(input_data.get("session_id", "") or "", file_key):
-        return None
-
-    return {"context": build_reminder(*hit)}
+    named = ", ".join("%s (%s, %s)" % (n, members[n], "; ".join(shown)) for n, shown in slots.items())
+    return {"context": (
+        f"[design-litmus] This edit adds exported bool {', '.join(added)}; the class already exports {named}. "
+        ".claude/rules/design_litmus.md #1: if the bool selects behavior, it belongs in that family. "
+        "Name the family that owns the concern, or record \"none exists\"."
+    )}
 
 
 def main() -> None:
@@ -138,15 +136,12 @@ def main() -> None:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
-
-    result = process(input_data) or {}
-    if result.get("context"):
-        sys.stdout.write(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": result["context"],
-            }
-        }))
+    result = process(input_data) if isinstance(input_data, dict) else None
+    if result:
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": result["context"],
+        }}))
     sys.exit(0)
 
 

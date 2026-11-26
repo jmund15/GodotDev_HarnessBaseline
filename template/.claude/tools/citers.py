@@ -65,7 +65,7 @@ def git(repo, *args):
 
 
 def head_text(repo, rel):
-    code, out, _ = git(repo, "show", f"HEAD:{rel}")
+    code, out, _ = git(repo, "show", f"HEAD:./{rel}")
     return out if code == 0 else None
 
 
@@ -442,7 +442,7 @@ def cap_per_file(citers):
 
 
 def text_at(repo, rev, rel):
-    code, out, _ = git(repo, "show", f"{rev}:{rel}")
+    code, out, _ = git(repo, "show", f"{rev}:./{rel}")
     return out if code == 0 else None
 
 

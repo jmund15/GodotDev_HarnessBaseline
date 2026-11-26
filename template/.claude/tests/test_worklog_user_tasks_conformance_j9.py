@@ -16,7 +16,6 @@ sys.path[:0] = [str(CLAUDE / d) for d in ('hooks', 'tools', 'scripts')]
 import harness_edit_skill_reminder as reminder
 import session_digest
 import task_record
-import aggregate_routing_audit as audit
 
 
 class Contracts(unittest.TestCase):
@@ -47,19 +46,6 @@ class Contracts(unittest.TestCase):
             self.assertIn('unavailable', session_digest.task_record_block('s', '.').lower())
         with patch.object(task_record, 'active', return_value=None):
             self.assertEqual('', session_digest.task_record_block('s', '.'))
-
-
-    def test_S17_empty_refresh_and_bad_input(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            log, stats = Path(tmp)/'input.jsonl', Path(tmp)/'stats.json'
-            log.write_text(''); stats.write_text('{"total_entries":999}')
-            with patch.object(audit, 'LOG_PATH', log), patch.object(audit, 'STATS_PATH', stats), patch.object(sys, 'argv', ['audit']), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(0, audit.main())
-                self.assertEqual(0, json.loads(stats.read_text())['total_entries'])
-                log.write_text('not json\n')
-                with contextlib.redirect_stderr(io.StringIO()) as err:
-                    self.assertNotEqual(0, audit.main())
-                self.assertIn('unavailable', err.getvalue().lower())
 
 
     def test_V50_namespace_and_attribute_coverage(self):
@@ -158,7 +144,7 @@ class Contracts(unittest.TestCase):
 
     def test_runner_real_preexisting_root_comparison(self):
         import harness_tests as runner
-        from test_extract_numbers import mkrepo, git, write, _rm
+        from test_rule_units import mkrepo, git, write, _rm
         tmp = tempfile.mkdtemp(prefix='j9_root_comparison_')
         proof = '.claude/tests/test_missing_evidence.py'
         source = 'from pathlib import Path\n(Path(__file__).resolve().parents[1]/"scratch/evidence.json").read_text()\n'
@@ -176,7 +162,7 @@ class Contracts(unittest.TestCase):
 
     def test_runner_missing_checker_is_uncovered_not_a_crash(self):
         import harness_tests as runner
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, extract_numbers=None), patch.dict(os.environ, HARNESS_MACHINE_SLOTS='0'), patch.object(runner, 'STAMP_PATH', str(Path(tmp)/'stamp.json')):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, rule_units=None), patch.dict(os.environ, HARNESS_MACHINE_SLOTS='0'), patch.object(runner, 'STAMP_PATH', str(Path(tmp)/'stamp.json')):
             proof = Path(tmp)/'test_plain.py'; proof.write_text('print("ok plain")\n')
             row = {}
             result = runner._run_selected([str(proof)], False, options=runner.RunOptions(repo=tmp, mode='fixture', row=row))
@@ -191,7 +177,7 @@ class Contracts(unittest.TestCase):
         # The behavior-claim census does not run (owner cut list T2.11), so a changed unit no claim names
         # stays advisory; an affected claim's failure still fails the run.
         import harness_tests as runner
-        import extract_numbers
+        import rule_units
         unit = {'path': '.claude/commands/x.md', 'hash': 'h1', 'status': 'uncovered'}
         report = {'status': 'uncovered', 'counts': {'uncovered': 1}, 'units': [unit], 'claims': [], 'uncovered': [unit],
                   'scope': {'affected': [], 'changedUnits': [{'path': unit['path'], 'hash': 'h1'}], 'initialDebt': [], 'errors': []}}
@@ -201,7 +187,7 @@ class Contracts(unittest.TestCase):
             proof = Path(tmp)/'test_plain.py'; proof.write_text('print("ok plain")\n')
             for planted, want in ((report, 'pass'), (failing, 'fail')):
                 row = {}
-                with patch.object(extract_numbers, 'behavior_report', return_value=planted):
+                with patch.object(rule_units, 'behavior_report', return_value=planted):
                     runner._run_selected([str(proof)], False, options=runner.RunOptions(repo=tmp, mode='fixture', row=row))
                 self.assertEqual(want, row['behaviorAcceptance'])
 

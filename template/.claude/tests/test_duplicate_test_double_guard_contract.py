@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 INTERFACE = "public interface IWidget\n{\n    void Run();\n}\n"
@@ -32,8 +33,7 @@ class DuplicateTestDoubleGuardContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         hooks = self.temp / ".claude" / "hooks"
         hooks.mkdir(parents=True)
-        for name in ("duplicate_test_double_guard.py", "_cs_files.py", "_checkout_root.py", "_git_run.py"):
-            shutil.copy(ROOT / ".claude" / "hooks" / name, hooks / name)
+        copy_closure(self.temp / ".claude", "hooks/duplicate_test_double_guard.py")
         self.guard = hooks / "duplicate_test_double_guard.py"
         (self.temp / "Scripts").mkdir()
         (self.temp / "Scripts" / "IWidget.cs").write_text(INTERFACE, encoding="utf-8")

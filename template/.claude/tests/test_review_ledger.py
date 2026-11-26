@@ -2533,13 +2533,15 @@ class RangeCommitsTests(unittest.TestCase):
             {"sha": "resolved", "subject": "merge resolution", "files": [".claude/rules/both.md"]},
         ]
         repo = Path("planted-repo")
-        with patch.object(module.review_snapshot, "_git", return_value=Result(0, output, "")) as git:
+        def answer(args, **_):
+            return Result(0, "" if args[0] == "rev-parse" else output, "")
+        with patch.object(module.review_snapshot, "_git", side_effect=answer) as git:
             self.assertEqual(module.range_commits(repo, "base", "tip"), expected)
-            git.assert_called_once()
-            self.assertEqual(git.call_args.args[0], [
+            listing = next(call for call in git.call_args_list if call.args[0][0] == "log")
+            self.assertEqual(listing.args[0], [
                 "log", "--reverse", "--cc", "--no-renames", "--diff-filter=ACDMR",
                 "--raw", "--no-abbrev", "--format=@@%H\t%s", "base..tip"])
-            self.assertEqual(git.call_args.kwargs["cwd"], str(repo))
+            self.assertEqual(listing.kwargs["cwd"], str(repo))
 
     def test_shared_enumeration_fails_closed_on_git_error(self):
         module = load_module(TOOL)

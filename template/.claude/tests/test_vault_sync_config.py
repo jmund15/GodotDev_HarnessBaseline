@@ -2,12 +2,12 @@
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / '.claude/tools'
@@ -18,8 +18,7 @@ def stage_tool(base, config=None):
     """Copy the tool beside an optional config text into base; return the staged tool path."""
     tools = Path(base) / 'tools'
     tools.mkdir()
-    for name in ('vault_sync.py', 'vault_read.py'):
-        shutil.copy(TOOLS / name, tools / name)
+    copy_closure(tools, 'tools/vault_sync.py', flat=True)
     if config is not None:
         (tools / CONFIG).write_text(config, encoding='utf-8')
     return tools / 'vault_sync.py'

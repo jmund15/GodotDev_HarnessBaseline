@@ -35,12 +35,11 @@ _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(_TESTS_DIR))
 sys.path.insert(0, _TESTS_DIR)
 from _must_allow_cases import must_allow_cases  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 HOOKS = os.path.join(_REPO, ".claude", "hooks")
 
-# The guard under test plus the parser/scope modules it imports. Copied together: a guard whose
-# sibling is missing cannot import, and every case would then read as CRASH rather than as a pass.
-SUPPORT = ("_git_commit.py", "_git_run.py", "_shell_lex.py", "_command_text.py", "_commit_scope.py", "_cs_files.py", "_checkout_root.py",
-           "_hook_parts.py", "_win_path.py", "amend_delivery.py")
+# The guard under test is copied with its import closure: a guard whose sibling is missing cannot import, and every
+# case would then read as CRASH rather than as a pass.
 
 
 def _filter_file(*names):
@@ -96,13 +95,7 @@ def _init_repo():
 
 
 def _install_hooks(repo, hook):
-    dst = os.path.join(repo, ".claude", "hooks")
-    os.makedirs(dst, exist_ok=True)
-    for name in SUPPORT + (hook,):
-        shutil.copy(os.path.join(HOOKS, name), dst)
-    tools = os.path.join(repo, ".claude", "tools")
-    os.makedirs(tools, exist_ok=True)
-    shutil.copy(os.path.join(_REPO, ".claude", "tools", "sidecar_argv.py"), tools)
+    copy_closure(os.path.join(repo, ".claude"), "hooks/" + hook)
 
 
 def _decoy(rel, tag, head):

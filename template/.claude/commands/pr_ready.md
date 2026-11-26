@@ -112,7 +112,7 @@ One verdict per candidate:
 
 **Each reachability lens returns exactly one coverage roll-up finding** (`action: PLAN`, `category: improvement`, non-critical, `file: null`): candidates enumerated, and the REACHED ones listed with reacher `file:line`. A lens that enumerated zero candidates reports that in the roll-up, so "no findings" stays distinguishable from "nothing examined".
 
-Write each seat's brief (its mandate row above, the rubric, and its OLD/NEW or content slice, verbatim with file:line) to `.claude/scratch/pr_ready/<key>_<branch>.md`, then the spec `prepare` reads (`mode: "pr-ready"`, `seats: [{key, mandates, tier, effort, brief: "<that path>", tools: "+Bash"}, ...]`, `pins`, `efforts`, `ledger` as above, `context`) and run:
+Write each seat's brief (its mandate row above, the rubric, and its OLD/NEW or content slice, verbatim with file:line) to `.claude/scratch/pr_ready/<key>_<branch>.md`, then the spec `prepare` reads (`mode: "pr-ready"`, `seats: [{key, mandates, tier, effort, brief: "<that path>"}, ...]`, `pins`, `efforts`, `ledger` as above, `context`) and run:
 
 ```bash
 python3 .claude/tools/lens_briefs.py prepare --spec .claude/scratch/pr_ready/spec_<branch>.json --out .claude/scratch/pr_ready/out
@@ -120,7 +120,7 @@ python3 .claude/tools/lens_briefs.py prepare --spec .claude/scratch/pr_ready/spe
 
 Run the `next:` call it prints: the fan-out places each seat by the ladder's selection line, prints a `NATIVE` Workflow call for the seats it keeps on this session's plan (issue it in the same message as the Step 1a call) and the `--review-close` call that consolidates every seat once they have all ended.
 
-Every lens runs `git diff`/`git grep` itself, so each seat declares `tools: "+Bash"`. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
+Every lens runs `git diff`/`git grep` itself. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
 
 ## Step 2: Present findings by weight
 

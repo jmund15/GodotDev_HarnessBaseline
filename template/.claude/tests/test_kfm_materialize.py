@@ -4,11 +4,11 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from _module_closure import copy_closure  # noqa: E402
 
 REAL_TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
@@ -18,8 +18,7 @@ PLANTED = tempfile.TemporaryDirectory(prefix="kfm-proof-")
 ROOT = Path(PLANTED.name)
 SCRIPT = ROOT / ".claude/tools/kfm.py"
 SCRIPT.parent.mkdir(parents=True)
-for _name in ("kfm.py", "cli_usage.py"):
-    shutil.copyfile(REAL_TOOLS / _name, SCRIPT.parent / _name)
+copy_closure(ROOT / ".claude", "tools/kfm.py")
 (ROOT / ".claude/reference").mkdir()
 (ROOT / ".claude/reference/known_failure_modes_entries.md").write_text(
     "# Known Failure Modes\n\n## Runtime failures\n\n"

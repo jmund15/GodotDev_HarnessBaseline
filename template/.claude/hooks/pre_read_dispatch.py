@@ -7,6 +7,7 @@ One settings entry runs these checks in order:
   indexed_reference_guard.process — indexed whole-file Read → advise the main session, block a delegate
   semantic_search_scope_guard.process — a scope its values settle → corrected via `updatedInput`;
      one that leaves the project → block
+  file_size_preblock.process — an unbounded Read of a file at or over its ceiling → the head via `updatedInput`
   video_read_hint.advisory — a Read of a video or GIF → advisory naming the contact-sheet tool
 
 Each check ships in the coding layer and runs only where its file exists. A delegate is not exempt from
@@ -41,15 +42,10 @@ def _failed_import(name, exc):
     return None
 
 
-indexed_reference_guard, semantic_search_scope_guard, video_read_hint = _optional_hooks.load(
-    'indexed_reference_guard', 'semantic_search_scope_guard', 'video_read_hint', on_error=_failed_import)
+indexed_reference_guard, semantic_search_scope_guard, video_read_hint, file_size_preblock = _optional_hooks.load(
+    'indexed_reference_guard', 'semantic_search_scope_guard', 'video_read_hint', 'file_size_preblock',
+    on_error=_failed_import)
 
-# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
-# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
-UNWIRED = (
-    "file_size_preblock",
-    "tool_routing_nudge",
-)
 
 
 def main() -> None:
@@ -83,6 +79,14 @@ def main() -> None:
             rewrite, rewrite_note = result["rewrite"], result.get("note")
     except SystemExit:
         raise
+    except Exception:
+        pass
+
+    # Large-file clamp: the two rewriting members act on different tools (Read versus search), so at most one fires.
+    try:
+        result = file_size_preblock.process(input_data) if file_size_preblock else None
+        if result and not rewrite:
+            rewrite, rewrite_note = result["rewrite"], result["note"]
     except Exception:
         pass
 

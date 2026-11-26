@@ -1232,7 +1232,7 @@ class UnmeasuredPromptHookTests(unittest.TestCase):
 class IsolatedHookCwdTests(unittest.TestCase):
     def test_isolated_hook_runs_with_an_isolated_cwd_and_payload_cwd(self):
         """An isolated shared-state hook that resolves its root from the payload `cwd` or
-        `os.getcwd()` (activity_registry.py does) must see the throwaway project, not this checkout."""
+        `os.getcwd()` must see the throwaway project, not this checkout."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / ".claude"
             make_minimal_root(root)

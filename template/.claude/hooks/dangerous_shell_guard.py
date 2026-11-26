@@ -5,8 +5,9 @@
 Blocks, each judged on the resolved target and never on the command's wording:
 - Recursive/forced deletes and directory removal (rm -r/-rf, del /s, rd /s, rmdir /s, PowerShell Remove-Item
   -Recurse and its aliases) and drive format commands. Allowed: a target that is a regenerable cache inside the
-  project, a path below the system temp directory (any repository in it included, never the protected checkout or
-  a worktree registered to it) or below `~/.claude/plugins/cache/` holding no git repository, this session's own
+  project, a `.agents`, `bin` or `obj` folder of the project or a worktree where git sees no tracked or unignored
+  file under the target (`_is_ignored_output`), a path below the system temp directory (any repository in it
+  included, never the protected checkout or a worktree registered to it) or below `~/.claude/plugins/cache/` holding no git repository, this session's own
   `.claude/scratch/<session id>` output, a pushed regenerable clone, a scratch folder (the project's or a registered
   worktree's) holding no git repository and no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (`_delete_rule`: nothing
   outside the regenerable entries, every commit pushed or landed, no open PR), a `NAME=$(mktemp -d)`
@@ -52,9 +53,10 @@ if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
 from _shell_lex import (OPAQUE_WRAPPERS, POWERSHELLS, SHELLS, PowerShellText, base, cmd_switches, command_index,  # noqa: E402
                         command_words, executable_spans, executable_text, lex, options, ps_param, walk)
-from _delete_rule import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
-                          is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
-                          project_data, regenerable_segments, worktree_unstored)
+from _delete_rule import (ANY_SESSION_ID, empty_leftover, holds_only_ignored_output,  # noqa: E402
+                          is_regenerable_clone, is_plant_exhaust, is_proof_plant, is_retired_worktree,
+                          lossless_orphan_worktree, names_ignored_output, project_data, regenerable_segments,
+                          worktree_unstored)
 from _own_worktree import session_created_worktree  # noqa: E402
 import _git_commit  # noqa: E402
 if _git_commit.lex is None:
@@ -414,6 +416,8 @@ def _deletable_by_fact(target: str, here: str | None = None, transcript_path: st
     mkdir of this session created. One owner for the fact list, so a new class is one edit and both the token-level
     and resolved evaluators admit it. The cheapest fact decides first; the transcript read comes last."""
     return (_is_cache_path(target, here) or _is_own_session_scratch(target, here, transcript_path)
+            or (here is not None and not _UNSAFE_PATH_CHARS.search(target)
+                and _is_ignored_output(_norm(resolve_cd(here, target)), transcript_path))
             or _is_regenerable_target(target, here, transcript_path)
             or (here is not None and _is_regenerable_resolved(target, here))
             or _session_made_dir(target, here, transcript_path))
@@ -526,16 +530,44 @@ def _strictly_under(path: str, base: str) -> bool:
         return False
 
 
-def _checkout_rel_parts(path: str) -> list[str] | None:
-    """Path parts relative to the checkout holding `path`: the primary root, or the
-    `.claude/worktrees/<name>` checkout nested inside it (KFM #42). None outside the repo."""
+def _checkout_split(path: str) -> tuple[str, list[str]] | None:
+    """The checkout holding `path` (the primary root, or the `.claude/worktrees/<name>` checkout nested inside it,
+    KFM #42) and the path's parts below it. None outside the repo."""
     root = _norm(_project_root())
     if not _strictly_under(path, root):
         return None
     parts = os.path.relpath(path, root).replace("\\", "/").split("/")
     if parts[:2] == [".claude", "worktrees"]:
-        return parts[3:] if len(parts) > 3 else None
-    return parts
+        return (os.path.join(root, *parts[:3]), parts[3:]) if len(parts) > 3 else None
+    return root, parts
+
+
+def _checkout_rel_parts(path: str) -> list[str] | None:
+    """Path parts relative to the checkout holding `path`; None outside the repo."""
+    split = _checkout_split(path)
+    return split[1] if split else None
+
+
+def _is_ignored_output(path: str, transcript_path: str | None) -> bool:
+    """`path` (absolute, normalized) is, or lies in, a `bin`, `obj` or `.agents` folder of this project or one of its
+    worktrees that git observes as ignored output (`holds_only_ignored_output`), holding no repository and no live
+    peer's working directory, reached through no link."""
+    split = _checkout_split(path)
+    if split is None:
+        return False
+    root, parts = split
+    if not names_ignored_output(parts):
+        return False
+    real_root = os.path.realpath(root)
+    if os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.join(real_root, *parts)):
+        return False
+    if _peer_working_in(path, transcript_path) or _holds_git(path):
+        return False
+    repo, inside = root, parts
+    for i in range(len(parts) - 1):  # a submodule or clone holds its own ignore rules and index: git in `root` is blind there
+        if os.path.exists(os.path.join(root, *parts[:i + 1], ".git")):
+            repo, inside = os.path.join(root, *parts[:i + 1]), parts[i + 1:]
+    return holds_only_ignored_output(Path(repo), inside)
 
 
 _GIT_WALK_CAP = 20000

@@ -21,13 +21,52 @@ Non-compliant (warns):
   JmoLogger.Info(this, "plain message")
   JmoLogger.Debug(this, $"plain interpolated {x}")
 """
+import collections
 import json
-import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness_growth_guard import added_lines, pre_edit_text
+
+def pre_edit_text(data, text):
+    """Recover the immediate preimage from the client's result, not from HEAD."""
+    response = data.get("tool_response") or {}
+    original = response.get("originalFile")
+    if isinstance(original, str):
+        return original
+    if response.get("type") == "create":
+        return ""
+    hunks = response.get("structuredPatch")
+    if isinstance(hunks, list) and hunks:
+        lines = text.splitlines()
+        for hunk in reversed(hunks):
+            patch = hunk.get("lines") or []
+            new = [line[1:] for line in patch if line.startswith((" ", "+"))]
+            old = [line[1:] for line in patch if line.startswith((" ", "-"))]
+            start = max(0, hunk["newStart"] - 1)
+            if lines[start:start + len(new)] != new:
+                return None
+            lines[start:start + len(new)] = old
+        return "\n".join(lines) + ("\n" if text.endswith("\n") and lines else "")
+    if data.get("tool_name") == "Edit":
+        inp = data.get("tool_input") or {}
+        old, new = inp.get("old_string"), inp.get("new_string")
+        if isinstance(old, str) and isinstance(new, str) and new:
+            if inp.get("replace_all") or text.count(new) == 1:
+                return text.replace(new, old, -1 if inp.get("replace_all") else 1)
+    return None
+
+
+def added_lines(before, text):
+    """Net-new occurrences, so a rewrite that retains a bad old line does not report it."""
+    remaining = collections.Counter(before.splitlines())
+    added = []
+    for line in text.splitlines():
+        if remaining[line]:
+            remaining[line] -= 1
+        else:
+            added.append(line)
+    return added
+
 
 # Tagged: literal "[Tag]" or interpolated $"[Tag]" or $"{InstrumentationTags.X} ...".
 # Captures the JmoLogger.(Info|Debug)( portion + the first argument shape afterward.

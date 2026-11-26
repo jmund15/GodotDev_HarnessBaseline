@@ -8,8 +8,8 @@ as the writes: a row over a typo'd mandate key or a sha that is not a commit is 
 that later reads as evidence.
 
 Every case runs against a planted repo (git init + one commit) with a planted adaptation.json
-catalog and a planted review ledger, so no case reads the live tree. The documented `/self_evaluate` and
-debugging invocations are fed verbatim.
+catalog and a planted review ledger, so no case reads the live tree. The documented debugging invocation
+is fed verbatim.
 
 Run: python3 .claude/tests/test_escape_log.py
 """
@@ -144,11 +144,11 @@ def build(tmp):
     check("`mandate_keys` over an empty project file lists the coding layer keys",
           {"cq.C", "architecture-sweep"} <= layer_keys, str(sorted(layer_keys)))
 
-    ok = run(["add", "--sha", sha, "--writer", "self_evaluate", "--should-have-caught", "none"], root)
+    ok = run(["add", "--sha", sha, "--writer", "debugging", "--should-have-caught", "none"], root)
     check("an escape row is written for a landed sha", ok.returncode == 0, ok.stderr.strip())
     written = rows_of(root)
     check("one row lands, with the sha, the writer and the key", len(written) == 1
-          and written[0]["sha"] == sha and written[0]["writer"] == "self_evaluate"
+          and written[0]["sha"] == sha and written[0]["writer"] == "debugging"
           and written[0]["shouldHaveCaught"] == "none", json.dumps(written))
     row = written[0] if written else {}
     check("`--paths` defaults to the files the sha changed", row.get("paths") == ["pkg/a.py"], str(row.get("paths")))
@@ -370,15 +370,16 @@ def build(tmp):
           human.returncode == 0 and len([l for l in human.stdout.splitlines() if l.strip()]) == len(rows_of(root)),
           human.stdout)
 
-    # -- the documented /self_evaluate and debugging invocations --------------------------------------
+    # -- the documented debugging invocation; the retired /self_evaluate writer is refused ----------------
     lit = os.path.join(tmp, "literal")
     root7, sha7 = plant(lit)
-    for writer in ("self_evaluate", "debugging"):
-        literal = ["add", "--writer", writer, "--sha", sha7, "--should-have-caught", "none"]
-        got = run(literal, root7, cwd=REPO_ROOT, script=".claude/tools/escape_log.py")
-        check("the %s literal exits 0 against a planted repo" % writer, got.returncode == 0, got.stderr)
-    check("...and both landed, with the planted sha", [r["writer"] for r in rows_of(root7)] ==
-          ["self_evaluate", "debugging"], json.dumps([r["writer"] for r in rows_of(root7)]))
+    literal = ["add", "--writer", "debugging", "--sha", sha7, "--should-have-caught", "none"]
+    got = run(literal, root7, cwd=REPO_ROOT, script=".claude/tools/escape_log.py")
+    check("the debugging literal exits 0 against a planted repo", got.returncode == 0, got.stderr)
+    retired = run(["add", "--writer", "self_evaluate", "--sha", sha7, "--should-have-caught", "none"], root7)
+    check("the retired self_evaluate writer is refused with nothing written",
+          retired.returncode == 2 and [r["writer"] for r in rows_of(root7)] == ["debugging"],
+          retired.stderr + json.dumps([r["writer"] for r in rows_of(root7)]))
 
     # -- a lock that cannot be taken writes nothing -------------------------------------------------
     sys.path.insert(0, os.path.join(HERE, "..", "hooks"))

@@ -12,17 +12,6 @@
     "PYTHONUTF8": "1"
   },
   "hooks": {
-    "InstructionsLoaded": [
-      {
-        "hooks": [
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/log_instruction_loads.py\"",
-            "timeout": 10,
-            "type": "command"
-          }
-        ]
-      }
-    ],
     "PermissionDenied": [
       {
         "hooks": [
@@ -73,16 +62,6 @@
           }
         ],
         "matcher": "Skill"
-      },
-      {
-        "hooks": [
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/memory_hits_logger.py\"",
-            "timeout": 10,
-            "type": "command"
-          }
-        ],
-        "matcher": "mcp__ai-worker__read_files"
       },
       {
         "hooks": [
@@ -338,9 +317,6 @@
   },
   "outputStyle": "terse",
   "permissions": {
-    "ask": [
-      "Bash(bash .claude/scripts/*_sidecar.sh * -t +Bash *)"
-    ],
     "allow": [
       "Bash(git --version:*)",
       "Bash(git add:*)",
@@ -522,7 +498,6 @@
       "Skill(project_subsystems)",
       "Skill(sync_baseline)",
       "Skill(sync_permissions)",
-      "Skill(self_evaluate)",
       "Skill(session_end)",
       "Skill(memory_graph)",
       "Skill(commit_push)",
@@ -533,7 +508,6 @@
       "Skill(doc_architecture)",
       "Skill(doc_retrospective)",
       "Skill(doc_usage)",
-      "Skill(eval_dashboard)",
       "Skill(worklog)"
     ],
     "deny": [

@@ -121,9 +121,9 @@ rejects(lambda d: d["transports"]["codex"].__setitem__(
 # ---- railTierEvidence: a tier above `detailed` names its evidence (instruction_quality §3) ----
 rejects(lambda d: row(d, "opus").pop("railTierEvidence", None), "a condensed row without railTierEvidence is rejected")
 rejects(lambda d: row(d, "opus").__setitem__("railTierEvidence", {"evidence": "guessed"}), "an unknown evidence kind is rejected")
-rejects(lambda d: row(d, "opus").__setitem__("railTierEvidence", {"evidence": "measured", "route": "dispatch.js", "effort": "low"}),
-        "measured evidence without evidenceRef is rejected")
-check("unmeasured evidence validates", mr.rail_evidence_problems(live, mr.Path(HERE).parents[1]) == ([], []))
+rejects(lambda d: row(d, "opus").__setitem__("railTierEvidence", {
+    "evidence": "measured", "evidenceRef": "report.json", "route": "dispatch.js", "effort": "low"}),
+    "measured evidence is a retired kind: nothing in the harness produces it")
 
 # ---- contextSuffix: the one legal value, an accessor by name, the shipped claim and its retire condition ----
 rejects(lambda d: row(d, "sonnet").__setitem__("contextSuffix", "[2m]"), "a contextSuffix other than [1m] is rejected")
@@ -155,88 +155,6 @@ check("only the claude-sonnet-5-5 row declares contextSuffix",
 check("context_suffix_names maps id and alias of a declaring row, restricted to a transport",
       mr.context_suffix_names(live, "anthropic") == {"claude-sonnet-5-5": "[1m]", "sonnet": "[1m]"}
       and mr.context_suffix_names(live, "codex") == {}, mr.context_suffix_names(live, "anthropic"))
-
-import json as _json  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
-_repo = mr.Path(HERE).parents[1]
-_tmp = mr.Path(_tempfile.mkdtemp(prefix="rte_"))
-
-
-def _report(**over):
-    rep = {"phase": "B", "modelId": "claude-opus-5-5", "tier": "condensed", "route": "dispatch.js", "effort": "low",
-           "verdict": "PASS", "treatmentHashes": mr._rail_treatment_hashes(_repo)}
-    rep.update(over)
-    path = _tmp / ("r%d.json" % len(list(_tmp.iterdir())))
-    path.write_text(_json.dumps(rep), encoding="utf-8")
-    return str(path)
-
-
-def _problems(ref, **ev):
-    data = copy.deepcopy(live)
-    row(data, "opus")["railTierEvidence"] = dict({"evidence": "measured", "evidenceRef": ref, "route": "dispatch.js",
-                                                  "effort": "low"}, **ev)
-    return mr.rail_evidence_problems(data, _repo)
-
-
-errs, stale = _problems(_report())
-check("a matching PASS report validates and is fresh", errs == [] and stale == [], (errs, stale))
-check("a missing report file is an error", _problems(str(_tmp / "nope.json"))[0] != [])
-check("a report for another model is an error", _problems(_report(modelId="claude-fable-5-1"))[0] != [])
-check("a report at another effort is an error", _problems(_report(effort="medium"))[0] != [])
-check("a non-PASS report is an error", _problems(_report(verdict="INCONCLUSIVE"))[0] != [])
-errs, stale = _problems(_report(treatmentHashes={"guards/common.md": "0" * 64}))
-check("a report whose guard hashes moved is STALE, not an error", errs == [] and len(stale) == 1, (errs, stale))
-
-def _mrow(probe, stage, verdict, model="claude-opus-5-5", effort="low", runs=("4ee3c043",)):
-    return {"model": model, "effort": effort, "probe": probe, "stage": stage, "verdict": verdict, "runs": list(runs)}
-
-
-def _matrix(rows=None, **over):
-    rows = [_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:condensed", "CARRIED"),
-            _mrow("P9", "necessity", "WEAK"), _mrow("P9", "carriage:condensed", "CARRIED"),
-            _mrow("P1", "necessity", "HELD")] if rows is None else rows
-    rep = {"rows": rows, "scorerSha": "ab" * 32, "builtAt": "2026-09-29T00:00:00+00:00"}
-    rep.update(over)
-    path = _tmp / ("m%d.json" % len(list(_tmp.iterdir())))
-    path.write_text(_json.dumps(rep), encoding="utf-8")
-    return str(path)
-
-
-errs, stale = _problems(_matrix())
-check("an S4 matrix with every NEEDED/WEAK rule CARRIED validates", errs == [], str((errs, stale)))
-check("an S4 matrix with a DROPPED carriage row is refused",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:condensed", "DROPPED")]))[0] != [])
-check("an S4 matrix with an UNDERPOWERED carriage row is refused",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:condensed", "UNDERPOWERED")]))[0] != [])
-check("a NEEDED rule with no carriage row is refused",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P9", "necessity", "WEAK"),
-                         _mrow("P9", "carriage:condensed", "CARRIED")]))[0] != [])
-check("a matrix with no carriage row for this model is refused",
-      _problems(_matrix([_mrow("P1", "necessity", "HELD")]))[0] != [])
-check("a carriage row at another tier is refused",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:minimal", "CARRIED")]))[0] != [])
-check("a carriage row for another model does not count",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"),
-                         _mrow("P5", "carriage:condensed", "CARRIED", model="claude-fable-5-1")]))[0] != [])
-check("a carriage row at another effort does not count",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"),
-                         _mrow("P5", "carriage:condensed", "CARRIED", effort="medium")]))[0] != [])
-check("a carriage row without runs is refused",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:condensed", "CARRIED", runs=())]))[0] != [])
-check("a carriage-only matrix with no necessity row for this model is refused",
-      _problems(_matrix([_mrow("P5", "carriage:condensed", "CARRIED")]))[0] != [])
-check("a necessity row for another effort does not stand in for this model's",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED", effort="medium"),
-                         _mrow("P5", "carriage:condensed", "CARRIED")]))[0] != [])
-check("a DROPPED carriage rerun hidden behind a later CARRIED row is refused",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:condensed", "DROPPED"),
-                         _mrow("P5", "carriage:condensed", "CARRIED")]))[0] != [])
-check("duplicate carriage rows that are all CARRIED validate",
-      _problems(_matrix([_mrow("P5", "necessity", "NEEDED"), _mrow("P5", "carriage:condensed", "CARRIED"),
-                         _mrow("P5", "carriage:condensed", "CARRIED")]))[0] == [])
-check("a matrix without scorerSha is refused", _problems(_matrix(scorerSha=""))[0] != [])
-check("a matrix whose rows are not a list is refused", _problems(_matrix(rows="x"))[0] != [])
-
 
 try:
     mr._validate(copy.deepcopy(live), "live")

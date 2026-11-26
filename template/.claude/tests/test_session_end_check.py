@@ -2,9 +2,9 @@
 """Re-runnable proof for tools/session_end_check.py.
 
 instruction_quality §14: registration proves wiring, not matching. Each case builds a
-synthetic transcript JSONL and, where relevant, a synthetic self-evaluate archive, then
+synthetic transcript JSONL, then
 asserts on stdout and the exit code -- so a regression in the phase table, `--resume`'s
-RESUME AT line, or `--artifacts`' Phase 3 artifact check shows up as a failing case.
+RESUME AT line or the final-stage receipt checks shows up as a failing case.
 
     python3 .claude/tests/test_session_end_check.py
 """
@@ -46,28 +46,6 @@ def write_transcript(tmpdir, lines, sid=SID):
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         for rec in lines:
             fh.write(json.dumps(rec) + "\n")
-    return path
-
-
-def archive_entry(session_id, entry_id):
-    return {
-        "session_id": session_id,
-        "id": entry_id,
-        "title": "fixture",
-        "date": "2026-09-12",
-        "outcome": "clean",
-        "pattern": None,
-        "domains": ["meta"],
-        "corrections": [],
-    }
-
-
-def write_archive(tmpdir, session_ids, name="archive.json"):
-    path = os.path.join(tmpdir, name)
-    entries = [archive_entry(sid, i) for i, sid in enumerate(session_ids)]
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"Self_Evaluate_Themes": {"patterns": {"A": "fixture"}},
-                   "structured_entries": entries, "legacy_entries": []}, fh)
     return path
 
 
@@ -143,8 +121,6 @@ def line_with(out, needle):
 PARTIAL_LINES = [
     tool_use("read", ".claude/commands/session_audit.md"),
     tool_use("bash", "cat .claude/commands/autolearn.md"),
-    tool_use("read", ".claude/commands/self_evaluate.md"),
-    tool_use("read", ".claude/commands/routing_audit.md"),
     tool_use("bash", "python3 .claude/scripts/roadmap_atlas.py --render --json"),
     tool_use("read", ".claude/commands/regression_gate.md"),
     tool_use("read", ".claude/commands/worklog.md"),
@@ -171,12 +147,6 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         partial_path = write_transcript(tmp, PARTIAL_LINES, sid=SID)
         all_path = write_transcript(tmp, ALL_MANDATORY_LINES, sid=OTHER_SID)
-        archive_hit = write_archive(tmp, [OTHER_SID], name="archive_hit.json")
-        archive_miss = write_archive(tmp, ["some-other-session"], name="archive_miss.json")
-        archive_ledger = write_archive(tmp, ["some-other-session"], name="archive_ledger.json")
-        with open(archive_ledger[:-5] + ".jsonl", "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(archive_entry(OTHER_SID, 3)) + "\n")
-
         # --- default mode: missing mandatory phases -> exit 1, phases printed -----------
         rc, out = run(["--transcript", partial_path])
         check("default mode exits 1 on missing mandatory phases", rc == 1)
@@ -218,25 +188,10 @@ def main():
               detail=out[-300:])
 
         # --- --resume: nothing missing (artifact present) -> the none-branch sentence -------
-        rc, out = run(["--transcript", all_path, "--resume", "--archive", archive_hit])
+        rc, out = run(["--transcript", all_path, "--resume"])
         check("--resume exits 0 when nothing is missing", rc == 0)
         check("--resume prints the none-branch sentence",
               "RESUME AT: none" in out and "receipts are current" in out)
-
-        # --- --artifacts: Phase 3 receipted but archive has no matching session_id ------------
-        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_miss])
-        check("--artifacts exits 1 on a missing Phase 3 artifact", rc == 1)
-        check("--artifacts flags Phase 3 artifact missing", "[artifact-missing]" in out)
-
-        # --- --artifacts: Phase 3 receipted and archive has the matching session_id ------------
-        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
-        check("--artifacts exits 0 when the archive holds this session's row", rc == 0, detail=out[-400:])
-        check("--artifacts reports completed self-evaluate", "[completed]" in line_with(out, "self_evaluate"))
-
-        # --- --artifacts: Phase 3 accepts a target row held only in the bounded ledger -------
-        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_ledger])
-        check("--artifacts accepts a ledger-only Phase 3 row", rc == 0,
-              detail=out[-400:])
 
         # --- an earlier baseline pull left a path unproven: the close names it and fails -------------
         left, record = Path(tmp, "pulled.py"), Path(tmp, ".claude", "logs", "baseline_pull_proof.json")
@@ -248,32 +203,24 @@ def main():
             record.write_text(json.dumps({"ts": 0, "paths": {"pulled.py": {"sha": digest, "result": result}}}),
                               encoding="utf-8")
         pulled("red")
-        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
-        check("--artifacts fails while a pulled path's proof is still red", rc == 1
+        rc, out = run(["--transcript", all_path])
+        check("the close fails while a pulled path's proof is still red", rc == 1
               and "unresolved baseline pull" in out and "pulled.py" in out, detail=out[-400:])
-        rc, out = run(["--transcript", all_path, "--resume", "--archive", archive_hit])
+        rc, out = run(["--transcript", all_path, "--resume"])
         check("--resume names the unresolved pull and still exits 0", rc == 0 and "pulled.py" in out, detail=out[-400:])
         left.write_text("x = 2\n", encoding="utf-8")
-        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
+        rc, out = run(["--transcript", all_path])
         check("a pulled path edited after its pull is not the pulled tree", rc == 0 and "unresolved baseline pull" not in out,
               detail=out[-400:])
         left.write_text("x = 1\n", encoding="utf-8")
         pulled("green")
-        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
+        rc, out = run(["--transcript", all_path])
         check("a green pulled path leaves the close clean", rc == 0 and "unresolved baseline pull" not in out,
               detail=out[-400:])
         record.unlink()
 
-        # --- --resume --artifacts: a receipted phase whose artifact is missing moves RESUME AT ----
-        rc, out = run(["--transcript", all_path, "--resume", "--artifacts", "--archive", archive_miss])
-        check("--resume points at Phase 3 when its artifact is missing", "RESUME AT: 3" in out,
-              detail=line_with(out, "RESUME AT"))
-
-    # --- the default archive path is project-anchored, not cwd-relative ---------------
     sys.path.insert(0, os.path.dirname(TOOL))
     import session_end_check  # noqa: E402
-    check("DEFAULT_ARCHIVE is absolute (anchored like --repo)",
-          os.path.isabs(session_end_check.DEFAULT_ARCHIVE), detail=session_end_check.DEFAULT_ARCHIVE)
 
     with tempfile.TemporaryDirectory() as home:
         repo = os.path.join(home, "repo")
@@ -309,13 +256,9 @@ def main():
         checked_input = Path(tmp) / "checked-input.txt"
         upstream_evidence = Path(tmp) / "upstream-result.json"
         downstream_evidence = Path(tmp) / "downstream-result.json"
-        selected_archive_row = Path(tmp) / "selected-self-eval.json"
-        unrelated_archive = Path(tmp) / "append-only-archive.jsonl"
         checked_input.write_text("v1", encoding="utf-8")
         upstream_evidence.write_text("{}", encoding="utf-8")
         downstream_evidence.write_text("{}", encoding="utf-8")
-        selected_archive_row.write_text("{}", encoding="utf-8")
-        unrelated_archive.write_text("{}\n", encoding="utf-8")
 
         upstream = checker.make_receipt(
             SID, "session_digest", "completed", [str(checked_input)],
@@ -334,13 +277,6 @@ def main():
               checker.receipt_status(upstream, SID, receipts) == "stale")
         check("a changed upstream input invalidates dependent phase receipts",
               checker.receipt_status(downstream, SID, receipts) == "stale")
-
-        stable = checker.make_receipt(
-            SID, "self_evaluate", "completed", [str(selected_archive_row)],
-            [str(selected_archive_row)], "selected row verified")
-        unrelated_archive.write_text("{}\n{\"session_id\":\"peer\"}\n", encoding="utf-8")
-        check("an unrelated archive append does not stale selected-row evidence",
-              checker.receipt_status(stable, SID, {"self_evaluate": stable}) == "completed")
 
     # --- stale receipts are handled by their delta: named, refreshed, conclusion-bound -----
     with tempfile.TemporaryDirectory() as tmp:
@@ -369,13 +305,12 @@ def main():
 
         record_pair()
         r_in.write_text("v2", encoding="utf-8")
-        for flag in ("--resume", "--artifacts"):
-            _, out = run(["--transcript", rpath, flag])
-            line = line_with(out, "(session_digest)")
-            check("A1 " + flag + " names the changed input on a stale receipt",
-                  "[stale]" in line and "changed: inputs digest-input.txt" in line, detail=line)
-            check("A1 " + flag + " names only changed declared paths",
-                  "evidence" not in line and "digest-result.json" not in line, detail=line)
+        _, out = run(["--transcript", rpath, "--resume"])
+        line = line_with(out, "(session_digest)")
+        check("A1 --resume names the changed input on a stale receipt",
+              "[stale]" in line and "changed: inputs digest-input.txt" in line, detail=line)
+        check("A1 --resume names only changed declared paths",
+              "evidence" not in line and "digest-result.json" not in line, detail=line)
         r_in.unlink()
         _, out = run(["--transcript", rpath, "--resume"])
         line = line_with(out, "(session_digest)")
@@ -443,14 +378,10 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         cold_sid = "cold0000-0000-0000-0000-000000000003"
         cold_path = write_transcript(tmp, ALL_MANDATORY_LINES, sid=cold_sid)
-        cold_archive = write_archive(tmp, ["peer-session"], name="cold-archive.json")
-        with open(cold_archive[:-5] + ".jsonl", "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(archive_entry(cold_sid, 9)) + "\n")
         recorded = {}
         dependency_map = {
             "session_audit": ["session_digest"],
             "autolearn": ["session_digest", "session_audit"],
-            "self_evaluate": ["session_digest", "session_audit", "autolearn"],
             "update_roadmap": ["roadmap_atlas"],
         }
         for _, stem, mandatory in checker.PHASES:
@@ -477,14 +408,10 @@ def main():
             recorded[stem] = (rc, out)
         check("cold replay records every precommit phase without shared state",
               all(rc == 0 for rc, _ in recorded.values()), detail=repr(recorded))
-        rc, out = run(["--transcript", cold_path, "--artifacts", "--archive", cold_archive])
+        rc, out = run(["--transcript", cold_path])
         check("cold replay reaches a complete precommit closeout", rc == 0, detail=out[-500:])
-        with open(cold_archive[:-5] + ".jsonl", "a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(archive_entry("unrelated-session", 10)) + "\n")
-        rc, out = run(["--transcript", cold_path, "--resume", "--artifacts",
-                       "--archive", cold_archive])
-        check("cold replay ignores an unrelated archive append",
-              rc == 0 and "RESUME AT: none" in out, detail=out[-500:])
+        rc, out = run(["--transcript", cold_path, "--resume"])
+        check("cold replay resumes at none", rc == 0 and "RESUME AT: none" in out, detail=out[-500:])
 
         # --- final stage: a completed commit_push with the branch still ahead of its upstream -------
         # Phase 7 invokes /commit_push, which pushes. A receipt recorded after local commits alone
@@ -515,11 +442,9 @@ def main():
         def run_final():
             r = subprocess.run([sys.executable, '-B', "-X", "utf8", TOOL, "--transcript", final_path,
                                 "--session", final_sid, "--receipts", str(receipts_dir), "--repo", repo,
-                                "--artifacts", "--archive", archive_hit, "--stage", "final"],
+                                "--stage", "final"],
                                capture_output=True, text=True, encoding="utf-8", timeout=60)
             return r.returncode, r.stdout
-        # archive_hit holds OTHER_SID, not final_sid; point Phase 3 at a row for this sid.
-        archive_hit = write_archive(tmp, [final_sid], name="archive_final.json")
         rc, out = run_final()
         check("final stage fails a completed commit_push while the branch is ahead of its upstream",
               rc == 1 and "[unpushed]" in line_with(out, "commit_push"), detail=out[-500:])
@@ -557,7 +482,7 @@ def main():
         git(replay_repo, "fetch", "-q")
         r = subprocess.run([sys.executable, '-B', "-X", "utf8", TOOL, "--transcript", final_path,
                             "--session", final_sid, "--receipts", str(receipts_dir), "--repo", replay_repo,
-                            "--artifacts", "--archive", archive_hit, "--stage", "final"],
+                            "--stage", "final"],
                            capture_output=True, text=True, encoding="utf-8", timeout=60)
         check("...and passes when the upstream carries every local commit as a replayed patch",
               r.returncode == 0 and "[completed]" in line_with(r.stdout, "commit_push"), detail=r.stdout[-500:])
@@ -565,7 +490,7 @@ def main():
         git(replay_repo, "commit", "-q", "-am", "three")
         r = subprocess.run([sys.executable, '-B', "-X", "utf8", TOOL, "--transcript", final_path,
                             "--session", final_sid, "--receipts", str(receipts_dir), "--repo", replay_repo,
-                            "--artifacts", "--archive", archive_hit, "--stage", "final"],
+                            "--stage", "final"],
                            capture_output=True, text=True, encoding="utf-8", timeout=60)
         check("...but not when one local change has no replay upstream",
               r.returncode == 1 and "[unpushed]" in line_with(r.stdout, "commit_push"), detail=r.stdout[-500:])
@@ -655,7 +580,7 @@ def main():
             check("a gated skip on a %s predicate with no --reason exits 2" % value, rc == 2, detail=out)
             rc, out = record_skip("autolearn", predicate_file("autolearn", value))
             check("...and on a %s predicate whose reason only restates it" % value, rc == 2, detail=out)
-        rc, out = record_skip("autolearn", predicate_file("routing_audit", False, "other.json"))
+        rc, out = record_skip("autolearn", predicate_file("regression_gate", False, "other.json"))
         check("a predicate file that names another stem exits 2", rc == 2, detail=out)
         rc, out = record_skip("autolearn", str(Path(tmp) / "absent.json"))
         check("a missing predicate file exits 2", rc == 2, detail=out)
@@ -664,32 +589,32 @@ def main():
         rc, out = record_skip("autolearn", predicate_file("autolearn", True), reason="the digest had friction but no action")
         check("a true predicate plus an in-body reason records", rc == 0, detail=out)
         check("...and the final check reads it as skipped", "[skipped]" in phase_line("autolearn"), detail=phase_line("autolearn"))
-        rc, out = record_skip("routing_audit", predicate_file("routing_audit", False))
+        rc, out = record_skip("regression_gate", predicate_file("regression_gate", False))
         check("a false predicate records a skip of a mandatory gated phase", rc == 0, detail=out)
-        check("...and the final check passes it", "[skipped]" in phase_line("routing_audit"), detail=phase_line("routing_audit"))
+        check("...and the final check passes it", "[skipped]" in phase_line("regression_gate"), detail=phase_line("regression_gate"))
         for value in (True, None, "raise"):
-            line = phase_line("routing_audit", {"routing_audit": value})
+            line = phase_line("regression_gate", {"regression_gate": value})
             check("a false-predicate skip whose predicate now reads %s is stale on resume" % value,
                   "[stale-skip]" in line, detail=line)
-        rc, out = run(["--transcript", gate_path, "--stage", "final"], {"routing_audit": True})
-        check("...and the final check fails on it", rc == 1 and "[stale-skip]" in line_with(out, "(routing_audit)"),
+        rc, out = run(["--transcript", gate_path, "--stage", "final"], {"regression_gate": True})
+        check("...and the final check fails on it", rc == 1 and "[stale-skip]" in line_with(out, "(regression_gate)"),
               detail=out[-500:])
         calls = Path(tmp) / "seam-calls.jsonl"
         line = phase_line("autolearn", {"autolearn": True})
         run(["--transcript", gate_path, "--resume"], {"autolearn": True}, calls)
         asked = [json.loads(l) for l in calls.read_text(encoding="utf-8").splitlines()] if calls.exists() else []
         check("a skip a true predicate already ran stays skipped: only false-predicate skips are re-evaluated",
-              "[skipped]" in line and asked == [["routing_audit"]], detail=line + " " + repr(asked))
+              "[skipped]" in line and asked == [["regression_gate"]], detail=line + " " + repr(asked))
         rc, out = record_skip("session_digest")
         check("a skipped mandatory phase that is not gated is an invalid-skip",
               "[invalid-skip]" in phase_line("session_digest"), detail=phase_line("session_digest"))
 
         receipts_dir = Path(tmp) / (gate_sid + ".receipts")
-        receipt = json.loads((receipts_dir / "routing_audit.json").read_text())
+        receipt = json.loads((receipts_dir / "regression_gate.json").read_text())
         check("the receipt stores the predicate object", receipt.get("predicate", {}).get("value") is False,
               detail=repr(receipt.get("predicate")))
         def hand_edit(stem, edit):
-            edited = json.loads((receipts_dir / "routing_audit.json").read_text())
+            edited = json.loads((receipts_dir / "regression_gate.json").read_text())
             edited["phase"] = stem
             edit(edited)
             (receipts_dir / (stem + ".json")).write_text(json.dumps(edited))
@@ -735,8 +660,7 @@ def main():
         blocked = checker.make_receipt(blocked_sid, "hot_set_review", "blocked", [str(evidence)], [str(evidence)],
                                        "review seat unavailable")
         (Path(tmp) / (blocked_sid + ".receipts") / "hot_set_review.json").write_text(json.dumps(blocked))
-        archive = write_archive(tmp, [blocked_sid], name="archive_blocked.json")
-        rc, out = run(["--transcript", blocked_path, "--artifacts", "--archive", archive])
+        rc, out = run(["--transcript", blocked_path])
         check("a blocked hot_set_review does not fail the close",
               rc == 0 and "[blocked]" in line_with(out, "hot_set_review"), detail=out[-500:])
 

@@ -8,7 +8,7 @@ Audit recent doc-workflow output for write_doc rule violations. Advisory; does N
 ## When to use
 
 - After an idea or architecture brainstorm run, `/doc_full`, `/doc_architecture` or `/doc_retrospective` completes — verify the output didn't drift from the system-prompt rules.
-- Periodically as a drift watch — combine with `/eval_dashboard` cadence.
+- Periodically as a drift watch.
 - After a `models.yaml` (ai-worker host) or `write_doc.*.md` change to confirm the change took effect on real output. This audit itself is Grep-only over vault docs — it runs fine with ai-worker offline.
 
 ## Procedure

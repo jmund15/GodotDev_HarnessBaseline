@@ -6,7 +6,6 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import sys
 import tempfile
 import unittest
@@ -14,11 +13,11 @@ import urllib.error
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / ".claude" / "scripts" / "freesound_fetch.py"
-CLI_USAGE = ROOT / ".claude" / "tools" / "cli_usage.py"
 
 CC0 = "http://creativecommons.org/publicdomain/zero/1.0/"
 BY_NC = "http://creativecommons.org/licenses/by-nc/4.0/"
@@ -56,8 +55,7 @@ def plant_tool(root):
     tools = root / ".claude" / "tools"
     scripts.mkdir(parents=True)
     tools.mkdir(parents=True)
-    shutil.copyfile(SCRIPT, scripts / SCRIPT.name)
-    shutil.copyfile(CLI_USAGE, tools / "cli_usage.py")
+    copy_closure(root / ".claude", "scripts/" + SCRIPT.name)
     return scripts / SCRIPT.name
 
 

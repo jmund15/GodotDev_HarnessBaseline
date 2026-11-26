@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -54,8 +55,7 @@ def main() -> int:
     claude = root / ".claude"
     (claude / "hooks").mkdir(parents=True)
     (claude / "tools").mkdir(parents=True)
-    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py", "cli_usage.py", "lock_merge.py"):
-        shutil.copy(_TOOLS_DIR / name, claude / "tools" / name)
+    copy_closure(claude, "tools/baseline_sync.py")
     shutil.copy(base_path, claude / "settings.base.json")
     (claude / "settings.project.json").write_text("{}\n", encoding="utf-8")
     (claude / "skills" / "project_subsystems").mkdir(parents=True)

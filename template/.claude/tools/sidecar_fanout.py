@@ -167,7 +167,8 @@ CITER COVERAGE. Process guard, advisory until plan C's live proof permits promot
 Beside tool-profile brief validation, citer_coverage validates meta subjects' current
 sweeps without producing them. plan_check.md Phase 2 owns the materialization step.
 
-RESULT -- a job that wrote its report to `<out-dir>/<label>.md` during the run keeps it as the delivery,
+RESULT -- a job that wrote its report to `<out-dir>/<label>.md` since its first launch (a usage-limit continuation
+included) keeps it as the delivery,
 and a differing final message is set aside as `<label>.reply.md` (the result's `reply`). Any other job
 that ends has its final message (the stdout `result` event its `-R` record summarizes) written to
 `<label>.md`, named as dispatch.js names a spill file, so a child needs no Write tool to return a full
@@ -175,8 +176,8 @@ deliverable; the result's `deliveryFlag` warns when that message answered a late
 owns the extraction.
 
 CONCURRENCY -- more than one flat job allowed at once (no --max-parallel, or one above 1) hands every child the single-flight
-guard dispatch.js injects, as a `-C` file rendered from `guards/single_flight.json` (the shell or
-no-shell wording by the job's resolved built-ins). A chain lane instead gets dispatch_chains.js's lane
+guard dispatch.js injects, as a `-C` file rendered from `guards/single_flight.json` (the writer or
+read-only wording by whether the job's resolved built-ins hold a writing tool). A chain lane instead gets dispatch_chains.js's lane
 guard: it owns its lane (a chain's `exclusiveResource`, such as its worktree, so it may build and run its
 own tests), and only the object's `sharedSingleFlight` list is barred.
 
@@ -269,6 +270,7 @@ except ImportError:  # a project with no UI round has no such refusals
 import task_record  # noqa: E402 -- the session's task record: the acceptance test every job carries by default
 
 GUARD_SOURCE = ROOT / "guards" / "single_flight.json"
+WRITE_BUILTINS = frozenset(("Edit", "Write", "NotebookEdit"))   # dispatch.js `canWrite`'s list
 
 # A cap on concurrent child CLIs is the registry's `transports.<name>.maxChildren` (count and basis),
 # not `limits.concurrency`: that field is a vendor API/token ceiling (or null). A transport without one
@@ -1847,10 +1849,10 @@ def job_builtins(job):
         tools_csv="" if (add or remove) else str(job.get("toolsCsv") or ""))[0]["builtins"]
 
 
-def concurrency_guard_text(shell):
+def concurrency_guard_text(writes):
     """The single-flight guard dispatch.js injects, rendered from its one source file."""
     src = json.loads(GUARD_SOURCE.read_text(encoding="utf-8"))
-    return (src["header"] + "\n" + src["rule"] + (src["withShell"] if shell else src["noShell"])
+    return (src["header"] + "\n" + src["rule"] + (src["writer"] if writes else src["readOnly"])
             + src["stop"] + "\n")
 
 
@@ -1860,10 +1862,10 @@ def add_concurrency_guard(planned, jobs, max_parallel, out_dir):
         return planned
     guarded = []
     for (label, argv, out_path), job in zip(planned, jobs):
-        shell = "Bash" in job_builtins(normalize_job(job))
-        path = Path(out_dir) / ("single_flight_guard%s.md" % ("" if shell else "_noshell"))
+        writes = bool(WRITE_BUILTINS & set(job_builtins(normalize_job(job))))
+        path = Path(out_dir) / ("single_flight_guard%s.md" % ("" if writes else "_readonly"))
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(concurrency_guard_text(shell))
+            fh.write(concurrency_guard_text(writes))
         at = argv.index("-P") if "-P" in argv else len(argv)
         guarded.append((label, argv[:at] + ["-C", _posix(path)] + argv[at:], out_path))
     return guarded
@@ -2387,6 +2389,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     # `waves` (a `Waves`, or None when no plan reads a window) picks which queued unit starts next and when a
     # job waits, moves or stops; every call into it runs under `lock`, and a job end wakes the workers waiting on it.
     results = {}
+    job_began = {}  # label -> when its first attempt launched; a continuation keeps the report an earlier attempt wrote
     if not planned:
         return results
     parent_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
@@ -2490,7 +2493,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
             child_env["SIDECAR_FULL_WINDOW"] = "1"
         if label in CACHE_TTL:
             child_env["SIDECAR_CACHE_TTL"] = CACHE_TTL[label]
-        since = time.time()
+        since = job_began.setdefault(label, time.time())
         if True:
             print(f"[dispatch] {label}: {' '.join(argv[:6])} ...", flush=True)
             # Built from the same (out_dir, label) pair as `out_path`, not by substring surgery on
@@ -3810,6 +3813,9 @@ def finish_review(args, jobs, results, out_dir, data, selection, saved_review, t
     applied = sidecar_completion.publish(originals, report_path, out_dir / 'claims.json',
                                          errors=[] if review['status'] == 'complete' else
                                          [f"review coverage is {review['status']}"])
+    for directory in args.workflow_dir:
+        # The Stop audit reads a native run's verdict from its own directory: the close's claims, verdict and report path.
+        post_check._write(Path(directory) / 'review_close.json', applied)
     publish_review_children(review, applied, results, out_dir, args.root or REPO, fold)
     by_id = {row['id']: row for row in applied['claims']}
     for source in review['sources']:

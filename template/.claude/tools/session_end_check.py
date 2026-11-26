@@ -19,7 +19,7 @@ while the unpushed range holds a commit whose Claude-Session trailer is not this
 A dependency binds to the parent's conclusion (`_conclusion_hash`): phase, status, reason, the refreshes
 that changed more than inputs, and the evidence snapshot. A parent refreshed for an input-only change
 leaves its dependents current; changed evidence stales them. A dependency hash stored as the old
-whole-receipt hash still reads current. `--resume` and `--artifacts` name each stale receipt's delta
+whole-receipt hash still reads current. `--resume` names each stale receipt's delta
 (`changed:` inputs, evidence, dependencies; `missing:` files that no longer exist).
 --refresh <stem> --reason "<what the delta changed>" re-snapshots that receipt's declared inputs and
 evidence (extra --input/--evidence paths join the set), re-binds its dependencies, keeps its phase,
@@ -41,8 +41,6 @@ PHASES = [
     ("0   Session digest",        "session_digest",        True),
     ("1   Session audit",         "session_audit",         True),
     ("2   Autolearn",             "autolearn",             True),
-    ("3   Self-evaluate",         "self_evaluate",         True),
-    ("3.5 Routing audit",         "routing_audit",         True),
     ("3.6 Orchestration metrics", "orchestration_metrics", False),
     ("3.7 Hot-set review",        "hot_set_review",        False),
     ("4   Sync subsystems",       "sync_subsystems",       False),
@@ -62,15 +60,14 @@ PROJECT_COMMAND_PHASES = frozenset({"harness_prune"})
 # "artifact missing", a false red the exit code cannot distinguish from a real gap.
 _PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_ARCHIVE = os.path.join(_PROJECT_DIR, ".claude", "self_evaluate_archive.json")
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 _HOOKS_DIR = os.path.join(os.path.dirname(_TOOLS_DIR), 'hooks')
 if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
-from self_eval_archive_store import find_session  # noqa: E402
 import close_predicates  # noqa: E402
 import worklog  # noqa: E402
 
@@ -157,14 +154,6 @@ def stems_seen(path):
 def session_id_of(path):
     """Claude Code names transcripts `<session-id>.jsonl`."""
     return os.path.splitext(os.path.basename(path))[0]
-
-
-def phase3_artifact_ok(archive_path, sid):
-    """Phase 3 artifact check: the effective archive contains THIS session."""
-    try:
-        return find_session(archive_path, sid) is not None
-    except (OSError, ValueError):
-        return False
 
 
 def _file_hash(path):
@@ -580,7 +569,7 @@ def worklog_session_lines(sid, repo):
         ['  - %s — %s' % (title, context) for title, context in items]
 
 
-def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit', repo=None):
+def render(path, sid, receipts=None, stage='precommit', repo=None):
     """Print observation and receipt status separately; every phase needs a disposition."""
     observations, receipts = phase_observations(path), receipts or {}
     print('session_end evidence — ' + sid)
@@ -603,13 +592,11 @@ def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit',
         elif status == 'skipped' and mandatory and not (
                 stem == 'commit_push' and repo and unpublished_peer_sessions(repo, path)):
             status = 'invalid-skip'
-        if artifacts and stem == 'self_evaluate' and status == 'completed' and not phase3_artifact_ok(archive_path, sid):
-            status = 'artifact-missing'
         # A commit receipt is complete only when the push landed; an unreadable count is not a push.
         if stem == 'commit_push' and status == 'completed' and repo and unpushed_commits(repo) != 0:
             status = 'unpushed'
         seen = observations[stem]
-        note = delta_text(receipt_delta(receipt, sid, receipts), repo or os.getcwd()) if status == 'stale' else ''
+        note = delta_text(receipt_delta(receipt, sid, receipts), repo or harness_root()) if status == 'stale' else ''
         print(f'  [{status}] {label} ({stem}) — accessed={seen["accessed"]}, invoked={seen["invoked"]}'
               + (' — ' + note if note else ''))
         # A non-mandatory phase (Phase 8) may end blocked without failing the close.
@@ -632,13 +619,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--session", default=os.environ.get("CLAUDE_CODE_SESSION_ID") or None,
                     help="exact session id or unique prefix (default: active session; no newest fallback)")
-    ap.add_argument("--repo", default=os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    ap.add_argument("--repo", default=os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())
     ap.add_argument("--transcript", help="path to a transcript JSONL (proofs only; skips discovery)")
-    ap.add_argument("--archive", default=DEFAULT_ARCHIVE, help="self-evaluate archive path")
     ap.add_argument("--resume", action="store_true",
                      help="print the table + RESUME AT line; always exits 0")
-    ap.add_argument("--artifacts", action="store_true",
-                     help="also check Phase 3's archive artifact; exit 1 on any gap")
     ap.add_argument('--stage', choices=('precommit', 'final'), default='precommit')
     ap.add_argument('--receipts', help='session receipt directory')
     ap.add_argument('--record', choices=[stem for _, stem, _ in PHASES])
@@ -702,7 +686,7 @@ def main():
             return 2
         print('Recorded ' + a.record + ': ' + a.status)
         return 0
-    missing, resume_label = render(path, sid, a.archive, a.resume or a.artifacts, receipts, a.stage, a.repo)
+    missing, resume_label = render(path, sid, receipts, a.stage, a.repo)
     stuck = unresolved_pull(a.repo)
     if stuck:
         print('unresolved baseline pull: ' + ', '.join(stuck))

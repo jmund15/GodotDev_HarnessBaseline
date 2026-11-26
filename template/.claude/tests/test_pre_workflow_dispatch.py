@@ -72,9 +72,12 @@ def capacity_cache(path, status):
     failed probe, so no other plan has room and no live probe runs."""
     now = time.time()
     cache = {}
+    # A blocking reading is served only when observed within 2 s of the read (else the reader probes live, and a
+    # spawn on a loaded machine takes longer than that); the reader accepts a stamp up to 300 s ahead of its clock.
+    observed = now + 120
     for name, cfg in REGISTRY["transports"].items():
         base = {"schemaVersion": 1, "transport": name, "costModel": cfg.get("costModel"),
-                "sourceKind": "live", "observedAt": iso(now)}
+                "sourceKind": "live", "observedAt": iso(observed)}
         if name == "anthropic":
             spent = status == "exhausted"
             band = "Exhausted" if spent else "On pace"
@@ -119,7 +122,7 @@ class World:
             os.environ, HOME=str(self.home), USERPROFILE=str(self.home), CLAUDE_PROJECT_DIR=str(REPO),
             CLAUDE_CODE_TRANSPORT="anthropic", PROVIDER_CAPACITY_CACHE=str(cache),
             HARNESS_HOOK_STATE_DIR=self.state, HARNESS_PROVIDER_GUARD_LOG=str(self.root / "guard.jsonl"))
-        for name in ("CLAUDE_CODE_SIDECAR", "HARNESS_WORKFLOW_ARGS_OWNER", "CLAUDE_CONFIG_DIR"):
+        for name in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT", "HARNESS_WORKFLOW_ARGS_OWNER", "CLAUDE_CONFIG_DIR"):
             self.env.pop(name, None)
 
     def payload(self, **fields):
@@ -185,7 +188,7 @@ def real_payload_cases():
         "await agent(p"), proc.stdout[:300])
 
     delegate = World("exhausted", False, "pwdsub01")
-    proc = delegate.run(delegate.payload(transcript_path="C:/x/subagents/agent-1.jsonl"))
+    proc = delegate.run(delegate.payload(agent_id="agent-1"))  # a native subagent's payload carries agent_id (in_delegate)
     reason = reason_of(proc)
     check("a delegate's dispatch denies as orchestrator-only and names no orchestrator-side precondition",
           classify(proc) == "deny" and "orchestrator-only" in reason and CAPACITY not in reason,
@@ -199,15 +202,15 @@ def real_payload_cases():
 
     engine = clean.root / ".claude" / "workflows" / "engine.js"
     engine.parent.mkdir(parents=True)
-    engine.write_bytes(b"// READONLY-FANOUT-ENGINE\r\nconst x = 1;\r\n")
+    engine.write_bytes(b"// engine\r\nconst x = 1;\r\n")
     proc = clean.run(clean.payload(tool_input={"scriptPath": str(engine), "args": {}}))
-    check("a read-only engine dispatch rewrites CRLF to LF through the lf member",
+    check("an engine dispatch rewrites CRLF to LF through the lf member",
           classify(proc) == "allow" and b"\r" not in engine.read_bytes(), (proc.stdout[:300], proc.stderr[-300:]))
 
     blocked = World("exhausted", False, "pwdarm002")
     engine = blocked.root / ".claude" / "workflows" / "engine.js"
     engine.parent.mkdir(parents=True)
-    engine.write_bytes(b"// READONLY-FANOUT-ENGINE\r\nconst x = 1;\r\n")
+    engine.write_bytes(b"// engine\r\nconst x = 1;\r\n")
     proc = blocked.run(blocked.payload(tool_input={"scriptPath": str(engine), "args": {}}))
     check("a denied engine dispatch still gets its CRLF normalized (the permission handler reads it)",
           b"\r" not in engine.read_bytes(), engine.read_bytes())
@@ -409,7 +412,6 @@ def in_process_cases():
     check("the six Workflow|Agent members are wired, the args-file expander first and the provider guard last",
           names == ["expand_args_file", "fill_efforts", "subagent_dispatch_guard", "workflow_script_lf_guard",
                     "dispatch_mechanism_guard", "workflow_provider_guard"], names)
-    check("no hook is left unwired but the read-only marker", pwd.UNWIRED == ("readonly_marker_arm",), pwd.UNWIRED)
 
 
 def args_file_cases():

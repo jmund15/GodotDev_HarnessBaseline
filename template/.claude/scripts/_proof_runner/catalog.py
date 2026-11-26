@@ -197,7 +197,7 @@ class View:
 
     def text(self, rel):
         if self.tree is not None:
-            return self._git(["show", self.tree + ":" + rel])
+            return self._git(["show", self.tree + ":./" + rel])
         try:
             with open(self.full(rel), "rb") as fh:
                 return fh.read().decode("utf-8", "replace")
@@ -353,13 +353,13 @@ def behavior_plan(repo_root, paths=None):
     tools = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'tools')
     sys.path.insert(0, tools)
     try:
-        import extract_numbers
+        import rule_units
     except ImportError:
         return {"proofs": [], "cases": {}, "dependencies": {},
                 "unresolved": [{"reason": "behavior checker unavailable"}]}
     finally:
         sys.path.remove(tools)
-    return extract_numbers.behavior_proofs(repo_root, paths)
+    return rule_units.behavior_proofs(repo_root, paths)
 
 
 class Selection(NamedTuple):
