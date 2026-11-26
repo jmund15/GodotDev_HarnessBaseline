@@ -18,19 +18,6 @@ check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
 
 
-def archive_entry(session_id, entry_id=1):
-    return {
-        'session_id': session_id,
-        'id': entry_id,
-        'title': 'fixture',
-        'date': '2026-09-12',
-        'outcome': 'clean',
-        'pattern': None,
-        'domains': ['meta'],
-        'corrections': [],
-    }
-
-
 class CloseEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -47,7 +34,7 @@ class CloseEvidenceTests(unittest.TestCase):
                 'file_path': '.claude/commands/' + stem + '.md'}}]}}
             for _, stem, _ in check.PHASES])
         with contextlib.redirect_stdout(io.StringIO()):
-            missing, _ = check.render(str(self.transcript), 'own-session', str(self.root / 'archive.json'), False)
+            missing, _ = check.render(str(self.transcript), 'own-session')
         self.assertTrue(missing, 'Opening all command files is not a completion receipt')
 
     def test_user_embedded_tool_blocks_are_not_actual_calls(self):
@@ -215,37 +202,11 @@ class CloseEvidenceTests(unittest.TestCase):
         self.assertEqual('blocked', check.receipt_status(receipt, 'own-session'))
 
 
-    def test_phase3_artifact_accepts_a_ledger_only_session(self):
-        archive = self.root / 'archive.json'
-        archive.write_text(json.dumps({
-            'Self_Evaluate_Themes': {'patterns': {'A': 'fixture'}},
-            'structured_entries': [],
-            'legacy_entries': [],
-        }), encoding='utf-8')
-        (self.root / 'archive.jsonl').write_text(
-            json.dumps(archive_entry('own-session')) + '\n', encoding='utf-8')
-        self.assertTrue(check.phase3_artifact_ok(str(archive), 'own-session'))
-
-    def test_phase3_artifact_rejects_a_malformed_selected_session(self):
-        archive = self.root / 'archive.json'
-        archive.write_text(json.dumps({
-            'Self_Evaluate_Themes': {'patterns': {'A': 'fixture'}},
-            'structured_entries': [{'id': 900, 'session_id': 'own-session'}],
-            'legacy_entries': [],
-        }), encoding='utf-8')
-        self.assertFalse(check.phase3_artifact_ok(str(archive), 'own-session'))
-
     def test_cli_checks_receipts_and_excludes_future_phases(self):
         self.write_rows([])
         source, evidence = self.root / 'source.py', self.root / 'result.json'
         source.write_text('source')
         evidence.write_text('{}')
-        archive = self.root / 'archive.json'
-        archive.write_text(json.dumps({
-            'Self_Evaluate_Themes': {'patterns': {'A': 'fixture'}},
-            'structured_entries': [archive_entry('own-session')],
-            'legacy_entries': [],
-        }))
         directory = self.root / 'receipts'
         directory.mkdir()
         prune_report = self.root / 'harness-prune.md'
@@ -256,7 +217,7 @@ class CloseEvidenceTests(unittest.TestCase):
                                          [str(source)], [str(phase_evidence)], 'Fixture phase evidence')
             (directory / (stem + '.json')).write_text(json.dumps(receipt))
         args = [sys.executable, '-B', check.__file__, '--transcript', str(self.transcript),
-                '--session', 'own-session', '--repo', str(self.root), '--receipts', str(directory), '--archive', str(archive), '--artifacts']
+                '--session', 'own-session', '--repo', str(self.root), '--receipts', str(directory)]
         environment = dict(os.environ, CLAUDE_PROJECT_DIR=str(ROOT), PYTHONDONTWRITEBYTECODE='1')
         precommit = subprocess.run(args, env=environment, capture_output=True, text=True, timeout=30)
         self.assertEqual(0, precommit.returncode, precommit.stdout + precommit.stderr)
@@ -312,7 +273,7 @@ class CloseEvidenceTests(unittest.TestCase):
         receipt = check.make_receipt('own-session', 'reindex_search', 'skipped', [str(source)], [],
                                      'Plugin is unavailable in this session', predicate=predicate)
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            check.render(str(self.transcript), 'own-session', str(self.root / 'archive.json'), False,
+            check.render(str(self.transcript), 'own-session',
                          {'reindex_search': receipt}, 'final')
         self.assertNotIn('invalid-skip', output.getvalue())
 

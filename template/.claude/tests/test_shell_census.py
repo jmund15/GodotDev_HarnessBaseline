@@ -34,6 +34,7 @@ _project_dir = tempfile.mkdtemp(prefix="shell_census_project_")
 os.environ["CLAUDE_PROJECT_DIR"] = _project_dir
 
 import shell_census  # noqa: E402
+from _module_closure import copy_closure  # noqa: E402
 
 WRAP = ("\"C:\\Program Files\\Git\\bin\\bash.exe\" -c \"source /c/Users/x/.claude/shell-snapshots/snapshot-bash-1.sh "
         "2>/dev/null || true && eval '%s' < /dev/null && pwd -P >| /c/Users/x/AppData/Local/Temp/claude-1-cwd\"")
@@ -450,12 +451,10 @@ case("a UTF-8 process list raises no reader-thread exception", "Exception in thr
 
 # 15. no CLAUDE_PROJECT_DIR: the cache lands under the hook's own checkout root, never under cwd.
 # The hook runs from a copy inside a temp checkout so that root is not this one.
-import shutil  # noqa: E402
 with tempfile.TemporaryDirectory() as cwd_tmp, tempfile.TemporaryDirectory() as fake_root:
     fake_hooks = os.path.join(fake_root, ".claude", "hooks")
     os.makedirs(fake_hooks)
-    for name in ("shell_census.py", "_hook_state.py"):
-        shutil.copy(os.path.join(HERE, "..", "hooks", name), fake_hooks)
+    copy_closure(os.path.join(fake_root, ".claude"), "hooks/shell_census.py")
     env = dict(os.environ)
     env.pop("CLAUDE_PROJECT_DIR", None)
     env["HARNESS_HOOK_STATE_DIR"] = _state_dir

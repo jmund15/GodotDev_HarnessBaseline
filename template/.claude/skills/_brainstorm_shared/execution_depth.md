@@ -74,10 +74,7 @@ The last `Triage:` line counts. Declare local, shared or external reach; standin
 
 A command that sizes work reads the recorded fields and collects only the facts the record lacks.
 
-The commit check derives reach and oracle from the staged diff and prints any field raised above the recorded
-triage. With neither trailer nor record, it leaves the call as written and speaks only above local reach. It advises; re-triage on its raise. It also
-prints `candidate review owed` only for admitted mandates with changed-since-reviewed pairs, once per change of the
-owed set (`tools/review_ledger.py`). Never-reviewed files alone do not trigger it. The candidate review re-derives the path-derivable fields of the commits it covers (`triage.py rederive`) and flags any
+A session triage reaches a commit's `Triage:` trailer only when the commit message writes it: `hooks/triage_commit_check.py` would append it but is unwired, and no commit check prints anything. The candidate review re-derives the path-derivable fields of the commits it covers (`triage.py rederive`) and flags any
 recorded value below the derived one, and runs
 `task_record.py check <task_id>`, which re-resolves each recorded condition and flags one that is unresolved or that
 a delegate recorded.
@@ -106,7 +103,7 @@ Each element's depth is the sizing's call (`drive_spine.md` §Sizing); each row 
 | Candidate review | read rigor through §Conditions Rigor, reach, change kind, size and gate result through §Candidate width; run only when width is not `none`, once the unit is stable at drive close or `/session_end` Phase 1. Skip mandates the review ledger covers | `/session_audit`, from `drive_close.md` §Close and `/session_end` Phase 1 |
 | Harness-quality review seat | `decision` only; read rigor through §Conditions Rigor. At `light`, only standing reach; at `normal`, standing reach and, for size ≥ milestones, reach ≥ shared; at `thorough`, every decision. Never for `mechanical` | `/session_audit` |
 | Later round after a fold | a revision that meets `later_rounds.md`'s blast-radius criterion | `orchestration` §2 *Later rounds* |
-| Premises block | the change rests on a claim (a cause, count or ruling); check at commit, not push | `reference/evidence_contract.md` §Load-bearing premises |
+| Premises block | the change rests on a claim (a cause, count or ruling); verified by `verify_claims.py` when a reviewer or command runs it | `reference/evidence_contract.md` §Load-bearing premises |
 | Instruction-quality load and focused audit | a `decision` edit to a rule, guard or model-facing string | `instruction_quality` §5 |
 | Owner acceptance | oracle = owner | the owner's playtest or review |
 | Owner approval | the action is of the none class, whether or not the triage record names reversibility (floor) | §Reversibility |

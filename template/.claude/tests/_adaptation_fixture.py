@@ -10,6 +10,8 @@ import shutil
 import stat
 import tempfile
 
+from _module_closure import copy_closure
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REAL_HOOKS = os.path.join(HERE, "..", "hooks")
 REAL_TOOLS = os.path.join(HERE, "..", "tools")
@@ -22,13 +24,12 @@ def rm(path):
     shutil.rmtree(path, onerror=_onerror)
 
 
-def make_scratch(hook_name, hook_source_path, seed=None, extra_hook_files=()):
+def make_scratch(hook_name, hook_source_path, seed=None):
     """A scratch `.claude`-shaped tree: `<tmp>/hooks/<hook_name>` copied from
     `hook_source_path` (real file or pristine backup), `<tmp>/tools/adaptation.py` copied
     from the real loader, and `<tmp>/skills/project_subsystems/adaptation.json` written from
-    `seed` (a dict; `None` means no file at all -- the "absent" case). `extra_hook_files`
-    copies sibling modules a hook imports (e.g. `_hook_state.py`) into the scratch `hooks/`
-    dir too. Returns the scratch root."""
+    `seed` (a dict; `None` means no file at all -- the "absent" case). The real hook's import
+    closure (`_module_closure`) is copied beside it. Returns the scratch root."""
     tmp = tempfile.mkdtemp(prefix="adaptation_seam_")
     hooks_dir = os.path.join(tmp, "hooks")
     tools_dir = os.path.join(tmp, "tools")
@@ -37,10 +38,8 @@ def make_scratch(hook_name, hook_source_path, seed=None, extra_hook_files=()):
     os.makedirs(tools_dir, exist_ok=True)
     os.makedirs(skill_dir, exist_ok=True)
 
+    copy_closure(tmp, "hooks/" + hook_name, "tools/adaptation.py")
     shutil.copy(hook_source_path, os.path.join(hooks_dir, hook_name))
-    shutil.copy(os.path.join(REAL_TOOLS, "adaptation.py"), os.path.join(tools_dir, "adaptation.py"))
-    for name in extra_hook_files:
-        shutil.copy(os.path.join(REAL_HOOKS, name), os.path.join(hooks_dir, name))
 
     if seed is not None:
         with open(os.path.join(skill_dir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:

@@ -138,7 +138,7 @@ def _removed_asserts(diff):
 
 
 def _lock_rows(work):
-    code, text = _git(work, "show", "HEAD:.claude/baseline.lock.json")
+    code, text = _git(work, "show", "HEAD:./.claude/baseline.lock.json")
     try:
         files = json.loads(text).get("files") if code == 0 else None
     except ValueError:
@@ -187,7 +187,7 @@ def _git_facts(work, base_ref, out, run_proofs, proof_timeout):
         if not stands:
             finding = True
             out.append("  MISSING " + text)
-    _, status = _git(work, "diff", "--name-status", base, "HEAD")
+    _, status = _git(work, "diff", "--relative", "--name-status", base, "HEAD")
     changed = [row.split("\t") for row in status.splitlines() if row]
     lock = _lock_rows(work)
     for row in changed:

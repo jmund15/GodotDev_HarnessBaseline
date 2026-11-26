@@ -103,7 +103,28 @@ CASES = [
 
     # The stamp must not claim coverage it did not have.
     ("_write_stamp records the cannot-run list", lambda: _stamp_records()),
+
+    # A deadline-skipped proof bound its target fine: filing it under "could not bind" sends the reader to the wrong fix.
+    ("_print_incomplete files each proof under its own status", lambda: _incomplete_groups() == {
+        "contended": ["a_contended"], "skipped": ["b_skipped"], "cannot-run": ["c_cannot", "d_unrecorded"]}),
 ]
+
+
+def _incomplete_groups():
+    import contextlib
+    import io
+    statuses = {"a_contended": "contended", "b_skipped": "skipped", "c_cannot": "cannot-run"}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ht._print_incomplete(["a_contended", "b_skipped", "c_cannot", "d_unrecorded"], statuses, "tail")
+    groups, current = {}, None
+    for line in buf.getvalue().splitlines():
+        if line.startswith("    - "):
+            groups[current].append(line[6:])
+        elif line.strip():
+            current = line.split(" ", 1)[0]
+            groups[current] = []
+    return groups
 
 
 def _stamp_records():

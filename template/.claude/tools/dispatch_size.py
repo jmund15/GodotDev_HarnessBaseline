@@ -113,6 +113,14 @@ try:
 except Exception:  # no context reader: the `±` cell always prints in full
     model_ladder_gate = None
 
+
+def _project_root() -> Path:
+    """The default root of a check that reads the project: `CLAUDE_PROJECT_DIR`, else the harness root the cwd lies
+    in. Imported at call time, as `layer_closure` does, so a checkout without `hooks/` can still import this module."""
+    from _checkout_root import harness_root
+    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())
+
+
 KB = 1024
 CHARS_PER_TOKEN = 2.5
 # platform.claude.com/docs/en/build-with-claude/vision, read 2026-10-26: "Max visual tokens" 4,784 for "Claude 4.7
@@ -828,7 +836,7 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
     the orchestration skill when it is not in context. One `preflight: clean: ...` line means every check
     ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
     checked: ...`, never a pass. Facts only; no check denies on these lines."""
-    root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    root = Path(root) if root else _project_root()
     try:
         jobs = _jobs_of(spec)
     except ValueError:
@@ -889,7 +897,7 @@ def attribution_lines(spec, root=None) -> list:
     """One `advisory:` line per job whose brief holds a sentence that attributes a decision to the owners with no
     owner source id (a U-id, a thread or message id, a ledger entry) in that sentence. Advisory: it prints and
     never refuses; a spec that holds no job list prints nothing."""
-    root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    root = Path(root) if root else _project_root()
     try:
         jobs = _jobs_of(spec)
     except ValueError:

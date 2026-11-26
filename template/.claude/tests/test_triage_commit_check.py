@@ -1,7 +1,9 @@
-"""Proof for hooks/triage_commit_check.py: an unreadable Triage trailer is advised; a commit with no trailer gets a derived one; other commands pass silently.
+"""Proof for hooks/triage_commit_check.py: a commit made under a session triage carries it as its `Triage:` trailer,
+and every other commit passes silently.
 
-A planted git repo in a temp root is the project. Each decision case calls the hook's `main()` in this
-process through `_hook_call`; one spawned case proves the registered command still runs and exits 0.
+A planted git repo in a temp root is the project, with a registry whose tag derives shared reach from `hook.py`, so a
+case that stays silent while the diff outruns the trailer is a real silence. Each decision case calls the hook's
+`main()` in this process through `_hook_call`; one spawned case proves the registered command still runs.
     python3 .claude/tests/test_triage_commit_check.py
 """
 import json
@@ -11,33 +13,24 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOOK = os.path.join(os.path.dirname(HERE), "hooks", "triage_commit_check.py")
-sys.path.insert(0, HERE)
+CLAUDE = os.path.dirname(HERE)
+HOOK = os.path.join(CLAUDE, "hooks", "triage_commit_check.py")
+TASK_RECORD = os.path.join(CLAUDE, "tools", "task_record.py")
+sys.path[:0] = [HERE, os.path.join(CLAUDE, "hooks"), os.path.join(CLAUDE, "tools")]
+import _git_commit  # noqa: E402
 import _hook_call  # noqa: E402
+import triage  # noqa: E402
 
 FAILURES = []
-PROJECT = tempfile.mkdtemp(prefix="triage_commit_proof_")
-STATE = tempfile.mkdtemp(prefix="triage_commit_state_")
-RECORDS = tempfile.mkdtemp(prefix="triage_commit_records_")
-ENV = dict(os.environ, CLAUDE_PROJECT_DIR=PROJECT, HARNESS_HOOK_STATE_DIR=STATE, HARNESS_TASK_RECORD_DIR=RECORDS)
-
-
-def git(*args):
-    subprocess.run(["git", "-C", PROJECT] + list(args), capture_output=True, text=True, check=True)
-
-
-def run(command, tool="Bash"):
-    payload = {"tool_name": tool, "tool_input": {"command": command}, "cwd": PROJECT, "session_id": "proof-triage-1"}
-    code, out, err, _ = _hook_call.call(HOOK, payload, env=ENV, cwd=PROJECT)
-    return code, out, err
-
-
-def spawned(command):
-    """The registered command: one spawned run proves the hook imports and exits 0 from settings.json."""
-    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": PROJECT, "session_id": "proof-triage-1"}
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                       text=True, encoding="utf-8", timeout=120, env=ENV)
-    return r.returncode, r.stdout, r.stderr
+TMP = tempfile.mkdtemp(prefix="triage_commit_proof_")
+PROJECT = os.path.join(TMP, "project")
+OTHER = os.path.join(TMP, "other")
+STATE = os.path.join(TMP, "state")
+RECORDS = os.path.join(TMP, "records")
+ENV = dict(os.environ, CLAUDE_PROJECT_DIR=PROJECT, HARNESS_HOOK_STATE_DIR=STATE, HARNESS_TASK_RECORD_DIR=RECORDS,
+           PYTHONIOENCODING="utf-8")
+OWN = "Triage: reach=local design=settled grounding=verified oracle=none size=one-context"
+REGISTRY = {"sensitivity_tags": [{"id": "hook", "paths": ["hook.py"], "sets": {"reach": "shared"}, "source": "proof"}]}
 
 
 def check(label, ok, detail=""):
@@ -46,153 +39,159 @@ def check(label, ok, detail=""):
         FAILURES.append("%s :: %s" % (label, str(detail)[:300]))
 
 
-git("init", "-q")
-git("config", "user.email", "proof@example.invalid")
-git("config", "user.name", "proof")
-with open(os.path.join(PROJECT, "notes.md"), "w", encoding="utf-8", newline="\n") as fh:
-    fh.write("A proof note.\n")
-git("add", "--", "notes.md")
-
-rc, out, err = run('git commit -q -m "proof note"')
-output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a commit with no trailer and no record is left as written: nothing reads a derived trailer, and a rewrite costs a turn in auto mode",
-      rc == 0 and "updatedInput" not in output and "Triage-Derived" not in out, out + err)
-
-rc, out, err = run('git commit -q -m "proof note" -m "Triage: reach=bogus"')
-output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("an unreadable Triage trailer is advised as unreadable",
-      rc == 0 and "trailer unreadable" in output.get("additionalContext", ""), out + err)
-
-MESSAGE_FILE = os.path.join(STATE, "message.txt").replace("\\", "/")
+def git(root, *args):
+    subprocess.run(["git", "-C", root, "-c", "user.email=p@example.invalid", "-c", "user.name=proof"] + list(args),
+                   capture_output=True, text=True, check=True)
 
 
-def _write_message(text):
-    with open(MESSAGE_FILE, "w", encoding="utf-8", newline="\n") as fh:
+def write(root, rel, text):
+    path = os.path.join(root, *rel.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
 
 
-def _read_message():
+def make_repo(root, registry=True):
+    os.makedirs(root)
+    git(root, "init", "-q")
+    if registry:
+        write(root, ".claude/skills/project_subsystems/adaptation.json", json.dumps(REGISTRY))
+    write(root, "hook.py", "x = 1\n")
+    write(root, "notes.md", "A proof note.\n")
+    write(root, ".claude/rules/example.md", "A rule.\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed")
+
+
+def run(command, session="proof-triage-1", cwd=None):
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd or PROJECT, "session_id": session}
+    code, out, err, _ = _hook_call.call(HOOK, payload, env=ENV, cwd=cwd or PROJECT)
+    output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
+    return code, out, err, output
+
+
+def rewritten(output):
+    return output.get("updatedInput", {}).get("command", "")
+
+
+def trailers_of(command):
+    return [t for call in _git_commit.commit_invocations(command, PROJECT) for t in _git_commit.commit_trailer_lines(call.rest)]
+
+
+def record(session, reach="shared"):
+    env = dict(ENV, CLAUDE_CODE_SESSION_ID=session)
+    subprocess.run([sys.executable, TASK_RECORD, "open", session, "--session", session, "--title", session],
+                   capture_output=True, text=True, encoding="utf-8", env=env, check=True)
+    done = subprocess.run([sys.executable, TASK_RECORD, "triage", session, "--reach", reach, "--reversibility",
+                           "clean", "--design", "settled", "--grounding", "verified", "--oracle", "gate+new-test",
+                           "--size", "milestones", "--paths", "hook.py", "notes.md"],
+                          capture_output=True, text=True, encoding="utf-8", env=env)
+    assert done.returncode == 0, done.stderr
+
+
+MESSAGE_FILE = os.path.join(TMP, "message.txt").replace("\\", "/")
+FILE_COMMAND = 'git commit -q -F "%s"' % MESSAGE_FILE
+
+
+def message(text=None):
+    if text is not None:
+        write(TMP, "message.txt", text)
     with open(MESSAGE_FILE, encoding="utf-8") as fh:
         return fh.read()
 
 
-_write_message("proof note\n")
-command = 'git commit -q -F "%s"' % MESSAGE_FILE
-rc, out, err = run(command)
-output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a -F commit leaves the reviewed command unchanged", rc == 0 and "updatedInput" not in output, out + err)
-check("a -F commit gets its Triage-Derived trailer appended into the message file",
-      _read_message() == "proof note\n\nTriage-Derived: reach=local oracle=none\n", _read_message())
-rc, out, err = run(command)
-check("a second -F run adds no second trailer", _read_message().count("Triage-Derived:") == 1, _read_message())
+make_repo(PROJECT)
+make_repo(OTHER)
+os.makedirs(STATE)
+os.makedirs(RECORDS)
+write(PROJECT, "hook.py", "x = 2\n")  # derives shared reach, above every trailer this proof writes
+write(OTHER, "hook.py", "x = 2\n")
+write(PROJECT, ".claude/rules/example.md", "A rule that changed.\n")
+git(PROJECT, "add", "-A")
+git(OTHER, "add", "-A")
 
-_write_message("proof note\n\nClaude-Session: https://example.invalid/s\n")
-run(command)
+# --- no session triage: the check says nothing, whatever the diff derives ---------------------------------
+for label, command in (
+        ("a commit with no trailer and no record", 'git commit -q -m "proof note"'),
+        ("a trailer below the diff's derived reach", 'git commit -q -m "proof note" -m "%s"' % OWN),
+        ("an unreadable trailer", 'git commit -q -m "proof note" -m "Triage: reach=bogus"')):
+    rc, out, err, output = run(command)
+    check(label + " passes silently: a triage the diff outruns is `triage.py rederive`'s at close, not this hook's",
+          rc == 0 and out.strip() == "{}", out + err)
+message("proof note\n")
+rc, out, err, output = run(FILE_COMMAND)
+check("a -F commit with no trailer and no record is left as written and its file untouched: no reader parses a derived trailer",
+      rc == 0 and out.strip() == "{}" and message() == "proof note\n", (out, message()))
+
+# --- a session triage travels with the commit -------------------------------------------------------------
+record("proof-triage-1")
+rc, out, err, output = run('git commit -q -m "proof note"')
+written = trailers_of(rewritten(output))
+fields, error = triage.parse_trailer("proof note\n\n" + (written[0] if written else ""))
+check("a -m commit under a session triage gets that triage as one --trailer, and no advice",
+      rc == 0 and len(written) == 1 and error is None and fields["reach"] == "shared" and fields["size"] == "milestones"
+      and "additionalContext" not in output, (out, err))
+
+message("proof note\n")
+rc, out, err, output = run(FILE_COMMAND)
+check("a -F commit gets its trailer in the message file and its command is not rewritten: auto mode denies a call a hook changed",
+      rc == 0 and "updatedInput" not in output and message().startswith("proof note\n\nTriage: reach=shared"), (out, message()))
+once = message()
+run(FILE_COMMAND)
+check("a second run adds no second trailer", message() == once, message())
+
+message("proof note\n\nClaude-Session: https://example.invalid/s\n")
+run(FILE_COMMAND)
+lines = message().splitlines()
 check("a -F trailer joins an existing trailer block",
-      _read_message() == "proof note\n\nClaude-Session: https://example.invalid/s\nTriage-Derived: reach=local oracle=none\n",
-      _read_message())
+      lines[2].startswith("Claude-Session:") and lines[3].startswith("Triage: reach=shared") and len(lines) == 4, message())
 
-missing = os.path.join(STATE, "absent.txt").replace("\\", "/")
-rc, out, err = run('git commit -q -F "%s"' % missing)
-output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a -F file that is not readable yet is left as written: a derived trailer has no reader",
-      rc == 0 and "updatedInput" not in output, out + err)
+rc, out, err, output = run('git commit -q -F "%s"' % os.path.join(TMP, "absent.txt").replace("\\", "/"))
+check("a -F file not readable yet takes the --trailer rewrite, the only route left",
+      rc == 0 and len(trailers_of(rewritten(output))) == 1, out + err)
 
+for label, command in (
+        ("-m", 'git commit -q -m "proof note" -m "%s"' % OWN),
+        ("--trailer", 'git commit -q -m "proof note" --trailer "%s"' % OWN)):
+    rc, out, err, output = run(command)
+    check("a commit that carries its own trailer by %s keeps it and gets none added" % label,
+          rc == 0 and out.strip() == "{}", out)
+message("proof note\n\n%s\n" % OWN)
+before = message()
+rc, out, err, output = run(FILE_COMMAND)
+check("a -F file that carries its own trailer is left as written", out.strip() == "{}" and message() == before, (out, message()))
 
-rc, out, err = run("ls -la")
+rc, out, err, output = run("git merge --no-edit side")
+check("a merge gets no trailer: it authors no triage of its own", rc == 0 and out.strip() == "{}", out)
+rc, out, err, output = run('git commit -q -m "proof note"', cwd=OTHER)
+check("a commit in another repository holding its own .claude/ stays silent", rc == 0 and out.strip() == "{}", out + err)
+rc, out, err, output = run("ls -la")
 check("a non-commit command passes silently", rc == 0 and out.strip() == "{}", out + err)
 
-rc, out, err = spawned("ls -la")
-check("the registered command runs and exits 0", rc == 0 and out.strip() == "{}" and err == "", out + err)
+# --- launcher shapes: each nested commit keeps its own trailer --------------------------------------------
+record("launcher", reach="shared")
+for command, expected in (
+        ("bash -c 'git commit -m nested -- notes.md'", [True]),
+        ("bash -c 'git commit -m nested -- notes.md'; git commit -m direct -- hook.py", [True, True]),
+        ('env sh -c "git commit -m nested -- notes.md"; git commit -m direct -- hook.py', [True, True]),
+        ('bash -c "sh -c \'git commit -m nested -- notes.md\'"; git commit -m direct -- hook.py', [True, True]),
+        ("eval 'git commit -m nested -- notes.md'; git commit -m direct -- hook.py", [True, True]),
+        ("bash -n -c 'git commit -m ignored -- notes.md'; git commit -m direct -- hook.py", [True]),
+        ("bash -c 'git com'\"mit -m nested -- notes.md\"; git commit -m direct -- hook.py", [False, True]),
+        ("BODY='git commit -m nested -- notes.md'; bash -c \"$BODY\"; git commit -m direct -- hook.py", [False, True])):
+    rc, out, err, output = run(command, session="launcher")
+    calls = _git_commit.commit_invocations(rewritten(output), PROJECT)
+    got = [bool(_git_commit.commit_trailer_lines(call.rest)) for call in calls]
+    original = [call.rest for call in _git_commit.commit_invocations(command, PROJECT)]
+    stripped = [[a for a in call.rest if a != "--trailer" and not a.startswith("Triage: ")] for call in calls]
+    check("a launcher shape rewrites only the commits it can place, and no other argument: " + command,
+          rc == 0 and got == expected and stripped == original, (got, expected, rewritten(output)))
 
-
-sys.path[:0] = [os.path.dirname(HOOK), os.path.join(os.path.dirname(os.path.dirname(HOOK)), "tools")]
-import triage  # noqa: E402
-import triage_commit_check as tcc  # noqa: E402
-
-
-class _NoTags:
-    valid = []
-    invalid = []
-
-
-DIFF = "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1 @@\n+A proof note.\n"
-
-
-def _advice(message, reach=None):
-    """The pure verdict for a one-file diff string. No tag is loaded, so `reach` stands in for the reach a tag derives."""
-    changes = triage._changes(triage._name_status("A\0notes.md\0"), lambda: DIFF, lambda p: None)
-    derived = triage.derive(changes, _NoTags())
-    derived = triage.Result(reach or derived.reach, derived.oracle, derived.matches, derived.invalid)
-    fields, error = triage.parse_trailer(message) if message is not None else (None, None)
-    return tcc.triage_verdict(derived, fields, error, message, "commit", lambda: None)
-
-
-advice, trailer = _advice("proof note")
-check("a diff with no trailer and local reach gets no advice and no trailer",
-      advice is None and trailer is None, (advice, trailer))
-advice, trailer = _advice("proof note\n\nTriage: reach=bogus")
-check("a diff with an unreadable trailer is advised as unreadable",
-      advice is not None and "trailer unreadable" in advice and trailer is None, (advice, trailer))
-advice, trailer = _advice("proof note\n\nTriage: reach=local design=settled grounding=verified oracle=none size=one-context", reach="external")
-check("a diff deriving external reach over a local trailer raises the triage",
-      advice is not None and tcc.RAISE_HEAD in advice and "reach local -> external" in advice, advice)
-advice, trailer = _advice("proof note\n\nTriage: reach=external design=settled grounding=verified oracle=none size=one-context", reach="external")
-check("a diff whose derived reach the trailer already records raises nothing",
-      advice is None and trailer is None, (advice, trailer))
-
-RECORDED = {"reach": "shared", "reversibility": "clean", "design": "settled", "grounding": "verified",
-            "oracle": ["gate", "new-test"], "size": "milestones", "kind": "decision"}
-with open(os.path.join(RECORDS, "proof-task.json"), "w", encoding="utf-8", newline="\n") as fh:
-    json.dump({"task_id": "proof-task", "session_id": "proof-triage-1", "updated": "2026-01-01T00:00:00Z",
-               "triage": {"fields": RECORDED, "paths": ["notes.md"]}}, fh)
-rc, out, err = run('git commit -q -m "proof note"')
-command = (json.loads(out).get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
-           if out.strip() else "")
-written = command.partition('--trailer "')[2].partition('"')[0]
-fields, error = triage.parse_trailer("proof note\n\n" + written)
-check("a commit with no trailer under a session triage carries that triage as its Triage trailer",
-      rc == 0 and written.startswith("Triage: ") and error is None and fields is not None
-      and fields.get("reach") == "shared" and fields.get("size") == "milestones", (command, err))
-rc, out, err = run('git commit -q -m "proof note" -m "Triage: reach=local design=settled grounding=verified oracle=none size=one-context"')
-check("a commit that writes its own Triage trailer keeps it and gets none added",
-      rc == 0 and "--trailer" not in (out or ""), out)
-_write_message("proof note\n")
-rc, out, err = run('git commit -q -F "%s"' % MESSAGE_FILE)
-output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a -F commit under a session triage gets its Triage trailer in the file, command unchanged",
-      rc == 0 and "updatedInput" not in output and "\nTriage: " in _read_message()
-      and "Triage-Derived:" not in _read_message(), (_read_message(), out, err))
-os.remove(os.path.join(RECORDS, "proof-task.json"))
-
-
-class _Adm:
-    admitted = True
-
-
-def _premises_note(message, session):
-    saved = (tcc.triage.admits, tcc.commit_message)
-    tcc.triage.admits = lambda *a, **k: _Adm()
-    tcc.commit_message = lambda rest, cwd: message
-    try:
-        inv = type("Inv", (), {"rest": [], "cwd": PROJECT, "git_env": None})()
-        return tcc._premises(inv, session, None)
-    finally:
-        tcc.triage.admits, tcc.commit_message = saved
-
-
-note = _premises_note("x\n\n```premises\nthis is not json\n```\n", "premises-bad-1") or ""
-check("a premises block that is not one JSON object per line is named malformed, not unavailable",
-      "malformed" in note and "evidence_contract.md" in note and "unavailable" not in note, note)
-import verify_claims  # noqa: E402
-orig_check = verify_claims.check_claims
-verify_claims.check_claims = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
-try:
-    note = _premises_note('x\n\n```premises\n{"claim": "c"}\n```\n', "premises-crash-2") or ""
-finally:
-    verify_claims.check_claims = orig_check
-check("a crash inside verify_claims still reads as check unavailable",
-      "check unavailable: RuntimeError" in note, note)
+spawned = subprocess.run([sys.executable, HOOK], input=json.dumps({"tool_name": "Bash", "cwd": PROJECT, "session_id": "s",
+                         "tool_input": {"command": "ls -la"}}), capture_output=True, text=True, encoding="utf-8",
+                         timeout=120, env=ENV)
+check("the registered command imports and exits 0 from its own path",
+      spawned.returncode == 0 and spawned.stdout.strip() == "{}" and spawned.stderr == "", (spawned.stdout, spawned.stderr))
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

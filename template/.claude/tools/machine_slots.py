@@ -6,8 +6,12 @@ Usage:
                                         J (a holder note) names the work the broker holds for
   machine_slots.py root                 print the common pool path
 
-Waiters take a ticket in queue/ and only the oldest live one claims lanes (first come,
-first served: a releaser that re-takes at once cannot starve a waiting proof). WSL uses a
+Waiters take a ticket in queue/ and only the head live one claims lanes: the lowest ticket name,
+whole-machine tickets first. A shared ticket's name leads with a key (see `_ticket_name`) that is
+first come, first served per caller (the pid in the name) and round-robin across callers: a
+caller's n-th queued ticket sorts behind every other caller's first n-1, so a battery's worker
+tickets cannot make a lone run wait behind all of them, and a releaser that re-takes at once is
+its caller's last ticket, so it cannot starve a waiting proof. WSL uses a
 Windows broker: flock and Windows delete-sharing are not one lock protocol.
 HARNESS_SLOT_DIR isolates planted pools; HARNESS_MACHINE_ROOT preserves the real
 pool across proof HOME/temp changes. HARNESS_SLOT_BUDGET loans one held lane to a
@@ -25,11 +29,13 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 _CLAUDE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_CLAUDE / 'hooks'))
 import _file_lock
+from _msys import resolve_argv
 from _hook_state import SUBAGENT_CACHE_WARM_SECONDS, read_json_salvage, update_json_locked
 
 
@@ -135,6 +141,63 @@ def busy_lanes(folder, width, held):
     return len(named) + max(unnamed, probed_busy)
 
 
+SATURATED = 0.90      # a CPU share at or above this leaves a proof no room: its timeout is the machine's, not its own
+MIN_WINDOW_S = 1.0    # a shorter window reads the counter's granularity, not the load
+
+
+def cpu_read():
+    """The machine's cumulative `(busy, total)` CPU time, or None where the platform exposes no counter. Lane
+    admission bounds only lane work; a pytest run, a model server or a peer's build takes cores no lane counts."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+            if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            ticks = lambda t: (t.dwHighDateTime << 32) | t.dwLowDateTime  # noqa: E731
+            total = ticks(kernel) + ticks(user)  # kernel time includes idle
+            return total - ticks(idle), total
+        with open('/proc/stat', encoding='ascii') as fh:
+            fields = [int(part) for part in fh.readline().split()[1:9]]
+        return sum(fields) - fields[3] - fields[4], sum(fields)
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+class Room:
+    """Whether the machine had room for the work that just ran: its CPU share between `mark()` and `busy(mark)`.
+    `read`, `clock` and `sleep` are planted by a proof; an unreadable machine answers None, never saturated."""
+
+    def __init__(self, read=None, clock=time.monotonic, sleep=time.sleep):
+        self._read, self._clock, self._sleep = read or cpu_read, clock, sleep
+
+    def mark(self):
+        return self._clock(), self._read()
+
+    def busy(self, mark):
+        """The CPU share of the whole machine since `mark`, or None (unreadable, or shorter than MIN_WINDOW_S)."""
+        began, before = mark
+        now, after = self._clock(), self._read()
+        if before is None or after is None or now - began < MIN_WINDOW_S or after[1] <= before[1]:
+            return None
+        return (after[0] - before[0]) / (after[1] - before[1])
+
+    def wait(self, limit_s, quiet_s=15.0):
+        """Block until one `quiet_s` window runs below SATURATED, for at most `limit_s`: `(seconds waited, whether
+        room came)`. A machine that cannot be read has room by definition, so a wait never holds on it."""
+        if limit_s <= 0:
+            return 0.0, False
+        began = self._clock()
+        while self._clock() - began < limit_s:
+            mark = self.mark()
+            self._sleep(quiet_s)
+            busy = self.busy(mark)
+            if busy is None or busy < SATURATED:
+                return self._clock() - began, True
+        return self._clock() - began, False
+
+
 def claim_width(folder, count):
     """Called under drain.lock: adopt the held width; change it only with no live lane."""
     path = os.path.join(folder, 'width.json')
@@ -218,8 +281,6 @@ def job_deadline():
     """The deadline of a take made by a caller that may not start a wide run (a dispatched non-gate sidecar job,
     `_wide_runs.gate_caller`), else None. The job cannot move a full pool, and each wait re-reads its context; its
     dispatcher's watcher wakes it, so the run is the dispatcher's."""
-    if not os.environ.get('CLAUDE_CODE_SIDECAR'):
-        return None
     from _wide_runs import gate_caller
     return None if gate_caller({}, os.environ) else time.time() + JOB_WAIT_S
 
@@ -264,8 +325,10 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
         # First come, first served: only the oldest live ticket scans the slots, so a releaser that
         # re-takes at once, or a case pool borrowing extras, never passes a waiting proof.
         queue = os.path.join(folder, 'queue')
-        name = '%020d-%d-%d%s.lock' % (time.time_ns(), os.getpid(), next(_TICKETS), _EXCLUSIVE if exclusive else '')
-        ticket = _file_lock.acquire(os.path.join(queue, name), 0)
+        os.makedirs(queue, exist_ok=True)
+        with _TICKET_LOCK:
+            name = _ticket_name(queue, exclusive)
+            ticket = _file_lock.acquire(os.path.join(queue, name), 0)
         if ticket is None:
             raise SlotStoreError('machine admission queue unusable: %s' % queue)
         began = time.monotonic()
@@ -372,12 +435,40 @@ def _holders(folder, mine):
 
 
 _TICKETS = itertools.count()
+_TICKET_LOCK = threading.Lock()
 _EXCLUSIVE = 'x'
+# Key distance between one caller's consecutive queued tickets; tickets of different callers in one round sit
+# within a nanosecond of each other, so any positive spacing separates rounds.
+_ROUND_NS = 1_000_000
+
+
+def _ticket_name(queue, exclusive, pid=None):
+    """`<key>-<pid>-<n>-q[x].lock`: tickets are served in name order, and the name is fixed at enqueue, so every
+    harness version that sorts names agrees on the order (a rank re-derived from the live queue would let an
+    older checkout and this one each wait on the other). A whole-machine ticket's key is its arrival time. A
+    shared ticket's key is the queue's head key plus one (just behind the ticket being served) or, when its own
+    caller already queues, that caller's newest key plus `_ROUND_NS`. A caller's n-th queued ticket is therefore
+    in round n and sorts behind every other caller's first n-1, and a caller that arrives later joins at the
+    head's round, not behind every older ticket: a lone caller waits for at most one ticket per other caller.
+    A ticket from a checkout without rounds (three name fields, no `-q`) keeps arrival order and sorts before
+    every ticket made here, so a mixed pool never serves an old checkout after a newer one. Callers are
+    processes (one battery's workers share a pid); `pid` names another's in a proof. The caller holds
+    `_TICKET_LOCK`, so a process's simultaneous tickets see each other."""
+    pid = os.getpid() if pid is None else pid
+    key = time.time_ns()
+    if not exclusive:
+        shared = [t.split('-') for t in os.listdir(queue) if not t.endswith(_EXCLUSIVE + '.lock')]
+        shared = [(int(parts[0]), parts[1], len(parts) == 3) for parts in shared if len(parts) > 2 and parts[0].isdigit()]
+        floors = [min(k for k, _, _ in shared) + 1] if shared else [key]
+        floors += [k + 1 for k, _, old in shared if old]
+        floors += [k + _ROUND_NS for k, owner, _ in shared if owner == str(pid)]
+        key = max(floors)
+    return '%020d-%d-%d-q%s.lock' % (key, pid, next(_TICKETS), _EXCLUSIVE if exclusive else '')
 
 
 def _live_ticket_before(queue, name):
-    """True while another waiter is ahead of `name`. Tickets are served in arrival order, except that exclusive
-    tickets (`_EXCLUSIVE` suffix) go first, among themselves in arrival order: each whole-machine take that
+    """True while another waiter is ahead of `name`. Tickets are served in name order (`_ticket_name`), except
+    that exclusive tickets (`_EXCLUSIVE` suffix) go first, among themselves in arrival order: each whole-machine take that
     follows shared work pays one drain of the longest running lane, so exclusive takers queued together pay
     it once between them. A ticket whose owner died is reclaimed by the probe."""
     mine = name.endswith(_EXCLUSIVE + '.lock')
@@ -499,6 +590,11 @@ def main():
         command = command[1:]
     if args.mode == 'run' and not command:
         parser.error('run needs -- COMMAND ...')
+    if args.mode == 'run':
+        command, problem = resolve_argv(command)
+        if problem:
+            print(problem, file=sys.stderr, flush=True)
+            return 2
     if args.mode == 'run' and _no_lane(command):
         return subprocess.call(command)
     held = None

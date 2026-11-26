@@ -11,6 +11,10 @@ import os
 import subprocess
 import sys
 
+# The proof may run inside a delegate: plant the main channel, then each case plants its own caller.
+for _k in [k for k in os.environ if k.startswith("CLAUDE_CODE_SIDECAR") or k == "CLAUDE_CODE_ENTRYPOINT"]:
+    del os.environ[_k]
+
 HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "foreground_wait_guard.py")
 MONITOR_CAP_MS = 1800000
 FAILURES = []
@@ -135,8 +139,9 @@ def timed(command, timeout, **caller):
     return payload
 
 
-def rewrite(payload, entrypoint):
-    env = dict(os.environ, CLAUDE_CODE_ENTRYPOINT=entrypoint)
+def rewrite(payload, entrypoint, sidecar=""):
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR"}
+    env.update(CLAUDE_CODE_ENTRYPOINT=entrypoint, **({"CLAUDE_CODE_SIDECAR": sidecar} if sidecar else {}))
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
                        text=True, encoding="utf-8", timeout=30, env=env)
     hso = json.loads(r.stdout).get("hookSpecificOutput", {}) if r.stdout.strip() else {}
@@ -153,6 +158,10 @@ for label, payload, entrypoint in (
           and updated.get("timeout") == SUBAGENT_WAIT_MS and not updated.get("run_in_background")
           and updated.get("command", "").startswith(RENDER)
           and updated.get("command", "").rstrip().endswith('echo "EXIT $?"'), detail)
+
+rc, updated, verdict, detail = rewrite(timed(RENDER, 600000), "cli", sidecar="deepseek")
+check("a seat launcher's child (entrypoint cli, CLAUDE_CODE_SIDECAR set) is never woken: clamped to the cache bound",
+      rc == 0 and updated is not None and updated.get("timeout") == SUBAGENT_WAIT_MS, detail)
 
 rc, updated, verdict, detail = rewrite(timed(RENDER, 200000), "sdk-cli")
 check("a print-mode child's command inside the cache bound passes untouched",

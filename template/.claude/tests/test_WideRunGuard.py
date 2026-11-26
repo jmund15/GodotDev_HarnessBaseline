@@ -11,12 +11,12 @@ import os
 import shutil
 
 import _pwsh_drive
+from _module_closure import copy_closure
 from _pwsh_drive import check, run_proof
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TOOL = os.path.join(REPO, ".claude", "scripts", "WideRunGuard.ps1")
-HOOKS = ("wide_test_guard.py", "_wide_runs.py", "_command_text.py", "_shell_lex.py", "_git_commit.py", "_git_run.py")
-TOOLS = ("adaptation.py", "sidecar_argv.py")
+GUARD = "hooks/wide_test_guard.py"
 DECLARED = {"arg": "Filter", "glob": "Tests/**/*.cs", "decl": [r"class\s+(\w+)"], "admit": []}
 CADENCE = {"slice": [], "merge": [], "close": [], "wide": [
     {"runner": r"(?:\S*/)?(?:run_test_suite|verify)\.ps1\b", "exempt": [], "narrow": {"declared": DECLARED}},
@@ -35,12 +35,7 @@ def plant(tmp, tool):
     claude = os.path.join(tmp, "repo", ".claude")
     os.makedirs(os.path.join(claude, "scripts"))
     shutil.copy(tool, os.path.join(claude, "scripts", "WideRunGuard.ps1"))
-    for name in HOOKS:
-        os.makedirs(os.path.join(claude, "hooks"), exist_ok=True)
-        shutil.copy(os.path.join(REPO, ".claude", "hooks", name), os.path.join(claude, "hooks", name))
-    for name in TOOLS:
-        os.makedirs(os.path.join(claude, "tools"), exist_ok=True)
-        shutil.copy(os.path.join(REPO, ".claude", "tools", name), os.path.join(claude, "tools", name))
+    copy_closure(claude, GUARD)
     write(os.path.join(claude, "skills", "project_subsystems", "adaptation.pure.defaults.json"),
           json.dumps({"gate_cadence": CADENCE}))
     write(os.path.join(tmp, "repo", "Tests", "Logic", "FooTests.cs"), "public class FooTests {}\n")

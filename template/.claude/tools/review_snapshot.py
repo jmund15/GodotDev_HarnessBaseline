@@ -28,6 +28,7 @@ import difflib
 import hashlib
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -38,7 +39,7 @@ if str(_TOOLS) not in sys.path:
 if str(CLAUDE_DIR / "hooks") not in sys.path:
     sys.path.insert(0, str(CLAUDE_DIR / "hooks"))
 
-from _git_run import run as _git  # noqa: E402
+from _git_run import root_relative as _root_relative, run as _git  # noqa: E402
 
 
 class Blob(NamedTuple):
@@ -93,6 +94,42 @@ def _call(args, root, input=None):
         return Unreadable(f"git {args[0]} unavailable: {exc}")
     except Exception as exc:  # subprocess.TimeoutExpired and anything the launcher raises
         return Unreadable(f"git {args[0]} failed: {exc}")
+
+
+_FACTS = None  # {(fact, folder): answer} while a `repo_facts()` block runs
+
+
+@contextmanager
+def repo_facts():
+    """Inside the block each `fact` is asked once per folder. One command's repository does not move while it runs,
+    yet each snapshot it opened asked again (a lineage check opens three): those repeats were a third of the review
+    ledger proof's git processes."""
+    global _FACTS
+    outer = _FACTS
+    if outer is None:
+        _FACTS = {}
+    try:
+        yield
+    finally:
+        if outer is None:
+            _FACTS = None
+
+
+def fact(name, root, ask):
+    """`ask()`, answered once per `name` and folder inside a `repo_facts()` block, and every time outside one."""
+    if _FACTS is None:
+        return ask()
+    key = (name, os.path.normcase(os.path.abspath(str(root))))
+    if key not in _FACTS:
+        _FACTS[key] = ask()
+    return _FACTS[key]
+
+
+def _in_git(root) -> bool:
+    def ask():
+        probe = _call(["rev-parse", "--git-dir"], root)
+        return not isinstance(probe, Unreadable) and probe.returncode == 0
+    return fact("in_git", root, ask)
 
 
 def _out(args, root, input=None):
@@ -226,10 +263,12 @@ def hash_objects(root: Path, paths, *, write=False) -> dict:
     if not ordered:
         return {}
     # An id is compare-only unless the caller stores it for a later reader; the frozen-blob proof lists this line.
+    # `--stdin-paths` resolves a relative path from the toplevel, not the cwd, so the input is absolute.
     args = ["hash-object", "--stdin-paths"]
     if write:
         args.insert(1, "-w")
-    done = _call(args, root, input=("\n".join(ordered) + "\n").encode("utf-8"))
+    absolute = [(Path(root) / path).as_posix() for path in ordered]
+    done = _call(args, root, input=("\n".join(absolute) + "\n").encode("utf-8"))
     if isinstance(done, Unreadable) or done.returncode != 0:
         reason = done.reason if isinstance(done, Unreadable) else _text(done.stderr).strip()
         raise OSError(reason or "git hash-object failed")
@@ -300,7 +339,6 @@ class Snapshot:
     def __init__(self, repo: Path, source=None, rev: str | None = None):
         self.repo = Path(repo)
         self.source = Disk() if source is None else source
-        self._toplevel = None
         self._head = None
         self._cache: dict = {}
         self._ancestor: dict = {}
@@ -320,18 +358,16 @@ class Snapshot:
 
     @property
     def toplevel(self) -> Path:
-        if self._toplevel is None:
-            done = _call(["rev-parse", "--show-toplevel"], self.repo)
-            text = "" if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
-            self._toplevel = Path(text) if text else self.repo
-        return self._toplevel
+        """The directory every path here is relative to: the repo as opened, which is the harness root and may sit
+        below the git toplevel. Git forms that resolve from the toplevel (`rev:path`, `--stdin-paths`, `--full-tree`,
+        unqualified `--name-only`) are never handed these paths; use `rev:./path`, an absolute path or `--relative`."""
+        return self.repo
 
     @property
     def head(self):
         """HEAD's commit as the repository reports it, or None when it cannot be read."""
         if self._head is None:
-            done = _call(["rev-parse", "HEAD"], self.repo)
-            self._head = None if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
+            self._head = self.commit_for("HEAD")
         return self._head
 
     @property
@@ -344,8 +380,11 @@ class Snapshot:
         return self.head
 
     def commit_for(self, rev: str):
-        done = _call(["rev-parse", "--verify", "--quiet", rev + "^{commit}"], self.repo)
-        return None if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
+        def ask():
+            done = _call(["rev-parse", "--verify", "--quiet", rev + "^{commit}"], self.repo)
+            return None if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
+        # No command moves HEAD; a fetch can make another revision resolvable, so only HEAD is asked once.
+        return fact("HEAD", self.repo, ask) if rev == "HEAD" else ask()
 
     # -- content --
 
@@ -408,7 +447,7 @@ class Snapshot:
             return {}
         if revision == "INDEX":
             return self._index_entries(root, paths)
-        done = _call(["ls-tree", "-r", "-z", "--full-tree", revision, "--"] + [_literal(p) for p in paths], root)
+        done = _call(["ls-tree", "-r", "-z", revision, "--"] + [_literal(p) for p in paths], root)
         if isinstance(done, Unreadable) or done.returncode != 0:
             reason = done.reason if isinstance(done, Unreadable) else (
                 _text(done.stderr).strip() or f"cannot list {revision}")
@@ -451,7 +490,7 @@ class Snapshot:
                 for path in paths}
 
     def _linked_entry(self, link: str, rest: str, path: str):
-        pinned = _call(["rev-parse", "--verify", "--quiet", f"{self._revision}:{link}"], self.repo)
+        pinned = _call(["rev-parse", "--verify", "--quiet", f"{self._revision}:./{link}"], self.repo)
         if isinstance(pinned, Unreadable):
             return Unreadable(pinned.reason)
         pin = "" if pinned.returncode != 0 else _text(pinned.stdout).strip()
@@ -475,9 +514,7 @@ class Snapshot:
         if not present:
             return
         top = self.toplevel
-        probe = _call(["rev-parse", "--git-dir"], top)
-        in_git = not isinstance(probe, Unreadable) and probe.returncode == 0
-        if in_git:
+        if _in_git(top):
             try:
                 for path, sha in hash_objects(top, present, write=True).items():
                     self._cache[path] = Blob(sha)
@@ -522,7 +559,7 @@ class Snapshot:
         found = split_submodule(self.toplevel, path)
         pinned = None
         if found:
-            done = _call(["rev-parse", "--verify", "--quiet", f"{head}:{found[0]}"], self.toplevel)
+            done = _call(["rev-parse", "--verify", "--quiet", f"{head}:./{found[0]}"], self.toplevel)
             if isinstance(done, Unreadable):
                 return Unreadable(done.reason)
             pinned = None if done.returncode != 0 else _text(done.stdout).strip()
@@ -571,12 +608,12 @@ class Snapshot:
         return found
 
     def _changed_paths(self, old: str, replays: dict) -> set:
-        paths = set(_lines(["show", "--no-renames", "--name-only", "--format=", old], self.repo))
+        paths = set(_lines(["show", "--no-renames", "--relative", "--name-only", "--format=", old], self.repo))
         subject = _text(_call(["log", "-1", "--format=%s", old], self.repo).stdout).strip()
         new = replays.get(subject)
         if not new:
             return paths
-        paths |= set(_lines(["show", "--no-renames", "--name-only", "--format=", new], self.repo))
+        paths |= set(_lines(["show", "--no-renames", "--relative", "--name-only", "--format=", new], self.repo))
         ids = self.__dict__.setdefault("_patch_ids", {})
         return {path for path in paths if _file_patch_id(self.repo, old, path, ids)
                 != _file_patch_id(self.repo, new, path, ids)}
@@ -588,7 +625,7 @@ class Snapshot:
             self._merges[sha] = _text(done.stdout).split() if not isinstance(done, Unreadable) and done.returncode == 0 else []
         for merge in self._merges[sha]:
             if merge not in self._resolved:
-                shown = _call(["show", "--remerge-diff", "--name-only", "--format=", merge], self.repo)
+                shown = _call(["show", "--remerge-diff", "--relative", "--name-only", "--format=", merge], self.repo)
                 self._resolved[merge] = set(_text(shown.stdout).split("\n")) if not isinstance(shown, Unreadable) else set()
             if path in self._resolved[merge]:
                 return True
@@ -670,7 +707,7 @@ def blob_at(top: Path, revision: str, path: str):
     is read from that submodule's object store at the commit the gitlink pins at `revision`."""
     found = split_submodule(top, path)
     if found:
-        pinned = _call(["rev-parse", "--verify", "--quiet", f"{revision}:{found[0]}"], top)
+        pinned = _call(["rev-parse", "--verify", "--quiet", f"{revision}:./{found[0]}"], top)
         commit = "" if isinstance(pinned, Unreadable) or pinned.returncode != 0 else _text(pinned.stdout).strip()
         if not commit or not (top / found[0] / ".git").exists():
             return None
@@ -710,7 +747,7 @@ def range_commits(repo: Path, base: str, rev: str) -> list[dict]:
     if isinstance(done, Unreadable) or done.returncode != 0:
         detail = done.reason if isinstance(done, Unreadable) else _text(done.stderr).strip()
         raise OSError(f"cannot list commits in {rng}: {detail}")
-    commits, current = [], None
+    commits, current, raws = [], None, []
     for line in _text(done.stdout).splitlines():
         if line.startswith("@@"):
             sha, _, subject = line[2:].partition("\t")
@@ -718,14 +755,23 @@ def range_commits(repo: Path, base: str, rev: str) -> list[dict]:
             commits.append(current)
         elif line.startswith(":") and current is not None:
             meta, _, path = line.partition("\t")
-            parents = len(meta) - len(meta.lstrip(":"))
-            fields = meta.lstrip(":").split()
-            modes, pins = fields[:parents + 1], fields[parents + 1:2 * parents + 2]
-            if "160000" in modes:
-                changed = set.intersection(*(gitlink_files(repo, path, old, pins[-1]) for old in pins[:-1]))
-                current["files"].extend(sorted(changed))
-            else:
-                current["files"].append(path)
+            raws.append((current, meta, path))
+    # `--relative` is ignored for a merge's combined diff, so every name arrives toplevel-relative and maps back here.
+    prefix = _call(["rev-parse", "--show-prefix"], repo)
+    prefix = "" if isinstance(prefix, Unreadable) or prefix.returncode != 0 else _text(prefix.stdout).strip()
+    inside = _root_relative(prefix, [path for _, _, path in raws])
+    for current, meta, raw in raws:
+        if raw not in inside:
+            continue
+        path = inside[raw]
+        parents = len(meta) - len(meta.lstrip(":"))
+        fields = meta.lstrip(":").split()
+        modes, pins = fields[:parents + 1], fields[parents + 1:2 * parents + 2]
+        if "160000" in modes:
+            changed = set.intersection(*(gitlink_files(repo, path, old, pins[-1]) for old in pins[:-1]))
+            current["files"].extend(sorted(changed))
+        else:
+            current["files"].append(path)
     return commits
 
 

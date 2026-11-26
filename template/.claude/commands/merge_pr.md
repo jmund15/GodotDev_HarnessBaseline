@@ -145,14 +145,6 @@ Resolution:
 
 These files are modified by multiple worktree sessions and frequently conflict.
 
-**Accumulative data files** — content from ALL branches must be preserved:
-
-| File | Resolution | Rationale |
-|------|-----------|-----------|
-| `self_evaluate_archive.json` | **Union all entries.** Each evaluation is a timestamped snapshot — append all, sort by date. | Independent session evaluations, no conflicts possible if appended correctly |
-
-> **Merge technique for accumulative JSON:** Load both sides via `git -C <wt> show :2:<file>` and `:3:<file>` with Python (use `stdout.decode('utf-8')` to avoid Windows cp1252 errors). Union arrays by unique key (title/date), sort chronologically, renumber IDs sequentially, write result.
-
 **Functional files** — take the NEWER (more recently edited) version:
 
 | File | Resolution | Rationale |

@@ -91,14 +91,15 @@ OPTIONAL_DATA = {
     ".claude/tools/layer_closure.py": ("*",),
     ".claude/tests/test_layer_closure.py": ("tests/fixtures/evidence/*",),
     ".claude/tests/test_verify_claims.py": ("tests/fixtures/evidence/p19*", "tests/fixtures/evidence/oracle_labels.json"),
-    ".claude/tests/test_dispatch_table_verification.py": ("tests/fixtures/evidence*", "tests/fixtures/stop_audit/review_fold_native*"),
+    ".claude/tests/test_dispatch_table_verification.py": ("tests/fixtures/evidence*", "tests/fixtures/stop_audit/review_close_native*", "tests/fixtures/stop_audit/review_fold_native*"),
     ".claude/tools/lens.py": ("commands/agents/*_agents.md",),
     ".claude/tools/lens_briefs.py": ("commands/checklists/*.md",),
     ".claude/tools/mechanism_census.py": ("tools/identity_digests.json", "tools/layer_entries.json"),
     ".claude/tools/review_ledger.py": ("skills/_brainstorm_shared/execution_depth.md",),
     ".claude/tools/workstation_profile.py": ("commands/workstation_setup.md",),
     ".claude/tools/semantic_search_idle_install.py": ("package.json",),
-    ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md",),
+    ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md", "CLAUDE.coding.md",
+                                                     "CLAUDE.godot.md", "guards/common.godot.md"),
     ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
@@ -931,9 +932,14 @@ def main(argv=None) -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--lock", help="a consumer lock: check its tracked rows")
     source.add_argument("--manifest", help="a baseline manifest: check every file it ships")
-    parser.add_argument("--root", default=".", help="directory holding .claude/ (default: cwd)")
+    parser.add_argument("--root", help="directory holding .claude/ (default: the harness root)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if not args.root:
+        # Imported here: baseline_sync imports this module, and a pull-proof checkout carries tools/ without hooks/.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+        from _checkout_root import harness_root
+        args.root = harness_root()
     try:
         data = json.loads(Path(args.lock or args.manifest).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

@@ -186,6 +186,7 @@ from review_snapshot import (  # noqa: E402
 TOOLS_DIR = Path(__file__).resolve().parent
 CLAUDE_DIR = TOOLS_DIR.parent
 sys.path.insert(0, str(CLAUDE_DIR / "hooks"))
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as _git_run  # noqa: E402
 
 RECORD_HEADING = "## Review record"
@@ -459,11 +460,11 @@ def _remerge_rows(text: str) -> list[tuple[str, int]]:
 def _changed(repo: Path, commits: list[str], merges: list[str]) -> dict:
     counts: dict[str, int] = {}
     for sha in commits:
-        text = _git_text(repo, ["show", "--numstat", "--format=", "--no-renames", sha])
+        text = _git_text(repo, ["show", "--numstat", "--relative", "--format=", "--no-renames", sha])
         for path, count in _numstat_rows(text):
             counts[path] = counts.get(path, 0) + count
     for sha in merges:
-        text = _git_text(repo, ["show", "--remerge-diff", "--format=", sha])
+        text = _git_text(repo, ["show", "--remerge-diff", "--relative", "--format=", sha])
         for path, count in _remerge_rows(text):
             counts[path] = counts.get(path, 0) + count
     return counts
@@ -473,7 +474,7 @@ def _conflict_resolutions(repo: Path, first: str, second: str) -> list[str]:
     merges = _git_lines(repo, ["rev-list", "--merges", f"{first}..{second}"])
     return [
         sha for sha in merges
-        if _git_text(repo, ["show", "--remerge-diff", "--format=", sha]).strip()
+        if _git_text(repo, ["show", "--remerge-diff", "--relative", "--format=", sha]).strip()
     ]
 
 
@@ -533,7 +534,7 @@ def build_scope(repo: Path, base_ref: str, pr: int) -> dict:
     else:
         mode, last_head, reason = resolved
 
-    universe = dict(_numstat_rows(_git_text(repo, ["diff", "--numstat", "--no-renames", base, head])))
+    universe = dict(_numstat_rows(_git_text(repo, ["diff", "--numstat", "--relative", "--no-renames", base, head])))
     if mode == "delta":
         own = _git_lines(repo, ["rev-list", "--reverse", "--no-merges",
                                 f"{last_head}..{head}", f"^{base_ref}"])
@@ -587,7 +588,7 @@ def _pr_covered(repo: Path, base_ref: str, pr: int, files: list[str], rows: list
     except ToolError:
         return {}
     ctx = Ctx(repo, base_ref)
-    escapes, _ = read_escapes(repo, ctx.toplevel)
+    escapes, _ = read_escapes(repo)
     cover = Cover(ctx, catalog, own, escapes, "pr")
     result = query(cover, files=files, mandates=sorted({row.get("mandate") for row in own} & set(catalog)),
                    mode=Mode(seat={}), applicable=False)
@@ -791,10 +792,20 @@ def rule_blob(repo: Path, key: str, claude_dir: Path | None = None, catalog: dic
     data = rule_text(key, claude_dir, catalog)
     if data is None:
         return None
-    done = _git(repo, ["hash-object", "-w", "--stdin"], stdin=data)
-    if done.returncode != 0:
-        raise ToolError(f"{key}: git hash-object failed for the rule text: {done.stderr.decode().strip()}")
-    return done.stdout.decode().strip()
+
+    def write():
+        done = _git(repo, ["hash-object", "-w", "--stdin"], stdin=data)
+        if done.returncode != 0:
+            raise ToolError(f"{key}: git hash-object failed for the rule text: {done.stderr.decode().strip()}")
+        return done.stdout.decode().strip()
+    # Each seat row of a command carries its mandates' rule blobs, and many seats share a mandate.
+    return review_snapshot.fact("rule blob " + hashlib.sha256(data).hexdigest(), repo, write)
+
+
+def _rigor(task_id, repo: Path):
+    """The task's rigor (`finding_bar.run_rigor`), read once per command: without a task scope it is the working
+    tree's status, and a record reads it beside each coverage view it builds."""
+    return review_snapshot.fact("rigor %s" % (task_id,), repo, lambda: _import("finding_bar").run_rigor(task_id, repo))
 
 
 def check_keys(catalog: dict, claude_dir: Path, lens_sets: dict) -> list[str]:
@@ -906,13 +917,6 @@ def resolve_candidate(roster: list | None = None) -> list[str]:
 # ---- ledger and escape-log files --------------------------------------------------------------------------
 
 
-def _toplevel(repo: Path) -> Path | None:
-    result = _git(repo, ["rev-parse", "--show-toplevel"])
-    if result.returncode != 0:
-        return None
-    return Path(result.stdout.decode("utf-8", errors="replace").strip())
-
-
 def ledger_path(repo: Path) -> Path:
     """The ledger store: `HARNESS_REVIEW_LEDGER`, a relative name resolving against `repo` (the checkout the
     command records for, which an in-process caller need not be the working directory of)."""
@@ -923,18 +927,21 @@ def ledger_path(repo: Path) -> Path:
     if superproject.returncode == 0 and superproject.stdout.strip():
         raise ToolError(f"{repo} is a submodule checkout: the review ledger keys superproject paths, so run this "
                         f"from the superproject {superproject.stdout.decode().strip()}")
-    common = _git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    # `repo` is the harness root and may sit below its git toplevel (`--show-prefix`): the shared store is the main
+    # checkout's copy of that same root, so one ledger serves every worktree.
+    common = _git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-prefix"])
     if common.returncode == 0:
-        return Path(common.stdout.decode().strip()).parent / ".claude" / "logs" / "review_ledger.jsonl"
+        git_dir, _, prefix = common.stdout.decode().strip().partition("\n")
+        return Path(git_dir.strip()).parent / prefix.strip() / ".claude" / "logs" / "review_ledger.jsonl"
     return repo / ".claude" / "logs" / "review_ledger.jsonl"
 
 
-def escape_log_path(repo: Path, toplevel: Path | None = None) -> Path:
+def escape_log_path(repo: Path) -> Path:
     """The escape log: `HARNESS_ESCAPE_LOG`, a relative name resolving against `repo` like the ledger's."""
     override = os.environ.get("HARNESS_ESCAPE_LOG")
     if override:
         return Path(override) if Path(override).is_absolute() else repo / override
-    return (toplevel or _toplevel(repo) or repo) / ".claude" / "escape_log.jsonl"
+    return repo / ".claude" / "escape_log.jsonl"
 
 
 def escape_overlay_path(repo: Path) -> Path:
@@ -1098,7 +1105,7 @@ class Cover:
         self._default_mode = Mode(seat=seat)
         self.design = design
         self.claude_dir = claude_dir or _claude_dir()
-        self.request_rigor = rigor if rigor is not None else _import("finding_bar").run_rigor(task_id, ctx.repo)
+        self.request_rigor = rigor if rigor is not None else _rigor(task_id, ctx.repo)
         self._rules: dict = {}
         self._premise_ancestors: dict = {}
         self._tiers = None
@@ -1437,7 +1444,7 @@ def _note_ledger(problem, corrupt) -> None:
         print(f"{corrupt} corrupt ledger line(s) skipped", file=sys.stderr)
 
 
-def read_escapes(repo: Path, toplevel: Path | None = None):
+def read_escapes(repo: Path):
     """(escape rows, problem): the checkout's tracked escape log plus the shared overlay (`escape_overlay_path`),
     or rows None with the problem text when either exists and cannot be parsed.
 
@@ -1445,7 +1452,7 @@ def read_escapes(repo: Path, toplevel: Path | None = None):
     row would leave standing the coverage it was written to revoke. A row both files hold reads twice, which
     clause 5 treats as once."""
     out = []
-    for path, label in ((escape_log_path(repo, toplevel), "escape log"),
+    for path, label in ((escape_log_path(repo), "escape log"),
                         (escape_overlay_path(repo), "escape overlay")):
         rows, corrupt, problem = _read_jsonl(path, label)
         if problem and path.exists():
@@ -1461,7 +1468,7 @@ def _make_cover(repo: Path, base_ref: str, subject_kind: str, seat=None, design=
     rows, corrupt, problem = read_rows(ledger_path(repo))
     _note_ledger(problem, corrupt)
     ctx = Ctx(repo, base_ref, hashes)
-    escapes, escape_problem = read_escapes(repo, ctx.toplevel)
+    escapes, escape_problem = read_escapes(repo)
     if escape_problem:
         print(f"{escape_problem}: no row covers until it is repaired", file=sys.stderr)
     return Cover(ctx, catalog, rows, escapes, subject_kind, seat, design, task_id=task_id), problem
@@ -2847,7 +2854,7 @@ def record(request: RecordRequest, repo: Path) -> list:
     if author is None:
         author = "unknown"
         print("author model unknown: no readable session transcript (pass --author-model)", file=sys.stderr)
-    recorded = _import("finding_bar").run_rigor(args.task, repo)
+    recorded = _rigor(args.task, repo)
     base = {"v": 1, "stage": args.stage, "subject": args.subject, "head": ctx.head, "mergeBase": ctx.merge_base(),
             "repo": (ctx.toplevel or repo).as_posix(),
             "premise_commits": premise_commits,
@@ -3105,12 +3112,11 @@ def cmd_rows(args, repo: Path) -> int:
               and (not args.model or row.get("model") == args.model)]
     if args.units:
         units: dict = {}
-        top = Path(_git(repo, ["rev-parse", "--show-toplevel"]).stdout.decode().strip() or repo)
         for row in picked:
             if row.get("reviewer") != "panel" or row.get("stage") != "candidate":
                 continue
             unit = f"task:{row['task']}" if row.get("task") else f"run:{str(row.get('id', '')).partition(':')[0]}"
-            units.setdefault(unit, set()).update(f for f in (row.get("files") or {}) if (top / f).exists())
+            units.setdefault(unit, set()).update(f for f in (row.get("files") or {}) if (repo / f).exists())
         for unit in sorted(u for u in units if units[u]):
             print(f"{unit}\t{','.join(sorted(units[unit]))}")
     elif args.json:
@@ -3258,7 +3264,7 @@ def _dispatch(argv, repo=None):
         args.files = (args.files or []) + load_files_from(args.files_from)
     if args.command == "uncovered" and args.files is None:
         raise ToolError("uncovered needs --files or --files-from")
-    repo = Path(getattr(args, "repo", None) or repo or Path.cwd())
+    repo = Path(getattr(args, "repo", None) or repo or harness_root())
     if args.command == "scope":
         sys.stdout.write(json.dumps(build_scope(repo, args.base_ref, args.pr)) + "\n")
         return 0
@@ -3275,9 +3281,11 @@ def _dispatch(argv, repo=None):
 
 
 def _guard(work, *args):
-    """(return value, exit code) for `work(*args)`, printing the CLI's error and mapping it to its status."""
+    """(return value, exit code) for `work(*args)`, printing the CLI's error and mapping it to its status. The command
+    asks each repository fact of git once (`review_snapshot.repo_facts`)."""
     try:
-        return work(*args), 0
+        with review_snapshot.repo_facts():
+            return work(*args), 0
     except LedgerUnreadable as exc:
         print(exc, file=sys.stderr)
         return None, 2

@@ -275,7 +275,7 @@ ConvertTo-Json -Compress @{ defined = $true; live = $set.Contains($live.Id); sel
 
 
 def ppp_cases(script):
-    """The wrapper's reaper spares every live record but its own (activity_registry.py's no-ownership policy), now read
+    """The wrapper's reaper spares every live record but its own (the reaper keeps no ownership axis), now read
     through PeerActivity.ps1: a same-checkout, same-session record is protected; the wrapper's own record is not."""
     tmp = tempfile.mkdtemp(prefix="rtsppp_")
     live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])

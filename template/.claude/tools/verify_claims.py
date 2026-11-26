@@ -36,6 +36,7 @@ the URL->artifact mapping when a claim cites a URL.
 Exit is 0 unless the input itself is unusable.
 """
 import argparse
+import functools
 import hashlib
 import html
 import json
@@ -45,7 +46,6 @@ import shlex
 import subprocess
 import sys
 import unicodedata
-from functools import cached_property
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -212,16 +212,23 @@ class _Context:
         self.bodies = {}
         self.hashes = {}
 
-    @cached_property
+    @property
     def main_root(self):
-        common = _path_git(self.root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-        if common is None or common.returncode:
-            return None
-        listed = _path_git(self.root, "--git-dir", common.text.strip(), "worktree", "list", "--porcelain")
-        if listed is None or listed.returncode:
-            return None
-        first = listed.text.splitlines()[0] if listed.text else ""
-        return Path(first[len("worktree "):]).resolve() if first.startswith("worktree ") else None
+        return _main_root(str(self.root))
+
+
+@functools.lru_cache(maxsize=None)
+def _main_root(root):
+    """The main checkout of `root`'s repository, for the process: a repository's first worktree does not move, and
+    `resolve_path` opens a context per cited path (two git processes each before this cache)."""
+    common = _path_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common is None or common.returncode:
+        return None
+    listed = _path_git(root, "--git-dir", common.text.strip(), "worktree", "list", "--porcelain")
+    if listed is None or listed.returncode:
+        return None
+    first = listed.text.splitlines()[0] if listed.text else ""
+    return Path(first[len("worktree "):]).resolve() if first.startswith("worktree ") else None
 
 
 def _result(kind, verdict, reason, **extra):
@@ -368,7 +375,7 @@ def _commit_text(ctx, sha, path):
     """`git show --stat --patch <sha>` text (message, stat summary, diff), or the file `<sha>:<path>` at that
     commit; None when git cannot read it."""
     try:
-        code, text, _err = _run_git(["show", f"{sha}:{path}"] if path else ["show", "--stat", "--patch", sha],
+        code, text, _err = _run_git(["show", f"{sha}:./{path}"] if path else ["show", "--stat", "--patch", sha],
                                     ctx.root, ctx.timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None

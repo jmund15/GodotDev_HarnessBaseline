@@ -30,7 +30,7 @@ import _delete_rule as rule
 import _git_commit
 import _own_worktree
 from case import bash
-from conftest import git, write
+from conftest import LIVE_BACKGROUND_NOTICE, fill, git, write
 
 PEER_SID = "5eed5eed-aaaa-4bbb-8ccc-0000000000ff"
 SUB = ("-c", "protocol.file.allow=always")
@@ -1168,6 +1168,59 @@ def test_what_a_status_line_loses(tmp_path, status, lost):
     assert rule.losses(status, tmp_path) == lost
 
 
+@pytest.mark.parametrize("status,made,lost", [
+    ("!! bin/\n", "bin/Debug/app.dll", False), ("!! src/obj/\n", "src/obj/project.assets.json", False),
+    ("!! .agents/\n", ".agents/workflows/run.md", False), ("?? Art/desktop.ini\n", "Art/desktop.ini", False),
+    ("!! Art/desktop.ini\n", "Art/desktop.ini", False), ("?? bin/tool.cs\n", "bin/tool.cs", True),
+    ("!! Binary/\n", "Binary/x.dat", True), ("?? Art/desktop.ini.bak\n", "Art/desktop.ini.bak", True),
+])
+def test_what_a_status_line_loses_for_the_owner_picked_outputs(tmp_path, status, made, lost):
+    """U62078: `.agents/`, `bin/`, `obj/` (when git ignores them) and `desktop.ini` regenerate; a lookalike name or an
+    unignored `bin/` is work."""
+    write(tmp_path, made, "x\n")
+    assert bool(rule.losses(status, tmp_path)) is lost
+
+
+# --- Owner-picked regenerable outputs inside a checkout (U62078) ---------------------------------------------------
+@pytest.fixture(scope="module")
+def outputs(tmp_path_factory):
+    """A project whose git ignores `/bin/`, `obj/` and `.agents/` and tracks `tools/bin/run.sh`; `src/bin/` is unignored."""
+    project = Project(tmp_path_factory.mktemp("outputs"))
+    write(project.root, "tools/bin/run.sh", "#!/bin/sh\n")
+    git(project.root, "add", "tools/bin/run.sh")
+    git(project.root, "commit", "-qm", "tracked bin")
+    git(project.root, "push", "-q", "origin", "HEAD")
+    with open(project.root / ".git" / "info" / "exclude", "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("/bin/\nobj/\n.agents/\n")
+    return project
+
+
+# One row per verdict: the status-line cases above decide each name; these prove the two readers (`losses` for a
+# linked worktree, `_unheld_files` for an orphan) take the rule's answer.
+OUTPUT_CASES = [
+    ("all_four", lambda p: (write(p, "bin/a"), write(p, "src/obj/b"), write(p, ".agents/c"), write(p, "d/desktop.ini")), True),
+    ("bin_unignored", lambda p: write(p, "src/bin/tool.cs"), False),
+    ("bin_tracked_edit", lambda p: write(p, "tools/bin/run.sh", "edited\n"), False),
+]
+
+
+@pytest.mark.parametrize("name,setup,want", OUTPUT_CASES, ids=[c[0] for c in OUTPUT_CASES])
+def test_a_worktrees_owner_picked_outputs_go_and_work_stays(outputs, name, setup, want):
+    path = outputs.wt("o_" + name)
+    setup(path)
+    assert outputs.retired(path)[0] is want
+
+
+@pytest.mark.parametrize("name,setup,want", OUTPUT_CASES, ids=[c[0] for c in OUTPUT_CASES])
+def test_an_orphans_owner_picked_outputs_go_and_work_stays(outputs, name, setup, want, tmp_path, monkeypatch):
+    path = outputs.orphan("f_o_" + name, edit=setup)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(outputs.root))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no_login"))
+    monkeypatch.chdir(outputs.root)
+    assert (rm("rm -rf " + path.as_posix(), outputs).kind == "allow") is want
+
+
 def test_the_verdict_cli_prints_each_worktree(world, capsys, monkeypatch):
     clean = world.wt("cli_clean")
     dirty = world.wt("cli_dirty")
@@ -1219,9 +1272,7 @@ def test_a_backgrounded_add_is_owned_only_on_its_completed_notice(bg_repo, tmp_p
     git(bg_repo, "worktree", "add", "-q", "-b", "scratch/" + name, str(wt), "HEAD")
     stamp = datetime.fromisoformat(born.replace("Z", "+00:00")).timestamp()
     os.utime(wt / ".git", (stamp, stamp))
-    notice = ("Command running in background with ID: %s. Output is being written to: %s. You will be notified when "
-              "it completes. To check interim output, use Read on that file path.\nSession cwd remains %s; directory "
-              "changes made by the backgrounded command do not apply to subsequent commands." % (task, out, bg_repo))
+    notice = fill(LIVE_BACKGROUND_NOTICE, task=task, output=out, cwd=bg_repo)
     rows = [{"type": "assistant", "isSidechain": False, "timestamp": START, "cwd": str(bg_repo),
              "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_" + name, "name": "Bash",
                          "input": {"command": command.format(repo=bg_repo.as_posix(), name=name)}}]}},

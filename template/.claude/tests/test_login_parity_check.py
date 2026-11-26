@@ -23,6 +23,7 @@ import threading
 import time
 from pathlib import Path
 
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)  # the proof may run inside a delegate: each case plants its own caller
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = Path(__file__).resolve().parent
 HOOK = HERE.parent / "hooks" / "login_parity_check.py"
@@ -60,8 +61,9 @@ def run_hook(root, check_argv, env=None):
     module.LOGS = root / "logs"
     spawns = []
     module.spawn = lambda argv, log: spawns.append((list(argv), Path(log)))
-    saved = {k: os.environ.get(k) for k in ("CLAUDE_CODE_SIDECAR",)}
+    saved = {k: os.environ.get(k) for k in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT")}
     os.environ.pop("CLAUDE_CODE_SIDECAR", None)   # the proof may itself run inside a sidecar child
+    os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
     for key, value in (env or {}).items():
         os.environ[key] = value
     out = io.StringIO()
@@ -159,6 +161,12 @@ def main():
     case("a failed check: one line naming the exit and the command to run; nothing started",
          crash is None and not spawns and len(lines) == 1 and "exit 2" in lines[0]
          and "sync_plan_config.py --check" in lines[0], repr((out, spawns, crash)))
+
+    root = new_root()
+    out, spawns, crash = run_hook(root, plant(root, DRIFT, 1), env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})
+    case("a claude -p child (sdk-cli, no sidecar marker) runs no check and starts nothing",
+         crash is None and out.strip() == "" and not spawns and not (root / "check_ran").exists(),
+         repr((out, spawns, crash)))
 
     root = new_root()
     out, spawns, crash = run_hook(root, plant(root, DRIFT, 1), env={"CLAUDE_CODE_SIDECAR": "1"})

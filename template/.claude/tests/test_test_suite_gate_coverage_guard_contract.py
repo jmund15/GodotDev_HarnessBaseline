@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from _module_closure import copy_closure  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 FILTERS = "\n".join("-Filter \"FullyQualifiedName~Tests.%s\"" % name for name in ("Logic", "Integration", "Sanity"))
@@ -31,10 +32,7 @@ class TestSuiteGateCoverageContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         hooks = self.temp / ".claude" / "hooks"
         hooks.mkdir(parents=True)
-        shutil.copy(ROOT / ".claude" / "hooks" / "test_suite_gate_coverage_guard.py",
-                    hooks / "test_suite_gate_coverage_guard.py")
-        shutil.copy(ROOT / ".claude" / "hooks" / "_checkout_root.py", hooks / "_checkout_root.py")
-        shutil.copy(ROOT / ".claude" / "hooks" / "_git_run.py", hooks / "_git_run.py")
+        copy_closure(self.temp / ".claude", "hooks/test_suite_gate_coverage_guard.py")
         self.guard = hooks / "test_suite_gate_coverage_guard.py"
         scripts = self.temp / ".claude" / "scripts"
         scripts.mkdir(parents=True)

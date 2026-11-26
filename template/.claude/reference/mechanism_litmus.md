@@ -1,8 +1,10 @@
 # Mechanism litmus
 
 A mechanism is any test, check, hook, tool, rule or stage that runs without a reader deciding each time. This file
-applies to adding one and to keeping one, in any project: Godot tests, web tests and harness proofs included. Add or
-keep a mechanism only when all four hold.
+applies to adding one and to judging one that exists, in any project: Godot tests, web tests and harness proofs
+included. Add a mechanism only when all four hold. An existing one is kept, redesigned or removed as `CLAUDE.core.md`
+§Core Principles *Build on what exists* states; a test it fails names what its redesign fixes, and is not by itself a
+removal. Overhead is fixed in how mechanisms are built, never by building none.
 
 - **L1. Real.** The failure it targets has happened (a red, an incident, a deny that saved work), or it is a floor: an
   irreversible loss of peer work, owner authority, data, or a destructive operation's target. A spec test's RED-first

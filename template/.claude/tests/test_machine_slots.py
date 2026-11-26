@@ -146,6 +146,33 @@ class MachineSlots(unittest.TestCase):
         (Path(self.folder) / 'slot-1.lock').write_text('424242', encoding='ascii')
         self.assertEqual(slots._holders(self.folder, []), '; held by pid 424242 (1)')
 
+    def _run_named(self, *argv):
+        bin_dir = Path(self.tmp.name) / 'bin'
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / 'tool.cmd').write_text('@echo off\r\necho [%1]\r\n', encoding='utf-8')
+        env = dict(os.environ, PATH=str(bin_dir), HOME=self.tmp.name, USERPROFILE=self.tmp.name)
+        return subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--', *argv],
+                              capture_output=True, text=True, timeout=60, env=env)
+
+    @unittest.skipUnless(os.name == 'nt', 'CreateProcess applies no PATHEXT only on Windows')
+    def test_run_finds_a_cmd_tool_by_its_bare_name(self):
+        out = self._run_named('tool', 'a b')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn('a b', out.stdout)
+
+    @unittest.skipUnless(os.name == 'nt', 'cmd.exe parses a .cmd tool\'s arguments')
+    def test_run_refuses_a_cmd_argument_cmd_exe_would_reparse(self):
+        out = self._run_named('tool', 'x"&echo INJECTED')
+        self.assertEqual(out.returncode, 2)
+        self.assertNotIn('INJECTED', out.stdout)
+        self.assertNotIn('Traceback', out.stderr)
+
+    def test_run_names_a_missing_command_and_exits_2(self):
+        out = self._run_named('no_such_tool_xyz')
+        self.assertEqual(out.returncode, 2)
+        self.assertIn('no_such_tool_xyz', out.stderr)
+        self.assertNotIn('Traceback', out.stderr)
+
     def test_run_passes_a_proof_runner_through_without_a_lane(self):
         # A wrapped runner held one lane for its whole batch and ran every proof serially inside it, so an
         # exclusive head waited out the batch while the rest of the pool sat idle.
@@ -212,7 +239,10 @@ class MachineSlots(unittest.TestCase):
             self.assertIsNone(slots.job_deadline(), 'a gate job exists to run the wide run, queue included')
         with patch.dict(os.environ):
             os.environ.pop('CLAUDE_CODE_SIDECAR', None)
+            os.environ.pop('CLAUDE_CODE_ENTRYPOINT', None)
             self.assertIsNone(slots.job_deadline(), 'the session itself is woken by its watcher and keeps its place')
+            os.environ['CLAUDE_CODE_ENTRYPOINT'] = 'sdk-cli'
+            self.assertIsNotNone(slots.job_deadline(), 'a claude -p child is a delegate whatever its sidecar marker')
 
     def test_a_dispatched_jobs_proof_process_gives_up_its_place_the_same_way(self):
         # sitecustomize admits a direct `python test_x.py` through admit(); None makes it exit 2.
@@ -479,6 +509,99 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(holder)
 
+    def _plant(self, pid, exclusive=False):
+        """A live ticket another process (named `pid`) holds in the queue, named by production's own rule."""
+        queue = Path(self.folder) / 'queue'
+        queue.mkdir(parents=True, exist_ok=True)
+        with slots._TICKET_LOCK:
+            name = slots._ticket_name(str(queue), exclusive, pid=pid)
+            handle = slots._file_lock.acquire(str(queue / name), 0)
+        self.assertIsNotNone(handle)
+        self.addCleanup(slots.release, handle)
+        return name, handle
+
+    def _served_order(self, tickets):
+        """Release the head ticket, over and over, as admission would; returns the names in that order."""
+        queue, order = str(Path(self.folder) / 'queue'), []
+        live = dict(tickets)
+        while live:
+            head = [name for name in live if not slots._live_ticket_before(queue, name)]
+            self.assertEqual(len(head), 1, 'exactly one ticket is the head')
+            order.append(head[0])
+            slots.release(live.pop(head[0]))
+        return order
+
+    def test_a_callers_nth_ticket_waits_behind_every_other_callers_first_n_minus_one(self):
+        """Shared tickets are first come first served per caller, round-robin across callers, so one caller's
+        many tickets never queue a lone caller's single ticket behind all of them."""
+        many = [self._plant(111) for _ in range(3)]
+        lone = self._plant(222)
+        other = self._plant(333)
+        order = self._served_order(many + [lone, other])
+        self.assertEqual(order[0], many[0][0])
+        self.assertEqual(set(order[1:3]), {lone[0], other[0]}, 'each other caller\'s first ticket goes before the many-ticket caller\'s second')
+        self.assertEqual(order[3:], [many[1][0], many[2][0]], 'a caller\'s tickets keep arrival order')
+
+    def test_a_caller_that_arrives_late_joins_the_current_round_not_the_end(self):
+        many = [self._plant(111) for _ in range(4)]
+        time.sleep(.2)
+        lone = self._plant(222)
+        order = self._served_order(many + [lone])
+        self.assertEqual(order.index(lone[0]), 1)
+
+    def test_a_releaser_that_takes_again_queues_behind_the_waiting_callers_next_ticket(self):
+        waiting = [self._plant(111) for _ in range(3)]
+        churner = self._plant(222)
+        slots.release(churner[1])
+        again = self._plant(222)
+        order = self._served_order(waiting + [again])
+        self.assertEqual(order[:2], [waiting[0][0], again[0]])
+        self.assertEqual(order[2:], [waiting[1][0], waiting[2][0]])
+
+    def test_a_ticket_from_a_checkout_without_rounds_is_never_served_after_a_newer_one(self):
+        """The pool is shared by checkouts at different harness versions; an old one orders by arrival only."""
+        queue = Path(self.folder) / 'queue'
+        queue.mkdir(parents=True)
+        old = ['%020d-%d-%d.lock' % (time.time_ns() + i, 999, i) for i in range(3)]
+        handles = [(name, slots._file_lock.acquire(str(queue / name), 0)) for name in old]
+        fresh = [self._plant(111), self._plant(222)]
+        order = self._served_order(handles + fresh)
+        self.assertEqual(order[:3], old)
+
+    def test_a_process_queuing_many_tickets_at_once_spaces_them_by_round(self):
+        os.environ['HARNESS_MACHINE_SLOTS'] = '1'
+        holder = slots.take(False)
+        threads = [threading.Thread(target=lambda: slots.release_all(slots.take(False, deadline=time.time() + 8))) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        self._wait_for_tickets(6)
+        keys = sorted(int(name.split('-')[0]) for name in os.listdir(Path(self.folder) / 'queue'))
+        self.assertEqual(len(set(k // slots._ROUND_NS for k in keys)), 6, 'tickets queued together shared a round')
+        slots.release_all(holder)
+        for thread in threads:
+            thread.join(10)
+
+    def test_a_lone_caller_is_admitted_before_a_many_ticket_callers_second(self):
+        os.environ['HARNESS_MACHINE_SLOTS'] = '1'
+        first = self._plant(111)
+        self._plant(111)
+        self._plant(111)
+        thread, lone = self._queued()
+        self._wait_for_tickets(4)
+        time.sleep(.3)
+        self.assertNotIn('held', lone, 'the head ticket is served first')
+        slots.release(first[1])
+        thread.join(10)
+        self.assertIsNotNone(lone.get('held'), 'the lone ticket waited behind the second and third older tickets')
+        slots.release_all(lone['held'])
+
+    def test_an_exclusive_ticket_still_goes_ahead_of_every_shared_round(self):
+        shared = [self._plant(111) for _ in range(2)]
+        exclusive = self._plant(222, exclusive=True)
+        later = self._plant(333, exclusive=True)
+        order = self._served_order(shared + [exclusive, later])
+        self.assertEqual(order, [exclusive[0], later[0], shared[0][0], shared[1][0]])
+
     def test_a_dead_waiters_ticket_does_not_block_the_line(self):
         os.environ['HARNESS_MACHINE_SLOTS'] = '1'
         crash = subprocess.run([sys.executable, '-c',
@@ -583,7 +706,7 @@ class MachineSlots(unittest.TestCase):
 
     def test_native_delegate_guard_names_slotted_direct_proof_command(self):
         guard = json.loads((ROOT / '.claude/guards/single_flight.json').read_text(encoding='utf-8'))
-        self.assertIn('machine_slots.py run --', guard['withShell'])
+        self.assertIn('machine_slots.py run --', guard['writer'])
 
     def test_manual_case_pool_callers_hold_a_budget(self):
         # A proof that sizes its own ThreadPoolExecutor from _case_pool's width must hold the budget for it.

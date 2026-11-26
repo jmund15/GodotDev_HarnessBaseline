@@ -12,8 +12,8 @@ The default outgoing range matches review_ledger owed: upstream..HEAD, or origin
 An explicit --base-ref freezes <base-ref>..HEAD instead, so an owed audit of already-pushed doctrine still runs.
 All doctrine commits supply messages and per-commit diffs, including transient paths and
 rename sources. --widen unions their paths into the subject. restate-groups.txt carries
-`restate_scan.py pairs --changed` over the subject files (peer-dirty paths excluded) since
---session-base, the duplicate-sentence groups the harness-quality seat reads; a nonzero
+`restate_scan.py pairs --changed --strong` over the subject files (peer-dirty paths excluded) since
+--session-base, the duplicate-sentence pairs two or more channels agree on, which the harness-quality seat reads; a nonzero
 `restateScanExit` means it did not scan. Coverage uses the ledger's
 final-state check. A fresh output
 folder holds the frozen IDs, blob map, every typed evidence artifact and one view per mandate.
@@ -40,7 +40,7 @@ from pathlib import Path
 import review_ledger as ledger
 import review_snapshot
 import task_record
-from _checkout_root import linked_main_root
+from _checkout_root import harness_root, linked_main_root
 from cli_usage import usage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
@@ -170,10 +170,10 @@ def per_path_diffs(root, args, paths):
     """`git diff <args> -- <path>` text for each path. Plain paths share one call per argument chunk; each patch
     block goes to every subject its pathspec would have matched (the file itself, or a directory above it).
     Any other path keeps its own call, since git reads its pathspec or quoting differently."""
-    texts = {path: git(root, "diff", *args, "--", path) for path in paths if not plain_path(path)}
+    texts = {path: git(root, "diff", "--relative", *args, "--", path) for path in paths if not plain_path(path)}
     for chunk in chunked([path for path in paths if plain_path(path)]):
         owned = {path: [] for path in chunk}
-        patch = git(root, "diff", *args, "--", *chunk)
+        patch = git(root, "diff", "--relative", *args, "--", *chunk)
         for block in re.split(r"(?m)^(?=diff --git )", patch):
             if not block:
                 continue
@@ -207,13 +207,13 @@ def committed_objects(root, head, paths):
         bodies[oid] = entry[2]
     found = {}
     for path, (kind, oid) in entries.items():
-        text = bodies[oid].decode("utf-8", errors="replace") if kind == "blob" else git(root, "show", f"{head}:{path}")
+        text = bodies[oid].decode("utf-8", errors="replace") if kind == "blob" else git(root, "show", f"{head}:./{path}")
         found[path] = (oid, text)
     for path in paths:
         if not plain_path(path):
-            oid = git(root, "rev-parse", "--verify", f"{head}:{path}", optional=True)
+            oid = git(root, "rev-parse", "--verify", f"{head}:./{path}", optional=True)
             if oid:
-                found[path] = (oid.strip(), git(root, "show", f"{head}:{path}"))
+                found[path] = (oid.strip(), git(root, "show", f"{head}:./{path}"))
     return found
 
 
@@ -231,7 +231,7 @@ def restate_groups(root, session_base, files):
         listing = Path(tmp) / "paths.txt"
         listing.write_text("\n".join(files) + "\n", encoding="utf-8", newline="\n")
         result = subprocess.run([sys.executable, str(scan), "--repo", str(root), "pairs", "--changed",
-                                 "--base", session_base, "--paths", f"@{listing}"], capture_output=True)
+                                 "--strong", "--base", session_base, "--paths", f"@{listing}"], capture_output=True)
     return result.returncode, result.stdout.decode("utf-8", errors="replace")
 
 
@@ -336,8 +336,8 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
         commit_diffs.append((commit, commit_diff_text(root, commit)))
     committed_text = per_path_diffs(root, ["--no-renames", f"{session_base}..{head}"], files)
     dirty_text = per_path_diffs(root, ["--no-renames", "HEAD"], [path for path in files if path not in committed_only])
-    base_state = cat_file(root, [f"{session_base}:{path}" for path in files])
-    head_state = cat_file(root, [f"{head}:{path}" for path in files])
+    base_state = cat_file(root, [f"{session_base}:./{path}" for path in files])
+    head_state = cat_file(root, [f"{head}:./{path}" for path in files])
     index_paths = tracked_entries(root)
     subjects = []
     changed = []
@@ -475,7 +475,7 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
 
 def main():
     parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--root", default=".")
+    parser.add_argument("--root", default=None, help="the harness root (default: the nearest ancestor of the cwd holding .claude/)")
     parser.add_argument("--base-ref")
     parser.add_argument("--session-base", required=True)
     parser.add_argument("--files", nargs="*", default=[])
@@ -489,7 +489,7 @@ def main():
     parser.add_argument("--plan", help="freeze this plan instead of the task's first recorded plan")
     try:
         a = parser.parse_args()
-        result = freeze(root=a.root, out=a.out, roster=a.roster, session_base=a.session_base, base_ref=a.base_ref,
+        result = freeze(root=a.root or harness_root(), out=a.out, roster=a.roster, session_base=a.session_base, base_ref=a.base_ref,
                         files=a.files, widen=a.widen, committed_only=a.committed_only, session=a.session,
                         task=a.task, plan=a.plan)
         print(json.dumps(result))

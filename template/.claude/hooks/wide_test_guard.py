@@ -12,7 +12,7 @@ regex, its exempt arguments, an optional narrow rule), read through `hooks/_wide
 is the invocation, never the noun, so `grep`, `cat` or a bare name in prose never denies. A malformed
 row fails closed: its validation error is the deny reason.
 
-Admitted callers: the root session (no `agent_id`, no `CLAUDE_CODE_SIDECAR`), a native job whose
+Admitted callers: the root session (`in_delegate` false), a native job whose
 payload `agent_type` is the gate kind's `agentType`, and a sidecar whose `CLAUDE_CODE_SIDECAR_KIND` is
 `gate`. The `agentType` is read from `guards/tool_profiles.json`'s gate row, and an unreadable table
 refuses a native job with that cause. Every other caller, an unknown type included, is refused.

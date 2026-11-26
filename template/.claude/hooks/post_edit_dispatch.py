@@ -9,8 +9,10 @@ merge into one additionalContext payload.
 
 Order (cheapest text scans first, then the file-reading guards):
   1. check_logger_tag_prefix.process — untagged JmoLogger call on an added line
-  2. design_surface_reminder.process — .cs text matching a design-litmus shape (3 narrow regexes, once per file)
-  3. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
+  2. design_surface_reminder.process — an exported bool the edit introduced beside an exported slot whose type the repo shows to be a family
+  3. plan_memory_reminder.process    — a plan write whose declared files a memory domain owns (once per session and domain set)
+  4. task_brief_facts.process        — a scratch brief's malformed `task` block, and the dispatch-prep notice
+  5. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
 
 Sub-hook contract: `process(payload)` returns `{"context": <text>}` or None;
 `{"stderr": <text>}` records diagnostics. Each sub-hook self-gates on tool_name and
@@ -39,17 +41,12 @@ import _optional_hooks  # noqa: E402
 CHAIN = (
     ("check_logger_tag_prefix", "advisory"),
     ("design_surface_reminder", "advisory"),
+    ("plan_memory_reminder", "advisory"),
+    ("task_brief_facts", "advisory"),
     ("runaway_scan_reaper", "reaper"),
 )
 CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
 
-# Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
-# keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
-UNWIRED = (
-    "plan_memory_reminder",
-    "retire_trigger_advisory",
-    "self_eval_archive_guard",
-)
 SUBHOOK_TIMEOUT = 5.0
 MAX_CONTEXT_CHARS = 8_000
 

@@ -168,15 +168,6 @@ class Replay(unittest.TestCase):
                         "--files", *self.files, "--roster", str(self.root / "roster.json"))
         self.assertEqual(json.loads(plan.stdout)["roster"], [])
         self.git("add", "--", *self.files)
-        self.assertNotIn("[review]", self.hook())
-
-    def hook(self, command='git commit -m "fixture"', session="replay"):
-        payload = {"tool_name": "Bash", "cwd": str(self.root), "session_id": session,
-                   "tool_input": {"command": command}}
-        done = subprocess.run([sys.executable, str(CLAUDE / "hooks/triage_commit_check.py")],
-                              input=json.dumps(payload), capture_output=True, text=True, env=self.env, cwd=self.root)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return done.stdout
 
     def test_mechanical_fold_inherits_coverage_and_the_parent_s_design_owes_the_game_round(self):
         self.fold()
@@ -192,12 +183,6 @@ class Replay(unittest.TestCase):
         self.write("fix.md", "the default\nan unrelated mechanism\n")
         self.git("add", "fix.md")
         self.assertEqual(self.owed("fix.md"), {"fix.md"})
-        self.assertIn("edited", self.hook())
-        self.assertNotIn("[review]", self.hook())
-        broad = ('git commit -m "fixture" -m "Triage: reach=shared reversibility=clean '
-                 'design=settled grounding=verified oracle=gate size=milestones kind=decision"')
-        self.assertIn("edited", self.hook(broad, session="broad-replay"))
-        self.assertNotIn("[review]", self.hook(broad, session="broad-replay"))
 
     def test_harness_text_fold_leaves_no_review_debt(self):
         note = ".claude/commands/note.md"
@@ -271,7 +256,7 @@ class Binding(unittest.TestCase):
         binding = {path for path, proofs in data["proof_bindings"].items()
                    if "test_review_rounds_replay.py" in proofs}
         self.assertEqual(binding, {".claude/tools/review_ledger.py", ".claude/tools/post_check.py",
-                                       ".claude/tools/fold_check.py", ".claude/hooks/triage_commit_check.py",
+                                       ".claude/tools/fold_check.py",
                                        ".claude/workflows/review_fanout.js"})
 
 

@@ -266,6 +266,10 @@ case("post_check.json and claims.json are written by the same tail",
      lambda: read(out, "post_check.json") is not None and read(out, "claims.json") is not None
      and "post-check:" in text)
 
+claims = read(out, "claims.json") or {}
+case("--review-close leaves the close's claims and verdict in each --workflow-dir it landed, for the Stop audit",
+     lambda: claims and read(wf, "review_close.json") == claims)
+
 # parity: the same seats run all as sidecars give the same sources, counts and seat statuses
 out_s = tempfile.mkdtemp(dir=ROOT, prefix="allside_")
 jobs_s = write_jobs([seat("n4", plan=OTHER), seat("s4", plan=OTHER)])

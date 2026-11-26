@@ -1,0 +1,183 @@
+{
+ "status": "fail",
+ "counts": {
+  "VERIFIED": 5,
+  "UNVERIFIED": 0,
+  "UNCHECKED": 0
+ },
+ "verdicts": {
+  "F1": {
+   "verdict": "VERIFIED",
+   "items": [
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_05.md:20",
+     "rangeHit": true,
+     "citedRange": [
+      20,
+      20
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_05.md",
+     "blobHash": "47f12b8d79b1f533f28b9a6faf13c1bed6f2fea8"
+    },
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_01.md:87",
+     "rangeHit": true,
+     "citedRange": [
+      87,
+      87
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_01.md",
+     "blobHash": "d0f4c242a607f3a9d24041499c9028bd1fd1b07b"
+    }
+   ]
+  },
+  "F2": {
+   "verdict": "VERIFIED",
+   "items": [
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_13.md:163",
+     "rangeHit": true,
+     "citedRange": [
+      163,
+      163
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_13.md",
+     "blobHash": "076a1ad98a35ba51e0df515afa4fd97d51650b46"
+    },
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_13.md:164",
+     "rangeHit": true,
+     "citedRange": [
+      164,
+      164
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_13.md",
+     "blobHash": "076a1ad98a35ba51e0df515afa4fd97d51650b46"
+    },
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_10.md:213",
+     "rangeHit": true,
+     "citedRange": [
+      213,
+      213
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_10.md",
+     "blobHash": "3138d982485a60cb6926097741cbada491e96497"
+    },
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_12.md:172",
+     "rangeHit": true,
+     "citedRange": [
+      172,
+      172
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_12.md",
+     "blobHash": "cab038c866b1a61e3349f77b5ecb677d07bfd800"
+    }
+   ]
+  },
+  "F3": {
+   "verdict": "VERIFIED",
+   "items": [
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_06.md:136",
+     "rangeHit": true,
+     "citedRange": [
+      136,
+      136
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_06.md",
+     "blobHash": "3f772487e0fb00eaa1056f161172802c941cf0d9"
+    },
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_14.md:118",
+     "rangeHit": true,
+     "citedRange": [
+      118,
+      118
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_14.md",
+     "blobHash": "a72daeafebb2b2bdf098085ce081f953d0c8854c"
+    }
+   ]
+  },
+  "F4": {
+   "verdict": "VERIFIED",
+   "items": [
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_03.md:12",
+     "rangeHit": true,
+     "citedRange": [
+      12,
+      12
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_03.md",
+     "blobHash": "3e2b2ccadf913f30fd1aba83f3d9f663a9fb6a5f"
+    },
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_01.md:57",
+     "rangeHit": true,
+     "citedRange": [
+      57,
+      57
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_01.md",
+     "blobHash": "d0f4c242a607f3a9d24041499c9028bd1fd1b07b"
+    }
+   ]
+  },
+  "F5": {
+   "verdict": "VERIFIED",
+   "items": [
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/area/file_01.md:101",
+     "rangeHit": true,
+     "citedRange": [
+      101,
+      101
+     ],
+     "path": "C:\\dev\\proj\\.claude\\area\\file_01.md",
+     "blobHash": "d0f4c242a607f3a9d24041499c9028bd1fd1b07b"
+    }
+   ]
+  }
+ },
+ "errors": [
+  "fold-out-of-subject: changed or claimed outside the subject's files and new paths: .claude/area/file_13.md"
+ ],
+ "outcome": "fail",
+ "mode": "review"
+}

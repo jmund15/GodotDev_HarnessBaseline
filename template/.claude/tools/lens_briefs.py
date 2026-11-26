@@ -27,7 +27,7 @@ seat by the ladder's selection line, native on the session's plan through a Work
 elsewhere, then `--review-close` consolidates every seat. `"target": "native"` is the explicit `review_fanout.js`
 engine path: it writes `<run dir>/args.json`, the engine args `Workflow({scriptPath, args: {argsFile}})` expands, and
 every seat pays the session's plan. A registry-less seat (`brief`) is pinned to a registry row like the others, and its
-`tools` (a delta such as `+Bash`) rides in the job. Mode `explore` has no Workflow engine: it writes
+`tools` (a signed delta such as `+mcp:godot`) rides in the job. Mode `explore` has no Workflow engine: it writes
 `<run dir>/jobs_<prefix>.json` for `sidecar_fanout.py`, each lens listing its `rows` (`{alias: effort}`, from the
 seat's `rows` or its pin and effort) and no plan, so the fan-out places it; `explore_result.py` then consolidates
 the lenses of every transport. Spec keys: `mode` (`explore`, `session-audit`,
@@ -104,7 +104,7 @@ ends with every file its templates declare as `preload:`, once per seat, blockqu
 `kfm: index` (`lens.py`) gets the known-failure-modes snapshot materialized and checked by `kfm.py`
 under `.claude/scratch/kfm/<catalog sha>/`, and its brief names the index path. Every sidecar brief
 is checked against the review tool profile before any job is written: a line needing a tool the
-profile lacks refuses with that line, never a silent `+Bash`.
+profile lacks refuses with that line.
 
 A meta subject is swept once for all selected seats, including non-citer review seats `citer_coverage.py` matches.
 Its summary shows the subject's worktree hash and sweep HEAD as provenance; only the hash determines freshness.
@@ -118,7 +118,7 @@ that does not resolve at HEAD), printing the block grammar and its home. A `code
 swept. `--vault` is the Obsidian vault root the sweep reads (default: `vault_read.DEFAULT_VAULT`).
 
 For a meta subject, the `plc-evidence-grounding` seat also receives <prefix>_behavior.json:
-`extract_numbers.behavior_report` over the subject plans, file-bearing surfaces and that seat's
+`rule_units.behavior_report` over the subject plans, file-bearing surfaces and that seat's
 must-read paths. The full artifact is a sized must-read input, not a counts-only summary. Current
 claims keep the checker's typed outcomes; proposal subjects are pending, never observed proof passes.
 """
@@ -153,13 +153,14 @@ import _dispatch_pins  # noqa: E402  (the native pin name of a row)
 import dispatch_size  # noqa: E402  (a seat's reading and its fit to its pin's window)
 import explore_result  # noqa: E402  (the claims contract an explore lens brief carries)
 import lens  # noqa: E402  (sibling module: registry parsing)
+from _job_map import JOB_MAP_SECTION_RE, has_job_map  # noqa: E402  (the plan format's `## Job map` section)
 import model_registry  # noqa: E402  (the tier vocabulary, and the sidecar alias resolution)
 import finding_bar  # noqa: E402  (the run's bar words; a sidecar prompt has no engine contract to carry them)
 import task_record  # noqa: E402  (the session's task record: the acceptance test every seat judges)
-import plan_job_map_guard  # noqa: E402  (the `## Job map` heading rule, one home)
 import review_result  # noqa: E402  (the Read window a must-read brief states)
 import review_snapshot  # noqa: E402  (the one address for reviewed bytes)
 import tool_profiles  # noqa: E402  (the review kind's built-ins)
+from _checkout_root import harness_root  # noqa: E402
 from _git_run import run as _run_git  # noqa: E402
 
 TIERS = list(model_registry.TIER_ORDER) + sorted(model_registry._TIER_ALIASES)
@@ -216,7 +217,7 @@ def subject_plans(specs: list[str]) -> list[tuple[str, str]]:
             sys.exit(f"--subject-plan {spec}: write meta:<plan.md> or code:<plan.md>")
         if not Path(path).is_file():
             sys.exit(f"--subject-plan {spec}: {path} is not a file")
-        if not plan_job_map_guard.has_job_map(Path(path).read_text(encoding="utf-8", errors="replace")):
+        if not has_job_map(Path(path).read_text(encoding="utf-8", errors="replace")):
             sys.exit(f"--subject-plan {spec}: {path} has no `## Job map` section; add one routing each slice "
                      "(plan_file_format.md §Job map)")
         found.append((shape, path))
@@ -231,9 +232,6 @@ def subject_stem(path: str, stems) -> str:
     return stem
 
 
-FIX_WINDOW_DAYS = 30
-JOB_MAP_SECTION_RE = re.compile(plan_job_map_guard.JOB_MAP_HEADING + r".*?(?=^#{1,6}\s|\Z)",
-                                re.IGNORECASE | re.MULTILINE | re.DOTALL)
 BACKTICK_PATH_RE = re.compile(r"`([^`\s]+)`")
 
 
@@ -273,7 +271,7 @@ def fix_history_section(subjects: list[tuple[str, str]], repo: Path, *, out: Pat
     for shape, path in dict.fromkeys(subjects):
         forms = fix_paths(path, shape)
         history = mechanism_census.fix_history(str(repo), sorted({f for fs in forms.values() for f in fs}),
-                                               ref="HEAD", days=FIX_WINDOW_DAYS, reading=reading) if forms else {}
+                                               ref="HEAD", days=mechanism_census.DEFAULT_WINDOW_DAYS, reading=reading) if forms else {}
         rows, full = [], {}
         for raw, candidates in forms.items():
             hit = next((f for f in candidates if not history[f].get("unresolved")), None)
@@ -286,7 +284,7 @@ def fix_history_section(subjects: list[tuple[str, str]], repo: Path, *, out: Pat
         fixes_file = out / f"{prefix}_{subject_stem(path, stems)}_fixes.json"
         fixes_file.write_text(json.dumps(full, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
         lines += [f"> ## {path}", ">",
-                  f"> Counted fixes in the census window ({FIX_WINDOW_DAYS} days) for the runtime harness files this plan touches. "
+                  f"> Counted fixes in the census window ({mechanism_census.DEFAULT_WINDOW_DAYS} days) for the runtime harness files this plan touches. "
                   "Facts only: a count is a lead for judging a redesign against a patch, never the verdict.",
                   "> `sinceListing` counts fixes since a listed file's listing date, past the window: `cited` of `fixes` "
                   "carry a plan tag." if reading else
@@ -353,7 +351,7 @@ def grounding_behavior_section(subjects: list[tuple[str, str]], claimed_paths: l
     never executes proofs or interprets a resolving citation as a behavior pass.
     """
     import citers
-    import extract_numbers
+    import rule_units
     meta = list(dict.fromkeys(path for shape, path in subjects if shape == "meta"))
     if not meta:
         return ""
@@ -371,7 +369,7 @@ def grounding_behavior_section(subjects: list[tuple[str, str]], claimed_paths: l
         paths.extend(relative(target) for surface in citers.plan_surfaces(path)
                      if (target := citers.surface_file(surface)))
     paths.extend(relative(path) for path in claimed_paths)
-    report = extract_numbers.behavior_report(repo, paths=list(dict.fromkeys(paths)), base="HEAD",
+    report = rule_units.behavior_report(repo, paths=list(dict.fromkeys(paths)), base="HEAD",
                                             staged=False, proof_results=None)
 
     def unclassified(unit):
@@ -458,8 +456,8 @@ def sidecar_tool_block(context_path: str, builtins: list[str]) -> str:
     row does not grant.
     """
     context = Path(context_path).as_posix()
-    return ("# Your tool profile: read-only, no shell\n\n"
-            f"You are a review seat with {', '.join(builtins)}. You have no shell and no writing tool, "
+    return ("# Your tool profile: read-only\n\n"
+            f"You are a review seat with {', '.join(builtins)}. You have no writing tool and never write through the shell, "
             "and the transport's hooks or skills are not a substitute for this brief's mandates. "
             "When a mandate's evidence is "
             "not readable with those tools, report that mandate `not-reached` in `checked.mandates` and stop "
@@ -1345,13 +1343,13 @@ def prepare_command(argv: list[str]) -> None:
         sys.exit(f"prepare: --spec {a.spec}: {exc}")
     if isinstance(spec, dict) and spec.get("mode") == "delegate":
         import delegate_prepare
-        root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())
         sys.exit(delegate_prepare.run(spec, a.out, root))
     if not isinstance(spec, dict) or spec.get("mode") not in PREP_MODES:
         sys.exit(f"prepare: spec mode must be one of {', '.join(PREP_MODES)}, or delegate")
     if spec["mode"] not in PREP_ENGINES and spec["mode"] != "explore" and not spec.get("engine"):
         sys.exit(f"prepare: mode {spec['mode']} runs an engine the calling command names; add `engine` to the spec")
-    root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()
     _refuse_retired_keys(spec)
     _refuse_bad_spec(spec, root)
     out = Path(a.out).resolve()

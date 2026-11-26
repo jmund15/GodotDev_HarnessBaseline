@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".claude/tools"))
@@ -57,6 +58,32 @@ class SnapshotSources(unittest.TestCase):
         self.assertEqual(staged.sha, rs.open(self.root, rs.Disk()).hash("kept.txt").sha)
         self.assertEqual(commit.hash("kept.txt").sha,
                          _git(self.root, "rev-parse", "HEAD:kept.txt").stdout.strip())
+
+    def test_a_command_asks_each_repository_fact_once_and_the_next_command_asks_again(self):
+        asked, real = [], rs._call
+
+        def spy(args, root, input=None):
+            asked.append(tuple(args[:2]))
+            return real(args, root, input=input)
+
+        def reads():
+            for snap in [rs.open(self.root, rs.Disk()) for _ in range(3)]:
+                snap.hash("kept.txt")
+                snap.head
+        with patch.object(rs, "_call", spy):
+            with rs.repo_facts():
+                reads()
+            within, asked[:] = list(asked), []
+            reads()
+            outside, asked[:] = list(asked), []
+            _git(self.root, "commit", "-q", "--allow-empty", "-m", "three")
+            with rs.repo_facts():
+                head = rs.open(self.root, rs.Disk()).head
+        self.assertEqual(within.count(("rev-parse", "--show-toplevel")), 0, "the root is the repo as opened")
+        self.assertEqual(within.count(("rev-parse", "--git-dir")), 1)
+        self.assertEqual(within.count(("rev-parse", "--verify")), 1)
+        self.assertEqual(outside.count(("rev-parse", "--git-dir")), 3)
+        self.assertEqual(head, _git(self.root, "rev-parse", "HEAD").stdout.strip())
 
     def test_a_recorded_row_reads_its_own_map(self):
         sha = rs.open(self.root, rs.Commit("HEAD")).hash("kept.txt").sha

@@ -33,6 +33,7 @@ from pathlib import Path
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import _git_run  # noqa: E402
+from _msys import resolve_argv  # noqa: E402
 
 SHOWN_ERRORS = 10
 BYPASS = "`--no-verify` skips this check."
@@ -106,6 +107,9 @@ def main(argv):
     cmd = shlex.split(os.environ.get("HARNESS_MERGE_BUILD_CMD") or "dotnet build -nologo -v q") + [str(projects[0])]
     sys.stderr.write(f"merge_build_check: building {projects[0].name} before the merge commit...\n")
     started = time.monotonic()
+    cmd, problem = resolve_argv(cmd)
+    if problem:
+        return refuse(f"the build command `{cmd[0]}` did not start ({problem}).")
     try:
         run = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=root,
                              env=child_env())

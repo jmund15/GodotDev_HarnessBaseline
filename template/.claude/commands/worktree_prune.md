@@ -31,7 +31,7 @@ Per worktree, gather:
 | Uncommitted | `git -C <path> status --porcelain` — count **tracked** modifications separately from untracked files |
 | Locked | `locked` in the porcelain output — a locked worktree is deliberately pinned; never recommend it |
 | Open PR | the worktree's branch is an open PR's head branch or `sync/pr<N>` of open PR N (`gh pr list --state open --json number,headRefName`) |
-| Guard | `python3 .claude/hooks/_delete_rule.py [--created] <path>...`: the delete guard's own verdict for each worktree (`--created`: as for one this session created), with every reason it would deny |
+| Guard | `python3 .claude/hooks/_delete_rule.py [--created] <path>...`: the delete guard's own verdict for each worktree, ownership read from this session's transcript as the guard reads it (`--created`: assume this session created it, labelled in the output), with every reason it would deny |
 
 Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan` · `open-pr:N` (checked first; never recommended, because PR testing and review need its checkout until the PR closes or merges, and the delete guard denies it).
 

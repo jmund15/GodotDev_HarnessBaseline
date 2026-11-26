@@ -178,9 +178,8 @@ LADDER_DIGEST_KEY = "ladder_digest"
 LADDER_RECEIPT_KEY = "ladder_receipt"
 LADDER_RECEIPT_CAP = 8
 LADDER_RECEIPT_FAILURE_KEY = "ladder_receipt_failure"
-BRIEF_TABLE_KEY = "brief_table_fits"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", LADDER_READY_KEY, LADDER_SLICE_KEY,
-                          LADDER_DIGEST_KEY, LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY, BRIEF_TABLE_KEY)
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, LADDER_READY_KEY, LADDER_SLICE_KEY,
+                          LADDER_DIGEST_KEY, LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
 
@@ -488,25 +487,6 @@ def ladder_receipt_failure(session_id):
     """The recorded reason the last `for-role` delivery earned no credit, else None. Reads only."""
     entry = read_json_salvage(state_path(session_id)).get(LADDER_RECEIPT_FAILURE_KEY)
     return entry.get("reason") if isinstance(entry, dict) else None
-
-
-def brief_table_seen(session_id, tier, fits):
-    """The fit snapshot `{row id: fit verdict}` stored for `tier` when its full table printed in this context
-    window, or None when none is stored: the caller then prints the full table, and `fits` is stored with it.
-    A compaction clears the record, so the table prints again. One locked read-and-set, fail-open to None."""
-    def update(state):
-        tables = state.get(BRIEF_TABLE_KEY)
-        if not isinstance(tables, dict):
-            tables = {}
-        earlier = tables.get(tier)
-        if not isinstance(earlier, dict):
-            tables[tier] = fits
-            state[BRIEF_TABLE_KEY] = tables
-            return None
-        return earlier
-
-    written, earlier = update_json_locked(state_path(session_id), update)
-    return earlier if written else None
 
 
 def fire_once_since_compaction(session_id, key):

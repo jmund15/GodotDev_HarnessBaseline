@@ -119,7 +119,7 @@ def code_of(src: str) -> str:
 def check_tree(root: Path, base: str, label: str) -> tuple[int, list[tuple[str, str, str]]]:
     """Check one git working tree. Returns (files_checked, offenders)."""
     changed = [
-        p for p in git("diff", "--name-only", base, "--", "*.cs", cwd=root).splitlines() if p.strip()
+        p for p in git("diff", "--relative", "--name-only", base, "--", "*.cs", cwd=root).splitlines() if p.strip()
     ]
     offenders: list[tuple[str, str, str]] = []
     for rel in changed:
@@ -129,7 +129,7 @@ def check_tree(root: Path, base: str, label: str) -> tuple[int, list[tuple[str, 
             offenders.append((name, "<deleted>", "file deleted — not a comment-only change"))
             continue
         try:
-            old = git("show", f"{base}:{rel}", cwd=root)
+            old = git("show", f"{base}:./{rel}", cwd=root)
         except RuntimeError:
             offenders.append((name, "<new file>", "file added — not a comment-only change"))
             continue

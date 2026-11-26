@@ -54,7 +54,7 @@ def main():
     repos = []
     try:
         # --- absent: adaptation.json missing -> no crash, no submodule field ------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None, extra_hook_files=("_git_run.py",))
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None)
         scratches.append(tmp)
         repo = tempfile.mkdtemp(prefix="gsd_repo_")
         repos.append(repo)
@@ -64,7 +64,7 @@ def main():
         cases.append(("absent adaptation.json: no stderr", err == ""))
 
         # --- present: a valid git_submodules entry is read without crashing --------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"git_submodules": ["Jmodot"]}, extra_hook_files=("_git_run.py",))
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"git_submodules": ["Jmodot"]})
         scratches.append(tmp)
         repo = tempfile.mkdtemp(prefix="gsd_repo_")
         repos.append(repo)
@@ -74,7 +74,7 @@ def main():
         cases.append(("present adaptation.json: no stderr on a valid entry", err == ""))
 
         # --- wrong-typed: git_submodules is not a list -> default + one stderr line ------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"git_submodules": "Jmodot"}, extra_hook_files=("_git_run.py",))
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"git_submodules": "Jmodot"})
         scratches.append(tmp)
         repo = tempfile.mkdtemp(prefix="gsd_repo_")
         repos.append(repo)
@@ -85,7 +85,7 @@ def main():
                       err.count("\n") <= 1 and "git_submodules" in err))
 
         # --- cache override: HARNESS_GIT_STATE_CACHE_DIR keeps the cache out of the repo ----
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None, extra_hook_files=("_git_run.py",))
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None)
         scratches.append(tmp)
         repo = tempfile.mkdtemp(prefix="gsd_repo_")
         repos.append(repo)

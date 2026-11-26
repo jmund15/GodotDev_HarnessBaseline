@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
 import _owner_text  # noqa: E402
+import _prompt_provenance  # noqa: E402
 from _prompt_provenance import is_user_intent_prompt  # noqa: E402
 
 
@@ -42,6 +43,30 @@ def main():
                  for kind in _owner_text.ENVELOPE_NOTICES)),
         ("empty and non-string values are not user intent",
          not is_user_intent_prompt("") and not is_user_intent_prompt(None)),
+        ("a typed prompt in an interactive session is human typed",
+         _prompt_provenance.human_typed({"prompt": SYNTHESIS}, {"CLAUDE_CODE_ENTRYPOINT": "cli"})
+         and _prompt_provenance.human_typed({"prompt": SYNTHESIS}, {})),
+        ("a launcher child (CLAUDE_CODE_SIDECAR) is not human typed, whatever its entrypoint says",
+         not _prompt_provenance.human_typed({"prompt": SYNTHESIS},
+                                            {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_ENTRYPOINT": "cli"})),
+        ("a claude -p child (entrypoint sdk-cli) is not human typed",
+         not _prompt_provenance.human_typed({"prompt": SYNTHESIS}, {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})),
+        ("a native subagent payload (agent_id) is not human typed",
+         not _prompt_provenance.human_typed({"prompt": SYNTHESIS, "agent_id": "a1"}, {})),
+        ("an envelope or a relayed peer message is not human typed",
+         not _prompt_provenance.human_typed({"prompt": "<task-notification>x</task-notification>"}, {})
+         and not _prompt_provenance.human_typed(
+             {"prompt": 'Another Claude session sent a message: <cross-session-message from="p">x</cross-session-message>'}, {})),
+        ("an empty SIDECAR value is unset, as every other reader of it treats it",
+         _prompt_provenance.human_typed({"prompt": SYNTHESIS}, {"CLAUDE_CODE_SIDECAR": " "})),
+        ("in_delegate holds for each observed delegate fact and for none else",
+         all(_prompt_provenance.in_delegate(p, e) for p, e in (
+             ({"agent_id": "a1"}, {}), ({}, {"CLAUDE_CODE_SIDECAR": "1"}), ({}, {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})))
+         and not any(_prompt_provenance.in_delegate(p, e) for p, e in (
+             ({}, {}), ({"agent_id": " "}, {"CLAUDE_CODE_SIDECAR": " ", "CLAUDE_CODE_ENTRYPOINT": "cli"})))),
+        ("human_typed is in_delegate's negation plus the prompt's own shape",
+         all(_prompt_provenance.human_typed({"prompt": SYNTHESIS, **p}, e) == (not _prompt_provenance.in_delegate(p, e))
+             for p, e in (({}, {}), ({"agent_id": "a"}, {}), ({}, {"CLAUDE_CODE_SIDECAR": "1"})))),
     ]
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

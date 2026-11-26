@@ -2,9 +2,6 @@
   "memory_domains": [
     {
       "name": "Design Philosophy",
-      "triggers": [
-        "design"
-      ],
       "memory_keywords": [
         "existing abstraction",
         "composition over inheritance",
@@ -22,7 +19,6 @@
     },
     {
       "name": "Debugging",
-      "triggers": [],
       "memory_keywords": [
         "debugging",
         "diagnose"

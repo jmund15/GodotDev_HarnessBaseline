@@ -40,6 +40,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
+from _checkout_root import harness_root  # noqa: E402
 import adaptation  # noqa: E402
 
 # Backticked identifiers only — prose PascalCase is too noisy to gate on.
@@ -459,7 +461,7 @@ def parse_list(raw: str, allowed, noun: str):
 def main() -> int:
     ap = argparse.ArgumentParser(fromfile_prefix_chars='@')
     ap.add_argument('docs', nargs='+', metavar='doc')
-    ap.add_argument('--repo', default='.')
+    ap.add_argument('--repo', help='the repo root (default: the harness root)')
     ap.add_argument('--kinds', default=','.join(DEFAULT_KINDS))
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--only', default='all')
@@ -476,7 +478,7 @@ def main() -> int:
             print(f'ERROR: no such doc: {doc}', file=sys.stderr)
             return 2
 
-    repo = os.path.abspath(args.repo)
+    repo = os.path.abspath(args.repo or harness_root())
     rs = Resolver(repo)
     per_file = []
     for doc in args.docs:

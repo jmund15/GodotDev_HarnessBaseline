@@ -1,17 +1,9 @@
-"""The runner's import closure for a scratch `.claude` tree: one home for what `scripts/harness_tests.py` loads."""
-import shutil
-from pathlib import Path
+"""The runner's import closure for a scratch `.claude` tree: what `scripts/harness_tests.py` imports, followed by `_module_closure`."""
+from _module_closure import copy_closure
 
-CLAUDE = Path(__file__).resolve().parents[1]
-RUNNER_DEPS = ("hooks/_hook_state.py", "hooks/_file_lock.py", "hooks/_bounded_run.py", "hooks/_git_run.py",
-               "hooks/_push_range.py", "tools/adaptation.py", "tools/machine_slots.py",
-               "scripts/_proof_runner/attempt.py", "scripts/_proof_runner/authority.py",
-               "scripts/_proof_runner/catalog.py", "scripts/_proof_runner/evidence.py")
+RUNNER = "scripts/harness_tests.py"
 
 
 def copy_runner_deps(claude_dir):
-    """Copy each real runner dependency into the same relative path under `claude_dir`."""
-    for rel in RUNNER_DEPS:
-        target = Path(claude_dir) / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(CLAUDE / rel, target)
+    """Copy every module the runner imports into the same relative path under `claude_dir`; the runner itself is the caller's."""
+    copy_closure(claude_dir, RUNNER, with_entries=False)

@@ -5,8 +5,7 @@ Class: process, blocking. `autolearn_outcomes.py record` appends the row `/codif
 `/autolearn`'s sweep read. Written by hand it reads as having handled a correction while the pass's search for a repeat
 never ran (ten hand rows after four text fixes to `CLAUDE.interactive.md` §Corrections and surfaced work: `git log
 --oneline -- .claude/CLAUDE.interactive.md`). The call is denied unless one of the commands that own the ledger is in
-this context since the last compaction (`OWNERS`: `/codify` and `/autolearn` write their pass's row, `/eval_dashboard`
-a declined move), the fact `_hook_state.skill_in_context` records for any skill or command the dispatch gate also reads
+this context since the last compaction (`OWNERS`: `/codify` and `/autolearn` write their pass's row), the fact `_hook_state.skill_in_context` records for any skill or command the dispatch gate also reads
 (`instruction_quality` §3: a deny requiring a recorded load, behind the surface that names the pass). A correction
 whose cause is the work writes no row. A record to a scratch ledger (`--file`) is not the ledger Step 0 reads and passes.
 Residual: a command the owner types is not a Skill call, so it counts only once re-attached whole after a compaction;
@@ -21,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import runs_script  # noqa: E402
 from _hook_state import skill_in_context  # noqa: E402
 
-OWNERS = ("codify", "autolearn", "eval_dashboard")
+OWNERS = ("codify", "autolearn")
 REASON = ('BLOCKED ledger row (CLAUDE.interactive.md §Corrections and surfaced work): a row is written by the pass '
           'that decided it, and no pass is in this context. Invoke Skill(skill="codify") on the correction: its '
           'Step 0 searches for a repeat and its Step 6 records the row. A correction whose cause is the work '

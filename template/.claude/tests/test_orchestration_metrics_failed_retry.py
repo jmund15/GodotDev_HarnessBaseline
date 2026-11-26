@@ -65,8 +65,8 @@ class FailedRetry(unittest.TestCase):
     def test_rate_accepts_the_label(self):
         rc, text = self.run_quiet(om.rate, self.session, LABEL, "clean", effort="high", with_sidecar=False)
         self.assertEqual(rc, 0, text)
-        self.assertIn("rated %s:%s" % (RUN, LABEL), text)
         self.assertNotIn("REFUSED", text)
+        self.assertEqual(text.strip(), "rated %s:%s: clean" % (RUN, LABEL), "a clean rating prints its one line")
 
     def test_rate_batch_accepts_the_exact_key(self):
         rc, text = self.run_quiet(om.rate_batch, self.session,

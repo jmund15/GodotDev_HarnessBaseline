@@ -8,7 +8,7 @@ watched submodules, high-risk prompt patterns, drive commands, teardown helpers,
 root, the Integration quarantine filter, memory domains, paired repos, the rule file each one's commit path follows (`paired_repo_rules`), content domains and
 scopes, structure exceptions, PR domains, content nouns, the work-triage tag registry
 (`sensitivity_tags`, read by `tools/triage.py`), the citation checker's code extensions and
-vocabulary words (`source_extensions`, `symbol_stopwords`, read by `tools/verify_doc_citations.py`), the rule-text scope and row-file location (`instruction_scope`, read by `tools/extract_numbers.py` and `tools/restate_scan.py`), the review mandate catalog and
+vocabulary words (`source_extensions`, `symbol_stopwords`, read by `tools/verify_doc_citations.py`), the rule-text scope and row-file location (`instruction_scope`, read by `tools/rule_units.py` and `tools/restate_scan.py`), the review mandate catalog and
 ledger path scope (`review_mandates`, `review_scope`, read by `tools/review_ledger.py` and `tools/escape_log.py`), the proof runner's excluded/timeout tables and the directories a project proof scans whole (`proof_corpus`, {proof: [dir, ...]}), the absolute document roots the project reads outside the repo (`doc_roots`, re-injected after compaction by `hooks/compact_directive_anchor.py`), the key prefix a registry's lens headings share (`lens_prefixes`, {registry: prefix}, read by `tools/lens.py`; a registry with no row keeps its literal prefix, and review's literal is empty, so it takes every heading), the doctrine files a project attaches to a lens beyond its header `preload:` lines (`lens_preloads`, {lens key: [path relative to `.claude/`]}, read by `tools/lens.py`). The baseline tracks only this file's default seed (manifest `sync: seed`);
 each consumer's copy is `local` and never published.
 
@@ -59,7 +59,11 @@ default branch, with no proof run (empty: no runner), read by `/commit_push` ste
 (`<land branch>` and `<pushed sha>` filled in; empty: no watcher).
 `regenerable_ignored` lists the project's ignored build outputs that a delete of an orphaned or retired worktree may
 discard: paths from the worktree root, `fnmatch` patterns, a listed directory covering everything under it; read by
-`hooks/_delete_rule.py` from the project root it judges for (empty: only the shared caches).
+`hooks/_delete_rule.py` from the project root it judges for (empty: only the shared caches and the ignored
+`.agents`, `bin` and `obj` folders, which need no row).
+`worktree_create_tools` lists the script basenames a session runs as `python <tool> create <name> ...` to make the
+worktree `<root>/.claude/worktrees/<name>` (a tool that prints `error:` on every failure); the floor counts such a
+call as this session's creation of that worktree, read by `hooks/_own_worktree.py` (empty: only `git worktree add`).
 `gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks` line
 prints verbatim, and `wide` holds one row per wide runner (invocation regex, exempt arguments, optional narrow rule,
 optional `hint` the deny prints as the narrow form to write instead). `reach` ({name, paths: [glob], cmd}),
@@ -109,8 +113,6 @@ from typing import NamedTuple
 DEFAULTS: dict = {
     "read_only_commands": [],
     "git_submodules": [],
-    "high_risk_patterns": [],
-    "drive_commands": [],
     "teardown_helpers": [],
     "tests_root": "Tests",
     "test_quarantine_filter": "",
@@ -145,6 +147,7 @@ DEFAULTS: dict = {
     "main_check": "",
     "land_watch": "",
     "regenerable_ignored": [],
+    "worktree_create_tools": [],
     "gate_cadence": {"slice": [], "merge": [], "close": [], "wide": []},
     "drift_scan": {},
     "pr_pipeline": {"discover": [], "sync": [], "pre_review": [], "gate": [], "checklist": [], "post_merge": []},
@@ -161,8 +164,6 @@ PIPELINE_POINTS = tuple(DEFAULTS["pr_pipeline"])
 _TYPES: dict = {
     "read_only_commands": list,
     "git_submodules": list,
-    "high_risk_patterns": list,
-    "drive_commands": list,
     "teardown_helpers": list,
     "tests_root": str,
     "test_quarantine_filter": str,
@@ -197,6 +198,7 @@ _TYPES: dict = {
     "main_check": str,
     "land_watch": str,
     "regenerable_ignored": list,
+    "worktree_create_tools": list,
     "gate_cadence": dict,
     "drift_scan": dict,
     "pr_pipeline": dict,
@@ -642,11 +644,16 @@ def main(argv=None) -> int:
     if not isinstance(value, list):
         print(f"adaptation: key '{key}' is not a list", file=sys.stderr)
         return 2
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+    from _msys import resolve_argv
     for entry in value:
         try:
-            done = subprocess.run(shlex.split(entry), cwd=str(claude_dir.parent), capture_output=True,
+            argv, problem = resolve_argv(shlex.split(entry))
+            if problem:
+                raise OSError(problem)
+            done = subprocess.run(argv, cwd=str(claude_dir.parent), capture_output=True,
                                   text=True, encoding="utf-8", errors="replace")
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, IndexError) as exc:
             print(f"adaptation: {entry} failed to start: {exc}", file=sys.stderr)
             continue
         sys.stdout.write(done.stdout)

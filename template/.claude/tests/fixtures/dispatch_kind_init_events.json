@@ -1,5 +1,5 @@
 {
-  "source": "stream-json system/init events from live sidecar_fanout -P runs, trimmed to type, subtype and tools; scout/lens/reviewer rows recaptured 2026-11-05 with the git server (claude_code_version 2.1.317)",
+  "source": "stream-json system/init events from live sidecar_fanout -P runs, trimmed to type, subtype and tools; deepseek, opencode and codex scout rows recaptured 2026-11-25 with the git server; other scout/lens/reviewer rows captured 2026-11-05 (claude_code_version 2.1.317)",
   "runs": [
     {
       "launcher": "anthropic_secondary_sidecar.sh",
@@ -30,7 +30,8 @@
         "mcp__git__git_show",
         "mcp__git__git_status",
         "mcp__plugin_semantic-search_semantic-search__search"
-      ]
+      ],
+      "stale": "every public kind holds Bash (2026-11-25); the anthropic-secondary plan was out of quota at recapture, so this row predates the grant"
     },
     {
       "launcher": "anthropic_secondary_sidecar.sh",
@@ -61,7 +62,8 @@
         "mcp__git__git_show",
         "mcp__git__git_status",
         "mcp__plugin_semantic-search_semantic-search__search"
-      ]
+      ],
+      "stale": "every public kind holds Bash (2026-11-25); the anthropic-secondary plan was out of quota at recapture, so this row predates the grant"
     },
     {
       "launcher": "anthropic_secondary_sidecar.sh",
@@ -93,7 +95,8 @@
         "mcp__git__git_show",
         "mcp__git__git_status",
         "mcp__plugin_semantic-search_semantic-search__search"
-      ]
+      ],
+      "stale": "every public kind holds Bash (2026-11-25); the anthropic-secondary plan was out of quota at recapture, so this row predates the grant"
     },
     {
       "launcher": "anthropic_secondary_sidecar.sh",
@@ -123,6 +126,7 @@
       "type": "system",
       "subtype": "init",
       "tools": [
+        "Bash",
         "Glob",
         "Grep",
         "Read",
@@ -132,7 +136,6 @@
         "mcp__ai-worker__list_models",
         "mcp__ai-worker__read_files",
         "mcp__ai-worker__read_web",
-        "mcp__ai-worker__write_doc",
         "mcp__git__git_blame",
         "mcp__git__git_branch",
         "mcp__git__git_diff",
@@ -176,6 +179,7 @@
       "type": "system",
       "subtype": "init",
       "tools": [
+        "Bash",
         "Glob",
         "Grep",
         "Read",
@@ -185,7 +189,6 @@
         "mcp__ai-worker__list_models",
         "mcp__ai-worker__read_files",
         "mcp__ai-worker__read_web",
-        "mcp__ai-worker__write_doc",
         "mcp__git__git_blame",
         "mcp__git__git_branch",
         "mcp__git__git_diff",
@@ -230,6 +233,7 @@
       "subtype": "init",
       "denyApplied": true,
       "tools": [
+        "Bash",
         "Glob",
         "Grep",
         "Read",

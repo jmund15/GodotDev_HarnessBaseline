@@ -47,7 +47,7 @@ def run(tmp, payload, state_dir, env_extra=None):
 def plant_state(state_dir):
     path = _hook_state.state_path(SID)
     Path(state_dir).mkdir(parents=True, exist_ok=True)
-    state = {"model_ladder_ready": True, "nudge_targets_seen": ["a"],
+    state = {"model_ladder_ready": True, "brief_table_fits": ["a"],
              "fired_since_compaction": {"k": True}, "fired_once": {"o": True}}
     Path(state_dir, os.path.basename(path)).write_text(json.dumps(state), encoding="utf-8")
 
@@ -145,7 +145,7 @@ def main():
         cases.append(("subagent: leaves model_ladder_ready set", state.get("model_ladder_ready") is True))
         cases.append(("subagent: leaves compaction-scoped keys alone",
                       state.get("fired_since_compaction") == {"k": True}
-                      and state.get("nudge_targets_seen") == ["a"]))
+                      and state.get("brief_table_fits") == ["a"]))
         cases.append(("subagent: writes no parent log or manifest", not log_exists and not manifest))
         cases.append(("subagent: emits no parent reminder", "POST-CONTINUATION" not in out))
 

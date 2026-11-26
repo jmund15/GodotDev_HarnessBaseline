@@ -1018,7 +1018,6 @@ SESSION_START_SKIP = {
 }
 
 SESSION_START_SID = "census0001"
-SIDECAR_TIERS = ("detailed", "condensed", "minimal", "none")
 # Env a SessionStart case must not inherit from the census's own process: a delegate, transport or state seam set in
 # the caller's shell would change which text the case prints. HOME stays real: the rails text reads the ai-worker
 # registration under it, so an isolated HOME prints a different text.
@@ -1093,7 +1092,7 @@ def _sidecar_kind_per_guard(root: Path) -> dict[str, str]:
 
 def _session_model_rails_cases(root: Path) -> list[tuple[str, dict, dict]]:
     """Every shape the rails hook prints: each model tier and each model with driver notes as an orchestrator, an
-    absent model, a compaction, each registered transport, and each sidecar delegate guard at each tier."""
+    absent model, a compaction, each registered transport, and each sidecar delegate guard on a model of each registry rail tier and on the widest-notes model."""
     registry = _model_registry()
     rows = registry.load(start=root)["models"]
     tier_rep = {}
@@ -1109,11 +1108,11 @@ def _session_model_rails_cases(root: Path) -> list[tuple[str, dict, dict]]:
         cases.append(("transport=%s" % transport, {"CLAUDE_CODE_TRANSPORT": transport},
                       _session_start_payload(widest, "startup")))
     for guard, kind in _sidecar_kind_per_guard(root).items():
-        for tier in SIDECAR_TIERS:
-            overrides = {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": kind,
-                         "CLAUDE_CODE_SIDECAR_TIER": tier}
-            cases.append(("delegate guard=%s tier=%s" % (guard, tier), overrides,
-                          _session_start_payload(widest, "startup")))
+        # A delegate reads its own model's row tier, as every session does; the widest notes are the largest text.
+        for model in dict.fromkeys([*tier_rep.values(), widest]):
+            overrides = {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": kind}
+            cases.append(("delegate guard=%s model=%s (tier %s)" % (guard, model, registry.rail_tier(model)),
+                          overrides, _session_start_payload(model, "startup")))
     return cases
 
 

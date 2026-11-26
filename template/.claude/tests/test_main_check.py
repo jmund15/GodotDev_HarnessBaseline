@@ -948,6 +948,45 @@ class GateOwed(MainCheckCase):
         self.assertTrue(self.owed(dispatched=True))
 
 
+class GhRead(unittest.TestCase):
+    """`gh_read` spawns a `gh` that is a .cmd shim on Windows: CreateProcess applies no PATHEXT, and cmd.exe re-parses
+    the arguments it is handed, so the call goes through `_msys.resolve_argv` and never through a shell string."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        import main_check
+        self.main_check = main_check
+        self.tmp = tempfile.TemporaryDirectory(prefix='gh_read_')
+        self.addCleanup(self.tmp.cleanup)
+        self.bin = Path(self.tmp.name) / 'bin'
+        self.bin.mkdir()
+        self.log = Path(self.tmp.name) / 'ran.txt'
+        (self.bin / 'gh.cmd').write_bytes(('@echo off\r\necho gh-ran %%1>>"%s"\r\n' % self.log).encode())
+        env = patch.dict(os.environ, {'PATH': str(self.bin) + os.pathsep + os.environ.get('PATH', '')})
+        env.start()
+        self.addCleanup(env.stop)
+
+    @unittest.skipUnless(os.name == 'nt', 'a .cmd shim is a Windows shape')
+    def test_a_gh_cmd_shim_runs_with_its_arguments(self):
+        code, _out, err = self.main_check.gh_read(['run', 'list'])
+        self.assertEqual(code, 0, err)
+        self.assertIn('gh-ran run', self.log.read_text())
+
+    @unittest.skipUnless(os.name == 'nt', 'cmd.exe re-parses a .cmd shim\'s arguments')
+    def test_an_argument_cmd_exe_would_re_parse_is_refused_not_run(self):
+        code, out, err = self.main_check.gh_read(['x"&echo INJECTED'])
+        self.assertIsNone(code)
+        self.assertNotIn('INJECTED', out)
+        self.assertFalse(self.log.exists(), 'the shim ran')
+        self.assertIn('cmd.exe', err)
+
+    def test_a_missing_gh_reads_as_unreadable(self):
+        with patch.dict(os.environ, {'PATH': str(self.tmp.name)}):
+            code, _out, err = self.main_check.gh_read(['run', 'list'])
+        self.assertIsNone(code)
+        self.assertIn('gh', err)
+
+
 class Status(MainCheckCase):
     """`status()` and `--status`: the one health line `/session_end` prints, read from the local state ref."""
 

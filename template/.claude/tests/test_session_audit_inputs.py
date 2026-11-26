@@ -391,6 +391,17 @@ class TriggerInputsTests(DoctrineFixture):
         self.assertIsInstance(code, int)
         self.assertIn("restate_scan", text)
 
+    def test_restate_scan_asks_for_strong_pairs_only(self):
+        seen = []
+
+        def fake_run(argv, **kwargs):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+        with patch.object(inputs.subprocess, "run", side_effect=fake_run):
+            inputs.restate_groups(self.repo, self.base_sha, [DOCTRINE])
+        self.assertEqual(len(seen), 1)
+        self.assertIn("--strong", seen[0], "a single-channel pair is the scan's recall tail, not a second home")
+
     def test_a_commit_touching_more_files_than_a_command_line_freezes(self):
         names = [f".claude/commands/subject_list_case_{i:05d}.md" for i in range(800)]
         self.assertGreater(sum(len(n) + 1 for n in names), 32767)
@@ -506,6 +517,41 @@ class TriggerInputsTests(DoctrineFixture):
     def test_an_unknown_mandate_keeps_full_source(self):
         self.assertFalse(inputs.source_required("harness-quality"))
         self.assertTrue(inputs.source_required("cq.C"))
+
+
+class NestedRootTests(DoctrineFixture):
+    """The harness root is `template/`, one level below the git toplevel: every path the freeze names is
+    harness-root-relative (`.claude/...`), so each git form it feeds must resolve from the root, not the toplevel."""
+
+    def freeze_nested(self, from_subdir=False):
+        nested = self.repo / "template"
+        self.r.write("template/" + DOCTRINE, "A\n")
+        sha = self._commit("nested doctrine")
+        (nested / DOCTRINE).write_bytes(b"A\nedited\n")
+        roster = self.root / "roster.json"
+        roster.write_text(json.dumps(ROSTER), encoding="utf-8")
+        out = nested / ".claude/scratch/audit/inputs.json"
+        cwd = nested / ".claude/scratch/x"
+        cwd.mkdir(parents=True, exist_ok=True)
+        # A drifted cwd with no `--root`: the root is the nearest ancestor holding `.claude/`.
+        result = subprocess.run(
+            [sys.executable, str(TOOL)] + ([] if from_subdir else ["--root", str(nested)])
+            + ["--base-ref", self.base_sha, "--session-base", self.base_sha, "--roster", str(roster),
+               "--out", str(out), "--files", DOCTRINE],
+            cwd=cwd if from_subdir else None, env={**os.environ, **self.env()}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(out.read_text()), sha, nested
+
+    def test_freeze_hashes_a_worktree_file_under_a_nested_root(self):
+        data, sha, nested = self.freeze_nested()
+        self.assertEqual(data["files"], [DOCTRINE])
+        blob = fixtures.Repo.blob_sha((nested / DOCTRINE).read_bytes())
+        self.assertEqual(json.loads((nested / data["blobs"]).read_text(encoding="utf-8"))[DOCTRINE], blob)
+        self.assertEqual(json.loads((nested / data["premiseCommits"]).read_text(encoding="utf-8")), [sha])
+
+    def test_freeze_from_a_subdirectory_takes_the_harness_root_as_its_root(self):
+        data, sha, nested = self.freeze_nested(from_subdir=True)
+        self.assertEqual(data["files"], [DOCTRINE])
 
 
 if __name__ == "__main__":

@@ -12,7 +12,9 @@ Prose in the consuming command covers the paths it knows about. It cannot cover 
 found the file through semantic-search, a `Glob`, or a memory citation and reached for `Read`
 next -- which is precisely how a per-entry contract erodes. This hook is that backstop.
 
-NOT SUBAGENT-EXEMPT: the main session gets an accessor advisory, but a delegate is blocked. The
+NOT DELEGATE-EXEMPT: the main session gets an accessor advisory, but a delegate is blocked. A delegate is
+what `_prompt_provenance.in_delegate` says: a native subagent (payload `agent_id`), a sidecar child
+(`CLAUDE_CODE_SIDECAR`, carried by no `agent_id`) or a `claude -p` child (entrypoint `sdk-cli`). The
 cost here is different in kind: a fan-out lens reading 46KB spends 46KB of input tokens on every
 lens, N times per dispatch, and the discard at the end recovers none of it. The multiplication IS
 the defect, so the actor that multiplies it is the one that must be stopped.
@@ -32,6 +34,10 @@ spawn per matched call is the budget (`instruction_quality` §15).
 
 import os
 import posixpath
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _prompt_provenance import in_delegate  # noqa: E402  (the one delegate fact: agent_id, launcher child, claude -p child)
 
 # suffix -> (accessor command, what the accessor returns)
 INDEXED_REFERENCES = {
@@ -92,7 +98,7 @@ def _is_bounded(tool_input) -> bool:
     return tool_input.get("offset") is not None or tool_input.get("limit") is not None
 
 
-def process(input_data):
+def process(input_data, environ=None):
     """Return delegate block or main-session advice for an unbounded indexed-reference Read."""
     if not isinstance(input_data, dict) or input_data.get("tool_name") != "Read":
         return None
@@ -117,7 +123,7 @@ def process(input_data):
             size = f"~{size_kb}KB"
         except OSError:
             size = "the whole file"
-        if str(input_data.get("agent_id") or "").strip():
+        if in_delegate(input_data, os.environ if environ is None else environ):
             return {
                 "block": (
                     f"BLOCKED: whole-file Read of {suffix} ({size}).\n"
@@ -138,8 +144,6 @@ def process(input_data):
 
 def main() -> None:
     import json
-    import sys
-
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):

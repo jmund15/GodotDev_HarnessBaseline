@@ -284,7 +284,6 @@ sc_detach_launch() {
   exit 0
 }
 SC_REGISTRY_CLI="$SC_ROOT/tools/model_registry.py"
-SC_BUDGET_HOOK="$SC_ROOT/hooks/budget_posture.py"
 
 # ------------------------------------------------------------------------ defaults
 # Every launcher starts from the same values. A provider that needs a different default
@@ -681,7 +680,7 @@ sc_validate_common() {
 # active config. An unregistered server, an unknown kind, a removal the kind does not carry, an
 # unsigned `-t` or a mixed signed/unsigned `-t` fails HERE with the resolver's own message: a strict
 # config that quietly dropped a server would run the job on an inventory nobody chose. The launcher
-# reads no brief: a job that needs a shell writes `-t +Bash`.
+# reads no brief.
 #
 # SC_RESOLVED_BUILTINS  -> `--tools` (the child's built-in availability list)
 # SC_RESOLVED_TOOL_SPEC -> built-ins plus `mcp__<registered key>`, the form sc_mcp_config reads
@@ -2072,7 +2071,7 @@ SC_AUTONOMY
     hookless-full)
       local hookless_guards
       hookless_guards="$(mktemp)"
-      python3 "$SC_ROOT/tools/guard_text.py" "${SC_SHAPE:-}" detailed "$SC_MODEL" > "$hookless_guards" || {
+      python3 "$SC_ROOT/tools/guard_text.py" "${SC_SHAPE:-}" auto "$SC_MODEL" > "$hookless_guards" || {
         rm -f "$hookless_guards" 2>/dev/null || :
         sc_die 2 "could not assemble guards for kind '${SC_SHAPE:-}' — refusing to dispatch unguarded"
       }
@@ -2089,10 +2088,10 @@ SC_AUTONOMY
       # file at one tier, followed by this child model's registry driver notes. The raw
       # shape file ships BOTH tiers and omits common.md, and no hook fires in the isolated
       # tiers to correct it. SC_MODEL is already resolved by sc_resolve_model to the id
-      # the launcher sends to the CLI/proxy; `detailed` matches the hook's default.
+      # the launcher sends to the CLI/proxy; `auto` reads that model's registry railTier, as the hook does.
       local guard_tmp
       guard_tmp="$(mktemp)"
-      python3 "$SC_ROOT/tools/guard_text.py" "$shape" detailed "$SC_MODEL" > "$guard_tmp" || {
+      python3 "$SC_ROOT/tools/guard_text.py" "$shape" auto "$SC_MODEL" > "$guard_tmp" || {
         rm -f "$guard_tmp" 2>/dev/null || :
         sc_die 2 "could not assemble guards for kind '$shape' — refusing to dispatch unguarded"
       }

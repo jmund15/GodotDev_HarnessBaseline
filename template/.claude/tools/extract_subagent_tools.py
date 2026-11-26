@@ -131,8 +131,7 @@ def extract_tool_names(
     Each tool call appears once per `tool_use` content block in `assistant`
     messages. Parallel tool calls within a single message preserve their
     block order. ToolSearch / TodoWrite are NOT filtered here — that
-    classification belongs to the caller (e.g. score_routing_battery.py
-    has its own SKIP_TOOLS set).
+    classification belongs to the caller.
     """
     # No agent id names a headless child: its tools are its own session's.
     jsonl_path = (find_subagent_jsonl(agent_id, session_id, project_dir) if agent_id

@@ -15,9 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import review_result
 import dispatch_size
 import lens_briefs
-import extract_numbers
+import rule_units
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_extract_numbers import mkrepo, write, _rm
+from test_rule_units import mkrepo, write, _rm
 
 # Every repository here is planted in temp (`mkrepo`, and the child JS proof plants its own), so the process starts in
 # an empty temp folder: no git command runs with this checkout as its directory.
@@ -50,8 +50,8 @@ class ReviewPreparation(unittest.TestCase):
                       '```surfaces\n' + json.dumps({'kind': 'path', 'surface': doc, 'change': 'rewrite'})
                       + '\n```\n',
             }, scope={'paths': ['.claude/rules/*.md'], 'rows_dir': '.claude/instruction_rows'}))
-            row = {'path': doc, 'sentence': extract_numbers.norm(sentence),
-                   'hash': extract_numbers.sentence_hash(extract_numbers.norm(sentence)),
+            row = {'path': doc, 'sentence': rule_units.norm(sentence),
+                   'hash': rule_units.sentence_hash(rule_units.norm(sentence)),
                    'section': '__module__', 'class': 'behavior', 'source': 'author:J4',
                    'classificationQuote': sentence, 'claimId': 'emitter.accepted',
                    'implementation': [{'path': '.claude/tools/emitter.py', 'symbol': 'emit',
@@ -76,7 +76,7 @@ class ReviewPreparation(unittest.TestCase):
                               'selector': {'type': 'unittest-case'},
                               'assertion': 'self.assertEqual(emit(), "accepted")'}]
             write(str(repo), '.claude/instruction_rows/behaviors.jsonl', json.dumps(row) + '\n')
-            runner = extract_numbers._proof_runner()
+            runner = rule_units._proof_runner()
             runs = Path(tmp) / 'observed.json'
             with mock.patch.object(runner, 'runs_path', return_value=runs), \
                     mock.patch.object(runner, 'PASSES_PATH', Path(tmp) / 'passes.json'):
@@ -93,7 +93,7 @@ class ReviewPreparation(unittest.TestCase):
                     observed = 'skip' if skip else 'pass' if run.returncode == 0 else 'fail'
                     print(f'grounding replay: expected={expected} observed={observed}\n{run.stdout}{run.stderr}')
                     self.assertIn('skipped' if skip else 'OK' if expected == 'pass' else 'FAILED', run.stderr)
-                    descriptor = extract_numbers.behavior_proofs(repo, [doc])['cases'][proof][0]
+                    descriptor = rule_units.behavior_proofs(repo, [doc])['cases'][proof][0]
                     runs.write_text(json.dumps({'observations': [{'proof': proof,
                         'caseId': 'Emit.test_accepted', 'status': observed, 'inputKey': descriptor['inputKey'],
                         'evidence': run.stdout + run.stderr}]}), encoding='utf-8')
@@ -119,8 +119,8 @@ class ReviewPreparation(unittest.TestCase):
                 plan: '# Proposal\n\n```surfaces\n' + json.dumps({'kind': 'path', 'surface': doc, 'change': 'rewrite'})
                       + '\n```\n',
             }, scope={'paths': ['.claude/rules/*.md'], 'rows_dir': '.claude/instruction_rows'}))
-            row = {'path': doc, 'sentence': extract_numbers.norm(sentence),
-                   'hash': extract_numbers.sentence_hash(extract_numbers.norm(sentence)),
+            row = {'path': doc, 'sentence': rule_units.norm(sentence),
+                   'hash': rule_units.sentence_hash(rule_units.norm(sentence)),
                    'section': '__module__', 'class': 'behavior', 'source': 'author:J4',
                    'classificationQuote': sentence, 'claimId': 'emitter.accepted',
                    'implementation': [{'path': '.claude/tools/emitter.py', 'symbol': 'emit',
@@ -131,7 +131,7 @@ class ReviewPreparation(unittest.TestCase):
             lens_briefs.grounding_behavior_section([('meta', str(repo / plan))], [], out=out, prefix='c', repo=repo)
             artifact = json.loads((out / 'c_behavior.json').read_text(encoding='utf-8'))
             listed = [u['sentence'] for u in artifact['units'] if u['path'] == doc]
-            self.assertEqual(listed, [extract_numbers.norm(sentence)], artifact['units'])
+            self.assertEqual(listed, [rule_units.norm(sentence)], artifact['units'])
             self.assertEqual(artifact['unclassifiedByPath'][doc], 2, artifact.get('unclassifiedByPath'))
             self.assertFalse([u for u in artifact['uncovered'] if u.get('reason') == 'unclassified unit'
                               and not u.get('changed')], artifact['uncovered'])

@@ -48,6 +48,7 @@ def test_condition_command_args(tmp_path, monkeypatch):
     tr = load()
     monkeypatch.setenv("HARNESS_TASK_RECORD_DIR", str(tmp_path / "records"))
     monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     tr.open_record("command", "owner-session", "Command condition")
     transcript = tmp_path / "session.jsonl"
     # Trimmed from ffd4976e's live /session_digest owner row, UUID preserved.
@@ -76,6 +77,7 @@ def test_condition_quote_restores_git_bash_path_rewrite(tmp_path, monkeypatch):
     tr = load()
     monkeypatch.setenv("HARNESS_TASK_RECORD_DIR", str(tmp_path / "records"))
     monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     tr.open_record("msys", "owner-session", "MSYS quote")
     transcript = tmp_path / "session.jsonl"
     row = {"uuid": "a625ae7a-b355-4d82-ace2-fb4da63cccab", "type": "user",
@@ -690,7 +692,7 @@ def main():
     os.makedirs(os.path.dirname(transcript))
 
     def cond_env(**extra):
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR"}
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT")}
         env.update(CLAUDE_PROJECT_DIR=proj, CLAUDE_CONFIG_DIR=cfg, CLAUDE_CODE_SESSION_ID=sid, **extra)
         return env
 
@@ -817,6 +819,7 @@ def main():
     refusals = (
         ("an effect other than lean or normal", spend_cli(effect="fast")),
         ("a delegate's CLAUDE_CODE_SIDECAR", spend_cli(extra_env={"CLAUDE_CODE_SIDECAR": "1"})),
+        ("a claude -p child's sdk-cli entrypoint", spend_cli(extra_env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})),
         ("no until", spend_cli(until=None)),
         ("an until that is not an ISO time with a zone", spend_cli(until="next tuesday")))
     for label, r in refusals:

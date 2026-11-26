@@ -56,9 +56,12 @@ def owner_lines(rel, heading):
 
 LADDER_RULE_LINES = owner_lines("commands/ladder_ingest.md", "What lands on the ladder")
 assert LADDER_RULE_LINES
-HOOKS_REF_LINE = reference_line("hooks.md", "Read in full when the edit changes a hook")
+LAYERS_LINES = owner_lines("skills/instruction_quality/reference/principles.md", "Layers")
+assert LAYERS_LINES
+LAYER_FILES = ("CLAUDE.md", "CLAUDE.core.md", "CLAUDE.coding.md", "CLAUDE.godot.md", "CLAUDE.interactive.md",
+               "guards/common.md", "guards/common.godot.md")
 CMDS_REF_LINE = reference_line("skills_and_commands.md", "Read in full when the edit changes a skill")
-assert HOOKS_REF_LINE and CMDS_REF_LINE, (HOOKS_REF_LINE, CMDS_REF_LINE)
+assert CMDS_REF_LINE
 
 # A checkout at <repo>/.claude/worktrees/<name>/ carries a `.claude` segment in
 # EVERY path inside it, so these are the two cells that separate the worktree
@@ -141,19 +144,19 @@ def main():
     cases.append(("settings.json with the skill absent is allowed (OF6 O1)",
                   got == ALLOW))
     got, reason = edit("C:/repo/.claude/hooks/README.md", env)
-    cases.append(("a hooks/*.md edit's deny embeds reference/hooks.md in full and names no other class file",
-                  got == DENY and HOOKS_REF_LINE in reason
-                  and all(f not in reason for f in (
-                      "skills_and_commands.md", "orchestration.md", "claims_and_wording.md"))))
+    cases.append(("a hooks/README.md edit with the skill absent is allowed (a maintainer doc, not agent-facing text)",
+                  got == ALLOW))
+    got, reason = edit("C:/repo/.claude/work/findings.md", env)
+    cases.append(("a work/ findings log with the skill absent is allowed (state, not doctrine)", got == ALLOW))
     got, reason = edit(COMMAND, env)
     cases.append(("a command edit's deny embeds reference/skills_and_commands.md and keeps the requirement and next step",
-                  got == DENY and CMDS_REF_LINE in reason and HOOKS_REF_LINE not in reason
+                  got == DENY and CMDS_REF_LINE in reason
                   and 'Skill(skill="instruction_quality")' in reason))
     got, reason = edit(UNMAPPED, env)
     cases.append(("an unmapped governed path names all four class files and embeds none",
                   got == DENY and all(f in reason for f in (
                       "skills_and_commands.md", "orchestration.md", "hooks.md", "claims_and_wording.md"))
-                  and HOOKS_REF_LINE not in reason and CMDS_REF_LINE not in reason))
+                  and CMDS_REF_LINE not in reason))
     got, _ = edit(HARNESS, env)
     cases.append(("a second edit is denied again: a denial consumes no latch", got == DENY))
 
@@ -288,7 +291,7 @@ def main():
                   got == ALLOW))
 
     mark_skill_loaded(tmp, WT_LOADED)
-    got, reason = edit(WT + "/.claude/hooks/README.md", env, session=WT_LOADED)
+    got, reason = edit(WT + "/.claude/rules/x.md", env, session=WT_LOADED)
     cases.append(("that checkout's own .claude/ surface is still gated",
                   got == NUDGE))
 
@@ -337,6 +340,71 @@ def main():
         tight = [call("latch-tight"), call("latch-tight")]
         cases.append(("L2: a note that never fits a whole cap is told once as its home line",
                       home in tight[0] and tight[1] == ""))
+    finally:
+        hook.HOOK_TEXT_CAP, hook.skill_in_context = real_cap, real_in_context
+        if latch_env is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = latch_env
+
+    # A chain or delegate-overlay file is a layer file: its edit carries principles.md §Layers, once per section.
+    for n, name in enumerate(LAYER_FILES):
+        session = "hesrl%03d" % n
+        mark_skill_loaded(tmp, session)
+        got, reason = edit("C:/repo/.claude/" + name, env, session=session)
+        missing = [line for line in LAYERS_LINES if line not in reason]
+        cases.append(("a first edit of %s carries principles.md §Layers whole (missing: %d)" % (name, len(missing)),
+                      got == NUDGE and "reference/principles.md" in reason and not missing))
+    mark_skill_loaded(tmp, "hesrl100")
+    got, reason = edit(WT + "/.claude/CLAUDE.md", env, session="hesrl100")
+    cases.append(("a worktree checkout's own CLAUDE.md carries principles.md §Layers whole",
+                  got == NUDGE and all(line in reason for line in LAYERS_LINES)))
+    mark_skill_loaded(tmp, "hesrl101")
+    got, reason = edit("C:/repo/CLAUDE.md", env, session="hesrl101")
+    cases.append(("a repo-root CLAUDE.md (no .claude tail) is not governed and carries no §Layers",
+                  got == ALLOW and not any(line in reason for line in LAYERS_LINES)))
+    mark_skill_loaded(tmp, "hesrl102")
+    got, reason = edit("C:/repo/.claude/guards/survey.md", env, session="hesrl102")
+    cases.append(("a kind file under guards/ gets the general reminder and no §Layers",
+                  got == NUDGE and "instruction_quality" in reason and not any(l in reason for l in LAYERS_LINES)))
+    mark_skill_loaded(tmp, "hesrl103")
+    got, reason = edit(HARNESS, env, session="hesrl103")
+    cases.append(("a skill edit gets no §Layers", got == NUDGE and not any(l in reason for l in LAYERS_LINES)))
+    got, reason = edit("C:/repo/.claude/CLAUDE.core.md", env, session="hesrl104")
+    cases.append(("before the skill loads a chain edit is still denied, and the deny carries no §Layers note",
+                  got == DENY and not any(l in reason for l in LAYERS_LINES)))
+
+    # One §Layers section serves six paths, so one window holds it once: the latch is per section, not per path.
+    mark_skill_loaded(tmp, "hesrl105")
+    edit("C:/repo/.claude/CLAUDE.core.md", env, session="hesrl105")
+    got, reason = edit("C:/repo/.claude/CLAUDE.coding.md", env, session="hesrl105")
+    cases.append(("L3: a second chain file in the same window repeats no §Layers",
+                  not any(line in reason for line in LAYERS_LINES)))
+    compact_start(env, "hesrl105")
+    mark_skill_loaded(tmp, "hesrl105")
+    got, reason = edit("C:/repo/.claude/CLAUDE.godot.md", env, session="hesrl105")
+    cases.append(("L3: after a compaction the next chain edit carries §Layers again",
+                  got == NUDGE and all(line in reason for line in LAYERS_LINES)))
+
+    # Room: when the general reminder plus the section pass the cap, the first chain edit names the home and the next
+    # carries the whole section, the L2 pattern pointed at a layer row.
+    latch_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="hesrroom_", dir=tmp)
+    real_cap, real_in_context = hook.HOOK_TEXT_CAP, hook.skill_in_context
+    hook.skill_in_context = lambda *args, **kwargs: True
+    try:
+        core = "C:/repo/.claude/CLAUDE.core.md"
+        row = hook.OWNED_NOTES.get("CLAUDE.core.md")
+        cases.append(("a CLAUDE.core.md row exists in OWNED_NOTES", row is not None))
+        if row:
+            full = hook.owned_note(*row)
+            hook.HOOK_TEXT_CAP = len(hook.build_reminder(core)) + 1 + len(full) - 1
+            call = lambda session: (hook.process({"tool_name": "Edit", "session_id": session,
+                                                  "tool_input": {"file_path": core}}) or {}).get("context", "")
+            first, second = call("room-layers"), call("room-layers")
+            cases.append(("room: the first chain edit carries the home line, not the section",
+                          row[1] in first and full not in first))
+            cases.append(("room: the next chain edit carries the whole section", full in second))
     finally:
         hook.HOOK_TEXT_CAP, hook.skill_in_context = real_cap, real_in_context
         if latch_env is None:

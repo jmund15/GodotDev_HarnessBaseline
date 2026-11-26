@@ -58,7 +58,6 @@ _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
 from cli_usage import refusal, usage
 
 
-import hashlib
 import json
 import os
 import re
@@ -130,11 +129,10 @@ _LEGAL_API_MODES = {"messages", "chat", "responses"}
 # Rail tiers are the guards/*.md section names. A row without `railTier` reads `detailed`: a tier
 # above it is earned by evidence that the model follows the shorter rails, never by capability.
 _LEGAL_RAIL_TIERS = ("detailed", "condensed", "minimal")
-# A tier above `detailed` names its evidence (instruction_quality §3): `unmeasured`, or a
-# /rail_battery Phase B report. Shape is checked on every load; the report file only by --check, so
-# a moved report never breaks a registry read.
+# A tier above `detailed` names its evidence (instruction_quality §3). `unmeasured` is the one kind this tree
+# records; shape is checked on every load.
 _SHORTER_RAIL_TIERS = ("condensed", "minimal")
-_RAIL_EVIDENCE_KINDS = ("measured", "unmeasured")
+_RAIL_EVIDENCE_KINDS = ("unmeasured",)
 
 # `contextSuffix` is the request modifier every native dispatch of the row must carry to be served
 # with the larger context window. Its only legal value is the host client's 1M-window modifier.
@@ -747,12 +745,7 @@ def _validate(data, target):
             if not isinstance(ev, dict) or ev.get("evidence") not in _RAIL_EVIDENCE_KINDS:
                 raise RegistryError(
                     f"{target}: model {mid} railTier {rail!r} needs railTierEvidence "
-                    f"{{evidence: {'|'.join(_RAIL_EVIDENCE_KINDS)}}} (/rail_battery)")
-            if ev["evidence"] == "measured":
-                missing = [k for k in ("evidenceRef", "route", "effort") if not str(ev.get(k) or "").strip()]
-                if missing:
-                    raise RegistryError(
-                        f"{target}: model {mid} measured railTierEvidence is missing {', '.join(missing)}")
+                    f"{{evidence: {'|'.join(_RAIL_EVIDENCE_KINDS)}}}")
         _validate_driver_notes(entry.get("driverNotes"), f"{target}: model {mid}")
         _validate_probation(entry.get("probation"), f"{target}: model {mid}")
 
@@ -3092,101 +3085,13 @@ def list_price(model, fresh=0, cache_read=0, output=0, cache_write=0, cache_writ
 
 # ----------------------------------------------------------------------------- CLI
 
-def _rail_treatment_hashes(repo):
-    """sha256 of each file a rail tier's treatment is made of, keyed relative to `.claude/`."""
-    base = Path(repo) / ".claude"
-    files = sorted((base / "guards").glob("*.md")) + [base / "workflows" / "dispatch.js"]
-    out = {}
-    for f in files:
-        if f.is_file():
-            out[f.relative_to(base).as_posix()] = hashlib.sha256(
-                f.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-    return out
-
-
-def _matrix_evidence_problems(matrix, mid, rail, effort):
-    """Why an S4 matrix (`matrix.json`) does not carry `rail` for `mid` at `effort`; [] when it does.
-
-    The model must have a necessity row at this effort; every one NEEDED or WEAK needs a `carriage:<rail>` row for
-    the same probe, and every carriage row for a probe (a rerun repeats the probe) must be CARRIED with runs.
-    """
-    rows = matrix.get("rows")
-    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        return ["rows is not a list of records"]
-    bad = [] if str(matrix.get("scorerSha") or "").strip() else ["scorerSha is missing"]
-    mine = [r for r in rows if r.get("model") == mid and r.get("effort") == effort]
-    carriage = {}
-    for r in mine:
-        if r.get("stage") == f"carriage:{rail}":
-            carriage.setdefault(r.get("probe"), []).append(r)
-    needed = sorted({r.get("probe") for r in mine
-                     if r.get("stage") == "necessity" and r.get("verdict") in ("NEEDED", "WEAK")})
-    if not any(r.get("stage") == "necessity" for r in mine):
-        return bad + [f"no necessity row for {mid} at effort {effort!r}"]
-    if not carriage:
-        return bad + [f"no carriage:{rail} row for {mid} at effort {effort!r}"]
-    for probe in needed:
-        if probe not in carriage:
-            bad.append(f"{probe} is NEEDED/WEAK but has no carriage:{rail} row")
-    for probe, probe_rows in sorted(carriage.items()):
-        for row in probe_rows:
-            if row.get("verdict") != "CARRIED":
-                bad.append(f"{probe} carriage verdict {row.get('verdict')!r} != 'CARRIED'")
-            if not row.get("runs"):
-                bad.append(f"{probe} carriage row has no runs")
-    return bad
-
-
-def rail_evidence_problems(data, repo):
-    """(errors, stale) for every measured railTierEvidence: errors fail --check, stale only warns.
-
-    evidenceRef is a Phase B PASS report or an S4 `matrix.json`; a matrix carries no treatment hashes, so it is never stale.
-    """
-    errors, stale = [], []
-    current = _rail_treatment_hashes(repo)
-    for entry in data.get("models") or []:
-        rail = entry.get("railTier")
-        ev = entry.get("railTierEvidence") or {}
-        if rail not in _SHORTER_RAIL_TIERS or ev.get("evidence") != "measured":
-            continue
-        mid = entry.get("id")
-        ref = Path(ev["evidenceRef"])
-        ref = ref if ref.is_absolute() else Path(repo) / ref
-        try:
-            report = json.loads(ref.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            errors.append(f"{mid}: railTierEvidence report unreadable at {ref}: {exc}")
-            continue
-        if "rows" in report:
-            bad = _matrix_evidence_problems(report, mid, rail, ev.get("effort"))
-            if bad:
-                errors.append(f"{mid}: railTierEvidence matrix {ref} does not support this row: {'; '.join(bad)}")
-            continue
-        want = {"phase": "B", "modelId": mid, "tier": rail, "route": ev.get("route"),
-                "effort": ev.get("effort"), "verdict": "PASS"}
-        bad = [f"{k} {report.get(k)!r} != {v!r}" for k, v in want.items() if report.get(k) != v]
-        if bad:
-            errors.append(f"{mid}: railTierEvidence report {ref} does not support this row: {'; '.join(bad)}")
-            continue
-        recorded = report.get("treatmentHashes") or {}
-        moved = sorted(k for k in current if recorded.get(k) != current[k])
-        if moved:
-            stale.append(f"{mid}: {', '.join(moved)} changed since the measured run - re-run /rail_battery")
-    return errors, stale
-
-
 def _cmd_check(argv):
     path = argv[0] if argv else None
     data = load(path)
-    rail_errors, rail_stale = rail_evidence_problems(data, Path(__file__).resolve().parents[2])
-    if rail_errors:
-        raise RegistryError("; ".join(rail_errors))
     refresh_errors = refresh_pin_problems(data)
     if refresh_errors:
         raise RegistryError("; ".join(refresh_errors))
     check_ladder(data=data)
-    for line in rail_stale:
-        print(f"STALE railTierEvidence {line}", file=sys.stderr)
     warnings = stale_prices(data)
     print(f"registry OK: {len(data['models'])} models, {len(data['transports'])} transports")
     for mid, why in warnings:

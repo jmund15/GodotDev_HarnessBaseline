@@ -26,17 +26,28 @@ with open(SUBSYS, "w", encoding="utf-8", newline="\n") as _fh:
     _fh.write("# planted subsystem catalog\n" * 40)
 
 
-def run(payload):
+def _env(sidecar=False, entrypoint=None):
+    """The caller's environment with every delegate marker planted either way, so a proof run inside a sidecar
+    child or a `claude -p` child still sees the main session's channel."""
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT")}
+    if sidecar:
+        env["CLAUDE_CODE_SIDECAR"] = "deepseek"
+    if entrypoint:
+        env["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
+    return env
+
+
+def run(payload, sidecar=False, entrypoint=None):
     raw = payload if isinstance(payload, str) else json.dumps(payload)
     r = subprocess.run([sys.executable, HOOK], input=raw, capture_output=True,
-                       text=True, encoding="utf-8", timeout=60)
+                       text=True, encoding="utf-8", timeout=60, env=_env(sidecar, entrypoint))
     return r.returncode, r.stderr or ""
 
 
-def run_dispatch(payload):
+def run_dispatch(payload, sidecar=False, entrypoint=None):
     raw = json.dumps(payload)
     r = subprocess.run([sys.executable, DISPATCH], input=raw, capture_output=True,
-                       text=True, encoding="utf-8", timeout=60)
+                       text=True, encoding="utf-8", timeout=60, env=_env(sidecar, entrypoint))
     return r.returncode, r.stdout or "", r.stderr or ""
 
 
@@ -83,6 +94,20 @@ def main():
                       rc == 2 and "guards/common.md" in err
                       and "read a catalog with an accessor through it" in err
                       and accessor in err))
+
+    # A sidecar child is a delegate with no `agent_id`: its launcher marks it by CLAUDE_CODE_SIDECAR.
+    rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": CATALOG}}, sidecar=True)
+    cases.append(("a sidecar delegate's whole-file Read is blocked with the accessor",
+                  rc == 2 and "BLOCKED" in err and "lens.py" in err))
+    rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": CATALOG, "limit": 40}},
+                                sidecar=True)
+    cases.append(("a sidecar delegate's bounded Read passes", rc == 0 and not err))
+    # A `claude -p` child (entrypoint sdk-cli) is a delegate whatever its launcher: `_prompt_provenance.in_delegate`.
+    rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": CATALOG}}, entrypoint="sdk-cli")
+    cases.append(("an sdk-cli delegate's whole-file Read is blocked with the accessor",
+                  rc == 2 and "BLOCKED" in err and "lens.py" in err))
+    rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": CATALOG}}, entrypoint="cli")
+    cases.append(("the interactive entrypoint (cli) reads the main session's advice", rc == 0 and "BLOCKED" not in err))
 
     rc, err = run({"tool_name": "Read", "tool_input": {"file_path": CATALOG, "offset": 10, "limit": 40}})
     cases.append(("bounded Read of the same catalog passes", rc == 0 and not err))

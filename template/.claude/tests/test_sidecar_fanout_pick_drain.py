@@ -943,6 +943,55 @@ def a_job_a_usage_limit_stops_mid_run_continues_as_a_fresh_session_on_a_sibling_
                      ["jobs"] if row["label"] == "j1")["recordPath"].endswith("j1.attempt2.record.json"))
 
 
+def wrote_report(attempt=1, final=None):
+    """`on_launch` for a job that writes `<label>.md` with a shell command during launch `attempt` and ends with a
+    different final message (`final`, else none): the file's mtime is the only trace, as for a job with no Write tool."""
+    def on_launch(label, ctx):
+        if len(ctx["argv"][label]) != attempt:
+            return
+        time.sleep(0.05)
+        (ctx["out"] / (label + ".md")).write_text("the report of " + label + "\n", encoding="utf-8")
+        if final:
+            (ctx["out"] / (label + ".out.json")).write_text(
+                json.dumps({"type": "result", "result": final}) + "\n", encoding="utf-8")
+    return on_launch
+
+
+def a_report_the_job_wrote_during_the_run_is_kept_whatever_exit_or_route_ended_it():
+    for detached in (False, True):
+        for code in (0, 1, 143):
+            got = scene([job("j1")], start={PA: 10}, detached=detached, on_launch=wrote_report(final="short reply"),
+                        exit_of=lambda label, plan, code=code: code)
+            res, out = got["results"]["j1"], got["out"]
+            if not (res["exit"] == code and res["deliverable"] == sf._posix(out / "j1.md")
+                    and (out / "j1.md").read_text(encoding="utf-8") == "the report of j1\n"
+                    and res.get("reply") == sf._posix(out / "j1.reply.md")
+                    and (out / "j1.reply.md").read_text(encoding="utf-8").startswith("short reply")):
+                return False
+    return True
+
+
+def a_job_that_wrote_no_report_delivers_its_final_message_as_its_report():
+    def final_only(label, ctx):
+        (ctx["out"] / (label + ".out.json")).write_text(
+            json.dumps({"type": "result", "result": "the final message"}) + "\n", encoding="utf-8")
+    got = scene([job("j1")], start={PA: 10}, on_launch=final_only)
+    res, out = got["results"]["j1"], got["out"]
+    return (res["deliverable"] == sf._posix(out / "j1.md") and "reply" not in res
+            and (out / "j1.md").read_text(encoding="utf-8").startswith("the final message")
+            and not (out / "j1.reply.md").exists())
+
+
+def a_report_written_before_a_usage_limit_continuation_is_still_the_jobs_report():
+    got = scene([job("j1")], start={PA: 10, PB: 60}, plans=(PA, PB), detached=True,
+                on_launch=wrote_report(attempt=1, final=None),
+                exit_of=lambda label, plan: sf.USAGE_LIMIT_EXIT if plan == PA else 0)
+    res, out = got["results"]["j1"], got["out"]
+    return (got["launches"] == [("j1", PA), ("j1", PB)] and res["exit"] == 0
+            and res["deliverable"] == sf._posix(out / "j1.md")
+            and (out / "j1.md").read_text(encoding="utf-8") == "the report of j1\n")
+
+
 def the_continuation_brief_points_the_child_at_its_brief_its_workdir_and_its_report():
     workdir = os.path.join(TMP, "work")
     os.makedirs(workdir, exist_ok=True)
@@ -1094,6 +1143,9 @@ for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_w
            a_named_plan_job_waits_for_the_running_job_though_a_sibling_has_room,
            a_sibling_that_cannot_hold_it_either_leaves_the_job_waiting_on_its_plan,
            a_job_a_usage_limit_stops_mid_run_continues_as_a_fresh_session_on_a_sibling_plan,
+           a_report_the_job_wrote_during_the_run_is_kept_whatever_exit_or_route_ended_it,
+           a_job_that_wrote_no_report_delivers_its_final_message_as_its_report,
+           a_report_written_before_a_usage_limit_continuation_is_still_the_jobs_report,
            the_continuation_brief_points_the_child_at_its_brief_its_workdir_and_its_report,
            the_stopped_runs_stream_is_kept_beside_the_continuation,
            the_summary_names_a_continued_job_and_its_stopped_attempt,

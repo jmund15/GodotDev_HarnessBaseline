@@ -3,7 +3,7 @@ description: Audit a skill, command, hook, or CLAUDE.md against instruction-load
 disable-model-invocation: true
 ---
 
-Static structural review — sibling to `/claudemd_compact`.
+Static structural review.
 
 ## Argument
 
@@ -11,7 +11,7 @@ Static structural review — sibling to `/claudemd_compact`.
 - A skill file: `.claude/skills/<name>/SKILL.md` (or just `<name>` — auto-resolves)
 - A command file: `.claude/commands/<name>.md` (or just `<name>` — auto-resolves)
 - A hook file: `.claude/hooks/<name>.py` (or just `<name>` — auto-resolves)
-- The CLAUDE.md file: `.claude/CLAUDE.md` (whole-file audit; for compression, prefer `/claudemd_compact`)
+- The CLAUDE.md file: `.claude/CLAUDE.md` (whole-file audit; each line meets the every-agent test in `skills/instruction_quality/reference/principles.md` §Layers)
 
 **No argument:** Print usage and suggest the most recently modified skill/command files as targets.
 
@@ -38,7 +38,7 @@ Run each applicable principle from the checklist against the target. Apply only 
 
 **Compute the quantitative inputs first** (so the size/length principles gate on numbers, not eyeballing): line count of the target; for a skill, the `description` char count AND its word count vs. the median word count of sibling `description:` fields in the same `.claude/skills/` directory (Glob the siblings, count); for a command, whether frontmatter carries a non-empty single-line `description:` at all, and its listed-text UTF-8 byte count against the `instruction_quality` §8 cap. Feed these into the size-proportional, description-as-trigger, and frontmatter-convention findings.
 
-**Number basis (skill, command and CLAUDE.md targets).** Run `python3 .claude/tools/extract_numbers.py list <target>`: each token without a row, and each rule row whose basis is absent, is a finding under the loaded skill's specificity principle (its number-basis rule).
+**Number basis (skill, command and CLAUDE.md targets).** Judge each number in the target against the loaded skill's specificity principle (its number-basis rule): one with no basis, or a basis that does not measure what the number gates, is a finding.
 
 **Em-dash density — a readout, not a gate.** Also compute, per target: em-dash count (`grep -o $'—' <file> | wc -l`), word count (`wc -w <file>`), and the derived `1 per N words` — frontmatter and fenced code included, so the number is reproducible. Print it beside the prose-engineering norm the `instruction_quality` prose-engineering principle cites (do not restate the figure here; read it from the loaded skill). **Emit no verdict on it.** Density reduction is not in this command's scope, and a permanently-red flag trains its readers to ignore the whole report.
 
@@ -152,6 +152,5 @@ The invoking session applies findings whose evidence is mechanical (a dead path,
 
 ## Pairs with
 
-- `/claudemd_compact` — applies these principles + CLAUDE.md-specific compression. Both reference `instruction_quality` skill for shared principles.
 - `instruction_quality` skill — the shared checklist (single source of truth).
 - `/rule_consistency` — audits cross-SURFACE drift (this command is per-FILE); complementary, not overlapping.

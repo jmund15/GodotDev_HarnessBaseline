@@ -155,10 +155,10 @@ check("an invalid delta is refused before any agent call",
                                                        "kind": "reviewer",
                                                        "tools": {"add": ["mcp:nosuch"],
                                                                  "remove": []}}]))))
-check("a signed string grant with no covering agent file is refused before launch", True,
+check("a signed string delta with no covering agent file is refused before launch", True,
       "no covering agent file" in (guard.tool_profile_refusal(workflow([
-          {"label": "shell", "model": "sonnet", "kind": "scout", "tools": "+Bash"}])) or ""))
-check("a reviewer's +Bash grant is covered by the lane-review-sh variant", None,
+          {"label": "shell", "model": "sonnet", "kind": "scout", "tools": "-Grep"}])) or ""))
+check("a +Bash grant a kind's row already holds changes nothing, so it needs no agent file", None,
       guard.tool_profile_refusal(workflow([
           {"label": "shell", "model": "sonnet", "kind": "reviewer", "tools": "+Bash"}])))
 check("an unsigned Workflow tools string fails before launch", True,
@@ -280,7 +280,7 @@ check("the rendered agent files check clean against the table", 0,
 _planted = os.path.join(_tmp, "tool_profiles.json")
 with open(TABLE, encoding="utf-8") as _h:
     _table = json.load(_h)
-_table["variants"][0]["add"].append("TodoWrite")
+_table["kinds"]["author"]["builtins"].append("TodoWrite")
 with open(_planted, "w", encoding="utf-8", newline="\n") as _h:
     json.dump(_table, _h)
 _tmp_agents = os.path.join(_tmp, "agents")
@@ -304,12 +304,11 @@ check("lane-review.md lists ToolSearch because the row names an MCP server", Tru
 check("lane-review.md grants no Skill tool", False, "Skill" in _tools.split(", "))
 check("lane-review.md's body is the delegate system prompt", True,
       _text.rstrip("\n").endswith("The runtime appends the workflow-return note."))
-_declared = sorted(r["agentType"] + ".md" for r in json.load(open(
+_declared = sorted({r["agentType"] + ".md" for r in json.load(open(
     os.path.join(os.path.dirname(AGENTS_DIR), "guards", "tool_profiles.json"), encoding="utf-8"))["kinds"].values()
-    if r.get("agentType"))
-_declared = sorted(set(_declared) | {"lane-review-sh.md"})
-check("the table declares survey, review, review-sh, author, verify and gate agent types",
-      ["lane-author.md", "lane-gate.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+    if r.get("agentType")})
+check("the table declares survey, review, author, verify and gate agent types",
+      ["lane-author.md", "lane-gate.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
       _declared)
 check("only kinds and variants that declare agentType render a file", _declared,
       sorted(os.listdir(_gen_agents)))
@@ -339,9 +338,9 @@ check("the brief-derived coverage functions are gone", [],
 check("resolve-kind has no --brief flag", True, "--brief" not in tp_cli("resolve-kind", "--help").stdout)
 check("the coverage module is deleted", False, os.path.exists(os.path.join(CLAUDE, "hooks", "_brief_coverage.py")))
 
-# ---- 14. a planted native command per kind runs as its agent type; the pr_ready lens runs as the variant
+# ---- 14. a planted native command per kind runs as its agent type; a stale +Bash grant changes none
 for _kind, _tools, _agent in (("scout", None, "lane-survey"), ("lens", None, "lane-survey"), ("reviewer", None, "lane-review"),
-                              ("reviewer", "+Bash", "lane-review-sh"), ("author", None, "lane-author"),
+                              ("reviewer", "+Bash", "lane-review"), ("author", None, "lane-author"),
                               ("judge", None, "lane-review")):
     _job = {"label": "planted", "model": "sonnet", "effort": "low", "kind": _kind}
     if _tools:
@@ -368,13 +367,9 @@ def _disallowed(name):
         if line.startswith("disallowedTools:"):
             return line.split(":", 1)[1].strip()
     return None
-for _name in ("lane-survey.md", "lane-review.md", "lane-review-sh.md"):
+for _name in ("lane-survey.md", "lane-review.md"):
     check(_name + " withholds ai-worker write_doc", "mcp__ai-worker__write_doc", _disallowed(_name))
 check("lane-author.md carries no disallowedTools line", None, _disallowed("lane-author.md"))
-check("render_agents puts disallowedTools in the variant's frontmatter", True,
-      "disallowedTools: mcp__ai-worker__write_doc" in tp.render_agents(
-          json.load(open(os.path.join(os.path.dirname(AGENTS_DIR), "guards", "tool_profiles.json"), encoding="utf-8")),
-          tp.load_registrations()).get("lane-review-sh.md", ""))
 
 if RAN < 70:
     print("FAIL expected >= 70 cases, ran %d" % RAN)

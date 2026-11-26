@@ -44,6 +44,7 @@ from _checkout_root import linked_main_root
 from _claude_scope import is_cloud
 from _hook_parts import HOOK_TEXT_CAP
 from _hook_state import replace_path
+from _prompt_provenance import in_delegate
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes. LF only, so a line's bytes are the
 # characters the client counts against the cap.
@@ -377,9 +378,9 @@ def roster_health(root: Path) -> str:
 def free_catalog_line(root: Path, source: str) -> str:
     """`free catalog: +<id> -<id>` when the live opencode catalog differs from the free pool's registry rows
     (free_pool.catalog_line), else "". The live read takes seconds, so only an owner's fresh session (startup or
-    /clear) pays it: a delegate, a resume and a compaction print nothing. A failed read prints its own line; this
+    /clear) pays it: a resume and a compaction print nothing, and `main` prints it to an owner session only. A failed read prints its own line; this
     never raises."""
-    if source not in ("startup", "clear") or _sidecar_delegate():
+    if source not in ("startup", "clear"):
         return ""
     try:
         sys.path.insert(0, str(root / ".claude" / "tools"))
@@ -389,15 +390,8 @@ def free_catalog_line(root: Path, source: str) -> str:
         return f"free catalog: check failed ({err})"
 
 
-def _sidecar_delegate() -> bool:
-    """A sidecar child (CLAUDE_CODE_SIDECAR, set by its launcher) executes a brief; owner-facing banners skip it."""
-    return bool(os.environ.get("CLAUDE_CODE_SIDECAR"))
-
-
 def ladder_banner(root: Path) -> str:
-    """One line when a board task has cells the model ladder was not swept for, or a ladder row's model version moved since its clauses were audited; empty when current or in a delegate."""
-    if _sidecar_delegate():
-        return ""
+    """One line when a board task has cells the model ladder was not swept for, or a ladder row's model version moved since its clauses were audited; empty when current. `main` prints it to an owner session only."""
     try:
         bench = adaptation.plugin_entry(root / ".claude", "bench")
         return bench.ladder_banner() if bench else ""
@@ -408,9 +402,9 @@ def ladder_banner(root: Path) -> str:
 
 
 def skill_listing_banner(root: Path, input_data: dict) -> str:
-    """One line naming skill-listing entries no file of ours authors and no ruling keeps; empty when none or in a delegate."""
+    """One line naming skill-listing entries no file of ours authors and no ruling keeps; empty when none. `main` prints it to an owner session only."""
     transcript = input_data.get("transcript_path")
-    if not transcript or _sidecar_delegate():
+    if not transcript:
         return ""
     try:
         sys.path.insert(0, os.path.join(root, ".claude", "tools"))
@@ -561,7 +555,7 @@ def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh", alias: 
 def self_improvement_advisory(root: Path, source: str | None) -> str:
     """`tools/self_improvement_due.py --line`'s output on `source == "startup"` only — empty on
     resume, compact, clear or a missing source, or when nothing is due. The 15 s subprocess
-    timeout outwaits the archive store's 10 s ledger-lock wait, so a held lock reports its reason."""
+    timeout bounds a stalled scan."""
     if source != "startup":
         return ""
     script = root / ".claude" / "tools" / "self_improvement_due.py"
@@ -786,6 +780,9 @@ def main():
         input_data = {}
 
     source = str(input_data.get("source") or "startup")
+    # A delegate executes a brief and holds a grant, not the owner's: the owner's worktree, env and git lines are noise to it,
+    # and a line that steers to an owner action or a tool it lacks (a nudge, a rebuild, a /worklog replay) cannot be taken.
+    owner_view = not in_delegate(input_data, os.environ)
     root = get_project_root()
     worktree = is_worktree()
     cloud = is_cloud()
@@ -848,9 +845,6 @@ def main():
     # --- Build output ---
     output_lines = ["<session-context>"]
 
-    # A sidecar child executes a brief; the owner's worktree, env and git lines are noise to it.
-    owner_view = not _sidecar_delegate()
-
     # Worktree/cloud report
     if owner_view and worktree:
         output_lines.append(f"Worktree: YES (root: {root})")
@@ -876,14 +870,14 @@ def main():
     if env_parts:
         output_lines.append("")
         output_lines.append("Env: " + " | ".join(env_parts))
-    if not cloud:
+    if owner_view and not cloud:
         ladder_line = ladder_banner(root)
         if ladder_line:
             output_lines.append(ladder_line)
         catalog_line = free_catalog_line(root, str(input_data.get("source") or "startup"))
         if catalog_line:
             output_lines.append(catalog_line)
-    listing_line = skill_listing_banner(root, input_data)
+    listing_line = skill_listing_banner(root, input_data) if owner_view else ""
     if listing_line:
         output_lines.append(listing_line)
 
@@ -943,14 +937,14 @@ def main():
         except Exception:
             pass
 
-    for lines in _step_results("nudge_lines", setup_results, cloud):
+    for lines in (_step_results("nudge_lines", setup_results, cloud) if owner_view else ()):
         output_lines.extend(_bulk(lines))
 
     # Cloud-worklog replay surface (local only). When a cloud session has queued
     # worklog mutations to .claude/worklog-pending.md (Unit D), flag the live count
     # so the user knows to run /worklog and replay them into Obsidian. Struck-through
     # (already-skipped) entries are excluded from the count.
-    if not cloud:
+    if owner_view and not cloud:
         pending_path = root / ".claude" / "worklog-pending.md"
         if pending_path.exists():
             try:
@@ -971,7 +965,7 @@ def main():
             except Exception:
                 pass
 
-    for lines in _step_results("report_lines", root):
+    for lines in (_step_results("report_lines", root) if owner_view else ()):
         output_lines.extend(_bulk(lines))
 
     # Self-improvement loop due-check — startup only, silent when nothing is due.

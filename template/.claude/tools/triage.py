@@ -52,6 +52,7 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 import adaptation  # noqa: E402
 import _git_commit  # noqa: E402
+from _checkout_root import harness_root  # noqa: E402
 from _claude_scope import is_prose_harness_scope  # noqa: E402
 
 FIELDS = {
@@ -179,7 +180,7 @@ def rigor(task_id: str | None = None, root: Path | None = None, session_id: str 
     (`task_record.active` by `rigorAt`), else the default. Without a task id the record read for the
     default's paths is the session's newest record."""
     import task_record
-    root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()
     directory = Path(task_record.record_dir(root))
     session = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if task_id:
@@ -236,7 +237,7 @@ def mode(task_id: str | None = None, root: Path | None = None, session_id: str |
     `attended`. A marker nobody owns (no session id, a malformed one) names no run, so it cannot set the
     default."""
     import task_record
-    root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()
     directory = Path(task_record.record_dir(root))
     session = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if task_id:
@@ -621,11 +622,6 @@ def _changes(statuses, read_patch, read_post_image):
             for letter, path in statuses]
 
 
-def _toplevel(repo, git_env):
-    out = _git_commit.run_git(["rev-parse", "--show-toplevel"], repo, git_env)
-    return out.strip() if out else repo
-
-
 def changes_from_index(repo, paths, git_env, rest):
     """The content the commit `git commit <rest>` publishes: the index, or the working tree for a pathspec or
     `-a` commit (the same rule `staged_paths` applies), limited to `paths`. Raises OSError when git cannot
@@ -642,23 +638,22 @@ def changes_from_index(repo, paths, git_env, rest):
         base = ["--cached", parent.strip() if parent else _EMPTY_TREE]
     else:
         base = ["--cached"]
-    listing = _git_commit.run_git(["-c", "core.quotepath=false", "diff", "-M", "--name-status", "-z"] + base,
+    listing = _git_commit.run_git(["-c", "core.quotepath=false", "diff", "-M", "--relative", "--name-status", "-z"] + base,
                                   repo, git_env)
     if listing is None:
         raise OSError("git diff --name-status %s" % " ".join(base))
     statuses = [(letter, path) for letter, path in _name_status(listing) if path in wanted]
-    top = _toplevel(repo, git_env)
 
     def read_post_image(path):
         if worktree:
             try:
-                with open(os.path.join(top, *path.split("/")), encoding="utf-8", errors="replace") as fh:
+                with open(os.path.join(repo, *path.split("/")), encoding="utf-8", errors="replace") as fh:
                     return fh.read()
             except OSError:
                 return None
-        return _git_commit.run_git(["show", ":" + path], repo, git_env)
+        return _git_commit.run_git(["show", ":./" + path], repo, git_env)
 
-    patch_args = ["diff", "-U0", "-M", "--no-color", "--no-ext-diff"] + base
+    patch_args = ["diff", "-U0", "-M", "--relative", "--no-color", "--no-ext-diff"] + base
     return _changes(statuses, lambda: _git_commit.run_git(["-c", "core.quotepath=false"] + patch_args, repo, git_env),
                     read_post_image)
 
@@ -668,12 +663,12 @@ def changes_from_commit(repo, sha):
     empty tree). A merge commit's diff is its first-parent diff."""
     parent = _git_commit.run_git(["rev-parse", "-q", "--verify", sha + "^"], repo)
     base = [parent.strip() if parent else _EMPTY_TREE, sha]
-    listing = _git_commit.run_git(["-c", "core.quotepath=false", "diff", "-M", "--name-status", "-z"] + base, repo)
+    listing = _git_commit.run_git(["-c", "core.quotepath=false", "diff", "-M", "--relative", "--name-status", "-z"] + base, repo)
     if listing is None:
         raise OSError("git diff %s" % " ".join(base))
-    patch_args = ["-c", "core.quotepath=false", "diff", "-U0", "-M", "--no-color", "--no-ext-diff"] + base
+    patch_args = ["-c", "core.quotepath=false", "diff", "-U0", "-M", "--relative", "--no-color", "--no-ext-diff"] + base
     return _changes(_name_status(listing), lambda: _git_commit.run_git(patch_args, repo),
-                    lambda path: _git_commit.run_git(["show", "%s:%s" % (sha, path)], repo))
+                    lambda path: _git_commit.run_git(["show", "%s:./%s" % (sha, path)], repo))
 
 
 # --- trailer ------------------------------------------------------------------------------------------------
@@ -897,7 +892,7 @@ def sentences(root: Path, *, rev: str | None = None, staged: bool = False) -> li
     for change in changes:
         if not sentence_diff.in_doctrine_scope(change.path):
             continue
-        before = _git_commit.run_git(["show", before_ref + ":" + change.path], root) or ""
+        before = _git_commit.run_git(["show", before_ref + ":./" + change.path], root) or ""
         after = change.file_text or ""
         rows.append({"path": change.path,
                      "added": [s for s, _ in sentence_diff.removed(after, before)],
@@ -939,7 +934,7 @@ def _cmd_check(_args, tags):
 
 def _cmd_rederive(args, tags):
     try:
-        flagged = rederive(args.repo, args.rev_range, tags)
+        flagged = rederive(args.repo or harness_root(), args.rev_range, tags)
     except OSError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
@@ -967,7 +962,7 @@ def _record_run_condition(value, task, title, key):
 
 def _cmd_rigor(args):
     import task_record
-    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())
     try:
         if args.set_level:
             _record_run_condition(args.set_level, args.task, "session rigor", "rigor")
@@ -982,7 +977,7 @@ def _cmd_rigor(args):
 
 def _cmd_mode(args):
     import task_record
-    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())
     try:
         if args.set_mode:
             _record_run_condition(args.set_mode, args.task, "session mode", "mode")
@@ -1008,12 +1003,12 @@ def main(argv=None):
     sub.add_parser("check-registry", help="validate every registry entry")
     p = sub.add_parser("rederive", help="flag commits whose trailer sits below their diff")
     p.add_argument("rev_range")
-    p.add_argument("--repo", default=".")
+    p.add_argument("--repo", default=None, help="default: the harness root the cwd lies in")
     p = sub.add_parser("sentences", help="print added and removed doctrine sentences")
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--staged", action="store_true")
     source.add_argument("--rev")
-    p.add_argument("--repo", default=".")
+    p.add_argument("--repo", default=None, help="default: the harness root the cwd lies in")
     p = sub.add_parser("admits", help="compute a scaled check's admission")
     p.add_argument("check", choices=CHECKS)
     source = p.add_mutually_exclusive_group(required=True)
@@ -1037,7 +1032,7 @@ def main(argv=None):
     if args.cmd == "admits":
         import task_record
         try:
-            root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
+            root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root())
             fields = current(root, rev=args.rev, staged=args.staged, task_id=args.task)
             adm = admits(args.check, fields, rigor(args.task, root), gate_green=args.gate_green, task_id=args.task)
         except (OSError, ValueError, KeyError, task_record.RecordTooLarge) as exc:
@@ -1050,7 +1045,7 @@ def main(argv=None):
                                      " width=" + adm.width if adm.width else "", adm.reason))
         return 0
     if args.cmd == "sentences":
-        for row in sentences(Path(args.repo), rev=args.rev, staged=args.staged):
+        for row in sentences(Path(args.repo or harness_root()), rev=args.rev, staged=args.staged):
             print(row["path"])
             for key, marker in (("removed", "-"), ("added", "+")):
                 for sentence in row[key]:

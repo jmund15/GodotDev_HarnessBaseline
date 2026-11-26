@@ -2,7 +2,7 @@
 description: Measure this session's dispatch cost per effort pin and archive it; /delegation_usage reports all-time usage
 ---
 
-Empirical counterpart to `/self_evaluate`: that captures *what the agent thinks* went well, this measures *what each effort pin cost*. Feeds the `/eval_dashboard` Agents and Ladder views.
+Measures *what each effort pin cost*, from what the runs recorded.
 
 Collect native Workflow records and labeled sidecar records through the existing collector. The ai-worker server's local calls join it from its call ledger (`~/.claude/ai_worker_calls.jsonl`, this session's `caller_session`): each call is a sidecar-style dispatch keyed `ai-worker-<call_id>:<call_id>`, rated with `--rate` like any sidecar result, and its requested effort is the pin (`--effort` when the ledger row has none). Keep served model, transport, native currency, cost basis and requested/effective settings separate. The sidecar ledger has a legacy filename; it is not evidence that every row belongs to one provider. Unlabeled legacy rows surface only under `--sidecar-all`, which is a spend report and never archives.
 
@@ -134,15 +134,15 @@ Outcomes merge before the table prints, so the roll-up you read is what gets wri
 |---|---|---|
 | `REJECTED unknown outcome` | Typo'd outcome string | Use one of the four above (legacy verdict words map through) |
 | `Already archived … nothing appended` | This run is in the store | Nothing to do — the guard exists because duplicates silently inflate `--archive-summary` |
-| `REFUSED: N agent(s) have no resolved effort pin` | Would write records the dashboard's Agents tab can't use | Add `[outcome, effort]` pairs; `--allow-unresolved-effort` overrides |
+| `REFUSED: N agent(s) have no resolved effort pin` | Would write records the per-effort roll-up can't use | Add `[outcome, effort]` pairs; `--allow-unresolved-effort` overrides |
 
 Unlisted labels archive as `unrated`.
 
-**4. Report.** Print the per-effort roll-up and name any `defects`/`rework`/`discarded` agent with its cost. Ladder `effort` and registry `roles` edits come from `/eval_dashboard` §Ladder readout, whose minimum sample is code.
+**4. Report.** Print the per-effort roll-up and name any `defects`/`rework`/`discarded` agent with its cost. Ladder `effort` and registry `roles` edits come from the cross-session roll-up below, whose minimum sample is code.
 
 ## Cross-session roll-up
 
 ```bash
 python3 .claude/tools/orchestration_metrics.py --archive-summary
 ```
-Also rendered by `/eval_dashboard`: its Agents tab is the sanctioned surface for `effort` proposals and its Ladder tab for `roles` proposals (`CLAUDE.interactive.md` §Corrections and surfaced work: aggregate before tuning). The roll-up also derives the over-pin candidate queue (written to `.claude/orchestration_candidates.json`) and prints the convergence line (see *Over-pin candidates*).
+This roll-up is the sanctioned surface for `effort` and `roles` proposals (`CLAUDE.interactive.md` §Corrections and surfaced work: aggregate before tuning). It also derives the over-pin candidate queue (written to `.claude/orchestration_candidates.json`) and prints the convergence line (see *Over-pin candidates*).

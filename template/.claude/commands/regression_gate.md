@@ -24,18 +24,10 @@ A cloud session runs this gate too: start `pwsh -NoProfile -File .claude/scripts
 ## Invocation
 
 ```bash
-pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
+pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach
 ```
 
-**A gate run declares its chain position** — `hooks/gate_cadence_guard.py` exempts `-StaticOnly`, `-RouteOnly` and watch-only calls, not `-RetryOnly`; other invocations without a marker receive an advisory:
-
-| Marker | Cap | Means |
-|---|---|---|
-| `# gate: final` | — | A drive's one full-gate run, when it makes one. |
-| `# gate: prepush` | — | Before a push no main check proves. |
-| `# gate: checkpoint` | Long-drive exception; full gate; no numerical cap. |
-
-There are no tiers to choose: the script picks the route. A run whose C# differs from the last full-green snapshot only in comments or whitespace, with every other build input identical, ends `PASS route=comment-only` after the build and `DOCS`; any other tree, an absent or unreadable snapshot, or a lexer failure runs the full gate. The route ignores line numbers: a comment edit above a `[CallerLineNumber]` call (a logger or a guard helper) shifts the line it logs. `change_control` §Gate cadence owns slice/lane verification, Part/drive close and fix re-verification. The hook never blocks `verify.ps1` or raw `-Filter` runs.
+There are no tiers to choose: the script picks the route. A run whose C# differs from the last full-green snapshot only in comments or whitespace, with every other build input identical, ends `PASS route=comment-only` after the build and `DOCS`; any other tree, an absent or unreadable snapshot, or a lexer failure runs the full gate. The route ignores line numbers: a comment edit above a `[CallerLineNumber]` call (a logger or a guard helper) shifts the line it logs. `change_control` §Gate cadence owns slice/lane verification, Part/drive close and fix re-verification.
 
 **`-Detach` is mandatory from an agent session.** A full gate outlives the 600 s foreground Bash ceiling, and a detached run survives a harness kill of the shell that launched it, which a `run_in_background` task does not. `-Detach` returns in ~1s with `OUT=<path>`, and the run is over only when a line begins `VERDICT=` in that file; a killed poller loses the wake-up, never the run.
 
@@ -63,8 +55,6 @@ Parsed test failures are red and never qualify for an automatic retry. Sanity re
 Stdout is ~10 lines; detail (failing tests, guard output, remediation) spills to `.claude/scratch/test_runs/gate_last_<runId>.md`; `gate_last.md` is a latest-run pointer copy. **Read the detail file only when the verdict is not PASS.**
 
 Preflight emits `REAP` even when it kills nothing. Suite reaper lines reach stdout only when killed or spared counts are nonzero. Their detail is retained in the run's detail file. An absent suite line does not prove the site never ran. `scope=orphans-only` marks orphan-only candidates; `PEERS` reports cross-checkout gates; `WAIT` names what this gate waits on.
-
-**`peer waiter live` in an `[activity]` line is not a blocker.** A gate waiting for its checkout stamps its record `kind=waiter`: it holds no build output and no runtime slot / checkout lock, so nothing defers to it. Only `kind=gate` blocks.
 
 [`regression_gate_reference.md`](reference/regression_gate_reference.md) §Sample output shows a passing run's stdout, line by line.
 

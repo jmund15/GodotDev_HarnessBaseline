@@ -339,7 +339,7 @@ def _run():
     cases.append(("commit_message is None for an unreadable -F file", message(["-F", "absent.txt"], msg_repo) is None))
 
     # --- in_project: the one home for "does this commit belong to this project" -------------------
-    # `triage_commit_check` and `duplicate_commit_check` both gate on it; a second copy would drift.
+    # `triage_commit_check` gates on it; a second copy would drift.
     def in_project(cwd, root):
         return gc.in_project(cwd, root)
 

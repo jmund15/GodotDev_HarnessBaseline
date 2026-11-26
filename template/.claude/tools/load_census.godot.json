@@ -17,6 +17,6 @@
   "session_start_skip": {
     "tres_script_strip_guard.py": "repairs .tres files in place (--repair-inplace); its output depends on the worktree's .tres files; it keeps its own proof"
   },
-  "isolated_shared_state_hooks": ["activity_registry.py"],
+  "isolated_shared_state_hooks": [],
   "code_edit_probe": {"path": "Scripts/Example.cs"}
 }
