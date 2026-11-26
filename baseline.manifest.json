@@ -3047,61 +3047,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/skills/benchmark_design/SKILL.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/axis_design.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/board_publication.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/calibration_and_replication.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/configuration_and_transport.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/configurations_and_outcomes.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/controls_and_subfloor.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/grid_health.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/scoring.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/staircase_construction.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/skills/benchmark_design/reference/validation_probes.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/skills/change_control/SKILL.md",
       "layer": "pure",
       "sync": "seed"

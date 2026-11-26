@@ -260,10 +260,6 @@ CODING_PATTERNS = [
     # Accepted candidates requiring an exact layer entry:
     ".claude/auto-memory/archive/feedback_session_end_full_scope.md",
     ".claude/reference/semantic_search.md",
-    ".claude/skills/benchmark_design/SKILL.md",
-    ".claude/skills/benchmark_design/reference/configuration_and_transport.md",
-    ".claude/skills/benchmark_design/reference/controls_and_subfloor.md",
-    ".claude/skills/benchmark_design/reference/staircase_construction.md",
 
 ]
 
