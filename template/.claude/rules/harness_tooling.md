@@ -151,7 +151,7 @@ check, as above.
   loses a race fetches, rebases and pushes again. It runs no proof and no C# gate, and `LAND_RESULT=red` names only the
   args, fetch, rebase, submodule or push stage.
 - **The main check proves `main` after the land.** `main_check.yml` runs the project's pytest over `.claude/tests` at the landed tip (`pytest -n auto`, then the `proof_serial` proofs alone; no retry, no bisect, so a red row names no culprit commit), and
-  the gate that `adaptation.json` `gate_cadence.main` declares (`tools/adaptation.py` owns its shape: exit 0 passes, exit 1
+  the gate that `adaptation.json` `gate_cadence.main` declares (`tools/gate_cadence.py` owns its shape: exit 0 passes, exit 1
   names each failed test as a `FAILED_TEST=<id>` line) when the range changes a non-harness path; a project that declares none
   runs the close alone. A red is a row on the `main-check-state` branch
   (`main_check.py --rows`), never a failed land: it blocks no push, and later checks read it as pre-existing.

@@ -1529,12 +1529,18 @@ class _PassCache(_evidence.Reach):
     def _git_read(self, args):
         """Git's answer in this checkout as a proof's own git gets it: the repository variables a caller set
         (a commit's private index) are dropped, as `run_proof` drops them from a proof's environment."""
+        memo, key = getattr(self, "_snapshot_reads", None), tuple(args)
+        if memo is not None and key in memo:
+            return memo[key]
         env = {k: None for k in GIT_REPO_ENV}
         result = _git_run.run(args, cwd=self.root, env=env, timeout=None)
         if result.returncode != 0:
             raise RuntimeError("git %s failed in %s: %s"
                                % (args[0], self.root, result.stderr.decode("utf-8", "replace").strip()))
-        return result.stdout.decode("utf-8", "replace")
+        text = result.stdout.decode("utf-8", "replace")
+        if memo is not None:
+            memo[key] = text
+        return text
 
     def _known(self, rel):
         """True when a tracked file anywhere in the repository is `rel` or lies under it, in any letter case:
@@ -1751,9 +1757,14 @@ class _PassCache(_evidence.Reach):
         """Read the git state the keys use, before the run's proofs start. A pass records only when the state
         its run ended on is this one (`observed_parts`): a proof that ran across a change observed a state
         no row can name. Every part is read, `repo` included: an older manifest, or a child whose shell script
-        names git, still keys it."""
-        for method in _GIT_SCOPES.values():
-            getattr(self, method)()
+        names git, still keys it. The scopes overlap (`repo` is the union of five others), so the snapshot asks git
+        each distinct read once; a `fresh` read at record time asks again."""
+        self._snapshot_reads = {}
+        try:
+            for method in _GIT_SCOPES.values():
+                getattr(self, method)()
+        finally:
+            self._snapshot_reads = None
 
     def observed_parts(self, proof, manifest, fresh=False, memo=None, files=None, why=None):
         """The parts of the observed key, each a short digest, or None when the proof has no manifest, its

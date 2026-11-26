@@ -323,6 +323,7 @@ def test_doctor_allows_a_tracked_ignored_row_and_a_local_ignored_row() -> None:
 
 
 def main() -> int:
+    T._git_fixture.warm()  # one layout for every case process to copy
     return run_cases([
         test_doctor_reports_every_gap_of_a_planted_consumer,
         test_doctor_without_a_repo_fails_git_repo,

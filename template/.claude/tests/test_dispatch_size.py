@@ -892,6 +892,42 @@ class PreflightTests(Plant):
         self.assertEqual(len(tier), 1, lines)
         self.assertIn("for-role executor", tier[0])
 
+    def _ladder(self, body):
+        os.makedirs(os.path.join(self.root, ".claude", "reference"), exist_ok=True)
+        return self.text(os.path.join(".claude", "reference", "model_ladder_evidence.md"), body)
+
+    def test_a_slice_cut_from_ladder_text_since_changed_is_named_stale_not_absent(self):
+        """A ladder edit voids every credit cut from the old text (`model_ladder_gate.ladder_credit`); the line
+        names that cause, since "no ladder slice" after a load sends the agent looking for a load that happened."""
+        import _hook_state
+        import model_ladder_gate
+        self._ladder("# ladder\nold rows\n")
+        _hook_state.mark_ladder_slice(self.sid, ["executor"], digest=model_ladder_gate.ladder_digest({"cwd": self.root}))
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        job = self.workflow_job("Do the work.")
+        self.assertEqual(self.lines([job]), ["preflight: clean: every launch precondition is met"])
+        self._ladder("# ladder\nnew rows\n")
+        tier = [line for line in self.lines([job]) if "tier `executor`" in line]
+        self.assertEqual(len(tier), 1, tier)
+        self.assertIn(model_ladder_gate.STALE_CAUSE, tier[0])
+        self.assertIn("for-role executor", tier[0])
+
+    def test_the_ladder_credit_is_read_under_the_preflight_root_not_the_cwd(self):
+        """With no CLAUDE_PROJECT_DIR the credit once resolved the ladder from the cwd, so a run from any other
+        directory read every recorded load as cut from other text."""
+        import _hook_state
+        import model_ladder_gate
+        self._ladder("# ladder\nrows\n")
+        _hook_state.mark_ladder_slice(self.sid, ["executor"], digest=model_ladder_gate.ladder_digest({"cwd": self.root}))
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        elsewhere = tempfile.mkdtemp(prefix="pf_cwd_")
+        here = os.getcwd()
+        os.chdir(elsewhere)
+        self.addCleanup(os.chdir, here)
+        self.assertEqual(self.lines([self.workflow_job("Do the work.")]),
+                         ["preflight: clean: every launch precondition is met"])
+
     def test_a_skill_path_in_a_brief_demands_nothing_only_orchestration_is_required(self):
         """Which skills a job follows is the briefing session's judgment; no reading of the brief's prose decides it."""
         os.makedirs(os.path.join(self.root, ".claude", "skills", "product_ui"))

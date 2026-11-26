@@ -3,6 +3,7 @@ and nothing a call touches crosses into the next case.
 
     python3 .claude/tests/test_hook_call.py
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -48,6 +49,65 @@ class HookCallTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return str(path)
+
+    def test_script_mode_gives_a_cli_the_exit_and_streams_a_spawned_run_gives(self):
+        tool = self.plant("cli.py", textwrap.dedent('''
+            import sys
+            def main():
+                if sys.argv[1:] == ["fail"]:
+                    sys.exit("error: refused")
+                if sys.argv[1:] == ["code"]:
+                    sys.exit(3)
+                print("ran", sys.argv[1:])
+            if __name__ == "__main__":
+                sys.exit(main())
+        '''), sub="tools")
+        for argv in (["fail"], ["code"], ["ok", "--flag"]):
+            spawned = subprocess.run([sys.executable, tool, *argv], capture_output=True, text=True, cwd=self.here)
+            code, out, err, _ = _hook_call.call(tool, "", cwd=str(self.here), argv=argv, script=True)
+            self.assertEqual((code, out, err.strip()), (spawned.returncode, spawned.stdout.replace("\r\n", "\n"),
+                                                       spawned.stderr.strip()), argv)
+
+    def test_run_main_on_an_imported_module_gives_the_exit_and_streams_a_spawned_run_gives(self):
+        """The module is imported once by the proof and its `main` run many times: every exit shape, the environment
+        replaced (not layered over the caller's), and the working directory, argv and environment put back."""
+        tool = self.plant("cli2.py", textwrap.dedent('''
+            import os, sys
+            def main():
+                if sys.argv[1:] == ["fail"]:
+                    sys.exit("error: refused")
+                if sys.argv[1:] == ["none"]:
+                    sys.exit()
+                if sys.argv[1:] == ["code"]:
+                    sys.exit(3)
+                if sys.argv[1:] == ["raise"]:
+                    raise ValueError("boom")
+                print("ran", sys.argv[1:], os.environ.get("PROBE_ONLY"), os.environ.get("PROBE_CALLER"),
+                      os.path.basename(os.getcwd()))
+            if __name__ == "__main__":
+                sys.exit(main())
+        '''), sub="tools")
+        spec = importlib.util.spec_from_file_location("cli2_once", tool)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        main_before, cwd, argv, caller = module.main, os.getcwd(), list(sys.argv), dict(os.environ)
+        os.environ["PROBE_CALLER"] = "caller"
+        planted = dict(os.environ, PROBE_ONLY="planted")
+        planted.pop("PROBE_CALLER")
+        try:
+            for args in (["fail"], ["none"], ["code"], ["raise"], ["ok", "--flag"], ["ok"]):
+                spawned = subprocess.run([sys.executable, tool, *args], capture_output=True, text=True,
+                                         cwd=self.here, env=planted)
+                done = _hook_call.run_main(module, args, env=planted, cwd=str(self.here))
+                self.assertEqual((done.returncode, done.stdout, done.stderr.strip().splitlines()[-1:]),
+                                 (spawned.returncode, spawned.stdout.replace("\r\n", "\n"),
+                                  spawned.stderr.strip().splitlines()[-1:]), args)
+            self.assertIs(module.main, main_before)
+            self.assertEqual((os.getcwd(), sys.argv, os.environ.get("PROBE_CALLER")), (cwd, argv, "caller"))
+            self.assertNotIn("PROBE_ONLY", os.environ)
+        finally:
+            os.environ.clear()
+            os.environ.update(caller)
 
     def test_same_verdict_as_spawned_run(self):
         hook = self.plant("probe.py", PROBE)
@@ -148,6 +208,24 @@ class RepoTemplateTest(unittest.TestCase):
             self.assertEqual(git(work, "rev-parse", "HEAD"), base)
             self.assertEqual((work / "a.txt").read_text(), "base\n")
             self.assertEqual(git(template, "rev-parse", "HEAD"), base)
+
+    def test_an_overlay_keeps_the_files_the_case_wrote_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            template, work = tmp / "template", tmp / "work"
+            template.mkdir()
+            work.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=template, check=True, capture_output=True)
+            (template / "a.txt").write_text("base\n")
+            (work / "mine.txt").write_text("planted first\n")
+
+            _hook_call.copy_repo(template, work, overlay=True)
+            self.assertEqual((work / "mine.txt").read_text(), "planted first\n")
+            self.assertEqual((work / "a.txt").read_text(), "base\n")
+            self.assertTrue((work / ".git" / "HEAD").is_file())
+
+            _hook_call.copy_repo(template, work)
+            self.assertFalse((work / "mine.txt").exists())
 
 
 if __name__ == "__main__":

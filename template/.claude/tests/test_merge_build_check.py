@@ -8,7 +8,6 @@ at once. Each case builds a throwaway repo carrying the real hooks, with a stub 
 
     python3 .claude/tests/test_merge_build_check.py
 """
-import atexit
 import os
 import shutil
 import subprocess
@@ -16,7 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _hook_call import _writable, copy_repo  # the tests folder is this script's folder, on sys.path first
+import _git_fixture
+from _hook_call import copy_repo  # the tests folder is this script's folder, on sys.path first
 from _module_closure import copy_closure
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,19 +82,12 @@ def build_repo(repo):
     return repo
 
 
-_TEMPLATE = []
-
-
 def make_repo(tmp, live=False):
-    """Each case gets a copy of one built repository (`build_repo`), plus its own stub build and log; returns
-    (repo, env, log)."""
-    if not _TEMPLATE:
-        root = tempfile.mkdtemp(prefix="merge_build_template_")
-        atexit.register(shutil.rmtree, root, onerror=_writable)
-        _TEMPLATE.append(build_repo(Path(root) / "repo"))
+    """Each case gets a copy of one built repository (`build_repo`, `_git_fixture.built`), plus its own stub build and log;
+    returns (repo, env, log)."""
     tmp = Path(tmp)
     repo = tmp / "repo"
-    copy_repo(_TEMPLATE[0], repo)
+    copy_repo(_git_fixture.built("merge_build_check.repo", build_repo), repo)
     stub = tmp / "stub_build.py"
     stub.write_text(STUB, encoding="utf-8", newline="\n")
     log = tmp / "build.log"

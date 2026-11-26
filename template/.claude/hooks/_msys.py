@@ -46,16 +46,19 @@ _CMD_META = set('"&|<>^%!\r\n')
 
 
 def resolve_argv(argv):
-    """(argv, error) for a command a caller or config names. CreateProcess applies no PATHEXT, so on Windows a bare
-    `npx` never finds `npx.cmd`: a separator-free name resolves through PATH, and a name PATH lacks is an error line
-    naming it. A .cmd/.bat target runs under cmd.exe, which re-parses its arguments, so an argument carrying a cmd
-    metacharacter is an error, never a quoted pass-through (`x"&echo y` would run `echo y`)."""
+    """(argv, error) for a command a caller or config names. A separator-free name PATH lacks is an error line naming
+    it on every platform, so a caller reports it instead of meeting a spawn error. CreateProcess applies no PATHEXT,
+    so on Windows a bare `npx` never finds `npx.cmd`: the name is replaced by its PATH hit. A .cmd/.bat target runs
+    under cmd.exe, which re-parses its arguments, so an argument carrying a cmd metacharacter is an error, never a
+    quoted pass-through (`x"&echo y` would run `echo y`)."""
     name = argv[0]
-    if os.name != "nt" or os.sep in name or "/" in name:
+    if os.sep in name or "/" in name:
         return argv, None
     found = shutil.which(name)
     if not found:
         return argv, "command not found on PATH: " + name
+    if os.name != "nt":
+        return argv, None
     if found.lower().endswith((".cmd", ".bat")):
         bad = [a for a in argv[1:] if _CMD_META & set(a)]
         if bad:

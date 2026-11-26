@@ -2,10 +2,16 @@
 rows on the `main-check-state` branch (rules/harness_tooling.md §Land and main check).
 
 Each case plants a repo whose `origin` is a bare `file://` remote under a temp root: nothing reaches the network or
-the real `origin`. The repo carries a planted `.claude/tests/conftest.py` that, when a close plan is present, writes the plan as the
-junit file pytest was asked for and ends with the plan's exit code (no plan: pytest runs the planted tests for real),
-and a planted gate script that replays gate scenarios: the project declares it as `gate_cadence.main` in the
-planted repo's `adaptation.json`, and its verdict is its exit code plus `FAILED_TEST=<id>` stdout lines. A project-local proof replays that project's real gate output and exit table.
+the real `origin`. The repo and its remote (with a seeded state branch) are built once and copied per case.
+
+The stages run in this process (`_inprocess_hook.run_hook` over `main_check.main`, the CLI's own contract), against real
+git. The two children a stage starts, the project's pytest (close) and the declared gate command (gate), replay a planted
+plan through `main_check.run_logged`'s seam: a close plan names the proofs that ran, the files with a failing case and the
+exit; a gate plan lists one step per attempt (its `FAILED_TEST=` lines, its exit). The project declares the gate as
+`gate_cadence.main` in the planted repo's `adaptation.json`; a project-local proof replays that project's real gate
+output and exit table. A case that names a live child (`self.live`) runs the real `run_logged`: a real pytest over
+planted tests, a real process killed at its cap, the env a settings file gives a child. One case spawns the CLI and its
+planted `pwsh` gate (the console encoding, the declared command really run), and one spawns `--rows` from a second clone.
 
     python3 .claude/tests/test_main_check.py
 """
@@ -20,12 +26,20 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from xml.etree import ElementTree
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from _harness_repo_case import RepoCase, ROOT  # noqa: E402
+import _git_fixture  # noqa: E402
+from _hook_call import copy_repo  # noqa: E402
+from _inprocess_hook import run_hook  # noqa: E402
 
 SCRIPT = ROOT / '.claude' / 'scripts' / 'main_check.py'
+sys.path.insert(0, str(SCRIPT.parent))
+import main_check  # noqa: E402
+
+REAL_RUN_LOGGED = main_check.run_logged
 FIXTURES = HERE / 'fixtures' / 'main_check'
 PLATFORM = 'windows' if os.name == 'nt' else 'linux' if sys.platform.startswith('linux') else 'macos'
 JOB_MINUTES = 777
@@ -35,6 +49,7 @@ GATE_ARGV = ['pwsh', '-NoProfile', '-File', '.claude/scripts/planted_gate.ps1', 
 GATE_OUTPUTS = ['out/baseline.json', 'out/durations.json']
 ADAPTATION = '.claude/skills/project_subsystems/adaptation.json'
 SUB_ENV = {'MAIN_CHECK_WORKERS': '0', 'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'protocol.file.allow', 'GIT_CONFIG_VALUE_0': 'always'}
+SLEEPER = [sys.executable, '-c', 'import time; time.sleep(30)']
 
 WORKFLOW = """name: main-check
 on:
@@ -49,77 +64,8 @@ jobs:
       - run: python3 .claude/scripts/main_check.py close
 """ % JOB_MINUTES
 
-CONFTEST = '''import json, os, time
-from xml.sax.saxutils import quoteattr
-import pytest
-
-SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scratch")
-PLAN = os.path.join(SCRATCH, "close_plan.json")
-
-
-def pytest_configure(config):
-    if hasattr(config, "workerinput") or not os.path.exists(PLAN):
-        return
-    os.makedirs(SCRATCH, exist_ok=True)
-    with open(os.path.join(SCRATCH, "close_calls.jsonl"), "a") as fh:
-        fh.write(json.dumps({"argv": list(config.invocation_params.args), "probe": os.environ.get("MC_PROBE"),
-                             "both": os.environ.get("MC_BOTH")}) + "\\n")
-
-
-def junit(plan, path):
-    red = {r["proof"]: r for r in plan["record"].get("red", [])}
-    cases = ["<testcase classname=\'x\' name=\'case\' file=\'.claude/tests/%s\'/>" % n
-             for n in plan["record"].get("proofs", []) if n not in red]
-    cases += ["<testcase classname=\'x\' name=\'case\' file=\'.claude/tests/%s\'><failure message=%s>%s</failure>"
-              "</testcase>" % (n, quoteattr(r["detail"]), "") for n, r in red.items()]
-    cases += ["<testcase classname=\'x\' name=\'case\' file=\'.claude/tests/%s\'><skipped type=\'pytest.xfail\' "
-              "message=\'q\'/></testcase>" % n for n, how in plan["record"].get("quarantine", {}).items() if how == "failed"]
-    with open(path, "w") as fh:
-        fh.write("<testsuites><testsuite name=\'pytest\'>" + "".join(cases) + "</testsuite></testsuites>")
-
-
-@pytest.hookimpl(trylast=True)
-def pytest_sessionfinish(session, exitstatus):
-    if hasattr(session.config, "workerinput") or not os.path.exists(PLAN):
-        return
-    plan = json.load(open(PLAN, encoding="utf-8"))
-    time.sleep(plan.get("sleep", 0))
-    for line in plan.get("lines", []):
-        print(line)
-    if plan.get("record") is not None:
-        junit(plan, session.config.option.xmlpath)
-    elif session.config.option.xmlpath and os.path.exists(session.config.option.xmlpath):
-        os.remove(session.config.option.xmlpath)
-    session.exitstatus = plan.get("exit", 0)
-'''
-
 BASELINE_SLUG = 'jmund15/GodotDev_HarnessBaseline'
 BASELINE_SHA = '2caaab4e5d6c80520127847e0aab8e8b6661a1ce'
-
-FAKE_GH_SOURCE = '''#!/usr/bin/env python3
-"""Fake `gh` for the baseline Linux row source: every answer comes from one planted plan
-(MC_GH_PLAN), so no case reaches the network. `unreadable` makes every call fail."""
-import json
-import os
-import sys
-
-plan = json.load(open(os.environ["MC_GH_PLAN"], encoding="utf-8"))
-argv = sys.argv[1:]
-if plan.get("unreadable"):
-    print("gh: HTTP 500", file=sys.stderr)
-    sys.exit(1)
-if argv[:2] == ["run", "list"]:
-    print(json.dumps(plan.get("runs", [])))
-    sys.exit(0)
-if argv[:2] == ["run", "view"]:
-    sys.stdout.write(open(plan["log"], encoding="utf-8", errors="replace").read())
-    sys.exit(0)
-if argv[:1] == ["api"]:
-    print(plan.get("message", ""))
-    sys.exit(0)
-print("fake gh: unsupported " + " ".join(argv), file=sys.stderr)
-sys.exit(1)
-'''
 
 GATE_STUB = r'''[CmdletBinding()]
 param([string] $Repo = '', [switch] $NoBaselineUpdate, [switch] $RetryOnly, [switch] $NoReuse, [switch] $StaticOnly,
@@ -146,29 +92,57 @@ def iso(seconds_ago=0):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - seconds_ago))
 
 
+def write_junit(record, path):
+    """The junit file a pytest run of `record` leaves: a case per proof that ran, a failing one per red file, an xfail
+    skip per quarantined entry that failed (`main_check.close_record` reads these)."""
+    red = {r['proof']: r for r in record.get('red', [])}
+    suite = ElementTree.Element('testsuite', name='pytest')
+
+    def case(name):
+        return ElementTree.SubElement(suite, 'testcase', classname='x', name='case', file='.claude/tests/' + name)
+
+    for name in record.get('proofs', []):
+        if name not in red:
+            case(name)
+    for name, row in red.items():
+        ElementTree.SubElement(case(name), 'failure', message=row['detail'])
+    for name, how in record.get('quarantine', {}).items():
+        if how == 'failed':
+            ElementTree.SubElement(case(name), 'skipped', type='pytest.xfail', message='q')
+    root = ElementTree.Element('testsuites')
+    root.append(suite)
+    ElementTree.ElementTree(root).write(path, encoding='utf-8')
+
+
 class MainCheckCase(RepoCase):
+    live = ()  # the children ('close': pytest, 'gate': the gate command) that run as real processes, not planted plans
+
     def seed_repo(self):
         super().seed_repo()
         self.write('.github/workflows/main_check.yml', WORKFLOW)
-        self.write('.claude/tests/conftest.py', CONFTEST)
         self.write('.claude/scripts/planted_gate.ps1', GATE_STUB.replace('@NAME@', 'gate'))
         self.declare_gate()
         self.write('.claude/tests/test_main_check_planted.py', 'print("planted proof ran")\n')
         self.write('.gitignore', '.claude/scratch/\n/stamp.json\n/slots/\n/harness_*\n*.lock\n')
         self.commit('planted main check inputs')
         self.base = self.git('rev-parse', 'HEAD')
+        # The remote and its state branch are built here once with the repository; each case copies both.
+        self.remote = self.repo.parent / 'origin.git'
+        _git_fixture.init_repo(self.remote, bare=True)
+        self.git('config', 'remote.origin.url', self.remote.as_uri())
+        self.push()
+        self.seed_state(self.base)
 
     def setUp(self):
         super().setUp()
         self.aux = tempfile.TemporaryDirectory(prefix='main_check_aux_')
         self.addCleanup(self.aux.cleanup)
         self.remote = Path(self.aux.name) / 'origin.git'
-        subprocess.run(['git', 'init', '-q', '--bare', '-b', 'main', str(self.remote)], check=True)
+        copy_repo(type(self)._template()[0].parent / 'origin.git', self.remote)
         self.git('config', 'remote.origin.url', self.remote.as_uri())
-        for key, value in SUB_ENV.items():
-            os.environ[key] = value
-        self.push()
-        self.seed_state(self.base)
+        patch.dict(os.environ, SUB_ENV).start()
+        patch.object(main_check, 'run_logged', self.run_child).start()
+        self.gate_runs = []
         self.tips = [self.base]
 
     def declare_gate(self, declared=True, **main):
@@ -177,6 +151,13 @@ class MainCheckCase(RepoCase):
         gate = dict({'command': GATE_ARGV, 'retry_exits': [7, 8, 124], 'outputs': GATE_OUTPUTS}, **main)
         gate = {k: v for k, v in gate.items() if v is not None}
         self.write(ADAPTATION, json.dumps({'gate_cadence': {'main': gate}} if declared else {}))
+
+    def redeclare(self, **kwargs):
+        """Land a changed gate declaration and start the state at it."""
+        self.declare_gate(**kwargs)
+        self.commit_as('declare the gate')
+        self.push()
+        self.seed_state(self.git('rev-parse', 'HEAD'))
 
     @contextlib.contextmanager
     def variant(self, label):
@@ -198,8 +179,8 @@ class MainCheckCase(RepoCase):
         return self.git('rev-parse', 'HEAD')
 
     def land(self, message='landed', session=None, **files):
-        self.commit_as(message, session, **files)
-        sha = self.push()
+        sha = self.commit_as(message, session, **files)
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/main')
         self.tips.append(sha)
         return sha
 
@@ -214,15 +195,16 @@ class MainCheckCase(RepoCase):
                 'sources': {'baselineLinux': {'readAt': None, 'status': 'pending', 'reason': 'planted', 'pendingSha': None}},
                 'rows': list(rows)}
 
-    def state_commit(self, doc, parent=None):
+    def state_commit(self, doc):
         blob = self.plumb(['hash-object', '-w', '--stdin'], json.dumps(doc, indent=1) + '\n')
         tree = self.plumb(['mktree'], '100644 blob %s\tmain_check.json\n' % blob)
-        return self.plumb(['commit-tree', tree] + (['-p', parent] if parent else []) + ['-m', 'planted state'])
+        return self.plumb(['commit-tree', tree, '-m', 'planted state'])
 
     def seed_state(self, checked_to, rows=(), run=None):
-        old = self.remote_ref('main-check-state')
-        commit = self.state_commit(self.state_doc(checked_to, rows, run), old)
-        self.git('push', '-q', '-f', 'origin', commit + ':refs/heads/main-check-state')
+        """The state branch of the remote reset to a root commit holding the state document: one `fast-import`."""
+        text = json.dumps(self.state_doc(checked_to, rows, run), indent=1) + '\n'
+        _git_fixture.history(self.remote, ({'main_check.json': text}, 'planted state', 0),
+                             ref='refs/heads/main-check-state', root=True, force=True)
 
     def remote_ref(self, branch):
         result = subprocess.run(['git', '--git-dir', str(self.remote), 'rev-parse', '-q', '--verify', 'refs/heads/' + branch],
@@ -269,12 +251,37 @@ class MainCheckCase(RepoCase):
         self.write('.claude/scratch/gate_plan.json', json.dumps(list(steps)))
 
     def gate_calls(self):
-        path = self.repo / '.claude' / 'scratch' / 'gate_calls.txt'
-        return path.read_text().splitlines() if path.exists() else []
+        """The flags of each call the planted gate script got, as the stub's own calls file lists them."""
+        return [','.join(run['flags']) for run in self.gate_runs if run['script'] == 'planted_gate']
 
-    def close_calls(self):
-        path = self.repo / '.claude' / 'scratch' / 'close_calls.jsonl'
-        return [json.loads(l) for l in path.read_text().splitlines()] if path.exists() else []
+    def run_child(self, cmd, *, cwd, env, log_path, echo, cap_seconds):
+        """`main_check.run_logged` for a stage's child: a planted plan answers unless the case names the child `live`."""
+        kind = 'close' if echo is main_check.CLOSE_ECHO else 'gate'
+        if kind in self.live:
+            return REAL_RUN_LOGGED(cmd, cwd=cwd, env=env, log_path=log_path, echo=echo, cap_seconds=cap_seconds)
+        scratch = Path(cwd) / '.claude' / 'scratch'
+        if kind == 'close':
+            plan = json.loads((scratch / 'close_plan.json').read_text(encoding='utf-8'))
+            junit = next(arg.split('=', 1)[1] for arg in cmd if arg.startswith('--junitxml='))
+            if plan.get('record') is not None:
+                write_junit(plan['record'], junit)
+            elif os.path.exists(junit):
+                os.remove(junit)
+            text, code = ''.join(line + '\n' for line in plan.get('lines', [])), plan.get('exit', 0)
+        else:
+            script = next(arg for arg in cmd if arg.endswith('.ps1'))
+            name = Path(script).stem
+            plan = json.loads((scratch / 'gate_plan.json').read_text(encoding='utf-8'))
+            step = plan[min(sum(run['script'] == name for run in self.gate_runs), len(plan) - 1)]
+            self.gate_runs.append({'script': name, 'cmd': list(cmd),
+                                   'flags': sorted(arg[1:] for arg in cmd[cmd.index(script) + 1:] if arg.startswith('-'))})
+            text, code = step['stdout'], int(step['exit'])
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(log_path).write_text(text, encoding='utf-8')
+        for line in text.splitlines():
+            if echo.match(line):
+                print('  ' + line, flush=True)
+        return code, text
 
     def run_dir(self, run_id):
         return self.repo / '.claude' / 'scratch' / 'main_check' / run_id
@@ -288,13 +295,20 @@ class MainCheckCase(RepoCase):
     last_out = ''
 
     def mc(self, *args, env=None):
-        full = dict(os.environ, **(env or {}))
-        result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=full, timeout=600,
-                                cwd=str(self.repo), encoding='utf-8', errors='replace')
+        """The CLI's exit code and output, from `main_check.main` in this process under `env`."""
+        with patch.dict(os.environ, env or {}):
+            code, out, err = run_hook(main_check, list(args), '')
+        return code, out + err
+
+    def spawn(self, *args, env=None):
+        """The same call as its own process: the CLI path, the console encoding and the planted `pwsh` gate are real."""
+        result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
+                                env=dict(os.environ, **(env or {})), timeout=600, cwd=str(self.repo), encoding='utf-8',
+                                errors='replace')
         return result.returncode, result.stdout + result.stderr
 
-    def stage(self, name, run_id='run1', *extra, env=None):
-        return self.mc(name, '--repo', str(self.repo), '--run-id', run_id, *extra, env=env)
+    def stage(self, name, run_id='run1', *extra, env=None, run=None):
+        return (run or self.mc)(name, '--repo', str(self.repo), '--run-id', run_id, *extra, env=env)
 
     def whole_run(self, run_id='run1', *extra):
         outs = [self.stage(name, run_id, *(extra if name == 'close' else ())) for name in ('close', 'gate', 'finalize')]
@@ -304,7 +318,8 @@ class MainCheckCase(RepoCase):
 
 class StateAndVerdict(MainCheckCase):
     def test_a_real_pytest_run_becomes_red_rows_quarantine_lines_and_a_passing_proof_clears_its_row(self):
-        # The live boundary once: no close plan, so pytest runs the planted tests and the junit file it wrote is read.
+        # The live boundary once: no close plan, so a real pytest runs the planted tests and the junit file it wrote is read.
+        self.live = ('close',)
         self.write('.claude/skills/project_subsystems/adaptation.json',
                    json.dumps({'proof_quarantine': {'test_wobbly.py': 'races its own fixture'}}))
         self.seed_state(self.base, rows=[self.row('test_good.py', commit='abc')])
@@ -410,9 +425,6 @@ class StateAndVerdict(MainCheckCase):
 
     def test_a_close_that_raises_after_its_start_write_still_gets_a_finalize_that_leaves_checked_to(self):
         self.land('first', **{'.claude__notes.md': 'a\n'})
-        sys.path.insert(0, str(SCRIPT.parent))
-        import main_check
-        from unittest.mock import patch
         args = ['close', '--repo', str(self.repo), '--run-id', 'r1']
         with patch.object(main_check, 'run_logged', side_effect=RuntimeError('planted raise')):
             with self.assertRaises(RuntimeError):
@@ -463,12 +475,15 @@ class StateAndVerdict(MainCheckCase):
 
     def test_a_killed_close_leaves_checked_to(self):
         self.land('first', **{'.claude__notes.md': 'a\n'})
-        self.plan_close(None, sleep=30)
-        rc, out = self.stage('close', 'killed', '--cap-minutes', '0.01')
+        self.live = ('close',)  # the cap ends a real process tree
+        sleeper = lambda folder, serial: [(SLEEPER, os.path.join(folder, 'close_sleeper.xml'))]
+        with patch.object(main_check, 'pytest_passes', sleeper):
+            rc, out = self.stage('close', 'killed', '--cap-minutes', '0.01')
         self.assertTrue(self.record('killed', 'close')['timedOut'], out)
         rc, out = self.stage('finalize', 'killed')
         self.assertEqual(self.remote_state()['checkedTo'], self.base, out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'no-verdict', out)
+
     def test_each_stage_sees_the_settings_env_a_session_gets(self):
         self.write('.claude/settings.json', json.dumps({'env': {'MC_PROBE': 'project', 'MC_BOTH': 'project'}}))
         self.commit_as('settings')
@@ -476,11 +491,14 @@ class StateAndVerdict(MainCheckCase):
         home = Path(self.aux.name) / 'home'
         (home / '.claude').mkdir(parents=True)
         (home / '.claude' / 'settings.json').write_text(json.dumps({'env': {'MC_BOTH': 'user'}}))
-        self.plan_close('green')
+        self.live = ('close',)  # a real child shows the env it was handed
+        seen = Path(self.aux.name) / 'child_env.json'
+        probe = [sys.executable, '-c', 'import json, os, sys; json.dump({k: os.environ.get(k) for k in ("MC_PROBE", "MC_BOTH")}, '
+                 'open(sys.argv[1], "w"))', str(seen)]
         env = {'USERPROFILE': str(home), 'HOME': str(home)}
-        self.mc('close', '--repo', str(self.repo), '--run-id', 'r1', env=env)
-        call = self.close_calls()[-1]
-        self.assertEqual((call['probe'], call['both']), ('project', 'project'))
+        with patch.object(main_check, 'pytest_passes', lambda folder, serial: [(probe, os.path.join(folder, 'close_probe.xml'))]):
+            self.mc('close', '--repo', str(self.repo), '--run-id', 'r1', env=env)
+        self.assertEqual(json.loads(seen.read_text()), {'MC_PROBE': 'project', 'MC_BOTH': 'project'})
 
     def test_run_folders_older_than_two_weeks_are_swept_at_close_start(self):
         old = self.run_dir('ancient')
@@ -523,8 +541,10 @@ class GateStage(MainCheckCase):
         name = '[desktop] › labels.spec.ts:137:1 › opens the ▾ menu'
         self.plan_gate(self.gate_step('FAIL', '20261121-000010-10', failed=[name]))
         console = {'PYTHONIOENCODING': 'cp1252'}
-        outs = [self.stage(stage, 'r1', env=console) for stage in ('close', 'gate', 'finalize')]
+        # The CLI path once: the gate and finalize are real processes on that console, and the gate is the planted pwsh script.
+        outs = [self.stage('close', 'r1')] + [self.stage(stage, 'r1', env=console, run=self.spawn) for stage in ('gate', 'finalize')]
         self.last_out = '\n'.join(o[1] for o in outs)
+        self.assertEqual(self.gate_runs, [], 'the gate ran as a real process, not through the planted plan')
         self.assertNotIn('UnicodeEncodeError', self.last_out)
         rows = [r for r in self.remote_state()['rows'] if r['kind'] == 'gate']
         self.assertEqual([r['name'] for r in rows], [name], self.last_out)
@@ -544,29 +564,33 @@ class GateStage(MainCheckCase):
         self.assertIsNone(rows['test_x.py']['clearedAt'], 'a full gate PASS clears gate rows only: ' + out)
 
     def test_contention_hang_and_busy_take_the_gates_next_step_before_they_are_recorded(self):
+        self.project_range()
+        self.plan_close('green')
+        self.stage('close', 'r1')  # one close of the range; each variant reruns the gate and finalize from a state at the base
         for verdict in ('CONTENTION', 'HANG', 'BUSY'):
             with self.variant(verdict):
-                self.project_range()
                 self.seed_state(self.base)
-                self.write('.claude/scratch/gate_calls.txt', '')
-                self.plan_close('green')
+                self.gate_runs.clear()
                 self.plan_gate(self.gate_step(verdict, '20261118-%06d-1' % EXIT_CODES[verdict]),
                                self.gate_step('PASS', '20261118-%06d-2' % EXIT_CODES[verdict]))
-                rc, out = self.whole_run('r-' + verdict)
+                outs = [self.stage('gate', 'r1'), self.stage('finalize', 'r1')]
+                out = self.last_out = '\n'.join(o[1] for o in outs)
                 self.assertEqual(len(self.gate_calls()), 2, out)
                 self.assertEqual(self.remote_state()['run']['outcome'], 'green', out)
                 self.assertEqual(self.remote_state()['checkedTo'], self.tips[-1], out)
 
     def test_each_no_verdict_gate_outcome_leaves_checked_to_writes_no_row_and_records_the_outcome(self):
         self.project_range()
+        self.plan_close('green')
+        self.stage('close', 'r1')  # one close of the range; each variant reruns the gate and finalize from a state at the base
         for verdict in ('WARN', 'INVALID', 'INCOMPLETE', 'BLOCKED', 'BUSY', 'CONTENTION', 'HANG', 'IMPORT_FAIL'):
             with self.variant(verdict):
                 self.seed_state(self.base)
-                (self.repo / '.claude' / 'scratch' / 'gate_calls.txt').unlink(missing_ok=True)
+                self.gate_runs.clear()
                 ident = '20261118-0001%02d' % (sum(map(ord, verdict)) % 100)
-                self.plan_close('green')
                 self.plan_gate(self.gate_step(verdict, ident + '-1'), self.gate_step(verdict, ident + '-2'))
-                rc, out = self.whole_run('r-' + verdict)
+                outs = [self.stage('gate', 'r1'), self.stage('finalize', 'r1')]
+                rc, out = outs[-1][0], '\n'.join(o[1] for o in outs)
                 state = self.remote_state()
                 self.assertEqual(state['checkedTo'], self.base, out)
                 self.assertEqual(state['rows'], [], out)
@@ -575,16 +599,16 @@ class GateStage(MainCheckCase):
                 self.assertNotEqual(rc, 0, 'a run with no verdict ends its job red: ' + out)
 
     def test_a_gate_killed_by_its_cap_is_no_verdict(self):
+        self.redeclare(command=SLEEPER)
+        start = self.git('rev-parse', 'HEAD')
         self.project_range()
+        self.live = ('gate',)  # the cap ends a real process tree
         self.plan_close('green')
-        step = self.gate_step('PASS', '20261118-000020-20')
-        step['sleep'] = 30
-        self.plan_gate(step)
         self.stage('close', 'r1')
         rc, out = self.stage('gate', 'r1', '--cap-minutes', '0.03')
         self.assertTrue(self.record('r1', 'gate')['timedOut'], out)
         rc, out = self.stage('finalize', 'r1')
-        self.assertEqual(self.remote_state()['checkedTo'], self.base, out)
+        self.assertEqual(self.remote_state()['checkedTo'], start, out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'no-verdict', out)
 
     def test_the_gate_runs_without_a_baseline_move_and_without_replaying_a_fail(self):
@@ -602,21 +626,13 @@ class GateContract(MainCheckCase):
         self.land('harness edit', session='sess-h', **{'.claude__notes.md': 'a\n'})
         return self.land('project edit', session='sess-p', **{'project.godot': 'config\n'})
 
-    def redeclare(self, **kwargs):
-        self.declare_gate(**kwargs)
-        self.commit_as('declare the gate')
-        self.push()
-        self.seed_state(self.git('rev-parse', 'HEAD'))
-
     def test_a_declared_command_other_than_the_default_script_runs(self):
-        self.write('.claude/scripts/other_gate.ps1', GATE_STUB.replace('@NAME@', 'other'))
         self.redeclare(command=['pwsh', '-NoProfile', '-File', '.claude/scripts/other_gate.ps1'])
         self.land_project_change()
         self.plan_close('green')
         self.plan_gate(self.gate_step('PASS'))
         rc, out = self.whole_run('r1')
-        other = self.repo / '.claude' / 'scratch' / 'other_calls.txt'
-        self.assertTrue(other.exists() and self.gate_calls() == [], out)
+        self.assertEqual([run['script'] for run in self.gate_runs], ['other_gate'], out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'green', out)
 
     def test_an_exit_the_declaration_lists_as_retry_reruns_once_with_no_verdict_line_needed(self):
@@ -675,8 +691,6 @@ class GateContract(MainCheckCase):
 
     def test_a_range_changing_only_a_declared_output_owes_no_gate_and_an_undeclared_one_does(self):
         self.redeclare(outputs=['out/gate_report.json'])
-        sys.path.insert(0, str(SCRIPT.parent))
-        import main_check
         before = self.git('rev-parse', 'HEAD')
         self.commit_as('write the output', **{'out__gate_report.json': '{}\n'})
         self.assertFalse(main_check.gate_owed(str(self.repo), before, self.git('rev-parse', 'HEAD'))[0])
@@ -855,8 +869,7 @@ class StateBranch(MainCheckCase):
         self.stage('gate', 'r1')
         peer_row = self.row('Peer.Tests.Pending', kind='gate', session='peer')
         peer_doc = self.state_doc(self.base, rows=[peer_row])
-        parent = self.remote_ref('main-check-state')
-        peer = self.state_commit(peer_doc, parent)
+        peer = self.state_commit(peer_doc)
         self.git('push', '-q', 'origin', peer + ':refs/heads/peer-state')
         wrapper = Path(self.aux.name) / 'move_state.sh'
         mark = (Path(self.aux.name) / 'moved').as_posix()
@@ -900,8 +913,6 @@ class WorkflowFile(unittest.TestCase):
         self.assertIn('workflow_dispatch:', self.text)
 
     def test_the_job_timeout_main_check_reads_covers_every_step(self):
-        sys.path.insert(0, str(SCRIPT.parent))
-        import main_check
         steps = [int(m) for m in re.findall(r'^        timeout-minutes: (\d+)$', self.text, re.M)]
         self.assertEqual(len(steps), 3)
         self.assertGreaterEqual(main_check.parse_job_minutes(self.text), sum(steps))
@@ -914,8 +925,6 @@ class GateOwed(MainCheckCase):
         before = self.git('rev-parse', 'HEAD')
         if files:
             self.commit_as('change', **files)
-        sys.path.insert(0, str(SCRIPT.parent))
-        import main_check
         return main_check.gate_owed(str(self.repo), before, self.git('rev-parse', 'HEAD'), dispatched)[0]
 
     def test_a_change_outside_the_harness_owes_the_gate(self):
@@ -953,8 +962,6 @@ class GhRead(unittest.TestCase):
     the arguments it is handed, so the call goes through `_msys.resolve_argv` and never through a shell string."""
 
     def setUp(self):
-        sys.path.insert(0, str(SCRIPT.parent))
-        import main_check
         self.main_check = main_check
         self.tmp = tempfile.TemporaryDirectory(prefix='gh_read_')
         self.addCleanup(self.tmp.cleanup)
@@ -991,8 +998,6 @@ class Status(MainCheckCase):
     """`status()` and `--status`: the one health line `/session_end` prints, read from the local state ref."""
 
     def health(self, now=None):
-        sys.path.insert(0, str(SCRIPT.parent))
-        import main_check
         subprocess.run(['git', '-C', str(self.repo), 'fetch', '-q', 'origin', 'main-check-state'], capture_output=True)
         return main_check.status(str(self.repo), now=now)
 
@@ -1055,7 +1060,7 @@ class Status(MainCheckCase):
     def test_an_unreadable_linux_source_gives_the_linux_lanes_form(self):
         doc = self.state_doc(self.tips[-1], run=self.run_rec(60))
         doc['sources']['baselineLinux'] = {'readAt': iso(0), 'status': 'unreadable', 'reason': 'planted', 'pendingSha': None}
-        commit = self.state_commit(doc, self.remote_ref('main-check-state'))
+        commit = self.state_commit(doc)
         self.git('push', '-q', '-f', 'origin', commit + ':refs/heads/main-check-state')
         self.assertEqual(self.health(), 'main: linux lanes unreadable (planted)')
 
@@ -1071,25 +1076,26 @@ class Status(MainCheckCase):
 @unittest.skipIf(PLATFORM == 'linux', 'the baseline Linux lane stands in for Linux only where the main check runs off Linux')
 class BaselineLinuxSource(MainCheckCase):
     """The finalize stage reads the baseline repo's Linux lanes for the lock's `synced_commit` and records their
-    reds as `platform: linux` rows (rules/harness_tooling.md §Land and main check). Each case plants a fake `gh` on PATH; no case
+    reds as `platform: linux` rows (rules/harness_tooling.md §Land and main check). Each case plants a fake `gh`; no case
     reaches the network."""
 
     def install_fake_gh(self, plan):
-        bin_dir = Path(self.aux.name) / 'gh-bin'
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        script = bin_dir / 'fake_gh.py'
-        script.write_text(FAKE_GH_SOURCE, encoding='utf-8')
-        if os.name == 'nt':
-            (bin_dir / 'gh.cmd').write_text('@echo off\r\n"%s" "%s" %%*\r\n' % (sys.executable, script),
-                                            encoding='utf-8')
-        else:
-            launcher = bin_dir / 'gh'
-            launcher.write_text('#!/bin/sh\nexec "%s" "%s" "$@"\n' % (sys.executable, script), encoding='utf-8')
-            os.chmod(launcher, 0o755)
-        plan_path = Path(self.aux.name) / 'gh_plan.json'
-        plan_path.write_text(json.dumps(plan), encoding='utf-8')
-        patch.dict(os.environ, {'PATH': str(bin_dir) + os.pathsep + os.environ.get('PATH', ''),
-                                'MC_GH_PLAN': str(plan_path)}).start()
+        """Every `gh` answer comes from one planted plan, so no case reaches the network; `unreadable` fails every call.
+        `GhRead` drives the real `gh_read` (a `.cmd` shim, a missing gh) that this stands in for."""
+        self.gh_plan = plan
+        patch.object(main_check, 'gh_read', self.fake_gh).start()
+
+    def fake_gh(self, args, timeout=None):
+        plan = self.gh_plan
+        if plan.get('unreadable'):
+            return 1, '', 'gh: HTTP 500'
+        if args[:2] == ['run', 'list']:
+            return 0, json.dumps(plan.get('runs', [])), ''
+        if args[:2] == ['run', 'view']:
+            return 0, Path(plan['log']).read_text(encoding='utf-8', errors='replace'), ''
+        if args[:1] == ['api']:
+            return 0, plan.get('message', '') + '\n', ''
+        return 1, '', 'fake gh: unsupported ' + ' '.join(args)
 
     def plant_baseline(self, sha=BASELINE_SHA, log=None, **plan):
         """Commit the lock pin for `sha` to the tip, and answer `gh` from `plan` (plus the run for `sha`)."""
@@ -1200,18 +1206,6 @@ class BaselineLinuxSource(MainCheckCase):
         self.assertTrue(self.source()['reason'], out)
 
 
-PARTS = 2
-
-
-def parts_present():
-    """Every part file exists: a deleted one would silently drop its cases."""
-    for n in range(2, PARTS + 1):
-        part = HERE / ('test_main_check_part%d.py' % n)
-        assert part.is_file(), 'missing part file ' + part.name
-
-
 if __name__ == '__main__':
-    sys.path.insert(0, str(HERE))
     from _case_pool import run_sharded
-    parts_present()
-    sys.exit(run_sharded(__file__, 0, PARTS))
+    sys.exit(run_sharded(__file__))

@@ -31,7 +31,8 @@ path whose working file is gone or whose content is already a blob in the object
 A submodule whose admin directory is gone is then judged against the main checkout's `.git/modules/<path>` store.
 
 An orphan (git pruned its admin directory, or its `.git` file is gone) has no status to read: it goes when every file
-in it is a blob in the repository's object store or a regenerable ignored entry (`_orphan_verdict`).
+in it is a blob in the repository's object store or a regenerable ignored entry (`_orphan_verdict`). Ownership never
+applies to one, since the proof reads the admin directory git pruned.
 
 Anything else is the owner's call. A read that fails is a reason, so missing evidence denies.
 """
@@ -303,7 +304,7 @@ def scratch_problem(entry: str, root: Path | None = None, project_root: Path | N
         if reason:
             return reason
         if index == start == len(parts) - 1 and parts[start - 1] == "scratch" and (root is None or leaf_is_file):
-            return "is a loose file in the scratch folder, not a job output folder"
+            return "is a loose file in the scratch folder, not a job output folder: move it into a folder under the main checkout's .claude/scratch/, then retry"
     if root is None:
         return None
     top = root / entry
@@ -337,7 +338,7 @@ def scratch_problem(entry: str, root: Path | None = None, project_root: Path | N
                 if reason:
                     return rel + "/" + name + " " + reason
                 if direct_scratch and not folder:
-                    return rel + "/" + name + " is a loose file in the scratch folder, not a job output folder"
+                    return rel + "/" + name + " is a loose file in the scratch folder, not a job output folder: move it into a folder under the main checkout's .claude/scratch/, then retry"
             for name in dirs:
                 if (Path(here) / name).is_symlink():
                     return rel + "/" + name + " is a link, so its contents cannot be judged"
@@ -902,7 +903,7 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
         if not (own or regenerable_when_ignored(entry.split("/")) or _listed(entry, patterns)
                 or _GODOT_IMPORT_TEMP.search(entry)
                 or (_scratch_start(entry.split("/")) is not None and scratch_problem(entry) is None)):
-            found.append(entry + " (ignored, and not a regenerable cache)")
+            found.append(entry + _IGNORED_LOSS)
     listed = run(["ls-files", "--others", "--exclude-standard", "-z"])
     if listed is None:
         return found + ["(cannot list files)"]
@@ -916,6 +917,9 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
     return found + (["(cannot read the object store)"] if missing is None else missing)
 
 
+_IGNORED_LOSS = " (ignored, and not a regenerable cache)"
+ORPHAN_OWNERSHIP = ("an orphan's ignored files count even for the session that created it: ownership is proven from "
+                    "the admin directory git pruned")
 _NOT_A_WORKTREE = ("target is not a linked worktree directly under .claude/worktrees, nor an orphaned worktree "
                    "of this repository")
 
@@ -955,9 +959,10 @@ def _worktree_target(token: str, cwd: str, project_root: str, reasons: list[str]
     return target, root
 
 
-def _orphan_verdict(target: Path, root: Path, reasons: list[str], own: bool = False) -> bool | None:
+def _orphan_verdict(target: Path, root: Path, reasons: list[str]) -> bool | None:
     """None when `target` has a live `.git` link (judge it by status). For an orphan (git pruned the admin directory,
-    or no `.git` link remains) True when nothing is lost, else False after naming every loss."""
+    or no `.git` link remains) True when nothing is lost, else False after naming every loss, and that ownership
+    cannot clear an ignored one."""
     if not (target / ".git").exists() and target.is_dir():
         admin = target / ".git-absent"
     elif (target / ".git").is_file():
@@ -967,22 +972,14 @@ def _orphan_verdict(target: Path, root: Path, reasons: list[str], own: bool = Fa
     else:
         reasons.append(_NOT_A_WORKTREE)
         return False
-    found = _unheld_files(_common_git_dir(root) or root / ".git", target, root, admin / "index", project_patterns(root),
-                          own)
+    found = _unheld_files(_common_git_dir(root) or root / ".git", target, root, admin / "index", project_patterns(root))
     if not found:
         return True
     reasons.append("orphaned worktree holds content git does not have: " + _format_losses(found)
                    + " (save those files elsewhere or delete them, then retry)")
+    if any(loss.endswith(_IGNORED_LOSS) for loss in found):
+        reasons.append(ORPHAN_OWNERSHIP)
     return False
-
-
-def lossless_orphan_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None,
-                             own: bool = False) -> bool:
-    """True only for an orphaned worktree of this repository (under `.claude/worktrees/` or anywhere its `.git` file
-    names a pruned admin directory of this repository) that holds nothing git lacks. `reasons` receives the loss of
-    an orphan, or the not-a-worktree reason for a target that is neither an orphan nor a live worktree."""
-    located = _worktree_target(token, cwd, project_root, [])
-    return located is not None and _orphan_verdict(*located, [] if reasons is None else reasons, own) is True
 
 
 # --- Linked worktrees ------------------------------------------------------------------------------------------------
@@ -1091,13 +1088,14 @@ OWNERSHIP_UNPROVEN = ("this session's transcript shows no literal, visible creat
 def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None,
                         own: bool = False) -> bool:
     """True only when `token` names a checkout of `project_root` whose deletion loses nothing (the module rule): a
-    standalone clone under scratch (`clone_reasons`), an orphan (`_orphan_verdict`), or a registered, unlocked linked
-    worktree directly under `<project>/.claude/worktrees/` whose branch heads no open PR, whose status and every
-    submodule's lists only regenerable entries, and whose HEAD and every submodule HEAD is pushed or landed.
-    `git worktree remove` refuses a worktree carrying a submodule, so a retired one goes by a recursive delete and
-    `git worktree prune`. `own` (this session created it) reads `unstored_losses` and judges a submodule whose admin
-    directory is gone against the main checkout's store. `reasons` receives every failed condition; a target or
-    registration that cannot be judged stops at that reason."""
+    standalone clone under scratch (`clone_reasons`), an orphan anywhere its `.git` file names a pruned admin directory
+    of this repository (`_orphan_verdict`), or a registered, unlocked linked worktree directly under
+    `<project>/.claude/worktrees/` whose branch heads no open PR, whose status and every submodule's lists only
+    regenerable entries, and whose HEAD and every submodule HEAD is pushed or landed. `git worktree remove` refuses a
+    worktree carrying a submodule, so a retired one goes by a recursive delete and `git worktree prune`. `own` (this
+    session created it: `session_owns`, or the guard's own transcript read) reads `unstored_losses` and judges a
+    submodule whose admin directory is gone against the main checkout's store. `reasons` receives every failed
+    condition; a target or registration that cannot be judged stops at that reason."""
     reasons = [] if reasons is None else reasons
     clone = _scratch_clone_target(token, cwd, project_root)
     if clone is not None:
@@ -1108,7 +1106,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[s
     if located is None:
         return False
     target, root = located
-    verdict = _orphan_verdict(target, root, reasons, own)
+    verdict = _orphan_verdict(target, root, reasons)
     if verdict is not None:
         return verdict
     listing = _git(["worktree", "list", "--porcelain"], root)
@@ -1190,11 +1188,18 @@ def _session_transcript() -> str | None:
     return str(found) if found else None
 
 
+def session_owns(path: str) -> bool:
+    """This session's transcript proves it created the live linked worktree at `path`, as the guard reads it
+    (`_own_worktree.session_created_worktree`); no transcript, or any fault, proves nothing."""
+    from _own_worktree import session_created_worktree
+    return session_created_worktree(path, _session_transcript())
+
+
 def main(argv: list[str]) -> int:
     """`[--created] <path>...`: the delete guard's verdict per checkout, `<path>: retired` or `<path>: blocked:
     <reasons>`. Ownership is read from this session's transcript as the guard reads it; `--created` instead assumes
-    this session created every path (a hypothetical, labelled in the output). Exit 1 when any is blocked, 2 with no
-    path. A live session working in it is the guard's check, not this one."""
+    this session created every live worktree (a hypothetical, labelled in the output). Exit 1 when any is blocked, 2
+    with no path. A live session working in it is the guard's check, not this one."""
     hypothetical = "--created" in argv
     argv = [a for a in argv if a != "--created"]
     if not argv:
@@ -1202,16 +1207,11 @@ def main(argv: list[str]) -> int:
         return 2
     root = (os.environ.get("CLAUDE_PROJECT_DIR") or _git(["rev-parse", "--show-toplevel"], Path.cwd()) or ".").strip()
     blocked = 0
-    transcript = None if hypothetical else _session_transcript()
     with _git_commit.memoized():
         for token in argv:
             reasons: list[str] = []
-            own = hypothetical
-            if not own:
-                from _own_worktree import session_created_worktree
-                own = session_created_worktree(resolve_cd(os.getcwd(), token), transcript)
-            if (lossless_orphan_worktree(token, os.getcwd(), root, own=own)
-                    or is_retired_worktree(token, os.getcwd(), root, reasons, own=own)):
+            own = hypothetical or session_owns(resolve_cd(os.getcwd(), token))
+            if is_retired_worktree(token, os.getcwd(), root, reasons, own=own):
                 print("%s: retired%s" % (token, " (--created: assumed, not proven)" if hypothetical else ""))
             else:
                 blocked += 1

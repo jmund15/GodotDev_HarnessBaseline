@@ -8,16 +8,15 @@ in this file matches either scanner it exercises.
 """
 from __future__ import annotations
 
-import contextlib
 import importlib.util
 import json
-import os
 import shutil
-import stat
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _git_fixture import git as _git, init_repo as _init_repo, scratch  # noqa: E402
 
 IDENTITY = Path(__file__).resolve().parents[1] / "tools" / "baseline_identity.py"
 
@@ -210,54 +209,8 @@ def test_scan_changed_ignores_removed_lines() -> None:
 # scan_tree — fixture git repo + digests file
 # ---------------------------------------------------------------------------
 
-def _env(root: Path) -> dict:
-    env = os.environ.copy()
-    env["GIT_CEILING_DIRECTORIES"] = str(root.parent)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    return env
-
-
-def _git(cwd: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", *args], cwd=cwd, env=_env(cwd),
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    return result.stdout
-
-
-def _init_repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-q")
-    _git(path, "config", "user.email", "fixture@example.invalid")
-    _git(path, "config", "user.name", "fixture")
-
-
-def _make_writable(path: Path) -> None:
-    if not path.exists():
-        return
-    for current, dirs, files in os.walk(path, topdown=False):
-        for name in files + dirs:
-            target = Path(current) / name
-            try:
-                os.chmod(target, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            except OSError:
-                pass
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    except OSError:
-        pass
-
-
-def _remove(path: Path) -> None:
-    _make_writable(path)
-    shutil.rmtree(path, ignore_errors=True)
-
-
-@contextlib.contextmanager
 def _fixture():
-    path = Path(tempfile.mkdtemp(prefix="baseline_identity_"))
-    try:
-        yield path
-    finally:
-        _remove(path)
+    return scratch("baseline_identity_")
 
 
 def _digests_doc(profile: dict) -> dict:

@@ -132,10 +132,8 @@ carries (default: the session's active record; `false` opts out). Per job:
                           window; any other value refuses
     cacheTtl              5m|1h -> the child's prompt-cache lifetime (`SIDECAR_CACHE_TTL`; Anthropic seats only). Omitted,
                           the kind row's (`gate` 1h) else 5m. The wait clamp follows it: 270 s on 5m, the Bash
-                          ceiling on 1h. Litmus: set 1h when the job will wait more than about an hour in total
-                          on long runs (tests, builds, other jobs); the 1h write costs 0.75 x the job's final
-                          context more than 5m, and 5m's 270 s polls cost 0.1 x context per 4.5 min waited
-                          against 0.1 x per 10 min on 1h. Break-even and replay: the cache-TTL memory archive
+                          ceiling on 1h. A 1h job stays a sidecar: a Workflow agent caches 5 minutes. When to
+                          set it: `orchestration` reference `dispatch_rows.md` §Which rows a job lists
     tools                 {add:[], remove:[]} -> a signed `-t` (`+Bash,-mcp:ai-worker`); items are
                           built-in names or `mcp:<server>`
     toolsCsv              kind `arm` only: its task row as an unsigned `-t`; cannot be combined with `tools`
@@ -3258,6 +3256,9 @@ def load_schema(job):
 def native_blockers(job, shared_context, session, data):
     """Why `job` cannot run as a native `dispatch.js` agent: [] when nothing blocks it."""
     why = [f"`{field}` has no Workflow equivalent" for field in SIDECAR_ONLY_FIELDS if job.get(field)]
+    kind_row = (tool_profiles.load_table().get("kinds") or {}).get(job.get("kind")) or {}
+    if (job.get("cacheTtl") or kind_row.get("cacheTtl")) == "1h":
+        why.append("`cacheTtl: 1h`: a Workflow agent caches 5 minutes")
     if _elsewhere(job):
         why.append("`workdir` needs a process started in another checkout")
     row = row_on_plan(job, session, data)
@@ -4551,25 +4552,25 @@ def _main(argv):
     except (JobError, model_registry.RegistryError) as err:
         return _refused(str(err))
 
+    # One refusal names every unmet precondition of this stage (tier fit, window, doctrine), so a corrected call
+    # passes the whole stage; the doctrine deny keeps stdout, the channel its text has always reached the session on.
+    refusals, size = [], None
     if not args.review_close:
         fit = launcher_fit_refusal(argv if argv is not None else sys.argv[1:])
-        if fit:
-            return _refused(fit)
         size = fit_size(jobs)
-        over = over_window_refusal(size)
-        if over:
-            return _refused(over)
+        refusals += [text for text in (fit, over_window_refusal(size)) if text]
+    doctrine = None
+    if args.detach and not args.dry_run:
+        doctrine = doctrine_refusal(argv if argv is not None else sys.argv[1:])
+        refusals += [doctrine] if doctrine else []
+    if refusals:
+        return _refused("\n\n".join(refusals), stream=sys.stdout if doctrine else None)
+    if not args.review_close:
         for fact in fit_facts(jobs, size):
             print(fact)
         if not args.refold:
             for fact in spare_facts(jobs, data):
                 print(fact)
-
-    if args.detach and not args.dry_run:
-        refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
-        if refusal:
-            print(refusal)
-            return 2
     rest_file = None
     split_run = False
     if not args.refold and not args.review_close and not is_remainder_file(args.jobs, out_dir):

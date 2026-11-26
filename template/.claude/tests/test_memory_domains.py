@@ -36,7 +36,7 @@ def test_a_row_of_paths_alone_loads_with_every_list_field(tmp_path):
     assert got["name"] == "Widgets" and got["paths"] == ["Widgets/**"] and got["rules"] == [] and got["memory_keywords"] == []
 
 
-def test_a_retired_triggers_list_in_a_project_row_is_ignored(tmp_path):
+def test_a_row_carrying_the_retired_triggers_key_loads_without_it(tmp_path):
     got = domains.load(claude_dir(tmp_path, {"memory_domains": [{"name": "Old", "triggers": ["x"], "paths": ["a/**"]}]}))
     assert names(got) == ["Old"] and "triggers" not in got[0]
 

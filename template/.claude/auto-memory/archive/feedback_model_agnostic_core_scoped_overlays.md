@@ -16,7 +16,7 @@ metadata:
 
 **Channels:**
 - A session driver: `driverNotes` on its registry row or its transport's row (`hooks/session_model_rails.py` prints them).
-- Rail depth for a session or a delegate: `railTier` (`detailed`, the default, or `condensed` / `minimal`, which need `railTierEvidence` per the rule home; the project's rail battery measures it) on the row (`hooks/_model_tier.py`, and `args.__rails` injected into the fan-out engines).
+- Rail depth for a session or a delegate: `railTier` (`detailed`, the default, or `condensed` / `minimal`, whose row's `_railTierComment` names the basis and the observation that reverts it, per the rule home) on the row (`hooks/_model_tier.py`, and `args.__rails` injected into the fan-out engines).
 - Delegate selection: the ladder `±` cell.
 Every note carries an `evidenceRef`, and `model_registry.py --check` rejects one without it.
 

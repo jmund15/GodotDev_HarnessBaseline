@@ -374,13 +374,33 @@ _held = consume(plant_consume("held", "done\n", {"check": ["python3 " + _held_ma
 case("a brief written after the run start is HELD: nothing runs, exit 1",
      lambda: _held[0] == 1 and "HELD" in _held[1] and not os.path.exists(HELD_MARK))
 
-_no_fence = consume(plant_consume("nofence", "done\n", None)[0], "w1")
+# A brief with no task block (a hand-written lane brief) names no check and no writeSet: every other fact
+# still prints, the exit is non-zero so the run cannot read as a pass, and a block that is present but
+# malformed stays a refusal that names the keys.
+_no_fence = consume(plant_consume("nofence", 'result\nchangedPaths: ["inside.txt"]\n', None)[0], "w1",
+                    "--root", QUIET_ROOT)
+_no_fence_spill = os.path.join(TMP, "nofence", "spill")
+case("a brief with no task block still prints the digest, the deliverable, the manifest and a NO TASK BLOCK line, and exits 1",
+     lambda: _no_fence[0] == 1 and "DIGEST" in _no_fence[1] and "NO TASK BLOCK" in _no_fence[1]
+     and any(l.startswith("DELIVERABLE ") for l in _no_fence[1].splitlines())
+     and any(l.startswith("MANIFEST ") and "refused" not in l for l in _no_fence[1].splitlines())
+     and read(os.path.join(_no_fence_spill, "w1.md")) is not None
+     and os.path.isfile(os.path.join(_no_fence_spill, "w1.manifest.json")))
+case("a brief with no task block runs no check and flags no path as outside a writeSet it does not have",
+     lambda: "CHECK " not in _no_fence[1] and "outside-writeSet" not in _no_fence[1]
+     and any(l.startswith("CHANGED ") and "inside.txt" in l for l in _no_fence[1].splitlines()))
 _empty_check = consume(plant_consume("emptycheck", "done\n", {"check": []})[0], "w1")
 _two_fences = consume(plant_consume("twofence", "done\n", None, brief_body=
                                     '```task\n{"check": ["x"]}\n```\n```task\n{"check": ["y"]}\n```\n')[0], "w1")
-case("a brief with no task block, an empty check or two task blocks is refused (exit 2)",
-     lambda: _no_fence[0] == 2 and "no task block" in _no_fence[2] and _empty_check[0] == 2
-     and "empty check" in _empty_check[2] and _two_fences[0] == 2 and "one task block" in _two_fences[2])
+_no_check_key = consume(plant_consume("nocheckkey", "done\n", {"writeSet": ["a.py"]})[0], "w1")
+case("a task block that is present but empty, doubled or without check is refused (exit 2), the message naming the key",
+     lambda: _empty_check[0] == 2 and "check" in _empty_check[2] and "DIGEST" not in _empty_check[1]
+     and _two_fences[0] == 2 and "one task block" in _two_fences[2]
+     and _no_check_key[0] == 2 and "check" in _no_check_key[2])
+_bad_returned = consume(plant_consume("badreturned", "result\nchangedPaths: not-a-list\n", {"check": [PY_OK]})[0], "w1")
+case("a changedPaths line that is not a JSON list does not withhold the digest: a warning, the checks still run, exit 1",
+     lambda: _bad_returned[0] == 1 and "DIGEST" in _bad_returned[1] and "WARNING" in _bad_returned[1]
+     and "CHECK 1 PASS" in _bad_returned[1])
 
 FLOOR_MARK = os.path.join(TMP, "floor.marker")
 _floor_mark = script("floor_mark.py", "open(%r, 'w').write('x')\n" % FLOOR_MARK)
@@ -490,8 +510,10 @@ _sc_pass = cli("consume", _sc_record, "--label", "w1", "--brief", _sc_brief, "--
 _sc_nobrief = cli("consume", _sc_record, "--label", "w1", "--check-timeout", "20")
 case("a sidecar -R record with --brief runs its checks: CHECK PASS, exit 0",
      lambda: _sc_pass[0] == 0 and "CHECK 1 PASS" in _sc_pass[1])
-case("a sidecar -R record without --brief is refused (exit 2) and the message names --brief",
-     lambda: _sc_nobrief[0] == 2 and "--brief" in _sc_nobrief[2])
+case("a sidecar -R record without --brief prints its facts, names NO TASK BLOCK with --brief and exits 1",
+     lambda: _sc_nobrief[0] == 1 and "DIGEST" in _sc_nobrief[1] and "MANIFEST" in _sc_nobrief[1]
+     and any(line.startswith("NO TASK BLOCK") and "--brief" in line and "amendment" in line
+             for line in _sc_nobrief[1].splitlines()))
 case("a sidecar deliverable is <label>.md beside its record, from the captured final message",
      lambda: read(os.path.join(_sc_dir, "w1.md")) == "sidecar final")
 case("consume writes <label>.manifest.json for a sidecar source, requested fields from its record",
@@ -506,8 +528,8 @@ _inv_nobrief = cli("consume", _sc_dir, "--label", "w1", "--check-timeout", "20")
 with open(os.path.join(_sc_dir, "fanout-proof.inventory.json"), "w", encoding="utf-8") as _fh:
     json.dump({"jobs": [{"label": "w1", "brief": _sc_brief}]}, _fh)
 _inv_brief = cli("consume", _sc_dir, "--label", "w1", "--check-timeout", "20")
-case("a fan-out inventory with no brief still refuses without --brief",
-     lambda: _inv_nobrief[0] == 2 and "--brief" in _inv_nobrief[2])
+case("a fan-out inventory with no brief and no --brief prints its facts and names NO TASK BLOCK, exit 1",
+     lambda: _inv_nobrief[0] == 1 and "DIGEST" in _inv_nobrief[1] and "NO TASK BLOCK" in _inv_nobrief[1])
 case("a fan-out inventory carrying brief lets consume run without --brief",
      lambda: _inv_brief[0] == 0 and "CHECK 1 PASS" in _inv_brief[1])
 
@@ -519,6 +541,25 @@ with open(_jr_record + ".journal.jsonl", "w", encoding="utf-8", newline="\n") as
 _jr_pass = cli("consume", _jr_record, "--label", "w1", "--brief", _jr_brief, "--check-timeout", "20")
 case("a sidecar with an ended journal row and no .exit is terminal: consume runs its checks, exit 0",
      lambda: _jr_pass[0] == 0 and "CHECK 1 PASS" in _jr_pass[1] and "not terminal" not in _jr_pass[2])
+
+_sc_nb_record, _sc_nb_brief, _ = plant_sidecar("sc_noblock", {"check": [PY_OK]})
+with open(_sc_nb_brief, "w", encoding="utf-8", newline="\n") as _fh:
+    _fh.write("A hand-written lane brief with no task block.\n")
+_sc_nb = cli("consume", _sc_nb_record, "--label", "w1", "--brief", _sc_nb_brief, "--check-timeout", "20")
+case("a sidecar record whose brief has no task block prints its facts, names NO TASK BLOCK and exits 1",
+     lambda: _sc_nb[0] == 1 and "NO TASK BLOCK" in _sc_nb[1] and "DIGEST" in _sc_nb[1])
+
+_wf_np_run, _, _ = plant_consume("wf_noprompt", "done\n", {"check": [PY_OK]})
+_wf_np_record = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(_wf_np_run))), "workflows", FIXTURE_RUN_ID + ".json")
+with open(_wf_np_record, encoding="utf-8") as _fh:
+    _wf_np = json.load(_fh)
+_wf_np["args"]["jobs"][0].pop("promptPath")
+with open(_wf_np_record, "w", encoding="utf-8") as _fh:
+    json.dump(_wf_np, _fh)
+_wf_nobrief = consume(_wf_np_run, "w1")
+case("a Workflow job whose record names no brief and no --brief prints its facts, names NO TASK BLOCK, exit 1",
+     lambda: _wf_nobrief[0] == 1 and "DIGEST" in _wf_nobrief[1] and "NO TASK BLOCK" in _wf_nobrief[1]
+     and "CHECK" not in _wf_nobrief[1])
 
 
 # ---- consume: an amend file the job never read --------------------------------------------------
@@ -764,6 +805,31 @@ case("a native label given the out dir is refused (exit 2), naming the Workflow 
      and "record.json" not in _nat[2])
 case("a label native.args.json does not list keeps the sidecar record refusal",
      lambda: _nat_other[0] == 2 and "native Workflow job" not in _nat_other[2])
+
+
+def _inventory_with_vanished_entry():
+    """`_inventory_job` over a listing whose second entry is gone by the time it is read, as when the launcher's stale
+    sweep deletes a fan-out inventory between the glob and the stat."""
+    import pathlib
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import dispatch_result
+    out = os.path.join(TMP, "vanishing_inventory")
+    os.makedirs(out)
+    with open(os.path.join(out, "fanout-kept.inventory.json"), "w", encoding="utf-8") as fh:
+        json.dump({"jobs": [{"label": "j1", "workdir": "/w"}]}, fh)
+    real_glob = pathlib.Path.glob
+
+    def glob(self, pattern):
+        return list(real_glob(self, pattern)) + [self / "fanout-gone.inventory.json"]
+    pathlib.Path.glob = glob
+    try:
+        return dispatch_result._inventory_job(out, "j1") == {"label": "j1", "workdir": "/w"}
+    finally:
+        pathlib.Path.glob = real_glob
+
+
+case("a fan-out inventory that vanishes between the listing and its stat is skipped, not a crash",
+     _inventory_with_vanished_entry)
 
 
 def main():

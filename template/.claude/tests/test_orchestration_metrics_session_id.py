@@ -17,8 +17,10 @@ import json
 import os
 import subprocess
 import sys
+import importlib.util
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..", "tools", "orchestration_metrics.py")
@@ -116,6 +118,27 @@ class SessionIdResolutionTests(unittest.TestCase):
         self.assertIn("unrated dispatches: 1", out, out)
         self.assertIn('"%s@wf_proof-001"' % LABEL, out, out)
         self.assertIn("wf_proof-001:" + LABEL, out, out)
+
+    def test_a_session_removed_between_its_check_and_its_stat_is_skipped(self):
+        spec = importlib.util.spec_from_file_location("orchestration_metrics_race", TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        projects = os.path.join(self.home, ".claude", "projects", "C--proof-project")
+        gone = os.path.join(projects, SID_AMBIG, "workflows")
+        real_isdir = os.path.isdir
+
+        def isdir_then_removed(path):
+            seen = real_isdir(path)
+            if seen and os.path.normcase(path) == os.path.normcase(gone):
+                os.remove(os.path.join(gone, "wf_proof-001.json"))
+                os.rmdir(gone)
+            return seen
+
+        with mock.patch.dict(os.environ), mock.patch.object(os.path, "isdir", isdir_then_removed), \
+                mock.patch.object(mod, "_candidate_project_dirs", lambda root=None, strict=False: [projects]):
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            got = mod.find_session_dir()
+        self.assertEqual(os.path.join(projects, SID), got)
 
     def test_existing_absolute_and_relative_session_directories_are_accepted(self):
         rc, out = run_cli(self.home, "--session", self.session)

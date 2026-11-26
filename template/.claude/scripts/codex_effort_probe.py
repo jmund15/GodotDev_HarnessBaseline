@@ -70,15 +70,17 @@ def newest_request_dir(session_id=None):
     for root in roots:
         for d in os.listdir(root):
             p = os.path.join(root, d)
-            if not os.path.isdir(p):
-                continue
             # A dir with no upstream capture attests nothing; skipping it here keeps the caller
             # from reporting "no effort found" for a request that simply had not finished.
-            if not _upstream(p):
+            try:
+                if not os.path.isdir(p) or not _upstream(p):
+                    continue
+                stamp = os.path.getmtime(p)
+            except OSError:
                 continue
-            if best is None or os.path.getmtime(p) > os.path.getmtime(best):
-                best = p
-    return best
+            if best is None or stamp > best[0]:
+                best = (stamp, p)
+    return best[1] if best else None
 
 
 def probe(session_id=None):

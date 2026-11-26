@@ -1,9 +1,4 @@
 {
   "_comment": "Mechanism-layer paths that may name models (hooks/model_name_guard.py). Globs are relative to .claude/. Each entry names what makes the file a measurement or a model-fact home; a file that only needs a model at run time resolves it from the registry instead.",
-  "exemptions": [
-    {
-      "glob": "scripts/rail_battery/reports/**",
-      "justification": "Rail-battery reports record which model each measured arm ran on."
-    }
-  ]
+  "exemptions": []
 }

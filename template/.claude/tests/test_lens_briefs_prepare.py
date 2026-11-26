@@ -8,6 +8,7 @@ owners, run in process.
 
     python3 .claude/tests/test_lens_briefs_prepare.py
 """
+import functools
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -22,6 +24,8 @@ REPO = HERE.parent.parent
 TOOLS = REPO / ".claude" / "tools"
 EXTERNAL = json.loads((REPO / ".claude" / "reference" / "external_models.json").read_text(encoding="utf-8"))
 sys.path[:0] = [str(TOOLS), str(REPO / ".claude" / "hooks"), str(HERE)]
+import _git_fixture  # noqa: E402
+import _hook_call  # noqa: E402
 import _mcp_plant  # noqa: E402
 from _planted_checkout import enter_planted_checkout  # noqa: E402
 
@@ -32,6 +36,19 @@ enter_planted_checkout()  # the rigor reader asks git about the working director
 _mcp_plant.plant()
 import lens  # noqa: E402
 import lens_briefs  # noqa: E402  (the live pin and effort vocabulary, so a roster change never breaks this proof)
+
+# The launcher seam, stubbed: `lens_briefs.launch_fanout` is the one place `prepare` starts the fan-out, so every
+# in-process case records the call it would have run and starts nothing; `launch_refused` runs the real one.
+LAUNCHED = []
+REAL_LAUNCH = getattr(lens_briefs, "launch_fanout", None)
+
+
+def _stub_launch(call, root):
+    LAUNCHED.append(list(call))
+    return 0
+
+
+lens_briefs.launch_fanout = _stub_launch
 
 PINS = sorted(lens_briefs.NATIVE_PINS)
 EFFORTS = sorted(lens_briefs.NATIVE_EFFORTS)
@@ -82,25 +99,41 @@ def capacity_cache(path):
     path.write_text(json.dumps(cache), encoding="utf-8")
 
 
+def _build_checkout(root):
+    _git_fixture.init_repo(root)
+    subject = root / "src/thing.py"
+    for rel, text in (("src/thing.py", "def thing():\n    return 1\n"),
+                      ("docs/plan.md", "# Plan\n\n**Shape:** code\n\nA plan.\n\n## Job map\n\n| Slice | Route |\n|---|---|\n| S1 | job |\n"),
+                      ("ctx/context.md", "# Context\n\nplanted\n")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
+    _git_fixture.commit_all(root, "base")
+    subject.write_text("def thing():\n    return 2\n", encoding="utf-8")
+    _git_fixture.commit_all(root, "change")
+
+
+def built_checkout():
+    """The two-commit checkout every case starts from, built once (`_git_fixture.built`) and copied per case: (folder,
+    base commit, head commit)."""
+    folder = _git_fixture.built("lens_briefs_prepare.checkout", _build_checkout)
+    return folder, _base_of(folder), _git_fixture.branch_sha(folder)
+
+
+@functools.cache
+def _base_of(folder):
+    return _git_fixture.git(folder, "rev-parse", "HEAD~1").decode().strip()
+
+
 class Fixture:
     """A planted checkout: two commits, a scratch tree, a context file and one changed subject file."""
 
     def __init__(self):
         self.root = Path(tempfile.mkdtemp(prefix="prep_proof_")).resolve()
-        self.git("init", "-q")
-        self.git("config", "user.email", "proof@example.invalid")
-        self.git("config", "user.name", "proof")
-        self.git("config", "commit.gpgsign", "false")
-        self.subject = self.write("src/thing.py", "def thing():\n    return 1\n")
-        self.plan = self.write("docs/plan.md", "# Plan\n\n**Shape:** code\n\nA plan.\n\n## Job map\n\n| Slice | Route |\n|---|---|\n| S1 | job |\n")
-        self.context = self.write("ctx/context.md", "# Context\n\nplanted\n")
-        self.git("add", "-A")
-        self.git("commit", "-qm", "base")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        self.subject.write_text("def thing():\n    return 2\n", encoding="utf-8")
-        self.git("add", "-A")
-        self.git("commit", "-qm", "change")
-        self.head = self.git("rev-parse", "HEAD").strip()
+        template, self.base, self.head = built_checkout()
+        _hook_call.copy_repo(template, self.root)
+        self.subject = self.root / "src/thing.py"
+        self.plan = self.root / "docs/plan.md"
+        self.context = self.root / "ctx/context.md"
         self.run_dir = self.scratch("run")
         self.state = self.root / "state"
         self.state.mkdir()
@@ -143,17 +176,22 @@ class Fixture:
         self.spec_path.write_text(json.dumps(base, indent=2), encoding="utf-8", newline="\n")
         return self.spec_path
 
-    def prepare(self, **fields):
+    def prepare(self, spawn=False, **fields):
         if fields and "target" not in fields and fields.get("mode") != "explore":
             fields["target"] = "native"
-        return self.prepare_as_written(**fields)
+        return self.prepare_as_written(spawn=spawn, **fields)
 
-    def prepare_as_written(self, **fields):
+    def prepare_as_written(self, spawn=False, **fields):
+        """`lens_briefs.py prepare` on the spec: in process under this fixture's environment and working directory
+        (the cases decide what `prepare` writes and refuses), or, with `spawn`, as the CLI process the command docs
+        run (`mode_explore` takes that path once)."""
         spec = self.spec(**fields) if fields else self.spec_path
-        return subprocess.run([sys.executable, str(TOOLS / "lens_briefs.py"), "prepare",
-                               "--spec", str(spec), "--out", str(self.out)],
-                              capture_output=True, text=True, encoding="utf-8",
-                              cwd=str(self.root), env=self.env, timeout=180)
+        argv = ["prepare", "--spec", str(spec), "--out", str(self.out)]
+        if spawn:
+            return subprocess.run([sys.executable, str(TOOLS / "lens_briefs.py"), *argv, "--no-launch"],
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  cwd=str(self.root), env=self.env, timeout=180)
+        return _hook_call.run_main(lens_briefs, argv, env=self.env, cwd=self.root)
 
     def args(self):
         path = self.out / "args.json"
@@ -264,7 +302,7 @@ def check_engine(label, f, engine):
 
 def mode_explore():
     f = Fixture()
-    proc = f.prepare(mode="explore", lenses=["exp-integration-surface"],
+    proc = f.prepare(spawn=True, mode="explore", lenses=["exp-integration-surface"],
                      pins={"panel": PANEL}, efforts={"panel": EFFORT},
                      spillDir=str(f.scratch("run", "spill")))
     good, detail = ok(proc)
@@ -658,7 +696,7 @@ def sidecar_target():
           review_result._roster_problems(str(roster)) if roster.exists() else "absent")
     import shlex
     import sidecar_fanout
-    line = next((l[len("next: "):] for l in proc.stdout.splitlines() if l.startswith("next: python3")), "")
+    line = next((l[len("launch: "):] for l in proc.stdout.splitlines() if l.startswith("launch: python3")), "")
     try:
         parsed = sidecar_fanout.build_parser().parse_args(shlex.split(line)[2:])
     except SystemExit:
@@ -1050,7 +1088,7 @@ def default_panels_run_through_the_fanout():
                       and "rows" not in j and "plan" not in j for j in jobs), (proc.stdout[-300:], proc.stderr[-800:]))
         check("%s: with no target, no Workflow call and no engine args are written" % mode,
               "Workflow(" not in proc.stdout and not (f.out / "args.json").exists(), proc.stdout[-400:])
-        line = next((l[len("next: "):] for l in proc.stdout.splitlines() if l.startswith("next: python3")), "")
+        line = next((l[len("launch: "):] for l in proc.stdout.splitlines() if l.startswith("launch: python3")), "")
         try:
             parsed = sidecar_fanout.build_parser().parse_args(shlex.split(line)[2:])
         except SystemExit:
@@ -1058,8 +1096,6 @@ def default_panels_run_through_the_fanout():
         check("%s: the next call is the fan-out's --review run, detached, carrying the spec's ledger" % mode,
               parsed is not None and parsed.review and parsed.detach and parsed.ledger_stage
               == fields["ledger"]["stage"], line)
-        check("%s: the printed text says what the fan-out prints and what closes the panel" % mode,
-              "--review-close" in proc.stdout and "NATIVE" in proc.stdout, proc.stdout[-500:])
     if builds:
         mode, f, fields = builds[0]
         proc = f.prepare_as_written(**dict(fields, target="native"))
@@ -1087,7 +1123,7 @@ def printed_tiers_are_the_guards():
                                  "baseRef": f.base},
                          subjectFiles=[str(f.plan)], spillDir=str(f.scratch("run", "spill")), **extra)
         good, detail = ok(proc)
-        line = next((l[len("next: "):] for l in proc.stdout.splitlines() if l.startswith("next: python3")), "")
+        line = next((l[len("launch: "):] for l in proc.stdout.splitlines() if l.startswith("launch: python3")), "")
         match = re.search(r"tiers pinned: ([a-z, ]+)", proc.stdout)
         printed = {t.strip() for t in match.group(1).split(",") if t.strip()} if match else set()
         fanout = types.SimpleNamespace(args=shlex.split(line)[2:])
@@ -1095,6 +1131,88 @@ def printed_tiers_are_the_guards():
         check("the pinned-tier line is the doctrine gate's own set: " + name,
               good and bool(asked) and printed == asked, "printed %s, the gate asks %s\n%s" % (sorted(printed), sorted(asked), detail))
 
+
+def prepare_fields(f, **more):
+    return dict(dict(mode="design-redteam", roster=[{"key": RT_SEAT, "effort": EFFORT_HI}], target="sidecar",
+                     pins={"panel": PANEL}, efforts={RT_SEAT: EFFORT_HI},
+                     fold={"tier": "architect", "model": PANEL, "effort": EFFORT_HI},
+                     ledger={"stage": "design", "subject": "doc:" + str(f.plan), "files": [str(f.plan)],
+                             "baseRef": f.base}, subjectFiles=[str(f.plan)],
+                     spillDir=str(f.scratch("run", "spill"))), **more)
+
+
+def prepare_cli(f, *flags):
+    """`prepare` as the CLI process on the fixture's last-written spec, with extra flags."""
+    return subprocess.run([sys.executable, str(TOOLS / "lens_briefs.py"), "prepare", "--spec", str(f.spec_path),
+                           "--out", str(f.out), *flags], capture_output=True, text=True, encoding="utf-8",
+                          cwd=str(f.root), env=f.env, timeout=180)
+
+
+def prepare_launches():
+    """A prepare whose launch preconditions hold starts the fan-out itself, once, with the call it used to print; the
+    stop-after-prepare flag and the native target start nothing. (The launcher is stubbed at `launch_fanout`.)"""
+    import shlex
+    import sidecar_argv
+    import sidecar_fanout
+    f = Fixture()
+    del LAUNCHED[:]
+    proc = f.prepare_as_written(**prepare_fields(f))
+    called = LAUNCHED[0] if LAUNCHED else []
+    try:
+        parsed = sidecar_fanout.build_parser().parse_args(called[2:]) if called else None
+    except SystemExit:
+        parsed = None
+    check("launch: a prepare whose preconditions hold launches the fan-out once, as the --review run it printed",
+          proc.returncode == 0 and len(LAUNCHED) == 1 and parsed is not None and parsed.review and parsed.detach
+          and parsed.ledger_stage == "design" and bool(parsed.fold_subject), (LAUNCHED, proc.stdout[-300:], proc.stderr[-400:]))
+    check("launch: the output names the launched call and asks the session to run no next call",
+          any(l.startswith("launch: python3 .claude/tools/sidecar_fanout.py") for l in proc.stdout.splitlines())
+          and not any(l.startswith("next: python3") for l in proc.stdout.splitlines()), proc.stdout[-500:])
+    command = "python3 .claude/tools/lens_briefs.py prepare --spec %s --out %s" % (shlex.quote(str(f.spec_path)), shlex.quote(str(f.out)))
+    seen = [i for i in sidecar_argv.launcher_invocations(command) if i.kind == "fanout"]
+    jobs_seen = Path(seen[0].args[0]).resolve() if seen else None
+    check("launch: the hooks read the prepare call as the fan-out call it makes: the same jobs file, --review and --detach",
+          len(seen) == 1 and jobs_seen == (f.out / "jobs_p.json").resolve() and called and jobs_seen == (f.root / called[2]).resolve()
+          and "--review" in seen[0].args and "--detach" in seen[0].args, (seen, called))
+
+    del LAUNCHED[:]
+    held = prepare_cli(f, "--no-launch")
+    check("launch: --no-launch prints the next call and starts nothing",
+          held.returncode == 0 and any(l.startswith("next: python3 .claude/tools/sidecar_fanout.py")
+                                       for l in held.stdout.splitlines()), (held.stdout[-300:], held.stderr[-300:]))
+    check("launch: --no-launch is no launch to the hooks",
+          not [i for i in sidecar_argv.launcher_invocations(command + " --no-launch") if i.kind == "fanout"])
+
+    f = Fixture()
+    del LAUNCHED[:]
+    proc = f.prepare_as_written(**prepare_fields(f, target="native"))
+    check("launch: the native target starts no fan-out and still prints its Workflow call",
+          proc.returncode == 0 and not LAUNCHED and "Workflow(" in proc.stdout, (LAUNCHED, proc.stdout[-300:]))
+    native = [i for i in sidecar_argv.launcher_invocations(
+        "python3 .claude/tools/lens_briefs.py prepare --spec %s --out %s" % (shlex.quote(str(f.spec_path)), shlex.quote(str(f.out))))
+        if i.kind == "fanout"]
+    check("launch: the native target is no fan-out launch to the hooks", not native, native)
+    del LAUNCHED[:]
+
+
+def launch_refused():
+    """A prepare whose launch precondition fails prints the fan-out's refusal, exits non-zero and starts no driver:
+    the real launcher (the fan-out as its own process) over a planted checkout that lacks the fold's brief template."""
+    f = Fixture()
+    check("launch: the real launcher seam exists", callable(REAL_LAUNCH), REAL_LAUNCH)
+    if not callable(REAL_LAUNCH):
+        return
+    lens_briefs.launch_fanout = REAL_LAUNCH
+    try:
+        proc = f.prepare_as_written(**prepare_fields(f))
+    finally:
+        lens_briefs.launch_fanout = _stub_launch
+    started = list(f.out.glob("*driver*")) + list(f.out.glob("fanout-*.inventory*"))
+    landed = f.out / "launch-refused.txt"  # the fan-out's own process prints the refusal; this file is its copy
+    refusal = landed.is_file() and "review_fold.md" in landed.read_text(encoding="utf-8")
+    check("launch: a failed precondition prints the fan-out's refusal, exits non-zero and starts no driver",
+          proc.returncode != 0 and refusal and not started and (f.out / "jobs_p.json").is_file(),
+          (proc.returncode, started, proc.stdout[-300:], proc.stderr[-400:]))
 
 def main():
     check("test_lens_briefs_prepare.py finds the tool it proves", (TOOLS / "lens_briefs.py").is_file())
@@ -1106,7 +1224,7 @@ def main():
                  session_audit_code_seat_reads_the_frozen_diff, session_audit_code_seat_reads_no_citers,
                  spec_refused_before_any_write,
                  doc_defined_none_placeholder, default_panels_run_through_the_fanout,
-                 printed_tiers_are_the_guards, record_contract):
+                 printed_tiers_are_the_guards, record_contract, prepare_launches, launch_refused):
         if NEEDS.get(case.__name__, "") and NEEDS[case.__name__] not in SHIPPED:
             print("skip %s: the %s lens registry is not installed" % (case.__name__, NEEDS[case.__name__]))
             continue

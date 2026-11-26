@@ -438,6 +438,30 @@ def main():
                    agents: "# a\n"}, {test_py: "pure", agents: "godot"})
     check("a test's .md literal is fixture data, not a dependency", got == [], kinds(got))
 
+    for label, body in (
+            ("a dict key looked up by a path", 'NOTES = {"commands/agents/scene_agents.md": 1}\n'
+                                               'def f(k):\n    return NOTES[k] if k in NOTES else NOTES.get(k)\n'),
+            ("a tuple member tested with in", 'ROOTS = ("scene_agents.md", "x")\ndef f(p):\n    return p in ROOTS\n'),
+            ("a frozenset member tested with in",
+             'ROOTS = frozenset({"scene_agents.md"})\ndef f(p):\n    return p not in ROOTS\n'),
+            ("a direct comparison and suffix test",
+             'def f(p):\n    return p == "scene_agents.md" or p.endswith(("scene_agents.md", "x.md"))\n'),
+            ("a name only in an f-string message", 'OWNER = "commands/agents/scene_agents.md"\nMSG = f"Owner: {OWNER}."\n'),
+            ("a name only in a %-format message", 'OWNER = "scene_agents.md"\nMSG = "Owner: %s, %s" % (OWNER, 1)\n')):
+        got = planted({registry: body, agents: "# a\n"}, {registry: "pure", agents: "godot"})
+        check(f"a name the source only matches or mentions ({label}) is not a dependency", got == [], kinds(got))
+    for label, body in (
+            ("a dict value read through a lookup",
+             'NOTES = {"k": "commands/agents/scene_agents.md"}\ndef f(k):\n    return open(NOTES[k]).read()\n'),
+            ("a dict key iterated and opened",
+             'NOTES = {"commands/agents/scene_agents.md": 1}\nfor k in NOTES:\n    open(k)\n'),
+            ("a tuple member indexed", 'ROOTS = ("scene_agents.md",)\nopen(ROOTS[0])\n'),
+            ("a name compared and also opened", 'DOC = "scene_agents.md"\ndef f(p):\n    return p == DOC and open(DOC)\n'),
+            ("a name bound twice", 'DOC = "scene_agents.md"\nDOC = "scene_agents.md"\nMSG = f"{DOC}"\n')):
+        got = planted({registry: body, agents: "# a\n"}, {registry: "pure", agents: "godot"})
+        check(f"a name the source may read ({label}) is still a dependency",
+              kinds(got) == [(registry, "needs-godot", agents)], kinds(got))
+
     optional = ".claude/tools/lens.py"
     got = planted({optional: 'REGISTRIES = ("scene_agents.md",)\n', agents: "# a\n"},
                   {optional: "pure", agents: "godot"})

@@ -14,12 +14,14 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest import mock
 
 CLAUDE = Path(__file__).resolve().parents[1]
 ROOT = CLAUDE.parent
 sys.path[:0] = [str(CLAUDE / 'hooks'), str(CLAUDE / 'tools'), str(CLAUDE / 'tests')]
 import _mcp_plant
 import _transport_fixture
+import dispatch_facts
 import sidecar_launch
 
 # The launcher validates its tool profile against the MCP servers the caller's config registers; a runner has none.
@@ -75,38 +77,62 @@ class Registration(unittest.TestCase):
                                                 encoding='utf-8')
         plant = self.work / 'plant'
         plant.mkdir()
-        (plant / 'sitecustomize.py').write_text('''import io, json, os, sys, subprocess, urllib.request
-from pathlib import Path
+        # Every python process the launch starts reads this file, and most need none of it: each patch applies when
+        # its module is first imported, so a process that never imports the module pays nothing.
+        (plant / 'sitecustomize.py').write_text('''import importlib.abc, importlib.util, io, json, os, sys
 sys.path[:0] = [os.environ['PROOF_HOOKS'], os.environ['PROOF_TOOLS']]
-import provider_capacity, _bounded_run, _dispatch_checks
 reading = {'schemaVersion':1, 'transport':'codex', 'costModel':'plan-quota', 'sourceKind':'live', 'observedAt':'2099-01-01T00:00:00Z', 'status':'available', 'error':None, 'liveFailure':None, 'quota':{'windows':[], 'dispatchBand':'Hot', 'routingBand':'Hot', 'bindingWindow':None, 'credits':{'enabled':False, 'available':False, 'balance':None}}, 'balance':None}
-def capacity(transport, *args, **kwargs):
-    return dict(reading, transport=transport)
-provider_capacity.reading = provider_capacity.cached = capacity
 def note(kind):
     with open(os.environ['PROOF_CALLS'], 'a', encoding='utf-8') as fh: fh.write(json.dumps(kind)+'\\n')
-real_tier = _dispatch_checks.tier_fit
-def tier(*args, **kwargs):
-    note('tier')
-    return real_tier(*args, **kwargs)
-_dispatch_checks.tier_fit = tier
-real_bounded = _bounded_run.run_bounded
-def bounded(args, *rest, **kwargs):
-    if '--check' in args: note('preflight')
-    return real_bounded(args, *rest, **kwargs)
-_bounded_run.run_bounded = bounded
-real_run = subprocess.run
-def run(args, *rest, **kwargs):
-    if isinstance(args, (list, tuple)) and 'proxy-stub' in str(args[0]):
-        answer = 'claude-code-proxy 0.1.36' if '--version' in args else 'fixture-model'
-        return subprocess.CompletedProcess(args, 0, answer, '')
-    return real_run(args, *rest, **kwargs)
-subprocess.run = run
-real_urlopen = urllib.request.urlopen
-def urlopen(url, *args, **kwargs):
-    if isinstance(url, str) and '/healthz' in url: return io.BytesIO(b'{"ok":true}')
-    return real_urlopen(url, *args, **kwargs)
-urllib.request.urlopen = urlopen
+def provider_capacity(module):
+    module.reading = module.cached = lambda transport, *args, **kwargs: dict(reading, transport=transport)
+def _dispatch_checks(module):
+    real = module.tier_fit
+    def tier(*args, **kwargs):
+        note('tier')
+        return real(*args, **kwargs)
+    module.tier_fit = tier
+def _bounded_run(module):
+    real = module.run_bounded
+    def bounded(args, *rest, **kwargs):
+        if '--check' in args: note('preflight')
+        return real(args, *rest, **kwargs)
+    module.run_bounded = bounded
+def subprocess(module):
+    real = module.run
+    def run(args, *rest, **kwargs):
+        if isinstance(args, (list, tuple)) and 'proxy-stub' in str(args[0]):
+            answer = 'claude-code-proxy 0.1.36' if '--version' in args else 'fixture-model'
+            return module.CompletedProcess(args, 0, answer, '')
+        return real(args, *rest, **kwargs)
+    module.run = run
+def urllib_request(module):
+    real = module.urlopen
+    def urlopen(url, *args, **kwargs):
+        if isinstance(url, str) and '/healthz' in url: return io.BytesIO(b'{"ok":true}')
+        return real(url, *args, **kwargs)
+    module.urlopen = urlopen
+PATCHES = {'provider_capacity': provider_capacity, '_dispatch_checks': _dispatch_checks, '_bounded_run': _bounded_run,
+           'subprocess': subprocess, 'urllib.request': urllib_request}
+class Patched(importlib.abc.MetaPathFinder):
+    busy = set()
+    def find_spec(self, name, path=None, target=None):
+        if name not in PATCHES or name in self.busy: return None
+        self.busy.add(name)
+        try: spec = importlib.util.find_spec(name)
+        finally: self.busy.discard(name)
+        if spec is None or spec.loader is None: return None
+        real = spec.loader
+        class Loader(importlib.abc.Loader):
+            def create_module(self, spec): return real.create_module(spec)
+            def exec_module(self, module):
+                real.exec_module(module)
+                PATCHES[name](module)
+            def __getattr__(self, attr): return getattr(real, attr)
+        spec.loader = Loader()
+        return spec
+sys.meta_path.insert(0, Patched())
+for loaded in [name for name in PATCHES if name in sys.modules]: PATCHES[loaded](sys.modules[loaded])
 ''', encoding='utf-8', newline='\n')
         self.env = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.sid,
                         CLAUDE_PROJECT_DIR=str(ROOT), HARNESS_HOOK_STATE_DIR=str(self.state.parent),
@@ -119,8 +145,7 @@ urllib.request.urlopen = urlopen
                         PROVIDER_CAPACITY_CACHE=_transport_fixture._available_capacity_cache(),
                         PYTHONPATH=os.pathsep.join(([os.environ['HARNESS_READ_RECORDER']] if os.environ.get('HARNESS_READ_LOG') and os.environ.get('HARNESS_READ_RECORDER') else []) + [str(plant)]), PROOF_HOOKS=str(CLAUDE / 'hooks'),
                         PROOF_TOOLS=str(CLAUDE / 'tools'), PROOF_CALLS=str(self.calls),
-                        PYTHONIOENCODING='utf-8', HARNESS_SIDECAR_PREFLIGHT='1',
-                        SIDECAR_WATCH_POLL_SEC='0.2')
+                        PYTHONIOENCODING='utf-8', HARNESS_SIDECAR_PREFLIGHT='1')
         for key in ('SC_LAUNCHER_DIR', 'SC_SNAPSHOT_OF', 'SIDECAR_DETACHED', 'SIDECAR_LAUNCH_ID', 'SIDECAR_SEAT_LAUNCH_ID', 'SIDECAR_FANOUT_ID'):
             self.env.pop(key, None)
 
@@ -129,6 +154,11 @@ urllib.request.urlopen = urlopen
                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
         self.assertNotIn('Traceback', proc.stderr, proc.stderr)
         return proc
+
+    def env_without_preflight(self):
+        """For a case whose subject is the journal or the claim: the launch's own `--check` pass is what the
+        registration cases count, so these skip it rather than pay for a second launcher start."""
+        return dict(self.env, HARNESS_SIDECAR_PREFLIGHT='0')
 
     def argv(self, label='wrapped', model='fixture-sol', shape='scout'):
         return ['-m', model, '-G', shape, *(['-D', 'bare'] if shape == 'arm' else []), '-l', label, '-R',
@@ -151,42 +181,62 @@ urllib.request.urlopen = urlopen
         wrapper.write_text('bash ' + shlex.join([posix(LAUNCHER), *argv]) + '\n', encoding='utf-8', newline='\n')
         return self.run_cmd([BASH, posix(wrapper)])
 
-    def facts(self, shape='scout'):
+    def facts_args(self, shape):
+        return ['--check', '-m', 'fixture-sol', '-e', 'high', '-G', shape, *(['-D', 'bare'] if shape == 'arm' else [])]
+
+    def facts_cli(self, shape='scout'):
+        """The launcher's own `--check` answer, spawned: the one case that proves the CLI path."""
         env = dict(self.env, CLAUDE_PROJECT_DIR=str(self.work))
-        return self.run_cmd([BASH, posix(LAUNCHER), '--check', '-m', 'fixture-sol',
-                             '-e', 'high', '-G', shape, *(['-D', 'bare'] if shape == 'arm' else []),
-                             '-f', posix(self.brief)], env=env)
+        return self.run_cmd([BASH, posix(LAUNCHER), *self.facts_args(shape), '-f', posix(self.brief)], env=env)
+
+    def facts(self, shape='scout'):
+        """The facts `--check` prints, from the unit that owns them, in process: the cases below decide what the
+        facts say, not how the launcher starts. The verdict module reads its verdict files from constants fixed at
+        import, so they are pointed at this case's project dir."""
+        import orchestration_metrics
+        data = self.work / '.claude'
+        planted = dict(ARCHIVE=str(data / 'orchestration_metrics.jsonl'),
+                       PENDING_VERDICTS=str(data / 'orchestration_verdicts.json'),
+                       LEGACY_PENDING_VERDICTS=str(data / 'scratch' / 'orchestration_verdicts.json'))
+        here = os.getcwd()
+        os.chdir(ROOT)
+        try:
+            with mock.patch.dict(os.environ, HARNESS_MODEL_REGISTRY=self.env['HARNESS_MODEL_REGISTRY']), \
+                    mock.patch.multiple(orchestration_metrics, **planted):
+                return '\n'.join(dispatch_facts.fact_lines(
+                    CLAUDE, 'fixture-sol', [*self.facts_args(shape), '-f', str(self.brief)]))
+        finally:
+            os.chdir(here)
 
     def test_check_brief_size_and_requested_pin(self):
         self.brief.write_bytes('é文abc'.encode('utf-8'))
-        proc = self.facts()
+        proc = self.facts_cli()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('brief: 8 bytes; estimated tokens=2', proc.stdout)
         self.assertIn('requested pin: fixture-sol·high', proc.stdout)
         self.assertNotRegex(proc.stdout.lower(), r'recommend|right pin|wrong pin|use instead')
         self.assertEqual(self.pending(), [])
+        self.assertEqual(self.facts().splitlines()[:2], proc.stdout.splitlines()[:2], 'the unit and the CLI print the same facts')
 
     def test_check_sizes_files_the_brief_names(self):
         named = self.work / 'big_reading.md'
         named.write_bytes(b'x' * 5000)
         self.brief.write_text('Read `%s` whole.\n' % named.as_posix(), encoding='utf-8')
-        proc = self.facts()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertRegex(proc.stdout, r'dispatch size: 1 job .*names 5 KB more')
+        self.assertRegex(self.facts(), r'dispatch size: 1 job .*names 5 KB more')
         named.write_bytes(b'x' * 3000000)
         over = self.facts()
         # dispatch_size.format_line owns the sizing summary (the launcher no longer prints its
         # `brief + named files` line): a named file is reported as named, never as read.
-        self.assertRegex(over.stdout, r'names \d{4} KB more')
-        self.assertNotIn('OVER by', over.stdout)
+        self.assertRegex(over, r'names \d{4} KB more')
+        self.assertNotIn('OVER by', over)
 
     def test_check_ladder_row_and_unmapped_profile(self):
-        proc = self.facts()
-        self.assertIn('profile=scout; tier=fanout', proc.stdout)
-        self.assertRegex(proc.stdout, r'ladder row: .*; rung: .+')
+        facts = self.facts()
+        self.assertIn('profile=scout; tier=fanout', facts)
+        self.assertRegex(facts, r'ladder row: .*; rung: .+')
         unmapped = self.facts('arm')
-        self.assertIn('profile=arm; no tier mapping exists', unmapped.stdout)
-        self.assertNotRegex(unmapped.stdout.lower(), r'recommend|right pin|wrong pin|use instead')
+        self.assertIn('profile=arm; no tier mapping exists', unmapped)
+        self.assertNotRegex(unmapped.lower(), r'recommend|right pin|wrong pin|use instead')
 
     def test_check_latest_shape_rating_and_note(self):
         data = self.work / '.claude'
@@ -200,12 +250,11 @@ urllib.request.urlopen = urlopen
             {'shape': 'right', 'shape_model': 'other-model', 'shape_rated_at': '2026-04-01T00:00:00Z'},
             {'shape': None, 'shape_rated_at': '2026-05-01T00:00:00Z'}])}
         (data / 'orchestration_verdicts.json').write_text(json.dumps(pending), encoding='utf-8')
-        proc = self.facts()
-        self.assertIn('shape rating: over; note: less width sufficed', proc.stdout)
-        self.assertNotIn('older archive', proc.stdout)
+        facts = self.facts()
+        self.assertIn('shape rating: over; note: less width sufficed', facts)
+        self.assertNotIn('older archive', facts)
         (data / 'orchestration_verdicts.json').unlink()
-        archived_proc = self.facts()
-        self.assertIn('shape rating: under; note: older archive', archived_proc.stdout)
+        self.assertIn('shape rating: under; note: older archive', self.facts())
 
     def test_check_refuses_an_enum_flag_the_launch_refuses(self):
         env = dict(self.env, CLAUDE_PROJECT_DIR=str(self.work))
@@ -222,12 +271,11 @@ urllib.request.urlopen = urlopen
         self.assertEqual(ok.returncode, 0, ok.stderr)
 
     def test_check_no_shape_rating_and_unreadable_brief(self):
-        proc = self.facts()
-        self.assertIn('shape rating: none exists', proc.stdout)
+        self.assertIn('shape rating: none exists', self.facts())
         self.brief.unlink()
         missing = self.facts()
-        self.assertIn('brief: unreadable', missing.stdout)
-        self.assertNotIn('brief: 0 bytes', missing.stdout)
+        self.assertIn('brief: unreadable', missing)
+        self.assertNotIn('brief: 0 bytes', missing)
 
     def test_wrapper_registers_checks_and_a_reused_record_keeps_the_new_pin(self):
         # -Y <pick>,<spec> records why the pin was chosen; an omitted -Y records null, never a guessed
@@ -317,7 +365,7 @@ urllib.request.urlopen = urlopen
 
     def test_launch_journal_records_start_and_end(self):
         # X1 S2 U2: a real foreground launch writes a started row at claim and an ended row with its rc.
-        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('journaled')])
+        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('journaled')], env=self.env_without_preflight())
         self.assertEqual(proc.returncode, 0, proc.stderr)
         record = self.work / 'journaled.record.json'
         journal = Path(str(record) + '.journal.jsonl')
@@ -362,7 +410,7 @@ urllib.request.urlopen = urlopen
         record = self.work / 'claimed.record.json'
         intent = Path(str(record) + '.launch-intent-toolu_direct.json')
         intent.write_text(json.dumps({'call': 'toolu_direct', 'session': self.sid}), encoding='utf-8')
-        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('claimed')])
+        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('claimed')], env=self.env_without_preflight())
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse(intent.exists(), 'the intent was not claimed')
         self.assertTrue(Path(str(intent) + '.claimed').exists())

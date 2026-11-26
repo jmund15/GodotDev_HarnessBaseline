@@ -1427,7 +1427,13 @@ sc_claim_call() {
   found="$(RECORD_V="$rec" python3 - <<'PY' 2>/dev/null
 import glob, json, os
 record = os.environ["RECORD_V"]
-for path in sorted(glob.glob(glob.escape(record) + ".launch-intent-*.json"), key=os.path.getmtime, reverse=True):
+dated = []
+for path in glob.glob(glob.escape(record) + ".launch-intent-*.json"):
+    try:
+        dated.append((os.path.getmtime(path), path))
+    except OSError:
+        continue  # another launch claimed it between the listing and the stat
+for _, path in sorted(dated, reverse=True):
     try:
         os.rename(path, path + ".claimed")
     except OSError:
@@ -1814,6 +1820,17 @@ sc_child_rc() {
   case "$1" in 0|1|124) printf '%s' "$1" ;; *) printf '1' ;; esac
 }
 
+# sc_poll_wait <pid> — return when the pid exits or SC_WATCH_POLL_SEC passes, whichever is first: a job that
+# ends in a second is not held for a whole poll.
+sc_poll_wait() {
+  local nap
+  sleep "${SC_WATCH_POLL_SEC:-10}" & nap=$!
+  wait -n "$1" "$nap" 2>/dev/null
+  kill "$nap" 2>/dev/null
+  wait "$nap" 2>/dev/null
+  return 0
+}
+
 sc_run_watched() {
   sc_admit_launch
   sc_prepare_record || { OUTPUT=""; rc=2; return 2; }
@@ -1844,7 +1861,7 @@ sc_run_watched() {
   ( "$run_fn" | tee -a "$progress" > "$tmp" ) &
   w=$!
   while kill -0 "$w" 2>/dev/null; do
-    sleep "${SC_WATCH_POLL_SEC:-10}"
+    sc_poll_wait "$w"
     sc_watch_step "$progress"
     if [ "$SC_USAGE_LIMITED" = 1 ]; then
       echo "[sidecar] usage-limit rejection in the -P stream — killing the child tree" >&2
@@ -2163,56 +2180,7 @@ sc_check_model_override() {
 }
 
 sc_check_dispatch_facts() {
-  SC_FACT_ROOT="$SC_ROOT" SC_FACT_MODEL="$SC_MODEL" python3 - "$@" <<'PY'
-import os, sys
-from pathlib import Path
-root = Path(os.environ['SC_FACT_ROOT'])
-sys.path[:0] = [str(root / 'tools'), str(root / 'hooks')]
-import sidecar_argv, dispatch_size, model_registry, orchestration_metrics, tool_profiles, _dispatch_checks
-args = sys.argv[1:]
-flags = sidecar_argv.sidecar_flags(args[1:] if args[:1] == ['--check'] else args)
-model = flags.get('m') or os.environ['SC_FACT_MODEL']
-effort = flags.get('e') or 'unspecified'
-profile = flags.get('G') or 'unspecified'
-kind_row = tool_profiles.load_table()['kinds'].get(profile) or {}
-print(f'requested pin: {model}·{effort}')
-brief = flags.get('f')
-if brief:
-    try:
-        content = Path(brief).read_bytes()
-        tokens = dispatch_size.window_fit(None, len(content.decode('utf-8', errors='replace')))['tokens']
-        print(f'brief: {len(content)} bytes; estimated tokens={tokens}')
-        size = dispatch_size.dispatch_size({'jobs': [{'promptPath': brief, 'model': model}]}, root=Path.cwd())
-        print(dispatch_size.format_line(size))
-    except OSError as exc:
-        print(f'brief: unreadable ({exc})')
-    except (KeyError, IndexError, ValueError) as exc:
-        print(f'brief: unsized ({type(exc).__name__}: {exc})')
-else:
-    print('brief: not supplied')
-try:
-    tier = _dispatch_checks.job_tier(profile, flags.get('Q'))[0]
-except ValueError as exc:
-    tier = None
-    print(f'tier: {exc}')
-print(f'profile={profile}; tier={tier}' if tier else f'profile={profile}; no tier mapping exists')
-try:
-    data = model_registry.load()
-    entry = model_registry.resolve(model, data)
-    if tier:
-        columns = ('model', 'strengths', 'evidence', 'intel', 'deleg', 'speed', 'cost', 'billing', 'taste', 'effort', '±')
-        rows = model_registry.parse_ladder_rows((root / 'reference/model_ladder_evidence.md').read_text(encoding='utf-8').splitlines(), columns)
-        matched = [row for row in rows if tier in model_registry.ladder_cell_tiers(row['model'], data)
-                   and entry['id'] in {m['id'] for m in model_registry.ladder_rows(row['model'], data)}]
-        for row in matched:
-            print(f"ladder row: {row['model']} ({row['strengths']}); rung: {row['effort']}")
-        if not matched:
-            print('ladder row: none for this tier and requested model')
-    rating = orchestration_metrics.latest_shape_rating(tool_profiles.kind_guard(profile) if kind_row else profile, model, data)
-    print(f"shape rating: {rating['shape']}; note: {rating.get('note') or 'not recorded'}" if rating else 'shape rating: none exists')
-except (OSError, ValueError, model_registry.RegistryError) as exc:
-    print(f'dispatch facts: unreadable ({exc})')
-PY
+  python3 "$SC_ROOT/tools/dispatch_facts.py" "$SC_ROOT" "$SC_MODEL" "$@"
 }
 
 # `--check` runs the SAME refusal gates a dispatch runs (availability, host band, provider

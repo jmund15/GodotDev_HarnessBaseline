@@ -9,7 +9,7 @@ run (kind reviewer, spillDir), and a second run consolidates. This tool does the
 prompt byte travels through Workflow `args` (gotcha_workflow_args_generation_fidelity).
 
 Usage:
-  python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> --out <run dir>
+  python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> --out <run dir> [--no-launch]
   python3 .claude/tools/lens_briefs.py (--keys <key> | --plan <plan.json>) \
       --out .claude/scratch/pr_pipeline/briefs_pr116 --prefix pr116 \
       --pr-num 116 --branch claude/x --context-path <abs>/context_pr116.md --model <pin> --effort <rung> \
@@ -19,12 +19,15 @@ Usage:
       [--subject-plan meta:<plan.md> | code:<plan.md>]... [--vault ROOT]
   python3 .claude/tools/lens_briefs.py must-read <list file>
 
-`prepare --spec <spec.json> --out <run dir>` is one fan-out prep: it composes `review_ledger.py plan`
+`prepare --spec <spec.json> --out <run dir>` is one fan-out prep and launch: it composes `review_ledger.py plan`
 (ledger modes), `session_audit_inputs.py freeze` (a `sessionAudit` block), each seat's must-read list,
 the seat fit, the `kfm` snapshot, the fold snapshot, the briefs and `<run dir>/jobs_<prefix>.json`, the job record
 (one contract, `record_problems`) and, for a review panel, the jobs file of `sidecar_fanout.py --review`: a review panel's spec names no `target` (or `sidecar`), and the fan-out places each
 seat by the ladder's selection line, native on the session's plan through a Workflow call it prints, a sidecar
-elsewhere, then `--review-close` consolidates every seat. `"target": "native"` is the explicit `review_fanout.js`
+elsewhere, then `--review-close` consolidates every seat. A sidecar-routed panel (every review mode, and `explore`) is
+launched by `prepare` itself through `launch_fanout`, the fan-out's own preflight refusing with nothing started;
+`--no-launch` stops after the prep and prints the call as `next:`. The `native` target and `delegate` mode launch
+nothing here. `"target": "native"` is the explicit `review_fanout.js`
 engine path: it writes `<run dir>/args.json`, the engine args `Workflow({scriptPath, args: {argsFile}})` expands, and
 every seat pays the session's plan. A registry-less seat (`brief`) is pinned to a registry row like the others, and its
 `tools` (a signed delta such as `+mcp:godot`) rides in the job. Mode `explore` has no Workflow engine: it writes
@@ -972,7 +975,7 @@ _SIDECAR_LEDGER_FLAGS = (("stage", "--ledger-stage"), ("subject", "--ledger-subj
 def _sidecar_call(root: Path, out: Path, prefix: str, fold: dict | None, ledger: dict) -> list[str]:
     """The sidecar review launch carrying the same fold and ledger the native args hold."""
     call = ["python3", ".claude/tools/sidecar_fanout.py", _rel(out / f"jobs_{prefix}.json", root),
-            "--review", "--out", _rel(out, root), "--detach"]
+            "--review", "--out-dir", _rel(out, root), "--detach"]
     if fold:
         call += ["--fold-alias", str(fold["model"]), "--fold-effort", str(fold["effort"])]
         for subject in fold.get("subjects") or []:
@@ -983,6 +986,27 @@ def _sidecar_call(root: Path, out: Path, prefix: str, fold: dict | None, ledger:
     if ledger.get("noNewDecision"):
         call.append("--no-new-decision")
     return call
+
+
+def launch_fanout(call: list[str], root: Path) -> int:
+    """The one place `prepare` starts a panel: the fan-out call it composed, run in the foreground as its own process
+    (it detaches the seats itself and prints any NATIVE Workflow call). Its exit code is the launch's; a refusal
+    prints before any seat starts."""
+    return subprocess.run([sys.executable, str(Path(__file__).with_name("sidecar_fanout.py")), *call[2:]],
+                          cwd=str(root)).returncode
+
+
+def _hand_off(call: list[str], root: Path, hold: bool) -> None:
+    """Launch `call`, or with `--no-launch` print it as the `next:` call. Every unmet launch precondition is the
+    fan-out's own refusal (`sidecar_fanout.py` preflight), so a refused call ends this one with its exit code."""
+    text = " ".join(shlex.quote(part) for part in call)
+    if hold:
+        print("next: " + text)
+        return
+    print("launch: " + text, flush=True)
+    code = launch_fanout(call, root)
+    if code:
+        sys.exit(code)
 
 
 def _base_sizes(root: Path, base: str | None, files: list[str]) -> dict[str, int]:
@@ -1035,12 +1059,14 @@ def _run_ledger_plan(root: Path, spec: dict, seats: list[dict], out: Path
     roster_in.write_text(json.dumps([{k: s[k] for k in ("key", "mandates", "tier", "effort") if k in s}
                                      for s in seats], indent=2), encoding="utf-8", newline="\n")
     try:
-        planned = review_ledger.plan(
-            root, stage=stage, subject=ledger.get("subject") or sys.exit("prepare: the spec's `ledger` names no subject"),
-            roster=str(roster_in), base_ref=ledger.get("baseRef", "origin/main"), task=ledger.get("task"),
-            files=ledger.get("files"), scope_json=ledger.get("scopeJson"),
-            ignore_ledger=bool(ledger.get("ignoreLedger")), design=ledger.get("design"),
-            no_new_decision=bool(ledger.get("noNewDecision")))
+        with review_snapshot.repo_facts():  # one command: the ledger asks each repository fact of git once
+            planned = review_ledger.plan(
+                root, stage=stage,
+                subject=ledger.get("subject") or sys.exit("prepare: the spec's `ledger` names no subject"),
+                roster=str(roster_in), base_ref=ledger.get("baseRef", "origin/main"), task=ledger.get("task"),
+                files=ledger.get("files"), scope_json=ledger.get("scopeJson"),
+                ignore_ledger=bool(ledger.get("ignoreLedger")), design=ledger.get("design"),
+                no_new_decision=bool(ledger.get("noNewDecision")))
     except review_ledger.ToolError as exc:
         sys.exit(f"prepare: review_ledger.py plan refused: {exc}")
     kept = planned.get("roster") or []
@@ -1289,10 +1315,13 @@ def _receipt_line(spec: dict, pinned: list[str]) -> str:
     """Every tier the envelope pins, and each tier lacking a delivered `for-role` receipt (`model_ladder_gate` owns the credit)."""
     import model_ladder_gate
     session = spec.get("session") or os.environ.get("CLAUDE_CODE_SESSION_ID")
-    missing = [tier for tier in pinned if not (session and model_ladder_gate.tier_in_context(session, tier))]
+    credit = model_ladder_gate.ladder_credit(session, root=REPO) if session else None
+    missing = [tier for tier in pinned if not (credit and credit.covers(tier))]
     line = "tiers pinned: " + (", ".join(pinned) if pinned else "none")
     if missing:
         line += "; missing receipt: " + ", ".join(missing)
+        if credit and credit.status == model_ladder_gate.STALE:
+            line += " (%s)" % model_ladder_gate.STALE_CAUSE
     return line
 
 
@@ -1336,7 +1365,8 @@ def _refuse_bad_spec(spec: dict, root: Path) -> None:
 def prepare_command(argv: list[str]) -> None:
     """One prep call: compose the ledger plan, the frozen inputs, the briefs, the fold snapshot and the
     `args.json` the `argsFile` member expands. Prints the bounded summary, the delta artifact path when a
-    later-round pair exists, and the next call.
+    later-round pair exists, and the call it launches (`--no-launch`: the call as `next:`), or for the native target
+    the Workflow call to issue.
 
     Spec keys: `mode` (required), `engine` (required when the mode's engine is not beside this tool),
     `prefix`, `topic`, `questions`, `seats`/`roster`/`lenses`, `pins`,
@@ -1350,6 +1380,8 @@ def prepare_command(argv: list[str]) -> None:
                                  description="compose a fan-out's roster, briefs, snapshots and engine args from one spec")
     ap.add_argument("--spec", required=True, help="the JSON spec holding the session's judgments")
     ap.add_argument("--out", required=True, help="the run directory (under .claude/scratch/)")
+    ap.add_argument("--no-launch", action="store_true",
+                    help="stop after the prep: print the fan-out call as `next:` instead of running it")
     a = ap.parse_args(argv)
     try:
         spec = json.loads(Path(a.spec).read_text(encoding="utf-8"))
@@ -1466,7 +1498,7 @@ def prepare_command(argv: list[str]) -> None:
         if spec.get("engine") or spec.get("checker"):
             print("note: explore runs through the fan-out and explore_result.py; the spec's `engine` and `checker` are unused")
         shown = _rel(jobs_file, root)
-        print(f"next: python3 .claude/tools/sidecar_fanout.py {shlex.quote(shown)} --detach")
+        _hand_off(["python3", ".claude/tools/sidecar_fanout.py", shown, "--detach"], root, a.no_launch)
         print(f"then: python3 .claude/tools/explore_result.py {shlex.quote(shown)} (add --workflow-dir <transcriptDir> "
               "for each NATIVE Workflow call the fan-out printed)")
         return
@@ -1526,11 +1558,11 @@ def prepare_command(argv: list[str]) -> None:
     print(_receipt_line(spec, pinned))
     engine = spec.get("engine") or PREP_ENGINES.get(spec["mode"])
     if _target(spec) == "sidecar":
-        print("next: " + " ".join(shlex.quote(part) for part in _sidecar_call(
-            root, out, prefix, args.get("fold"), args.get("ledger") or {})))
-        print("then: the fan-out places each seat by the ladder; it prints a NATIVE Workflow call for the seats it "
-              "keeps on this session's plan (issue it) and the exact `--review-close` call that consolidates "
-              "every seat once they have all ended. A panel it keeps wholly on sidecars consolidates itself.")
+        _hand_off(_sidecar_call(root, out, prefix, args.get("fold"), args.get("ledger") or {}), root, a.no_launch)
+        if a.no_launch:
+            print("then: the fan-out places each seat by the ladder; it prints a NATIVE Workflow call for the seats it "
+                  "keeps on this session's plan (issue it) and the exact `--review-close` call that consolidates "
+                  "every seat once they have all ended. A panel it keeps wholly on sidecars consolidates itself.")
     else:
         print(f'next: Workflow({{scriptPath: "{engine}", args: {{argsFile: "{_rel(args_path, root)}"}}}})')
 

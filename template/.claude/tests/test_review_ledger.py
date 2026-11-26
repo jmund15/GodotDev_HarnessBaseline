@@ -1183,6 +1183,19 @@ class DerivedCoverageTests(LedgerFixture):
             self.assertEqual(module.owed_staged(self.repo, {"src/a.cs": self.blob("src/a.cs")},
                                                ["cq.C"], "main", [self.seat()]), [])
 
+    def test_a_plan_reads_the_request_rigor_only_for_a_subject_a_rigor_bounds(self):
+        self.chain()
+        asked = []
+
+        def rigor(task_id, repo):
+            asked.append(task_id)
+            return "thorough"
+        for subject, owed_reads in (("doc:plan.md", 0), ("session:s1", 1)):
+            del asked[:]
+            self.kept(self.plan([self.seat()], stage="plan-check" if subject.startswith("doc") else "candidate",
+                                subject=subject, attrs={"_rigor": rigor}))
+            self.assertEqual(len(asked) > 0, bool(owed_reads), (subject, asked))
+
     def test_uncovered_predecessor_cannot_cover(self):
         self.chain(root=False)
         self.assertEqual(self.pairs(self.uncovered()), [self.pair()])

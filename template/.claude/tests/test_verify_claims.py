@@ -397,10 +397,11 @@ def part_two(vc):
         envelope = prompt("env1", "<task-notification>the owner said ship it at dawn</task-notification>")
         env = {"CLAUDE_CONFIG_DIR": str(cfg), "CLAUDE_PROJECT_DIR": str(project),
                "HARNESS_TASK_RECORD_DIR": str(root / "records")}
-        saved = {k: os.environ.get(k) for k in list(env) + ["CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SESSION_ID"]}
+        delegate_markers = ["CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_ENTRYPOINT"]
+        saved = {k: os.environ.get(k) for k in list(env) + delegate_markers + ["CLAUDE_CODE_SESSION_ID"]}
         os.environ.update(env)
-        os.environ.pop("CLAUDE_CODE_SIDECAR", None)
-        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        for key in delegate_markers + ["CLAUDE_CODE_SESSION_ID"]:
+            os.environ.pop(key, None)
         try:
             plant(sid, [prompt("p1", "Ship the owner leg by tonight, please."), answer, envelope])
             owner = lambda text, **extra: [dict({"owner": text}, **extra)]

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Proof for hooks/model_name_guard.py, run through its own entry point (the M1 cut unwired it from
-pre_edit_dispatch.py, so no dispatcher reaches it): mechanism-layer files name roles, never models
-(instruction_quality §12).
+"""Proof for hooks/model_name_guard.py, run through its own entry point: mechanism-layer files name
+roles, never models (instruction_quality §12).
 
 Real PreToolUse payloads go to the hook on stdin against a planted registry with a
 synthetic roster (HARNESS_MODEL_REGISTRY) and a planted exemption file
@@ -149,18 +148,10 @@ def main():
     expect("a registry that exists but does not parse advises", edit(skill, "Dispatch it on `alpha`."), "advise",
            dict(env, HARNESS_MODEL_REGISTRY=torn))
 
-    real = dict(env)
-    real.pop("HARNESS_MODEL_NAME_EXEMPTIONS")
-    expect("the shipped exemptions cover a rail-battery report",
-           edit(os.path.join(CLAUDE, "scripts", "rail_battery", "reports", "probe.md"),
-                "The arm ran on `alpha`."), "silent", real)
-    expect("a sibling of the exempt reports folder still cannot name a model",
-           edit(os.path.join(CLAUDE, "scripts", "rail_battery", "runs", "probe.md"),
-                "The arm ran on `alpha`."), "deny", real)
     try:
         with open(EXEMPTIONS, encoding="utf-8") as fh:
             entries = json.load(fh)["exemptions"]
-        ok = bool(entries) and all(isinstance(e.get("glob"), str) and e["glob"].strip()
+        ok = isinstance(entries, list) and all(isinstance(e.get("glob"), str) and e["glob"].strip()
                                    and isinstance(e.get("justification"), str) and e["justification"].strip()
                                    for e in entries)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:

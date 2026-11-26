@@ -52,6 +52,7 @@ REPO = Path(__file__).resolve().parents[2]
 for _d in (str(REPO / ".claude" / "hooks"), str(Path(__file__).resolve().parent)):
     if _d not in sys.path:
         sys.path.insert(0, _d)
+import _checkout_root  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
 
 VERIFIED, UNVERIFIED, UNCHECKED = "VERIFIED", "UNVERIFIED", "UNCHECKED"
@@ -219,16 +220,9 @@ class _Context:
 
 @functools.lru_cache(maxsize=None)
 def _main_root(root):
-    """The main checkout of `root`'s repository, for the process: a repository's first worktree does not move, and
-    `resolve_path` opens a context per cited path (two git processes each before this cache)."""
-    common = _path_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    if common is None or common.returncode:
-        return None
-    listed = _path_git(root, "--git-dir", common.text.strip(), "worktree", "list", "--porcelain")
-    if listed is None or listed.returncode:
-        return None
-    first = listed.text.splitlines()[0] if listed.text else ""
-    return Path(first[len("worktree "):]).resolve() if first.startswith("worktree ") else None
+    """The main checkout of `root`'s repository (`_checkout_root`'s one answer), for the process: a repository's first
+    worktree does not move, and `resolve_path` opens a context per cited path."""
+    return Path(_checkout_root.main_checkout_root(root)).resolve()
 
 
 def _result(kind, verdict, reason, **extra):

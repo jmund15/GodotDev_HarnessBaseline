@@ -309,7 +309,7 @@ def read_jsonl(path):
 BEHAVIOR_CLASSES = ("behavior", "procedure", "nonclaim")
 OBSERVATION_TYPES = ("check-label", "unittest-case", "case-result")
 BEHAVIOR_STATUSES = ("pass", "unbound", "fail", "uncovered", "stale")
-_ADAPTATION = ".claude/skills/project_subsystems/adaptation.json"
+_ADAPTATION_FILES = [path.as_posix() for path in adaptation.adaptation_files(".claude")]  # repo-relative, read order
 _RUNNER = None
 
 
@@ -375,12 +375,11 @@ def _behavior_text(repo, path, staged=False):
 
 
 def _behavior_scope(repo, staged=False, rows_dir=None):
-    text = _behavior_text(repo, _ADAPTATION, staged)
-    try:
-        raw = json.loads(text) if text is not None else None
-    except ValueError:
-        raw = None
-    raw = raw.get("instruction_scope") if isinstance(raw, dict) else None
+    """The `instruction_scope` the adaptation files merge to (`adaptation.merge`, as `load` merges them), read at
+    `staged` (False: the working tree)."""
+    texts = [(rel, _behavior_text(repo, rel, staged)) for rel in _ADAPTATION_FILES]
+    raw = adaptation.merge(adaptation.parse_values(rel, text) for rel, text in texts if text is not None)
+    raw = raw.get("instruction_scope")
     paths = raw.get("behavior_paths", raw.get("paths")) if isinstance(raw, dict) else None
     directory = rows_dir or (raw.get("rows_dir") if isinstance(raw, dict) else None)
     why = []
@@ -574,7 +573,7 @@ def _behavior_binding_state(repo, rows, staged=False, proof_paths=None):
         reached |= {impl["path"] for row, _ in bound for impl in row["implementation"]}
         # Entire config bytes and genuinely reached row files remain inputs. Merely registering a
         # dependency does not make the shared row file an input: fingerprint only this proof's subset.
-        reached.add(_ADAPTATION)
+        reached.update(_ADAPTATION_FILES)
         reached |= {row["path"] for row, _ in bound}
         inputs = []
         for path in sorted(reached):

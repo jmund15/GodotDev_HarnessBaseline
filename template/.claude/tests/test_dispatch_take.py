@@ -258,6 +258,20 @@ class Take(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("not ended", err)
 
+    def test_the_retired_created_flag_is_refused_with_the_accepted_shape(self):
+        code, out, err = self.run_take("--created")
+        self.assertEqual(code, 2)
+        self.assertNotIn("RETIRE", out)
+        self.assertIn("--created is retired", err)
+        self.assertIn("accepts:", err)
+        self.assertIn("example:", err)
+
+    def test_an_unknown_flag_is_refused_with_the_accepted_shape(self):
+        code, _, err = self.run_take("--no-such-flag")
+        self.assertEqual(code, 2)
+        self.assertIn("accepts:", err)
+        self.assertIn("example:", err)
+
     def test_a_job_with_no_workdir_prints_its_reports_alone(self):
         self.plant_job("scout", ended=True)
         done = subprocess.run([sys.executable, str(TOOL), "take", str(self.out), "--label", "scout",

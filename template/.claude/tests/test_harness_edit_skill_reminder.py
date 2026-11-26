@@ -305,6 +305,9 @@ def main():
                   "reference/principles.md" in hook.advance_notice(HARNESS)))
     cases.append(("build_reminder names reference/principles.md",
                   "reference/principles.md" in hook.build_reminder(HARNESS)))
+    cases.append(("build_reminder carries the commit's premises duty to the editor who commits next",
+                  "`premises` block" in hook.build_reminder(HARNESS)
+                  and "reference/evidence_contract.md" in hook.build_reminder(HARNESS)))
     root = tempfile.mkdtemp(prefix="hesrowner_", dir=tmp)
     os.makedirs(os.path.join(root, "commands"))
     with open(os.path.join(root, "commands", "own.md"), "w", encoding="utf-8", newline="\n") as fh:

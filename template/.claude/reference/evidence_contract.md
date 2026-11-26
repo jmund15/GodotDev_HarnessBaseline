@@ -23,7 +23,7 @@ UNCHECKED (formerly `NOT-APPLICABLE`) is counted and shown, never folded into a 
 
 A claim is load-bearing when it is a premise of a doctrine commit or a `task_record.py` decision. A doctrine path is a `.md` file admitted by `hooks/harness_edit_skill_reminder.py`'s `is_harness_file`; `is_doctrine_path` is its shared markdown predicate. `auto-memory/**` and `plans/**` are excluded, along with the predicate's other non-guidance paths. Code edits are excluded; their proofs gate them. An owner-facing claim is checked when it drives one of those edits or decisions, not when it is spoken.
 
-A `decision` doctrine commit owes a fenced `premises` block when its change rests on a claim (a cause, a count or a ruling). The block has one JSON object per line: `{"claim": "...", "evidence": [items]}`. State the load-bearing claims using the Items contract above. An owner-directed edit uses an `{owner}` item; executing another session's ruling uses `{owner, task}` so the quote resolves against the task record's checked owner turn.
+A `decision` doctrine commit owes a fenced `premises` block when its change rests on a claim (a cause, a count or a ruling). The block has one JSON object per line: `{"claim": "...", "evidence": [items]}`. State the load-bearing claims using the Items contract above. A count premise's evidence prints the counted members. One item lists the set: `git grep -l`, or a path-scoped `git log --format=%h <range> -- <path>` with both range bounds written out. A second item over the same range and path shows what the members share, such as an empty `--grep=premises` for members that carry no block. A count inferred from other reads, or taken over a range with no pathspec, can name members the claim never meant. An owner-directed edit uses an `{owner}` item; executing another session's ruling uses `{owner, task}` so the quote resolves against the task record's checked owner turn.
 
 ````
 fix(harness): apply the requested edit
@@ -32,6 +32,8 @@ fix(harness): apply the requested edit
 {"claim": "the owner requested this edit", "evidence": [{"owner": "<verbatim owner quote>", "task": "<task id>"}]}
 ```
 ````
+
+In the public shared repo every item resolves in that repo: a file or commit it tracks, or a command run in it. An owner's words, a consuming project's file, a scratch path and a session transcript stay out (`instruction_quality` H14), because a private word, once published, cannot be taken back. Record a claim that rests on such evidence first in the consuming project, as a `task_record.py` decision, whose `--evidence-item` write refuses an item that does not verify. Its block line then names that task and carries no items: `{"claim": "...", "task": "<task id>", "evidence": []}`. The line reads UNCHECKED in the shared repo; a reviewer in the consuming project checks the decision.
 
 No commit-time check reads the block: `verify_claims.py` verifies it when a reviewer or command runs it, and it is not judged at push.
 

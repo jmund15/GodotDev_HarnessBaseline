@@ -9,11 +9,10 @@ compaction and `session_digest.py --brief` prints the same block.
 
 Store: one JSON file per task at `<project>/.claude/logs/tasks/<task_id>.json`, a linked worktree's project being its main checkout (env override
 `HARNESS_TASK_RECORD_DIR` for proofs). Every write goes through `_hook_state.update_json_locked`, so
-concurrent writers from several hooks or sessions compose. A record is capped at MAX_BYTES; a write
-that would exceed it is refused with the offending field named, never truncated (a capped store that
-admits everything evicts the early rows that matter). Closed history leaves the record under the same
-lock: an archived decision and a job in a finished state move to the append-only
-`<task_id>.archive.jsonl` beside it, so the record holds only live state and stays under its cap. Active jobs carry run ids attested by a
+concurrent writers from several hooks or sessions compose. A write adding a string longer than STRING_BYTES is
+refused with its field named, never truncated; the record itself grows by rows with no total cap. Closed history
+leaves the record under the same lock: an archived decision and a job in a finished state move to the append-only
+`<task_id>.archive.jsonl` beside it, so the record holds only live state. Active jobs carry run ids attested by a
 Workflow record, a sidecar `-R` record or the writing session's transcript, never a plan.
 
 `slice` upserts one row of the plan's ordered slices; a resumed drive reads these rows, and the `TaskCreate`
@@ -89,12 +88,10 @@ from _prompt_provenance import in_delegate  # noqa: E402
 from _checkout_root import harness_root, linked_main_root  # noqa: E402
 from _git_run import run as _run_git  # noqa: E402
 
-# The per-turn cost is bounded by BLOCK_BYTES (the injected block), never by the file: the file is read
-# whole only by `show` and the digest. MAX_BYTES therefore guards against a dump, not context. Measured
-# 2026-09-15: a decision row costs ~95 B beyond its text and a job row ~110 B; a one-day drive reached
-# 8,201 B at 9 decisions and 6 jobs, so 8,192 refused a closeout write. 32 KiB holds a multi-day drive.
-MAX_BYTES = 32768
-BLOCK_BYTES = int(os.environ.get("HARNESS_TASK_RECORD_BLOCK_BYTES") or 2048)
+_DEFAULT_BLOCK_BYTES = 2048
+BLOCK_BYTES = int(os.environ.get("HARNESS_TASK_RECORD_BLOCK_BYTES") or _DEFAULT_BLOCK_BYTES)
+# A string longer than the whole default injected block could never be re-injected, so it is pasted content.
+STRING_BYTES = _DEFAULT_BLOCK_BYTES
 ITEM_KINDS = {"requirement": "requirements", "exclusion": "exclusions", "decision": "decisions",
               "artifact": "accepted_artifacts"}
 SHOW = "python3 .claude/tools/task_record.py show %s"
@@ -249,8 +246,20 @@ def load(task_id, *, directory=None):
     return rec or None
 
 
+def _strings(value, field=""):
+    """Every string in `value` with the top-level field that holds it."""
+    if isinstance(value, str):
+        yield field, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _strings(item, field or key)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item, field)
+
+
 def _mutate(task_id, mutation):
-    """Apply `mutation(record)` under the lock; refuse (unchanged) when the result exceeds MAX_BYTES.
+    """Apply `mutation(record)` under the lock; refuse (unchanged) when it adds a string over STRING_BYTES.
 
     `update_json_locked` swallows every exception the updater raises and reports `written=False`, so a
     usage error (`_require`, an unknown decision id) is captured here and re-raised as itself; only a
@@ -266,19 +275,19 @@ def _mutate(task_id, mutation):
         except (KeyError, TriageRefused, OpenRefused) as exc:
             caught["exc"] = exc
             raise
+        stored = {text for _, text in _strings(state)}
+        long_new = [(field, text) for field, text in _strings(working)
+                    if text not in stored and len(text.encode("utf-8")) > STRING_BYTES]
+        if long_new:
+            field, text = long_new[0]
+            error["msg"] = ("record %s: a %d B string in %s is over the %d B entry cap. Write the content to a file "
+                            "and record its path." % (task_id, len(text.encode("utf-8")), field, STRING_BYTES))
+            return None
         writer = os.environ.get("CLAUDE_CODE_SESSION_ID")
         if writer and working.get("session_id") == bound:
             working["session_id"] = writer
         working["updated"] = now()
         _spill_closed(task_id, working)
-        raw = json.dumps(working, ensure_ascii=True)
-        if len(raw.encode("utf-8")) > MAX_BYTES:
-            sizes = {k: len(json.dumps(v, ensure_ascii=True).encode("utf-8")) for k, v in working.items()}
-            field = max(sizes, key=sizes.get)
-            error["msg"] = ("record %s would be %d B, over the %d B cap; largest field is %s (%d B). Trim it "
-                            "(move detail to an artifact path) and retry."
-                            % (task_id, len(raw.encode("utf-8")), MAX_BYTES, field, sizes[field]))
-            return None
         state.clear()
         state.update(working)
         return result
@@ -702,7 +711,7 @@ def admissions_path(task_id, *, directory=None):
 def record_admission(task_id, row):
     """Record a triage.admits result. The full row spills to `<task_id>.admissions.jsonl`; the record keeps
     the newest ADMISSION_KEEP rows with each string field cut to ADMISSION_FIELD_CHARS, so an admission
-    never fails on the record's cap."""
+    is never refused for size."""
     full = dict(row)
     summary = {k: v[:ADMISSION_FIELD_CHARS] if isinstance(v, str) else v for k, v in full.items()}
 

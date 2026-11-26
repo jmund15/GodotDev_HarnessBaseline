@@ -20,7 +20,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
-from _hook_state import replace_path  # noqa: E402
+from _hook_state import replace_path, stat_present  # noqa: E402
 
 import model_registry
 
@@ -143,8 +143,9 @@ def emitted_signatures(hooks_dir=None):
     (a string constant, or an f-string with each field a hole, outside a docstring, whose first 70 characters name a block
     or a denial), keyed by the module that holds it."""
     folder = hooks_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hooks')
-    names = sorted(name for name in os.listdir(folder) if name.endswith('.py'))
-    stamp = tuple((name, os.stat(os.path.join(folder, name)).st_mtime_ns) for name in names)
+    present = stat_present(os.path.join(folder, name) for name in sorted(os.listdir(folder)) if name.endswith('.py'))
+    names = [os.path.basename(path) for path, _ in present]
+    stamp = tuple((os.path.basename(path), st.st_mtime_ns) for path, st in present)
     key = (os.path.abspath(folder), stamp)
     if key not in _SIGNATURES:  # parsing the hooks takes seconds: once per process and unchanged folder
         _SIGNATURES[key] = _read_signatures(folder, names)

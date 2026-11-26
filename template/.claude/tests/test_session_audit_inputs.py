@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import lens
 import session_audit_inputs as inputs
 
+import _hook_call
 import test_review_ledger as fixtures
 from _ledger_rows import ledger_row
 
@@ -69,16 +70,23 @@ class DoctrineFixture(fixtures.LedgerFixture):
         self.r.set_upstream(self.base_sha)
         return self.base_sha
 
+    def cli(self, *argv, drop_env=()):
+        """`session_audit_inputs.main` in process on `argv`, as the completed-process stand-in with its exit code and
+        text streams. Only `freeze_nested(from_subdir=True)` spawns the CLI: its default root is a read of the
+        process's working directory."""
+        env = {**os.environ, **self.env()}
+        for name in drop_env:
+            env.pop(name, None)
+        return _hook_call.run_main(inputs, argv, env=env)
+
 
 class TriggerInputsTests(DoctrineFixture):
     def freeze(self, *args):
         roster = self.root / "roster.json"
         roster.write_text(json.dumps(ROSTER), encoding="utf-8")
         out = self.repo / ".claude/scratch/audit/inputs.json"
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--root", str(self.repo), "--base-ref", self.base_sha,
-             "--session-base", self.base_sha, "--roster", str(roster), "--out", str(out), *args],
-            env={**os.environ, **self.env()}, capture_output=True, text=True)
+        result = self.cli("--root", str(self.repo), "--base-ref", self.base_sha,
+                          "--session-base", self.base_sha, "--roster", str(roster), "--out", str(out), *args)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(out.read_text()), out
 
@@ -124,10 +132,9 @@ class TriggerInputsTests(DoctrineFixture):
         roster = self.root / "roster.json"
         roster.write_text(json.dumps(ROSTER), encoding="utf-8")
         out = self.repo / ".claude/scratch/audit/inputs.json"
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--root", str(self.repo), "--base-ref", self.base_sha,
-             "--session-base", self.base_sha, "--roster", str(roster), "--out", str(out), "--files", DOCTRINE],
-            env={**os.environ, **self.env()}, capture_output=True, text=True)
+        result = self.cli("--root", str(self.repo), "--base-ref", self.base_sha,
+                          "--session-base", self.base_sha, "--roster", str(roster), "--out", str(out),
+                          "--files", DOCTRINE)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("no change", result.stderr)
         self.assertIn(DOCTRINE, result.stderr)
@@ -142,13 +149,13 @@ class TriggerInputsTests(DoctrineFixture):
         roster = self.root / "roster.json"
         roster.write_text(json.dumps(ROSTER), encoding="utf-8")
         run = self.repo / ".claude/scratch/audit"
-        command = [sys.executable, str(TOOL), "--root", str(self.repo), "--base-ref", self.base_sha,
+        command = ["--root", str(self.repo), "--base-ref", self.base_sha,
                    "--session-base", self.base_sha, "--roster", str(roster),
                    "--out", str(run / "inputs.json"), "--files", DOCTRINE]
-        first = subprocess.run(command, env={**os.environ, **self.env()}, capture_output=True, text=True)
+        first = self.cli(*command)
         self.assertEqual(first.returncode, 0, first.stderr)
         before = (run / "inputs.json").read_text(encoding="utf-8")
-        second = subprocess.run(command, env={**os.environ, **self.env()}, capture_output=True, text=True)
+        second = self.cli(*command)
         self.assertEqual(second.returncode, 0, second.stderr)
         packet = json.loads(second.stdout)
         self.assertTrue(packet["doctrineCommits"].startswith(".claude/scratch/audit_r2/"),
@@ -171,10 +178,8 @@ class TriggerInputsTests(DoctrineFixture):
         roster = self.root / "roster.json"
         roster.write_text(json.dumps(ROSTER), encoding="utf-8")
         out = self.repo / ".claude/scratch/audit/inputs.json"
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--root", str(self.repo), "--session-base", self.base_sha,
-             "--roster", str(roster), "--out", str(out), "--widen"],
-            env={**os.environ, **self.env()}, capture_output=True, text=True)
+        result = self.cli("--root", str(self.repo), "--session-base", self.base_sha,
+                          "--roster", str(roster), "--out", str(out), "--widen")
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(out.read_text())
         self.assertEqual(json.loads(self.read_input(data["premiseCommits"])), [unpushed])
@@ -342,11 +347,9 @@ class TriggerInputsTests(DoctrineFixture):
         roster = self.root / "roster.json"
         roster.write_text(json.dumps(ROSTER), encoding="utf-8")
         out = lane / ".claude/scratch/audit/inputs.json"
-        env = {k: v for k, v in {**os.environ, **self.env()}.items() if k != "HARNESS_TASK_RECORD_DIR"}
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--root", str(lane), "--base-ref", self.base_sha,
-             "--session-base", self.base_sha, "--roster", str(roster), "--out", str(out), "--task", "lane"],
-            env=env, capture_output=True, text=True)
+        result = self.cli("--root", str(lane), "--base-ref", self.base_sha,
+                          "--session-base", self.base_sha, "--roster", str(roster), "--out", str(out),
+                          "--task", "lane", drop_env=("HARNESS_TASK_RECORD_DIR",))
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(out.read_text())
         self.assertIn("Only the main checkout holds me.",
@@ -534,11 +537,13 @@ class NestedRootTests(DoctrineFixture):
         cwd = nested / ".claude/scratch/x"
         cwd.mkdir(parents=True, exist_ok=True)
         # A drifted cwd with no `--root`: the root is the nearest ancestor holding `.claude/`.
-        result = subprocess.run(
-            [sys.executable, str(TOOL)] + ([] if from_subdir else ["--root", str(nested)])
-            + ["--base-ref", self.base_sha, "--session-base", self.base_sha, "--roster", str(roster),
-               "--out", str(out), "--files", DOCTRINE],
-            cwd=cwd if from_subdir else None, env={**os.environ, **self.env()}, capture_output=True, text=True)
+        rest = ["--base-ref", self.base_sha, "--session-base", self.base_sha, "--roster", str(roster),
+                "--out", str(out), "--files", DOCTRINE]
+        if from_subdir:
+            result = subprocess.run([sys.executable, str(TOOL), *rest], cwd=cwd, env={**os.environ, **self.env()},
+                                    capture_output=True, text=True)
+        else:
+            result = self.cli("--root", str(nested), *rest)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(out.read_text()), sha, nested
 
@@ -552,6 +557,29 @@ class NestedRootTests(DoctrineFixture):
     def test_freeze_from_a_subdirectory_takes_the_harness_root_as_its_root(self):
         data, sha, nested = self.freeze_nested(from_subdir=True)
         self.assertEqual(data["files"], [DOCTRINE])
+
+
+class GitlinkCatFile(unittest.TestCase):
+    """A gitlink (a submodule pointer) is a present entry: `git cat-file` prints `<oid> submodule` with no size."""
+
+    def test_a_gitlink_spec_reads_as_a_present_submodule_entry(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "HOME": tmp}
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True, capture_output=True, env=env)
+            run("init", "-q")
+            run("config", "user.email", "t@t"); run("config", "user.name", "t")
+            (root / "f.txt").write_bytes(b"x\n")
+            run("add", "f.txt")
+            run("update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,sub")
+            run("commit", "-q", "-m", "c")
+            found = inputs.cat_file(root, ["HEAD:./sub", "HEAD:./f.txt", "HEAD:./absent"])
+            self.assertEqual(found[0][1], "submodule")
+            self.assertEqual(found[1][1], "blob")
+            self.assertIsNone(found[2])
+            bodies = inputs.cat_file(root, ["HEAD:./sub", "HEAD:./f.txt"], content=True)
+            self.assertEqual(bodies[1][2], b"x\n")
 
 
 if __name__ == "__main__":

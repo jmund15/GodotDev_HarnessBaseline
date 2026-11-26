@@ -118,12 +118,36 @@ rejects(lambda d: row(d, "fable").__setitem__(
     "an empty removeWhen is rejected")
 rejects(lambda d: d["transports"]["codex"].__setitem__(
     "driverNotes", [{"text": "x", "evidenceRef": "e", "weakness": "w"}]), "a transport note without removeWhen is rejected")
-# ---- railTierEvidence: a tier above `detailed` names its evidence (instruction_quality §3) ----
-rejects(lambda d: row(d, "opus").pop("railTierEvidence", None), "a condensed row without railTierEvidence is rejected")
-rejects(lambda d: row(d, "opus").__setitem__("railTierEvidence", {"evidence": "guessed"}), "an unknown evidence kind is rejected")
-rejects(lambda d: row(d, "opus").__setitem__("railTierEvidence", {
-    "evidence": "measured", "evidenceRef": "report.json", "route": "dispatch.js", "effort": "low"}),
-    "measured evidence is a retired kind: nothing in the harness produces it")
+# ---- shorter tiers: the row's `_railTierComment` carries the basis, and a shorter row must have it ----
+def validates(mutate, label):
+    data = copy.deepcopy(live)
+    mutate(data)
+    try:
+        mr._validate(data, "fixture")
+    except mr.RegistryError as exc:
+        check(label, False, str(exc))
+        return
+    check(label, True)
+
+
+def shorter(tier, comment):
+    def mutate(data):
+        target = row(data, "opus")
+        target["railTier"] = tier
+        target.pop("_railTierComment", None)
+        if comment is not None:
+            target["_railTierComment"] = comment
+    return mutate
+
+
+for _tier in ("condensed", "minimal"):
+    validates(shorter(_tier, "Basis: a measured run. Revert to detailed when a job breaks a rule the shorter rail omits."),
+              "a %s row with its _railTierComment validates clean" % _tier)
+    for _missing in (None, "", "   "):
+        rejects(shorter(_tier, _missing), "a %s row with _railTierComment %r is rejected" % (_tier, _missing))
+validates(shorter("detailed", None), "a detailed row needs no _railTierComment")
+validates(lambda d: (row(d, "opus").pop("railTier", None), row(d, "opus").pop("_railTierComment", None)),
+          "a row with no railTier needs no _railTierComment")
 
 # ---- contextSuffix: the one legal value, an accessor by name, the shipped claim and its retire condition ----
 rejects(lambda d: row(d, "sonnet").__setitem__("contextSuffix", "[2m]"), "a contextSuffix other than [1m] is rejected")

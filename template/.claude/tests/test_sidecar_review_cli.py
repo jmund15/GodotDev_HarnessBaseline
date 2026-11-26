@@ -310,6 +310,25 @@ class SidecarReviewCliTests(unittest.TestCase):
         self.assertEqual(detach.call_count, 1)
         self.assertTrue((self.out / fanout.REVIEW_CLAIM).exists())
 
+    def test_a_refused_detach_names_the_tier_fit_and_the_doctrine_together(self):
+        jobs = [{"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
+                 "contextFiles": [str(ROOT / ".claude/CLAUDE.md")], "mustRead": [CLAUDE_MD]}]
+        argv = [str(self.jobs), "--out-dir", str(self.out), "--review", "--detach"]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(fanout, "load_jobs", return_value=(jobs, None, None)), \
+             patch.object(fanout.model_registry, "load", return_value={"transports": {}, "models": []}), \
+             patch.object(fanout, "plan_job", side_effect=lambda job, *_, **__: (job["label"], ["stub"], str(self.out / "one.out.json"))), \
+             patch.object(fanout, "launcher_fit_refusal", return_value="TIERFIT planted"), \
+             patch.object(fanout, "doctrine_refusal", return_value="DOCTRINE planted"), \
+             patch.object(fanout, "detach_driver", return_value=0) as detach, \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = fanout.main(argv)
+        shown = out.getvalue() + err.getvalue()
+        self.assertNotEqual(code, 0)
+        self.assertIn("TIERFIT", shown)
+        self.assertIn("DOCTRINE", shown)
+        self.assertEqual(detach.call_count, 0)
+
     def test_missing_seat_is_uncovered_not_clean(self):
         code, review = self.run_review(two=True, missing=True)
         self.assertNotEqual(code, 0)

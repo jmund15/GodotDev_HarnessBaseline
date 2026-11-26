@@ -11,6 +11,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import _git_fixture
+import _hook_call
+
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 MODULE_PATH = TOOLS / "close_predicates.py"
 sys.path.insert(0, str(TOOLS))
@@ -129,17 +132,29 @@ def cut_commit(repo, transcript, relpath, date=INSIDE, trailer=None):
     return git_out(repo, "rev-parse", "HEAD").strip()
 
 
-def session_repo(repo):
-    """A git repo with one commit before the window and a transcript spanning WINDOW; returns the transcript."""
+def _seed_session(repo):
     git(repo, "init", "-q")
     commit(repo, "README.md", date=OUTSIDE)
     lines = [json.dumps({"type": "user", "timestamp": WINDOW[0], "message": {"content": "go"}}),
              json.dumps({"type": "assistant", "timestamp": WINDOW[1], "message": {"content": []}})]
-    path = Path(repo) / "transcript" / f"{SID}.jsonl"
-    write(path, "\n".join(lines) + "\n")
+    write(Path(repo) / "transcript" / f"{SID}.jsonl", "\n".join(lines) + "\n")
     git(repo, "add", "--", "transcript", date=OUTSIDE)
     git(repo, "commit", "-q", "-m", "transcript", date=OUTSIDE)
-    return str(path)
+
+
+BUILDS = {"close_predicates.init": lambda folder: git(folder, "init", "-q"), "close_predicates.session": _seed_session}
+
+
+def init_repo(repo):
+    """An initialized empty repository in `repo`, over the files the case already wrote."""
+    _hook_call.copy_repo(_git_fixture.built("close_predicates.init", BUILDS["close_predicates.init"]), repo, overlay=True)
+
+
+def session_repo(repo):
+    """A git repo with one commit before the window and a transcript spanning WINDOW; returns the transcript."""
+    _hook_call.copy_repo(_git_fixture.built("close_predicates.session", BUILDS["close_predicates.session"]), repo,
+                         overlay=True)
+    return str(Path(repo) / "transcript" / f"{SID}.jsonl")
 
 
 class StubCensus:
@@ -420,10 +435,7 @@ class PredicateTests(unittest.TestCase):
                 self.assertEqual(row["basis"]["roadmap_plans"], ["bound.md"])
 
     def test_harness_prune_true_false_null(self):
-        def git(*args):
-            subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
-                           capture_output=True, check=True)
-        git("init", "-q")
+        init_repo(self.repo)
         self.assertIs(run("harness_prune", self.repo)["value"], False)
         write(self.repo / ".claude" / "plans" / "p.md", "x")
         self.assertIs(run("harness_prune", self.repo)["value"], True)
@@ -441,7 +453,7 @@ class PredicateTests(unittest.TestCase):
         self.assertIs(row["value"], False)
 
     def test_harness_prune_ignores_tool_owned_scratch_folders(self):
-        subprocess.run(["git", "-C", str(self.repo), "init", "-q"], capture_output=True, check=True)
+        init_repo(self.repo)
         for name in ("session_end", "boot", "kfm", "eval_out", "linux_preview"):
             write(self.repo / ".claude" / "scratch" / name / "kept.json", "{}")
         row = run("harness_prune", self.repo)
@@ -508,7 +520,7 @@ class SessionChangeTests(unittest.TestCase):
 
     def test_a_root_commit_printed_by_the_session_is_its_own_change(self):
         repo = self.repo
-        git(repo, "init", "-q")
+        init_repo(repo)
         tr = transcript(repo, {"command": "ls"})
         write(repo / "Wizard" / "First.cs", "x")
         git(repo, "add", "-A")
@@ -803,4 +815,9 @@ class MutantTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    # Every test in its own process through the case pool: the cases are git-spawn bound and independent, so the
+    # runner's `HARNESS_CASE_JOBS` set how many run at once.
+    from _case_pool import run_cases, unittest_cases
+    for name, build in BUILDS.items():
+        _git_fixture.built(name, build)
+    sys.exit(run_cases(unittest_cases(PredicateTests, SessionChangeTests, CliTests, MutantTests)))

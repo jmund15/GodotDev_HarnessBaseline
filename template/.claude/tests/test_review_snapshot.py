@@ -1,4 +1,5 @@
 """The snapshot owner: one typed answer per path, and the three absences never collapse into each other."""
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -80,10 +81,58 @@ class SnapshotSources(unittest.TestCase):
             with rs.repo_facts():
                 head = rs.open(self.root, rs.Disk()).head
         self.assertEqual(within.count(("rev-parse", "--show-toplevel")), 0, "the root is the repo as opened")
-        self.assertEqual(within.count(("rev-parse", "--git-dir")), 1)
+        self.assertEqual(within.count(("rev-parse", "--git-dir")), 0, "a healthy checkout costs no git-dir probe")
         self.assertEqual(within.count(("rev-parse", "--verify")), 1)
-        self.assertEqual(outside.count(("rev-parse", "--git-dir")), 3)
+        self.assertEqual(outside.count(("rev-parse", "--verify")), 3)
         self.assertEqual(head, _git(self.root, "rev-parse", "HEAD").stdout.strip())
+
+    def test_the_submodule_list_is_asked_once_per_command_for_every_path_split_against_it(self):
+        asked, real = [], rs._call
+
+        def spy(args, root, input=None):
+            asked.append(tuple(args[:2]))
+            return real(args, root, input=input)
+
+        with patch.object(rs, "_call", spy):
+            with rs.repo_facts():
+                for path in ("kept.txt", "a/b.txt", "c.txt"):
+                    rs.split_submodule(self.root, path)
+            within, asked[:] = asked.count(("ls-files", "--stage")), []
+            for path in ("kept.txt", "a/b.txt", "c.txt"):
+                rs.split_submodule(self.root, path)
+        self.assertEqual((within, asked.count(("ls-files", "--stage"))), (1, 3))
+
+    def test_a_command_hashes_each_file_once_across_the_snapshots_it_opens_and_the_next_command_hashes_again(self):
+        asked, real = [], rs._call
+
+        def spy(args, root, input=None):
+            asked.append(args[0])
+            return real(args, root, input=input)
+
+        def two_snapshots():
+            return [rs.open(self.root, rs.Disk()).hash("kept.txt").sha for _ in range(2)]
+
+        with patch.object(rs, "_call", spy):
+            with rs.repo_facts():
+                first = two_snapshots()
+            within, asked[:] = asked.count("hash-object"), []
+            _write(self.root, "kept.txt", "kept\nedited\n")
+            with rs.repo_facts():
+                second = two_snapshots()
+        self.assertEqual((within, asked.count("hash-object")), (1, 1))
+        self.assertEqual(first[0], first[1])
+        self.assertEqual(second[0], second[1])
+        self.assertNotEqual(first[0], second[0], "a later command reads the edited bytes")
+
+    def test_a_disk_read_outside_git_hashes_its_bytes_and_a_refusing_git_leaves_the_file_unreadable(self):
+        bare = Path(self.tmp) / "plain"
+        _write(bare, "f.txt", "bytes\n")
+        got = rs.open(bare, rs.Disk()).hash("f.txt")
+        self.assertEqual(got, rs.Blob("sha256:" + hashlib.sha256((bare / "f.txt").read_bytes()).hexdigest()))
+        with patch.object(rs, "hash_objects", side_effect=OSError("object store is read-only")):
+            refused = rs.open(self.root, rs.Disk()).hash("kept.txt")
+        self.assertIsInstance(refused, rs.Unreadable)
+        self.assertIn("read-only", refused.reason)
 
     def test_a_recorded_row_reads_its_own_map(self):
         sha = rs.open(self.root, rs.Commit("HEAD")).hash("kept.txt").sha
