@@ -167,6 +167,28 @@ def test_exact_layer_entry_classifies_a_path_no_pattern_matches() -> None:
             planted.unlink()
 
 
+def test_a_layer_entry_naming_no_template_file_fails_the_check_and_generation_prunes_it() -> None:
+    # A row outlives its file when the file is deleted later, or when a publish's own row comes back for a file
+    # the author line deleted since; a silent dead row is how the list drifts.
+    root = _mirror()
+    rel = ".claude/" + "s9_proof_" + "gone_tool" + ".py"
+    assert not (root / "template" / rel).exists()
+    entries = root / "tools" / "layer_entries.json"
+
+    def action() -> None:
+        result = _run_check(root)
+        err = result.stderr.decode("utf-8", errors="replace")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert rel in err and "no template file" in err, err
+        generated = subprocess.run([sys.executable, str(root / "tools" / "gen_manifest.py")], cwd=root,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert generated.returncode == 0, generated.stdout + generated.stderr
+        assert rel not in json.loads(entries.read_text(encoding="utf-8"))["entries"], "generation prunes the dead row"
+        assert _run_check(root).returncode == 0
+
+    _with_layer_entries(root, {rel: "pure"}, action)
+
+
 def test_invalid_layer_entry_exits_1_naming_the_path() -> None:
     root = _mirror()
     rel = ".claude/" + "s9_proof_" + "bad_layer" + ".md"
@@ -223,6 +245,7 @@ def main() -> int:
         test_planted_ignored_file_under_template_changes_no_check_result,
         test_classify_returns_none_for_an_unknown_path,
         test_exact_layer_entry_classifies_a_path_no_pattern_matches,
+        test_a_layer_entry_naming_no_template_file_fails_the_check_and_generation_prunes_it,
         test_invalid_layer_entry_exits_1_naming_the_path,
         test_sync_kind_offers_memory_and_seeds_its_index,
         test_adaptation_defaults_are_auto_at_their_layer_and_seeds_stay_seed,

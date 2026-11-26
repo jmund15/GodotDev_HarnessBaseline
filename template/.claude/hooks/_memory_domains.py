@@ -1,8 +1,9 @@
 """The memory-domain table, one reader for the surface that matches against it.
 
 A row is `{name, paths, memory_keywords, skills, rules}`: the rows of `adaptation.json` `memory_domains`
-(`reference/memory_domains.md` renders the same rows). A later row of the same name replaces an earlier one; a key
-outside this list (a retired `triggers`) is ignored. A malformed row is skipped with one stderr line, so a bad seed
+(`reference/memory_domains.md` renders the same rows). A later row of the same name replaces an earlier one. A key
+outside this list is not read, a retired `triggers` key included, and its row still loads. `baseline_sync.py compose`
+names that key and `compose --check` fails on it (`adaptation.RETIRED_KEYS`). A malformed row is skipped with one stderr line, so a bad seed
 never crashes a hook.
 
 `by_paths(paths)`: a plan declares the files it edits, so a row owns a file by its `paths` globs

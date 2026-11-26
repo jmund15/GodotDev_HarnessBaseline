@@ -94,6 +94,25 @@ try {
     $script:PoolPollMs = 100
     Write-Host "Module: $ModulePath"
 
+    # A pool sizes itself against the other live callers on the record dir, so every case plants that dir (a peer's
+    # gate on this machine would otherwise shrink it).
+    function Use-PlantedRecords {
+        $script:RuntimeSlotRecordRoot = Join-Path $work ("rec-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Force -Path $script:RuntimeSlotRecordRoot | Out-Null
+        $script:RuntimeSlotOverrideFile = Join-Path $work 'no-override-file'
+        $script:RuntimeSlotDefault = 6
+        $script:IntraCheckoutWidthMax = $null
+    }
+    # A record another checkout's live process wrote: this test process stands in for it (live pid and start).
+    function Add-OtherCaller {
+        param([string] $Name, [string] $Id, [switch] $Slot, [bool] $Runtime = $true, [switch] $Released, [switch] $Dead, [string] $Checkout = '')
+        $rec = [ordered]@{ holderPid = $(if ($Dead) { 2147483000 } else { $PID }); procStart = (Get-ProcStartUtc (Get-Process -Id $PID))
+                           checkout = $(if ($Checkout) { $Checkout } else { "C:\other\wt-$Id" }); label = 'plant' }
+        if ($Slot) { $rec.state = 'running'; $rec.releasedAt = $(if ($Released) { '2026-01-01T00:00:00Z' } else { $null }) }
+        else { $rec.runtime = $Runtime; $rec.acquiredAt = '2026-01-01T00:00:00Z' }
+        Write-SlotRecord -RecordDir $script:RuntimeSlotRecordRoot -Name $Name -Record $rec -Required
+    }
+
     Invoke-Case 'P1 max concurrency never exceeds -MaxParallel' {
         Reset-Launched
         $units = @(1..5 | ForEach-Object { New-Unit -Label "U$_" -SleepMs 1500 -Lines (Get-GreenLines "U$_") })
@@ -106,7 +125,7 @@ try {
 
     Invoke-Case 'P2 default width is Get-RuntimeSlotCount capped by $IntraCheckoutWidthMax' {
         Reset-Launched
-        $script:RuntimeSlotOverrideFile = Join-Path $work 'no-override-file'
+        Use-PlantedRecords
         $IntraCheckoutWidthMax = $null
         $w = Get-RunPoolWidth
         Assert-True 'P2 $IntraCheckoutWidthMax $null means no cap (the default count, source default)' ($w.Count -eq $RuntimeSlotDefault -and $w.Source -eq 'default') "count=$($w.Count) source=$($w.Source)"
@@ -118,7 +137,7 @@ try {
         $max = Get-MaxOverlap $script:Launched
         Assert-True 'P2 a pool without -MaxParallel runs at the capped width' ($max -eq 2) "max=$max"
         $IntraCheckoutWidthMax = $null
-        $script:RuntimeSlotOverrideFile = ''
+        $script:RuntimeSlotRecordRoot = ''; $script:RuntimeSlotOverrideFile = ''
     }
 
     Invoke-Case 'P3 units start longest-first' {
@@ -313,6 +332,57 @@ try {
             (Get-Content (Join-Path $repoRoot '.claude/scripts/run_test_suite.ps1') -Raw) -match 'Get-SuiteDefaultCeilingMs') "wrapper=$wrapper"
         $verify = Get-TimeoutDefault 'verify.ps1'
         Assert-True 'P13 verify.ps1 -TimeoutMs has no default of its own' ($null -eq $verify) "verify=$verify"
+    }
+
+    Invoke-Case 'P14 the default width is the slot count shared across the live callers' {
+        Use-PlantedRecords
+        $w = Get-RunPoolWidth
+        Assert-True 'P14 alone, the pool takes every slot' ($w.Count -eq 6) "count=$($w.Count) source=$($w.Source)"
+        Add-OtherCaller -Name 'holder-aaaa0001' -Id 'a'
+        $w = Get-RunPoolWidth
+        Assert-True 'P14 one other runtime caller halves it, with Source=share' ($w.Count -eq 3 -and $w.Source -eq 'share') "count=$($w.Count) source=$($w.Source)"
+        Add-OtherCaller -Name 'slot-5' -Id 'b' -Slot
+        $w = Get-RunPoolWidth
+        Assert-True 'P14 a live slot holder is a caller too' ($w.Count -eq 2) "count=$($w.Count)"
+        Add-OtherCaller -Name 'slot-4' -Id 'b' -Slot
+        Assert-True 'P14 one checkout holding two slots is one caller' ((Get-RunPoolWidth).Count -eq 2)
+        foreach ($i in 3..9) { Add-OtherCaller -Name "holder-bbbb000$i" -Id "c$i" }
+        Assert-True 'P14 many callers leave the pool one slot, never zero' ((Get-RunPoolWidth).Count -eq 1)
+        $script:IntraCheckoutWidthMax = 2
+        Assert-True 'P14 the cap still binds' ((Get-RunPoolWidth).Count -eq 1)
+        $script:IntraCheckoutWidthMax = $null
+        $script:RuntimeSlotRecordRoot = ''; $script:RuntimeSlotOverrideFile = ''
+    }
+
+    Invoke-Case 'P15 only a live runtime caller of another checkout counts' {
+        Use-PlantedRecords
+        Add-OtherCaller -Name 'holder-aaaa0002' -Id 'd' -Dead
+        Add-OtherCaller -Name 'holder-aaaa0003' -Id 'e' -Runtime $false
+        Add-OtherCaller -Name 'slot-3' -Id 'f' -Slot -Released
+        Add-OtherCaller -Name 'holder-aaaa0004' -Id 'g' -Checkout $script:PoolRepo
+        Add-OtherCaller -Name 'slot-2' -Id 'h' -Slot -Checkout $script:PoolRepo
+        Set-Content -LiteralPath (Join-Path $script:RuntimeSlotRecordRoot 'holder-aaaa0005.json') -Value '{not json'
+        $w = Get-RunPoolWidth
+        Assert-True 'P15 a dead pid, a non-runtime holder, a released slot, this checkout and an unreadable record are not callers' ($w.Count -eq 6 -and $w.Source -eq 'default') "count=$($w.Count) source=$($w.Source)"
+        $script:RuntimeSlotRecordRoot = ''; $script:RuntimeSlotOverrideFile = ''
+    }
+
+    Invoke-Case 'P16 a running pool yields slots to a caller that appears, after its current units' {
+        Use-PlantedRecords
+        $script:RuntimeSlotDefault = 4
+        $script:PoolShareRecheckMs = 0
+        Reset-Launched
+        $script:PlantedAt = $null
+        $onPoll = { if (-not $script:PlantedAt -and $script:Launched.Count -ge 4) { $script:PlantedAt = [datetime]::UtcNow; Add-OtherCaller -Name 'holder-aaaa0006' -Id 'w' } }
+        $units = @(1..10 | ForEach-Object { New-Unit -Label "S$_" -SleepMs 1200 -Lines (Get-GreenLines "S$_") })
+        $r = Invoke-RunPool -Units $units -ResultsRoot $script:RunsRoot -Launch $stubLauncher -OnPoll $onPoll
+        Assert-True 'P16 every unit still ran' (@($r).Count -eq 10)
+        $before = @($script:Launched | Where-Object { $_.At -le $script:PlantedAt })
+        Assert-True 'P16 alone, the pool filled every slot' ($before.Count -eq 4) "before=$($before.Count)"
+        $after = @($script:Launched | Where-Object { $_.At -gt $script:PlantedAt })
+        $over = @($after | Where-Object { $a = $_; @($script:Launched | Where-Object { $_ -ne $a -and $_.At -le $a.At -and $_.Proc.ExitTime.ToUniversalTime() -gt $a.At }).Count -ge 2 })
+        Assert-True 'P16 once a second caller waits, no launch finds two children already running' ($after.Count -gt 0 -and $over.Count -eq 0) "after=$($after.Count) over=$($over.Count)"
+        $script:RuntimeSlotRecordRoot = ''; $script:RuntimeSlotOverrideFile = ''; $script:RuntimeSlotDefault = 6
     }
 } finally {
     Stop-Launched

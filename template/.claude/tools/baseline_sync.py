@@ -54,9 +54,13 @@ import layer_closure  # noqa: E402
 import cli_usage  # noqa: E402
 import lock_merge  # noqa: E402  the lock's one serializer; the merge driver writes the same bytes
 
-OPS = ("check", "diff", "pull", "update-lock", "resolve", "migrate", "upgrade",
+OPS = ("check", "diff", "pull", "update-lock", "migrate", "upgrade",
        "classify", "judge", "triage", "forget", "gc", "fork", "track",
        "ignore", "candidates", "paths", "closure", "init", "compose", "sub", "doctor", "never-ship")
+RETIRED_OPS = {
+    "materialize": "use publish --dry-run",
+    "resolve": "resolve the markers in the conflict copy `pull` named, then pull again: it installs the copy with every other row",
+}
 ROOT_ACCEPTS = "<op> [relpaths] [flags]; ops: " + "|".join(OPS)
 ROOT_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
 JUDGE_ACCEPTS = ("judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [--accept-hit PATH] "
@@ -882,6 +886,16 @@ def check_adaptation_contract(root: Path, *, missing_ok: bool = False) -> None:
         )
 
 
+def retired_key_lines(root: Path) -> list[str]:
+    """One line per retired project-data key the project's `adaptation.json` still holds (`adaptation.retired_keys`)."""
+    text = local_text(root, ADAPTATION_JSON_RELPATH)
+    try:
+        data = json.loads(text) if text is not None else None
+    except json.JSONDecodeError:
+        data = None  # `check_adaptation_contract` refuses an unparseable file where a lock exists
+    return adaptation.retired_keys(data) if isinstance(data, dict) else []
+
+
 CANDIDATE_EXCLUDE_PREFIXES = (
     ".claude/.cache/", ".claude/logs/", ".claude/worktrees/",
     ".claude/sessions/", ".claude/plans/", ".claude/scratch/",
@@ -1236,9 +1250,15 @@ def _seed_rows(root: Path, relpath: str, layer: str | None, files: dict,
     return rows
 
 
-def _manifest_paths_v2(source: BaselineSource | Path, root: Path, layers: list[str]) -> set[str]:
-    mapping = _manifest_layers_v2(source, root)
-    return {relpath for relpath, layer in mapping.items() if not layer or layer in layers}
+def _unrowed_manifest_paths(lock: dict, items: dict[str, dict], layers: list[str]) -> list[str]:
+    """The manifest paths in the profile that have no lock row: what `check` lists as `new-upstream` or
+    `offered` and a bare pull adopts. A `never_ship` prefix is the project's own directory, so it hides an
+    `offer` or `seed` the baseline lists there, never an `auto` row: a shipped proof may read that file."""
+    owned = tuple(lock.get("never_ship") or ())
+    files = lock.get("files") or {}
+    return sorted(relpath for relpath, item in items.items()
+                  if relpath not in files and (not item.get("layer") or item["layer"] in layers)
+                  and not (relpath.startswith(owned) and item.get("sync") in ("offer", "seed")))
 
 
 def _upstream_sha(source: BaselineSource | Path, relpath: str, substitutions: dict) -> str | None:
@@ -1647,7 +1667,7 @@ def _check_results(root: Path, lock: dict, source: BaselineSource,
         if (state == "local" and item and item.get("sync") not in ("seed", "offer")
                 and not lock["files"][relpath].get("absent") and (root / relpath).is_file()):
             results[relpath] = "local-shadows-upstream"
-    for relpath in sorted(p for p in _manifest_paths_v2(source, root, layers) if row_status(lock, p) is None):
+    for relpath in _unrowed_manifest_paths(lock, items, layers):
         results[relpath] = "offered" if items[relpath].get("sync") == "offer" else "new-upstream"
     return results, outside
 
@@ -2201,7 +2221,7 @@ def v2_closure(root: Path, relpaths: list[str], carry: str | None, baseline_dir:
         for rel in [*relpaths, *pulled]:
             state = _v2_state(root, source, lock, rel, files.get(rel, {}))
             if state in ("diverged", "upstream-updated"):
-                print(f"blocked: {rel} [{state}]: `judge` refuses it until `pull --merge {rel}`")
+                print(f"blocked: {rel} [{state}]: `judge` refuses it until a bare `pull` lands upstream's change")
         shipping = named | set(pulled)
         subs = lock.get("substitutions", {})
         for path in _harness_tests().select_for(str(root), sorted(shipping)):
@@ -2244,7 +2264,7 @@ def _refuse_push_over_newer_upstream(root: Path, relpath: str, entry: dict, lock
     if state in ("diverged", "upstream-updated"):
         raise BaselineError(
             f"{relpath}: upstream changed it since this row's base ({state}), so a push would overwrite that "
-            f"change; run `pull --merge {relpath}` (or `pull --force {relpath}`), then judge again")
+            f"change; run a bare `pull` (or `pull --force {relpath}`), then judge again")
 
 
 _SCANNED_SUFFIXES = (".py", ".md", ".sh", ".js", ".ps1")
@@ -3091,20 +3111,76 @@ def _pending_engine_rows(root: Path, source: BaselineSource, lock: dict, layers:
     return rows if ENGINE_RELPATH in rows else []
 
 
+MERGE_COPY_DIR = Path(".claude") / "scratch" / "baseline_merge"
+MERGE_MARKER_RE = re.compile(r"^(?:<{7} local|={7}|>{7} upstream)$", re.M)
+
+
+def _merge_base_marker(copy_path: Path) -> Path:
+    """The file beside a conflict copy holding the upstream hash that copy was merged against."""
+    return copy_path.with_name(copy_path.name + ".base")
+
+
+def _merge_row(root: Path, source: BaselineSource | Path, lock: dict, relpath: str, entry: dict,
+               upstream: str, unsettled: list[tuple[str, str, Path | None]]) -> str | None:
+    """The 3-way merge of a row's local copy and its upstream copy over the upstream copy at its base: the
+    merged text to land, or None with the reason recorded in `unsettled`. A hunk conflict leaves a marker copy
+    under `MERGE_COPY_DIR` that the owner resolves in place; a later pull reads that copy as the merge while
+    the local and upstream text it was made from are unchanged."""
+    if not _git_clean_path(root, relpath):
+        unsettled.append((relpath, "uncommitted local edits; commit or discard them", None))
+        return None
+    if isinstance(upstream, BinaryText):
+        unsettled.append((relpath, "binary row; `fork` keeps yours, `pull --force` takes upstream", None))
+        return None
+    subs = lock.get("substitutions", {})
+    local = local_text(root, relpath) or ""
+    copy_path = (root / MERGE_COPY_DIR / relpath).resolve()
+    marker = _merge_base_marker(copy_path)
+    inputs = sha(upstream.encode("utf-8")) + " " + sha(local.encode("utf-8"))
+    if copy_path.is_file() and marker.is_file() and marker.read_text(encoding="utf-8").strip() == inputs:
+        text = copy_path.read_text(encoding="utf-8")
+        marks = len(MERGE_MARKER_RE.findall(text))
+        hunks = max(1, marks // 3) if marks else 0
+    else:
+        base = _upstream_text_at(source, relpath, _reconcile_base(source, lock, relpath, entry, local), subs)
+        # No upstream copy at the base: merge over an empty base, so every line the two sides
+        # disagree on is a conflict hunk.
+        text, hunks = _merge3(local, base or "", upstream)
+        if hunks:
+            _write_lf(copy_path, text)
+            _write_lf(marker, inputs + "\n")
+    if hunks:
+        unsettled.append((relpath, f"{hunks} hunks; resolve the markers in the copy, or `fork` keeps yours", copy_path))
+        return None
+    return text
+
+
+def _drop_merge_copy(root: Path, relpath: str) -> None:
+    copy_path = root / MERGE_COPY_DIR / relpath
+    copy_path.unlink(missing_ok=True)
+    _merge_base_marker(copy_path).unlink(missing_ok=True)
+
+
+MERGEABLE_STATES = ("diverged", "forked-upstream-moved")
+
+
 def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
-            merge: bool = False, prove: bool = True) -> int:
+            prove: bool = True, only: set[str] | None = None) -> int:
+    """A pull lands every row it plans together or writes no live file: a bare pull plans each upstream change
+    and 3-way merges the rows both sides changed, and a row that cannot settle (a conflict, a dirty path, a
+    binary row) is named in `unsettled` and stops every write. `only` narrows the
+    writes of a settled pull to those rows (the engine phase: the rest runs on the engine it brings)."""
     _validate_relpaths(relpaths)
     manifest_items = _manifest_items_v2(source)
     manifest_layers = {relpath: item.get("layer") for relpath, item in manifest_items.items()}
     skipped = 0
     unrowed_differs: list[str] = []
-    held: list[tuple[str, str]] = []
     kept_seeds: list[str] = []
     retired: list[str] = []
     kept_local: list[str] = []
     offered: list[str] = []
     merged: list[str] = []
-    conflicts: list[tuple[str, str, Path | None]] = []
+    unsettled: list[tuple[str, str, Path | None]] = []
 
     def apply(lock: dict):
         nonlocal skipped
@@ -3124,17 +3200,11 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 if not in_profile(entry, layers):
                     continue
                 state = _v2_state(root, source, lock, path, entry)
-                if state == "forked-upstream-moved" or (state == "diverged" and not merge):
-                    held.append((path, state))
-                if state in ("upstream-updated", "new-upstream") or (
-                        merge and state == "diverged") or (
+                if state in ("upstream-updated", "new-upstream", *MERGEABLE_STATES) or (
                     state == "removed-upstream" and _entry_status(entry) == "tracked"
                 ):
                     targets.append(path)
-            unrowed = sorted(
-                path for path, layer in manifest_layers.items()
-                if row_status(lock, path) is None and (not layer or layer in layers)
-            )
+            unrowed = _unrowed_manifest_paths(lock, manifest_items, layers)
             offered[:] = [path for path in unrowed if manifest_items[path].get("sync") == "offer"]
             targets.extend(path for path in unrowed if path not in offered)
         targets = list(dict.fromkeys(targets))
@@ -3171,31 +3241,34 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 continue
             if state in ("composed-drift", "removed-upstream"):
                 raise BaselineError(f"pull refuses {state}: {relpath}")
-            if merge and state == "diverged":
-                if not _git_clean_path(root, relpath):
-                    conflicts.append((relpath, "uncommitted local edits; commit them, then pull --merge it", None))
-                    continue
-                plans.append((relpath, "merge", upstream))
+            if state in MERGEABLE_STATES and not relpaths:
+                text = _merge_row(root, source, lock, relpath, entry, upstream, unsettled)
+                if text is not None:
+                    plans.append((relpath, "merge", text))
                 continue
             needs_force = state in {
                 "local-modified", "diverged", "forked", "forked-upstream-moved",
                 "forked-base-unknown", "local", "watch",
             }
             if needs_force and not force:
-                raise BaselineError(f"pull requires --force for {state}: {relpath}")
+                hint = "; a bare `pull` merges both sides" if state in MERGEABLE_STATES else ""
+                raise BaselineError(f"pull requires --force for {state}: {relpath}{hint}")
             if force and not _git_clean_path(root, relpath):
                 raise BaselineError(f"forced pull refuses a dirty path: {relpath}")
             plans.append((relpath, "update", upstream))
+        if unsettled:
+            return NO_CHANGE
+        plans = [plan for plan in plans if only is None or plan[0] in only]
         changed = []
         seeds = []
         taken: set[str] = set()
         subs = lock.get("substitutions", {})
-        for relpath, action, upstream in plans:
+        for relpath, action, content in plans:
             if action == "noop":
                 continue
             if action == "seed":
-                if upstream is not None:
-                    _write_row(root, source, relpath, upstream)
+                if content is not None:
+                    _write_row(root, source, relpath, content)
                 else:
                     kept_seeds.append(relpath)
                 seeds.append(relpath)
@@ -3219,27 +3292,20 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 taken.add(relpath)
                 continue
             if action == "merge":
-                if isinstance(upstream, BinaryText):
-                    conflicts.append((relpath, "binary row; keep the local copy or take upstream with pull --force", None))
-                    continue
-                local = local_text(root, relpath) or ""
-                base = _upstream_text_at(
-                    source, relpath, _reconcile_base(source, lock, relpath, files[relpath], local), subs)
-                # No upstream copy at the base: merge over an empty base, so every line the two sides
-                # disagree on is a conflict hunk and `resolve` can install the hand-merged copy.
-                text, hunks = _merge3(local, base or "", upstream)
-                if hunks:
-                    copy_path = (root / MERGE_COPY_DIR / relpath).resolve()
-                    _write_lf(copy_path, text)
-                    _write_lf(_merge_base_marker(copy_path), sha(upstream.encode("utf-8")) + "\n")
-                    conflicts.append((relpath, f"{hunks} hunks", copy_path))
-                    continue
-                _write_row(root, source, relpath, text)
+                _write_row(root, source, relpath, content)
+                _drop_merge_copy(root, relpath)
                 merged.append(relpath)
+                if _entry_status(files[relpath]) == "forked":
+                    # A fork stays a fork: its base moves to the upstream this merge saw, and its verdict
+                    # judges the merged content.
+                    files[relpath]["base"] = source.sha
+                    files[relpath]["judged"] = _decision(
+                        root, relpath, None, sha_value=content_sha(relpath, content.encode("utf-8")))
+                else:
+                    taken.add(relpath)
                 changed.append(relpath)
-                taken.add(relpath)
                 continue
-            _write_row(root, source, relpath, upstream)
+            _write_row(root, source, relpath, content)
             if action is None:
                 files[relpath] = {
                     "status": "tracked",
@@ -3266,7 +3332,11 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         return changed
 
     result = mutate_lock(root, apply, source=source)
-    if result is NO_CHANGE:
+    if unsettled:
+        for relpath, reason, copy_path in unsettled:
+            print(f"unsettled: {relpath} ({reason})" + (f" -> {copy_path}" if copy_path else ""))
+        print(f"nothing written: {len(unsettled)} row(s) cannot settle; settle each, then pull again to land every row together")
+    elif result is NO_CHANGE:
         print("no change")
     else:
         for relpath in result:
@@ -3284,30 +3354,28 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                    if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
         for relpath in _ignored_untracked(root, written):
             print(f"ignored: {relpath} (add with git add -f)")
-    for relpath in dict.fromkeys(unrowed_differs):
-        print(f"skipped (local file differs, no lock row): {relpath}")
-    for relpath, state in dict.fromkeys(held):
-        merge_hint = f"`pull --merge {relpath}` combines both, " if state == "diverged" else ""
-        print(f"held ({state}): {relpath} — upstream changed it too; {merge_hint}`pull --force {relpath}` takes "
-              f"upstream, `fork {relpath}` keeps yours")
-    if offered:
-        print(f"offered: {len(offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
-    if skipped:
-        print(f"profile: {','.join(layers)} — {skipped} row(s) skipped")
-    for relpath, reason, copy_path in conflicts:
-        print(f"conflict: {relpath} ({reason})" + (f" -> {copy_path}" if copy_path else ""))
-    render_lane_agents(root)
-    write_harness_ignore_block(root)
+    if only is None:  # the engine phase reports no skip: the rest of the pull decides them again and says so
+        for relpath in dict.fromkeys(unrowed_differs):
+            print(f"skipped (local file differs, no lock row): {relpath}")
+        if offered:
+            print(f"offered: {len(offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
+        if skipped:
+            print(f"profile: {','.join(layers)} — {skipped} row(s) skipped")
+    if not unsettled:
+        render_lane_agents(root)
+        write_harness_ignore_block(root)
     written = [] if result is NO_CHANGE else [
         relpath for relpath in result
         if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
+    # A deleted file's importers and runners are proofs of the deletion, so a retired path is proved like a written one.
+    gone = [] if result is NO_CHANGE else [relpath for relpath in result if relpath in retired]
     if not prove and _pull_proof and _pull_proof.record_state(root)[0] != _pull_proof.UNREADABLE:
         # The engine phase: a pulled tool can need a row only the rest of the pull brings, so these go to the
         # journal as pending and the rest of the pull proves them beside every row it writes.
-        _pull_proof.write(root, {relpath: "pending" for relpath in written if (root / relpath).exists()}, source.sha)
+        _pull_proof.write(root, {relpath: "pending" for relpath in [*written, *gone]}, source.sha)
         hits = local_attr_hits(root, written)
         _report_local_attr_hits(hits)
-        return 1 if conflicts or hits else 0
+        return 1 if unsettled or hits else 0
     # A path whose proof is still pending or red is proved again, so a rerun of this pull releases its commit.
     unresolved, earlier = [], []
     if _pull_proof:
@@ -3325,10 +3393,10 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     if earlier:
         print(f"journal: an earlier pull left {len(earlier)} path(s) uncommitted with a red or pending proof, "
               f"proved again now: {', '.join(earlier)}")
-    proved = _prove_pulled(root, written + [relpath for relpath in unresolved if relpath not in written], source.sha)
+    proved = _prove_pulled(root, list(dict.fromkeys([*written, *gone, *unresolved])), source.sha)
     hits = local_attr_hits(root, written)
     _report_local_attr_hits(hits)
-    return 1 if conflicts or proved or hits else 0
+    return 1 if unsettled or proved or hits else 0
 
 
 def _uncommitted_lock_paths(root: Path) -> list[str]:
@@ -3352,18 +3420,18 @@ def _proof_results(paths: list[str], returncode: int, output: str) -> dict[str, 
         return {relpath: "green" for relpath in paths}
     if "no proof is bound to" in output:
         return {relpath: "unbound" for relpath in paths}
-    named = set(re.findall(r"unstamped (\S+): blocked by", output))
+    named = set(re.findall(r"unstamped (.+?): blocked by", output))
     if not named:
         return {relpath: "red" for relpath in paths}
     return {relpath: "red" if relpath in named else "green" for relpath in paths}
 
 
-def _prove_pulled(root: Path, written: list[str], pin: str | None = None) -> int:
-    """Run the proofs bound to the files a pull wrote; name each red one and the command that reruns it.
-    The pulled files stay written, and the proof record (`hooks/_pull_proof.py`) keeps each path's result and
-    the baseline `pin` it came from, which `check` and the session close read. Returns 1 on any red, else 0."""
+def _prove_pulled(root: Path, paths: list[str], pin: str | None = None) -> int:
+    """Run the proofs bound to the paths a pull wrote or retired; name each red one and the command that reruns it.
+    A retired path is absent, and the runner binds it to the proofs that import or run it. The pulled files stay
+    written, and the proof record (`hooks/_pull_proof.py`) keeps each path's result and the baseline `pin` it came
+    from, which `check` and the session close read. Returns 1 on any red, else 0."""
     runner = root / ".claude" / "scripts" / "harness_tests.py"
-    paths = [relpath for relpath in written if (root / relpath).exists()]
     if not paths or not runner.is_file():
         return 0
     if _pull_proof:
@@ -3376,7 +3444,8 @@ def _prove_pulled(root: Path, written: list[str], pin: str | None = None) -> int
         print(f"proofs: green for {len(paths)} pulled path(s)")
         return 0
     blocked = [name for chunk in re.findall(r"blocked by ([^\r\n]+)", result.stdout) for name in chunk.split(", ")]
-    failed = re.findall(r"^(?:FAIL|not ok) (\S+)", result.stdout, re.M)
+    # The runner's own header per red proof: `FAIL <seconds>s <path>`.
+    failed = [re.split(r"[\\/]", path)[-1] for path in re.findall(r"^FAIL \d+(?:\.\d+)?s (.+?)\s*$", result.stdout, re.M)]
     names = ", ".join(sorted(set(blocked + failed))) or "see output below"
     print(f"red proof(s) after pull (exit {result.returncode}): {names}")
     print(result.stdout[-2000:])
@@ -3578,62 +3647,6 @@ def v2_update_lock(root: Path, source: BaselineSource, relpaths: list[str], laye
             print(f"lock updated: {relpath}")
     if skipped:
         print(f"profile: {','.join(layers)} — {skipped} row(s) skipped")
-    return 0
-
-
-MERGE_COPY_DIR = Path(".claude") / "scratch" / "baseline_merge"
-MERGE_MARKER_RE = re.compile(r"^(?:<{7} local|={7}|>{7} upstream)$", re.M)
-
-
-def _merge_base_marker(copy_path: Path) -> Path:
-    """The file beside a conflict copy holding the upstream hash that copy was merged against."""
-    return copy_path.with_name(copy_path.name + ".base")
-
-
-def v2_resolve(root: Path, source: BaselineSource, relpaths: list[str]) -> int:
-    """Install each `pull --merge` conflict copy the owner resolved, and record the upstream it merged as the row's
-    base. Refuses a dirty working file (the copy would overwrite edits made since the merge) and an upstream that
-    moved since the merge (the copy never saw those changes)."""
-    _validate_relpaths(relpaths)
-    if not relpaths:
-        raise UsageError("resolve needs the relpaths of resolved conflict copies")
-    copies = {}
-    for relpath in relpaths:
-        copy_path = root / MERGE_COPY_DIR / relpath
-        text = local_text(root, str(MERGE_COPY_DIR / relpath))
-        if text is None:
-            raise BaselineError(f"no conflict copy for {relpath}: {copy_path}")
-        if MERGE_MARKER_RE.search(text):
-            raise BaselineError(f"conflict markers remain in {copy_path}")
-        if not _git_clean_path(root, relpath):
-            raise BaselineError(f"resolve refuses a dirty path: {relpath}; commit or discard its edits, then rerun "
-                                f"`pull --merge {relpath}`")
-        marker = _merge_base_marker(copy_path)
-        merged_against = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
-        copies[relpath] = (copy_path, text, merged_against)
-
-    def apply(lock: dict):
-        files = lock.get("files", {})
-        for relpath in relpaths:
-            if relpath not in files:
-                raise BaselineError(f"not a row: {relpath}")
-            upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
-            if upstream is None:
-                raise _missing_error(relpath)
-            upstream_hash = sha(upstream.encode("utf-8"))
-            if upstream_hash != copies[relpath][2]:
-                raise BaselineError(f"upstream moved since the merge copy of {relpath} was written; rerun "
-                                    f"`pull --merge {relpath}` to merge the current upstream")
-            # The merged copy reconciled against the upstream this merge saw: its base is that commit.
-            files[relpath]["base"] = source.sha
-        return relpaths
-
-    mutate_lock(root, apply, source=source)
-    for relpath, (copy_path, text, _base) in copies.items():
-        _write_lf(root / relpath, text)
-        copy_path.unlink()
-        _merge_base_marker(copy_path).unlink(missing_ok=True)
-        print(f"resolved: {relpath}")
     return 0
 
 
@@ -3945,6 +3958,9 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
         require_v2_lock(lock)
         require_v2_lock(load_lock(root))
     check_adaptation_contract(root)
+    retired = retired_key_lines(root)
+    for line in retired:
+        print(f"retired: {ADAPTATION_JSON_RELPATH} {line}")
     rows = _composed_rows(lock)
     outputs: dict[str, bytes] = {}
     inputs_by_relpath: dict[str, list[str]] = {}
@@ -3960,7 +3976,7 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
     if check:
         for relpath in drift:
             print(f"drift: {relpath}")
-        if drift:
+        if drift or retired:
             return 1
         print("no drift")
         return 0
@@ -4437,6 +4453,9 @@ def cmd_author_start(root: Path) -> int:
 def _validate_cli_usage(args) -> list[str] | None:
     if args.op != "never-ship":
         _validate_relpaths(args.relpaths)
+    if args.merge:
+        raise UsageError("--merge is retired: a bare `pull` 3-way merges the rows both sides changed and lands "
+                         "every row together")
     if args.op == "diff" and len(args.relpaths) != 1:
         raise UsageError("diff requires exactly one relpath")
     if args.op in ("classify", "judge", "forget", "gc", "fork", "track", "paths", "triage", "migrate", "ignore"):
@@ -4550,8 +4569,7 @@ def build_parser():
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--template", action="store_true")
     ap.add_argument("--force", action="store_true")
-    ap.add_argument("--merge", action="store_true",
-                    help="pull: 3-way merge each diverged row; a conflict leaves the row and prints a marker copy")
+    ap.add_argument("--merge", action="store_true", help=argparse.SUPPRESS)  # retired; refused in _validate_cli_usage
     ap.add_argument("--status")
     ap.add_argument("--from", dest="from_relpath")
     ap.add_argument("--layer")
@@ -4602,8 +4620,8 @@ def main(argv=None) -> int:
         except BaselineError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-    if raw_argv[:1] == ["materialize"]:
-        print("error: materialize is retired; use publish --dry-run", file=sys.stderr)
+    if raw_argv[:1] and raw_argv[0] in RETIRED_OPS:
+        print(f"error: {raw_argv[0]} is retired; {RETIRED_OPS[raw_argv[0]]}", file=sys.stderr)
         return 2
     if ({"--help", "-h"} & set(raw_argv)) and any(tok in OPS for tok in raw_argv):
         if next(tok for tok in raw_argv if tok in OPS) == "judge":
@@ -4652,7 +4670,7 @@ def main(argv=None) -> int:
 
         lock = load_lock(root)
         writes = args.op in {
-            "pull", "update-lock", "resolve", "classify", "judge", "forget", "fork", "track", "ignore",
+            "pull", "update-lock", "classify", "judge", "forget", "fork", "track", "ignore",
         } or (args.op == "gc" and args.apply) or (
             args.op == "compose" and not args.check
         ) or (args.op == "sub" and bool(args.sub or args.unset))
@@ -4705,8 +4723,8 @@ def main(argv=None) -> int:
             if args.op == "pull":
                 engine = _pending_engine_rows(root, source, lock, layers) if not args.relpaths else []
                 if not engine:
-                    return v2_pull(root, source, args.relpaths, layers, args.force, args.merge)
-                engine_code = v2_pull(root, source, engine, layers, False, prove=False)
+                    return v2_pull(root, source, args.relpaths, layers, args.force)
+                engine_code = v2_pull(root, source, [], layers, False, prove=False, only=set(engine))
                 source.close()
                 source = None
                 if engine_code != 0:
@@ -4726,8 +4744,6 @@ def main(argv=None) -> int:
                 return v2_track(root, args.relpaths, source)
             if args.op == "update-lock":
                 return v2_update_lock(root, source, args.relpaths, layers)
-            if args.op == "resolve":
-                return v2_resolve(root, source, args.relpaths)
             raise UsageError(f"unsupported operation: {args.op}")
         finally:
             if source is not None:

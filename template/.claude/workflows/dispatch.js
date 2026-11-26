@@ -434,7 +434,10 @@ const NO_RETURN_JOBS = jobs.filter(j => !(j.label in out) || out[j.label] == nul
 const NO_RETURN = NO_RETURN_JOBS.map(j => j.label)
 let noReturn = null
 if (NO_RETURN.length > 0) {
-  const route = NO_RETURN_JOBS.map(j => j.label + ' -> ' + (spills(j) ? spillPath(j.label) + ' else ' : '') + '/salvage_fanout <transcriptDir> ' + j.label).join('; ')
+  // A review seat records each finding beside its brief (tools/seat_findings.py), so a failed return keeps them.
+  const route = NO_RETURN_JOBS.map(j => j.label + ' -> ' + (spills(j) ? spillPath(j.label) + ' else ' : '')
+    + (j.schema && j.promptPath ? String(j.promptPath).replace(/\.[^./\\]+$/, '.findings.jsonl') + ' (its recorded findings; `--review-close` reads them) else ' : '')
+    + '/salvage_fanout <transcriptDir> ' + j.label).join('; ')
   log('NO-RETURN ' + NO_RETURN.join(', ') + ' — recover before re-dispatching: ' + route)
   noReturn = { labels: NO_RETURN, recover: route }
 }

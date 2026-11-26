@@ -702,7 +702,7 @@ def test_a_blank_segment_does_not_hide_a_peer_checkout(own):
 
 # --- a project's create tool is one more visible add (H9) ------------------------------------------------------
 # The commands, notices and result lines are the live rows `conftest` keeps; a case fills in only names and paths.
-SINGLE = 'cd "<root>" && python3 .claude/tools/lane_worktree.py create <name> --from main'
+SINGLE = 'cd "<root>" && python3 .claude/tools/example_lane_tool.py create <name> --from main'
 
 
 def _create_rows(own, command, output=None, background=False, notify=True):
@@ -749,6 +749,12 @@ def _names(command):
     pytest.param("exit 1; " + SINGLE, [], id="exit before"),
     pytest.param(SINGLE + " || true", [], id="masked by ||"),
     pytest.param(SINGLE.replace("--from main", "--from $BASE"), [], id="expansion"),
+    pytest.param(SINGLE + " --import 2>&1 | tail -6 | cut -c1-250", ["mine"],
+                 id="tail then a cut from column 1: every line start, and so any fatal:, stays visible"),
+    pytest.param(SINGLE + " 2>&1 | cut -c5-80", [], id="a cut past column 1 can hide fatal:"),
+    pytest.param(SINGLE + " 2>&1 | cut -c1-3", [], id="a cut shorter than fatal: cuts the marker"),
+    pytest.param(SINGLE + " 2>&1 | cut -c-5", [], id="an open-start cut shorter than error: cuts the marker"),
+    pytest.param(SINGLE + " 2>&1 | tail -6 | grep created", [], id="a filter that drops lines can hide fatal:"),
 ])
 def test_a_listed_create_is_named_by_the_one_visible_add_analysis(create_tools, command, want):
     assert _names(command) == want

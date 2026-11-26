@@ -63,7 +63,7 @@ a caller should use depends on whether a backgrounded job wakes it:
    the call's exit code is then the job's own, the failure `tail` reported as success. Every other shape is denied
    with the command to run instead. A short read (`grep`, `git status/log/diff`, `cat`,
    `sed`, `find`...) ends with the call and passes, as do `tail -f`, a `tee` stage and a `tail` of a file.
-6. Hand-back (denies, never-woken callers). A subagent or print-mode child's foreground loop waits are clamped to SUBAGENT_WAIT_MS each and their clamped time is totalled since its last non-wait call; past HANDBACK_MS (30 minutes) the next wait is denied with the hand-back text (return the log path, pid, expected end and the steps left), the same hand-back `bench wait` gives (`wait_log.py` HANDBACK_S). Rule home: guards/common.md.
+6. Loop waits are never totalled (never-woken callers). Each is bounded by its per-call clamp (item 1) and by nothing else: the job such a caller waits on is usually its own run, which ends when the caller returns (`reap.py end-seat`), so a total-time deny would force a return that kills the run. Handing a job back is for one under its own launcher and record (guards/common.md).
 
 7. Monitor past its cap. A Monitor call whose `timeout_ms` exceeds MONITOR_CAP_MS is denied: the tool ends every watch
    at that ceiling with no wake, so the request cannot do what it says. The deny names the waiter for a detached
@@ -134,8 +134,6 @@ _INLINE_FLAGS = frozenset(("-c", "-e", "-p"))
 _VALUE_FLAGS = frozenset(("-X", "-W", "-Q"))
 
 POLL_LIMIT = 4
-HANDBACK_MS = 1800000  # wait_log.py HANDBACK_S: the break-even past which the parent's one wake costs less than a child's trickle polls
-HANDBACK_KEY = "wait_loops"
 SUBAGENT_WAIT_MS = _hook_state.SUBAGENT_CACHE_WARM_SECONDS * 1000
 BASH_DEFAULT_MS = 120000
 BASH_CEILING_MS = 600000  # the Bash tool's own timeout ceiling
@@ -404,40 +402,6 @@ def _count_poll(payload, command):
             return 0
     written, count = _hook_state.update_json_locked(path, update)
     return count if written and count else 0
-
-
-HANDBACK_REASON = (
-    "BLOCKED wait: this caller's foreground loop waits total %d minutes since its last non-wait call, past the %d minutes "
-    "after which the parent's one wake costs less than these polls, and no wake reaches a subagent or `claude -p` child. "
-    "Return now with the log path, pid, expected end and the steps left after it, so the parent waits for it "
-    "(guards/common.md; the same hand-back `bench wait` gives)."
-)
-
-
-def _wait_total_ms(payload, add_ms):
-    """Track an unwoken caller's clamped loop-wait time: `add_ms` is added when this call is a loop wait, and any other
-    call resets the total. Returns the total BEFORE this call. Fails open to 0 when the state cannot be locked."""
-    key = _caller(payload) or "main"
-    path = _hook_state.state_path(payload.get("session_id"))
-    if not add_ms:
-        existing = _hook_state.read_json_salvage(path) if os.path.exists(path) else {}
-        if key not in (existing.get(HANDBACK_KEY) or {}):
-            return 0
-
-    def update(state):
-        loops = state.setdefault(HANDBACK_KEY, {})
-        now = time.time()
-        for other in [k for k, v in loops.items() if now - float((v or {}).get("at") or 0) > STALE_POLL_S]:
-            del loops[other]
-        prior = int((loops.get(key) or {}).get("ms") or 0)
-        if not add_ms:
-            loops.pop(key, None)
-        elif prior <= HANDBACK_MS:
-            loops[key] = {"ms": prior + add_ms, "at": now}
-        return prior
-
-    written, prior = _hook_state.update_json_locked(path, update)
-    return prior if written else 0
 
 
 def _words(segment):
@@ -1014,8 +978,6 @@ def main():
         return 0
     command = str(tool_input.get("command") or "")
     unwoken = never_woken(payload)
-    if unwoken and (tool_input.get("run_in_background") or not _LOOP_SLEEP.search(shell_code(command))):
-        _wait_total_ms(payload, 0)
     code = shell_code(command)
     bare = _unquoted(code)
     detached = _LOOP_DETACHED.search(bare) if payload.get("tool_name") == "Bash" else None
@@ -1059,10 +1021,6 @@ def main():
         except (TypeError, ValueError):
             budget = BASH_DEFAULT_MS
         updated, note = None, None
-        if unwoken:
-            spent = _wait_total_ms(payload, min(budget, clamp))
-            if spent > HANDBACK_MS:
-                return _deny(HANDBACK_REASON % (spent // 60000, HANDBACK_MS // 60000))
         if _caller(payload) or unwoken:
             if budget > clamp:
                 updated = dict(tool_input, timeout=clamp)

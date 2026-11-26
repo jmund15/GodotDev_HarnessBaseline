@@ -1008,26 +1008,31 @@ def test_candidates_lists_a_row_less_test_only_when_its_subject_ships() -> None:
         assert orphan not in lines, out
 
 
-def test_check_leaves_a_never_ship_path_the_baseline_ships_out_of_new_upstream() -> None:
-    """X2 D1/D2: a `never_ship` path has no row and is project-owned, so an upstream copy of it is no
-    `new-upstream` work item. An unjudged upstream path outside `never_ship` still is one."""
-    policy = ".claude/auto-memory/MEMORY.md"
+def test_a_never_ship_prefix_hides_an_upstream_offer_but_never_an_upstream_row_a_pull_delivers() -> None:
+    """`never_ship` is the project's own directory: an upstream offer under it is no work item. An `auto` row the
+    baseline delivers under it still is one, because a shipped proof may read it, and a bare pull writes it."""
+    offer = ".claude/auto-memory/foreign.md"
+    fixture = ".claude/tests/fixtures/rows.json"
     shipped = ".claude/tools/shipped_tool.py"
     with _fixture() as path:
         root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {
-            policy: {"row": False, "upstream": b"upstream memory\n"},
-            shipped: {"row": False, "upstream": b"upstream tool\n"},
+            offer: {"row": False, "local": None, "sync": "offer", "upstream": b"upstream memory\n"},
+            fixture: {"row": False, "local": None, "upstream": b"[]\n"},
+            shipped: {"row": False, "local": None, "upstream": b"upstream tool\n"},
         })
         lock = _load_lock(root)
-        lock["never_ship"] = [".claude/auto-memory/"]
+        lock["never_ship"] = [".claude/auto-memory/", ".claude/tests/fixtures/"]
         _write_json(root / ".claude" / "baseline.lock.json", lock)
         _commit(root, "never_ship")
         result = _run_baseline(root, baseline, "check", "--json")
-        output = result.stdout.decode("utf-8", errors="replace")
-        assert result.returncode == 0, output + result.stderr.decode("utf-8", errors="replace")
-        results = json.loads(output)["results"]
-        assert results.get(shipped) == "new-upstream", results
-        assert policy not in results, results
+        output = _out(result)
+        results = json.loads(result.stdout.decode("utf-8"))["results"]
+        assert results.get(shipped) == "new-upstream" and results.get(fixture) == "new-upstream", output
+        assert offer not in results, results
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert (root / fixture).read_bytes() == b"[]\n" and (root / shipped).is_file(), _out(pull)
+        assert not (root / offer).exists(), "an offer under a never_ship prefix was pulled"
 
 
 def _proof_rows(*specs: tuple[str, str, bytes]) -> dict[str, dict]:
@@ -1410,7 +1415,7 @@ def test_a_copy_equal_to_upstream_at_the_pin_reconciles_there_whatever_older_bas
         state = _run_baseline(root, baseline, "check", "--json")
         found = _json_output(state)["results"].get(rel)
         assert found == "upstream-updated", found
-        pulled = _run_baseline(root, baseline, "pull", rel, "--merge")
+        pulled = _run_baseline(root, baseline, "pull", rel)
         assert pulled.returncode == 0, (pulled.stdout + pulled.stderr).decode(errors="replace")
         assert (root / rel).read_bytes() == v3
 
@@ -1875,6 +1880,41 @@ def test_v2_compose_refuses_malformed_adaptation_contract() -> None:
             assert (root / settings_relpath).read_bytes() == before_settings, label
 
 
+def test_v2_compose_names_a_retired_adaptation_key_and_check_fails_on_it() -> None:
+    """A key a shared reader stopped reading is named in the project's own data at the step a consumer runs
+    after a pull: `compose` prints one line per retired key and still composes (exit 0); `compose --check` exits 1
+    with the same lines; a clean file prints none and exits 0."""
+    settings_relpath = ".claude/settings.json"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path,
+            {
+                ".claude/settings.base.json": {"status": "tracked", "upstream": b'{"permissions": {}, "hooks": {}}\n'},
+                ".claude/settings.project.json": {"status": "local", "local": b'{"permissions": {}, "hooks": {}}\n'},
+                settings_relpath: {
+                    "status": "composed",
+                    "upstream": b"not composed yet\n",
+                    "inputs": [".claude/settings.base.json", ".claude/settings.project.json"],
+                },
+            },
+        )
+        adaptation_path = _adaptation_json_path(root)
+        _write_json(adaptation_path, {"memory_domains": [{"name": "Old", "triggers": ["x"], "paths": ["a/**"]}],
+                                      "drive_commands": []})
+        composed = _run(root, "compose")
+        output = (composed.stdout + composed.stderr).decode("utf-8", errors="replace")
+        assert composed.returncode == 0, output
+        assert "memory_domains[].triggers" in output and "memory_domains[].paths" in output, output
+        assert "drive_commands" in output, output
+        checked = _run(root, "compose", "--check")
+        output = (checked.stdout + checked.stderr).decode("utf-8", errors="replace")
+        assert checked.returncode == 1 and "memory_domains[].triggers" in output and "no drift" not in output, output
+        _write_json(adaptation_path, {"memory_domains": [{"name": "Old", "paths": ["a/**"]}]})
+        clean = _run(root, "compose", "--check")
+        output = (clean.stdout + clean.stderr).decode("utf-8", errors="replace")
+        assert clean.returncode == 0 and "retired" not in output, output
+
+
 def test_v2_many_concurrent_classifies_lose_no_row() -> None:
     # The pid-file mutex let a waiter delete a mutex whose creator had not yet written its pid,
     # so two processes held it and one lock write was lost (1 run in 5 on Linux with two
@@ -2335,6 +2375,54 @@ def test_unreadable_record_recovery_proves_every_uncommitted_pulled_path() -> No
         assert results.get(green) == "green" and results.get(red) == "red", results
 
 
+def test_pull_proves_a_path_it_retires_like_one_it_writes() -> None:
+    """A deleted tool's proofs (an importer, a runner by path) stay red unseen unless the pull proves the deletion:
+    the retired path goes to the runner, the journal keeps its result, and a rerun releases it."""
+    green, red = ".claude/tools/retired_ok.py", ".claude/tools/retired_red.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {green: {"upstream": b"old\n"}, red: {"upstream": b"old\n"}})
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        _commit(root, "stub runner")
+        for gone in (green, red):
+            (baseline / "template" / gone).unlink()
+        _write_json(baseline / "baseline.manifest.json", {"version": 2, "files": []})
+        _commit(baseline, "upstream deletes both tools and their rows")
+        bad = _run_baseline(root, baseline, "pull")
+        assert not (root / green).exists() and not (root / red).exists(), _out(bad)
+        seen = (root / ".claude/scripts/seen.txt").read_text().split()
+        assert {green, red} <= set(seen), (seen, _out(bad))
+        assert bad.returncode == 1 and "retired_red" in _out(bad), _out(bad)
+        record = root / ".claude" / "logs" / "baseline_pull_proof.json"
+        results = {p: e["result"] for p, e in json.loads(record.read_text(encoding="utf-8"))["paths"].items()}
+        assert results == {green: "green", red: "red"}, results
+        guard = _pull_proof_guard()
+        assert guard.blocked(str(root), [green, red]) == [red], "a red retired path blocks its commit like a written one"
+        assert guard.open_paths(str(root)) == [red], "the uncommitted deletion stays in the journal while red"
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_PASS.encode())
+        rerun = _run_baseline(root, baseline, "pull")
+        assert rerun.returncode == 0 and red in (root / ".claude/scripts/seen.txt").read_text(), _out(rerun)
+        assert guard.blocked(str(root), [green, red]) == [], "a green rerun releases the retired path"
+
+
+def test_a_committed_deletion_leaves_the_pull_journal() -> None:
+    """A red or pending row for a deleted path is open while the deletion is uncommitted (unstaged or staged) and
+    leaves the journal once it is committed: an absent path is never `untracked`, so it cannot stay on that account."""
+    rel = ".claude/tools/gone.py"
+    with _fixture() as path:
+        _init_repo(path)
+        _write(path / rel, b"x = 1\n")
+        _commit(path, "add")
+        guard = _pull_proof_guard()
+        (path / rel).unlink()
+        guard.write(str(path), {rel: "red"})
+        assert guard.open_paths(str(path)) == [rel], "an unstaged deletion is uncommitted"
+        _git(path, "rm", "-q", "--cached", rel)
+        assert guard.open_paths(str(path)) == [rel], "a staged deletion is uncommitted"
+        _git(path, "commit", "-q", "-m", "delete")
+        assert guard.blocked(str(path), [rel]) == [rel], "the record still blocks until a proof passes"
+        assert guard.open_paths(str(path)) == [], "a committed deletion leaves the journal"
+
+
 def test_pull_that_wrote_nothing_runs_no_proof() -> None:
     rel = ".claude/tools/same.py"
     with _fixture() as path:
@@ -2358,20 +2446,6 @@ def test_bare_pull_skips_unrowed_differing_local() -> None:
         assert clash not in _load_lock(root)["files"]
         assert "local file differs" in _out(pull) and clash in _out(pull), _out(pull)
         assert (root / fresh).read_bytes() == b"fresh\n"
-
-
-def test_bare_pull_names_a_diverged_row_it_holds() -> None:
-    mine = ".claude/tools/mine.py"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {mine: {"upstream": b"v1\n"}})
-        _write(root / mine, b"local edit\n")
-        _commit(root, "local edit")
-        _write(baseline / "template" / mine, b"v2\n")
-        _commit(baseline, "upstream edit")
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        assert (root / mine).read_bytes() == b"local edit\n"
-        assert "held (diverged): " + mine in _out(pull) and "pull --force " + mine in _out(pull), _out(pull)
 
 
 def test_explicit_pull_refuses_unrowed_differing_local() -> None:
@@ -3058,14 +3132,27 @@ def _diverge(root: Path, baseline: Path, rel: str, local: bytes, upstream: bytes
     _commit(baseline, "upstream edit " + rel)
 
 
-def test_pull_merge_combines_both_sides_of_a_diverged_row() -> None:
+def _unsettled_copy(out: str, rel: str) -> Path:
+    """The conflict copy a pull named for `rel` on its `unsettled:` line."""
+    line = next((l for l in out.splitlines() if l.startswith(f"unsettled: {rel} ")), "")
+    assert " -> " in line, out
+    return Path(line.rsplit(" -> ", 1)[-1].strip())
+
+
+def _upstream_edit(baseline: Path, rel: str, content: bytes) -> None:
+    _write(baseline / "template" / rel, content)
+    _commit(baseline, "upstream edit " + rel)
+
+
+def test_bare_pull_merges_a_diverged_row_and_a_named_pull_still_refuses_it() -> None:
     rel = ".claude/rules/merged.md"
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
         _diverge(root, baseline, rel, b"ONE\ntwo\nthree\n", b"one\ntwo\nTHREE\n")
         refused = _run_baseline(root, baseline, "pull", rel)
         assert refused.returncode != 0 and "diverged" in _out(refused), _out(refused)
-        pull = _run_baseline(root, baseline, "pull", "--merge", rel)
+        assert (root / rel).read_bytes() == b"ONE\ntwo\nthree\n"
+        pull = _run_baseline(root, baseline, "pull")
         assert pull.returncode == 0, _out(pull)
         assert (root / rel).read_bytes() == b"ONE\ntwo\nTHREE\n", (root / rel).read_bytes()
         row = _load_lock(root)["files"][rel]
@@ -3074,58 +3161,111 @@ def test_pull_merge_combines_both_sides_of_a_diverged_row() -> None:
         assert f"merged: {rel}" in _out(pull), _out(pull)
 
 
-def test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched() -> None:
-    rel = ".claude/tools/grammar.wasm"
+def test_bare_pull_with_only_clean_merges_lands_every_row_in_one_run() -> None:
+    first, second, updated, fresh = ".claude/rules/a.md", ".claude/rules/b.md", ".claude/rules/c.md", ".claude/rules/d.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            first: {"upstream": b"one\ntwo\nthree\n"}, second: {"upstream": b"x\ny\nz\n"},
+            updated: {"upstream": b"old\n"}, fresh: {"local": None, "row": False, "upstream": b"new\n"},
+        })
+        _diverge(root, baseline, first, b"ONE\ntwo\nthree\n", b"one\ntwo\nTHREE\n")
+        _diverge(root, baseline, second, b"X\ny\nz\n", b"x\ny\nZ\n")
+        _upstream_edit(baseline, updated, b"newer\n")
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        landed = {rel: (root / rel).read_bytes() for rel in (first, second, updated, fresh)}
+        assert landed == {first: b"ONE\ntwo\nTHREE\n", second: b"X\ny\nZ\n", updated: b"newer\n", fresh: b"new\n"}, landed
+        again = _run_baseline(root, baseline, "pull")
+        assert "unsettled" not in _out(again), _out(again)
+
+
+def test_bare_pull_with_a_conflict_writes_no_live_file_and_names_it() -> None:
+    clash, updated = ".claude/rules/clash.md", ".claude/rules/updated.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            clash: {"upstream": b"one\ntwo\nthree\n"}, updated: {"upstream": b"old\n"},
+        })
+        _diverge(root, baseline, clash, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+        _upstream_edit(baseline, updated, b"newer\n")
+        # A harness ignore block the post-pull render would write: an unsettled pull writes it no more than a row.
+        (root / ".claude" / "searchignore.harness").write_bytes(b"planted-entry/\n")
+        (root / ".searchignore").write_bytes(b"project-entry/\n")
+        lock_before = (root / ".claude" / "baseline.lock.json").read_bytes()
+        pull = _run_baseline(root, baseline, "pull")
+        out = _out(pull)
+        assert pull.returncode == 1, out
+        assert (root / ".searchignore").read_bytes() == b"project-entry/\n", "an unsettled pull wrote a live file: " + out
+        assert (root / clash).read_bytes() == b"one\nLOCAL\nthree\n"
+        assert (root / updated).read_bytes() == b"old\n", "an upstream row was written beside a row that cannot settle: " + out
+        assert (root / ".claude" / "baseline.lock.json").read_bytes() == lock_before
+        copy = _unsettled_copy(out, clash)
+        assert copy.is_file() and b"<<<<<<< local" in copy.read_bytes() and b"UPSTREAM" in copy.read_bytes(), out
+
+
+def test_a_conflict_resolved_in_its_copy_lands_with_every_other_row_on_the_next_pull() -> None:
+    clash, updated = ".claude/rules/clash.md", ".claude/rules/updated.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            clash: {"upstream": b"one\ntwo\nthree\n"}, updated: {"upstream": b"old\n"},
+        })
+        _diverge(root, baseline, clash, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+        _upstream_edit(baseline, updated, b"newer\n")
+        copy = _unsettled_copy(_out(_run_baseline(root, baseline, "pull")), clash)
+        marked = copy.read_bytes()
+        again = _run_baseline(root, baseline, "pull")
+        assert again.returncode == 1 and (root / updated).read_bytes() == b"old\n", _out(again)
+        assert copy.read_bytes() == marked, "a rerun rewrote the copy the owner is resolving"
+        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
+        done = _run_baseline(root, baseline, "pull")
+        assert done.returncode == 0, _out(done)
+        assert (root / clash).read_bytes() == b"one\nLOCAL UPSTREAM\nthree\n"
+        assert (root / updated).read_bytes() == b"newer\n"
+        assert not copy.exists() and not copy.with_name(copy.name + ".base").exists()
+        assert "base" not in _load_lock(root)["files"][clash]
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][clash] == "local-modified"
+
+
+def test_a_resolved_copy_made_against_older_text_is_not_installed() -> None:
+    rel = ".claude/rules/clash.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+        copy = _unsettled_copy(_out(_run_baseline(root, baseline, "pull")), rel)
+        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
+        _upstream_edit(baseline, rel, b"one\nUPSTREAM\nthree\nfour\n")
+        moved = _run_baseline(root, baseline, "pull")
+        assert moved.returncode == 1 and (root / rel).read_bytes() == b"one\nLOCAL\nthree\n", _out(moved)
+        assert b"<<<<<<< local" in _unsettled_copy(_out(moved), rel).read_bytes()
+
+
+def test_bare_pull_refuses_a_diverged_binary_row_and_writes_nothing() -> None:
+    rel, other = ".claude/tools/grammar.wasm", ".claude/rules/other.md"
     base, local, upstream = b"\x00asm base\n", b"\x00asm local\r\n\xff", b"\x00asm upstream\r\n\xfe"
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": base}})
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": base}, other: {"upstream": b"old\n"}})
         _diverge(root, baseline, rel, local, upstream)
-        before = _load_lock(root)["files"][rel]
-        pull = _run_baseline(root, baseline, "pull", "--merge", rel)
-        out = _out(pull)
-        assert pull.returncode == 1, out
-        assert (root / rel).read_bytes() == local
-        assert _load_lock(root)["files"][rel] == before
+        _upstream_edit(baseline, other, b"newer\n")
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 1 and f"unsettled: {rel} " in _out(pull), _out(pull)
+        assert (root / rel).read_bytes() == local and (root / other).read_bytes() == b"old\n"
 
 
-def test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched() -> None:
-    rel = ".claude/rules/clash.md"
+def test_bare_pull_with_a_dirty_diverged_row_writes_nothing() -> None:
+    dirty, other = ".claude/rules/dirty.md", ".claude/rules/other.md"
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
-        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
-        before = _load_lock(root)["files"][rel]
-        pull = _run_baseline(root, baseline, "pull", "--merge")
-        out = _out(pull)
-        assert pull.returncode == 1, out
-        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n"
-        assert _load_lock(root)["files"][rel] == before
-        line = next((l for l in out.splitlines() if l.startswith(f"conflict: {rel} ")), "")
-        assert line, out
-        copy = Path(line.rsplit(" -> ", 1)[-1].strip())
-        assert copy.is_file() and b"<<<<<<< local" in copy.read_bytes() and b"UPSTREAM" in copy.read_bytes(), line
+        root, baseline, _r, _c = _v2_fixture(path, {dirty: {"upstream": b"one\ntwo\nthree\n"}, other: {"upstream": b"b\n"}})
+        _diverge(root, baseline, dirty, b"ONE\ntwo\nthree\n", b"one\ntwo\nTHREE\n")
+        _write(root / dirty, b"uncommitted\n")
+        _upstream_edit(baseline, other, b"b2\n")
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 1 and f"unsettled: {dirty} " in _out(pull), _out(pull)
+        assert (root / dirty).read_bytes() == b"uncommitted\n" and (root / other).read_bytes() == b"b\n"
+        _write(root / dirty, b"ONE\ntwo\nthree\n")
+        assert _run_baseline(root, baseline, "pull").returncode == 0
+        assert (root / other).read_bytes() == b"b2\n" and (root / dirty).read_bytes() == b"ONE\ntwo\nTHREE\n"
 
 
-def test_resolve_installs_a_marker_free_copy_and_refuses_one_with_markers() -> None:
-    rel = ".claude/rules/clash.md"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
-        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
-        pull = _run_baseline(root, baseline, "pull", "--merge")
-        copy = Path(next(l for l in _out(pull).splitlines() if l.startswith("conflict: ")).rsplit(" -> ", 1)[-1].strip())
-        refused = _run_baseline(root, baseline, "resolve", rel)
-        assert refused.returncode != 0 and "markers" in _out(refused), _out(refused)
-        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n"
-        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
-        done = _run_baseline(root, baseline, "resolve", rel)
-        assert done.returncode == 0, _out(done)
-        assert (root / rel).read_bytes() == b"one\nLOCAL UPSTREAM\nthree\n"
-        row = _load_lock(root)["files"][rel]
-        assert row["base"] == _git(baseline, "rev-parse", "HEAD").decode().strip(), row
-        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "local-modified"
-        assert not copy.exists() and f"resolved: {rel}" in _out(done), _out(done)
-
-
-def test_pull_merge_of_a_row_whose_base_lacks_the_file_writes_a_copy_resolve_installs() -> None:
+def test_a_conflict_in_a_row_whose_base_lacks_the_file_resolves_through_the_next_pull() -> None:
     rel = ".claude/rules/rebased.md"
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\n"}})
@@ -3135,52 +3275,164 @@ def test_pull_merge_of_a_row_whose_base_lacks_the_file_writes_a_copy_resolve_ins
         lock["files"][rel]["base"] = absent
         _write_json(root / ".claude" / "baseline.lock.json", lock)
         _diverge(root, baseline, rel, b"one\nLOCAL\n", b"one\nUPSTREAM\n")
-        pull = _run_baseline(root, baseline, "pull", "--merge", rel)
-        line = next((l for l in _out(pull).splitlines() if l.startswith(f"conflict: {rel} ")), "")
-        assert pull.returncode == 1 and " -> " in line, _out(pull)
-        copy = Path(line.rsplit(" -> ", 1)[-1].strip())
+        copy = _unsettled_copy(_out(_run_baseline(root, baseline, "pull")), rel)
         assert b"LOCAL" in copy.read_bytes() and b"UPSTREAM" in copy.read_bytes(), copy.read_bytes()
         _write(copy, b"one\nLOCAL\n")
-        done = _run_baseline(root, baseline, "resolve", rel)
-        assert done.returncode == 0, _out(done)
-        assert _load_lock(root)["files"][rel]["base"] == _branch_sha(baseline), _load_lock(root)["files"][rel]
+        done = _run_baseline(root, baseline, "pull")
+        assert done.returncode == 0 and (root / rel).read_bytes() == b"one\nLOCAL\n", _out(done)
+        assert "base" not in _load_lock(root)["files"][rel]
 
 
-def test_resolve_refuses_when_upstream_moved_or_the_file_changed_since_the_merge() -> None:
-    rel = ".claude/rules/clash.md"
+def _fork_row(root: Path, rel: str, base: str) -> None:
+    """Make a fixture row a fork whose recorded base is the upstream commit it last reconciled with."""
+    lock = _load_lock(root)
+    lock["files"][rel].update(status="forked", base=base)
+    _write_json(root / ".claude" / "baseline.lock.json", lock)
+    _commit(root, "fork " + rel)
+
+
+def _forked_moved_fixture(path: Path, rel: str, local: bytes, upstream: bytes):
+    """A forked row whose upstream file moved after its base and whose local copy was edited after it."""
+    root, baseline, _r, first = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+    _fork_row(root, rel, first)
+    _diverge(root, baseline, rel, local, upstream)
+    return root, baseline, first
+
+
+def test_bare_pull_merges_a_forked_row_whose_upstream_moved_and_keeps_it_forked() -> None:
+    rel = ".claude/rules/forked_merge.md"
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
-        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
-        pull = _run_baseline(root, baseline, "pull", "--merge")
-        copy = Path(next(l for l in _out(pull).splitlines() if l.startswith("conflict: ")).rsplit(" -> ", 1)[-1].strip())
-        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
-        _write(root / rel, b"one\nLOCAL EDITED\nthree\n")
-        dirty = _run_baseline(root, baseline, "resolve", rel)
-        assert dirty.returncode != 0 and "dirty" in _out(dirty), _out(dirty)
-        assert (root / rel).read_bytes() == b"one\nLOCAL EDITED\nthree\n"
-        _write(root / rel, b"one\nLOCAL\nthree\n")
-        _write(baseline / "template" / rel, b"one\nUPSTREAM\nthree\nfour\n")
-        _commit(baseline, "upstream moves again " + rel)
+        root, baseline, _first = _forked_moved_fixture(path, rel, b"ONE\ntwo\nthree\n", b"one\ntwo\nTHREE\n")
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "forked-upstream-moved"
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert (root / rel).read_bytes() == b"ONE\ntwo\nTHREE\n", (root / rel).read_bytes()
+        row = _load_lock(root)["files"][rel]
+        assert row["status"] == "forked" and row["base"] == _branch_sha(baseline), row
+        assert row["judged"]["sha"] == _sha(b"ONE\ntwo\nTHREE\n"), row
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "forked"
+
+
+def test_a_forked_row_with_a_conflict_keeps_its_fork_when_its_copy_is_resolved() -> None:
+    rel = ".claude/rules/forked_clash.md"
+    with _fixture() as path:
+        root, baseline, first = _forked_moved_fixture(path, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
         before = _load_lock(root)["files"][rel]
-        moved = _run_baseline(root, baseline, "resolve", rel)
-        assert moved.returncode != 0 and f"pull --merge {rel}" in _out(moved), _out(moved)
-        assert _load_lock(root)["files"][rel] == before
-        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n" and copy.is_file()
+        pull = _run_baseline(root, baseline, "pull")
+        copy = _unsettled_copy(_out(pull), rel)
+        assert pull.returncode == 1, _out(pull)
+        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n" and _load_lock(root)["files"][rel] == before
+        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
+        done = _run_baseline(root, baseline, "pull")
+        assert done.returncode == 0, _out(done)
+        row = _load_lock(root)["files"][rel]
+        assert row["status"] == "forked" and row["base"] == _branch_sha(baseline), row
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "forked"
 
 
-def test_pull_merge_reports_a_dirty_diverged_row_and_pulls_the_rest() -> None:
-    dirty, other = ".claude/rules/dirty.md", ".claude/rules/other.md"
+def test_merge_and_resolve_are_retired_and_name_the_pull_that_replaces_them() -> None:
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {dirty: {"upstream": b"a\n"}, other: {"upstream": b"b\n"}})
-        _diverge(root, baseline, dirty, b"A\n", b"a2\n")
-        _write(root / dirty, b"uncommitted\n")
-        _write(baseline / "template" / other, b"b2\n")
-        _commit(baseline, "upstream edit " + other)
-        pull = _run_baseline(root, baseline, "pull", "--merge")
-        out = _out(pull)
-        assert pull.returncode == 1, out
-        assert (root / dirty).read_bytes() == b"uncommitted\n"
-        assert (root / other).read_bytes() == b"b2\n", out
+        root, baseline, _r, _c = _v2_fixture(path, {".claude/rules/any.md": {"upstream": b"a\n"}})
+        for args in (("pull", "--merge"), ("resolve", ".claude/rules/any.md")):
+            result = _run_baseline(root, baseline, *args)
+            assert result.returncode == 2 and "pull" in _out(result) and "retired" in _out(result), (args, _out(result))
+
+
+RED_RUN = (  # the shape `harness_tests.py --for` prints on a red run, cut from a live one and trimmed
+    "harness_tests: 1 of 4 proofs reused from the pass cache (store)\n"
+    "FAIL 9.8s C:\\work\\consumer\\.claude\\tests\\test_alpha.py\n"
+    "    | ok   a passing check\n"
+    "    | FAIL a failing check\n"
+    "FAIL 0.1s C:\\work\\consumer\\.claude\\tests\\test_beta.py\n"
+    "    | FAIL test_inner: AssertionError: planted\n"
+    "harness_tests: scoped to 1 input(s): 4 run, 2 pass, 2 fail, 0 cannot-run, 13.6s wall, 12 jobs\n"
+    "harness_tests: unstamped .claude/tools/pulled.py: blocked by test_alpha.py, test_beta.py\n"
+)
+
+
+def test_a_red_pull_names_each_red_proof_once_by_file_name() -> None:
+    engine = _load_engine()
+    with _fixture() as path:
+        scripts = path / ".claude" / "scripts"
+        _write(scripts / "red_run.txt", RED_RUN.encode())
+        _write(scripts / "harness_tests.py",
+               b"import pathlib, sys\nsys.stdout.write(pathlib.Path(__file__).with_name('red_run.txt').read_text())\nsys.exit(1)\n")
+        _write(path / ".claude" / "tools" / "pulled.py", b"x = 1\n")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = engine._prove_pulled(path, [".claude/tools/pulled.py"])
+        line = next(l for l in out.getvalue().splitlines() if l.startswith("red proof(s) after pull"))
+        assert code == 1 and line.rsplit(": ", 1)[-1].split(", ") == ["test_alpha.py", "test_beta.py"], out.getvalue()
+
+
+HELPER = ".claude/hooks/_helper.py"
+USER = ".claude/tools/user.py"
+HELPER_OLD, HELPER_NEW = b"def old():\n    return 1\n", b"def old():\n    return 1\n\n\ndef newer():\n    return 2\n"
+
+
+def _helper_fixture(path: Path, user_old: bytes, user_new: bytes, helper_local: bytes | None):
+    """A tool row whose upstream copy changed, beside a hook helper both sides changed. `helper_local` is the
+    helper's committed local copy, None for an unmodified one."""
+    root, baseline, _r, _c = _v2_fixture(path, {HELPER: {"upstream": HELPER_OLD}, USER: {"upstream": user_old}})
+    if helper_local is not None:
+        _write(root / HELPER, helper_local)
+        _commit(root, "local helper edit")
+    _write(baseline / "template" / HELPER, HELPER_NEW)
+    _write(baseline / "template" / USER, user_new)
+    _commit(baseline, "upstream moves the helper and its caller")
+    return root, baseline
+
+
+def test_an_upstream_tool_needing_a_name_only_a_conflicting_helper_defines_is_never_written_alone() -> None:
+    old, new = b"import _helper\n_helper.old()\n", b"from _helper import newer\nimport _helper\n_helper.newer()\n"
+    mine = b"def old():\n    return 0\n"
+    with _fixture() as path:
+        root, baseline = _helper_fixture(path, old, new, helper_local=mine)
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 1, _out(pull)
+        assert (root / USER).read_bytes() == old, "a pulled importer needs a name its unsettled helper lacks"
+        assert (root / HELPER).read_bytes() == mine
+        copy = _unsettled_copy(_out(pull), HELPER)
+        _write(copy, mine + b"\n\ndef newer():\n    return 2\n")
+        done = _run_baseline(root, baseline, "pull")
+        assert done.returncode == 0, _out(done)
+        assert (root / USER).read_bytes() == new and b"def newer" in (root / HELPER).read_bytes(), _out(done)
+
+
+def test_bare_pull_with_nothing_unsettled_writes_every_row_as_before() -> None:
+    new = b"from _helper import newer\n"
+    with _fixture() as path:
+        root, baseline = _helper_fixture(path, b"import _helper\n_helper.old()\n", new, helper_local=None)
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert (root / USER).read_bytes() == new and b"def newer" in (root / HELPER).read_bytes(), _out(pull)
+
+
+def test_engine_phase_writes_nothing_while_a_row_cannot_settle_and_the_rerun_lands_it_all() -> None:
+    engine_rel, clash = ".claude/tools/baseline_sync.py", ".claude/rules/clash.md"
+    old = ENGINE.read_bytes()
+    new = old + b"\n# a newer engine\n"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            engine_rel: {"upstream": new, "local": old, "hash": _sha(old)},
+            clash: {"upstream": b"one\ntwo\nthree\n"},
+        })
+        for module in ENGINE.parent.glob("*.py"):
+            if module.name != "baseline_sync.py":
+                shutil.copy(module, root / ".claude" / "tools" / module.name)
+        _commit(root, "engine siblings")
+        _diverge(root, baseline, clash, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+
+        def pull() -> subprocess.CompletedProcess[bytes]:
+            return subprocess.run([sys.executable, str(root / engine_rel), "pull", "--baseline-dir", str(baseline)],
+                                  cwd=root, env=_env(root), stdin=subprocess.DEVNULL, capture_output=True)
+
+        first = pull()
+        assert first.returncode == 1 and f"unsettled: {clash} " in _out(first), _out(first)
+        assert (root / engine_rel).read_bytes() == old, "the engine row was written before the whole pull could land"
+        _write(_unsettled_copy(_out(first), clash), b"one\nLOCAL UPSTREAM\nthree\n")
+        done = pull()
+        assert done.returncode == 0, _out(done)
+        assert (root / engine_rel).read_bytes() == new and (root / clash).read_bytes() == b"one\nLOCAL UPSTREAM\nthree\n"
 
 
 def _keep_local_judgment(content: bytes) -> dict:
@@ -3556,7 +3808,7 @@ def test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push() ->
 
 
 def test_judge_push_refuses_a_row_whose_upstream_copy_changed_since_its_base() -> None:
-    """A push over a newer upstream copy silently overwrites it: refuse, name `pull --merge`; a pull clears it."""
+    """A push over a newer upstream copy silently overwrites it: refuse, name `pull`; a bare pull clears it."""
     rel = ".claude/tools/over_newer.py"
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
@@ -3567,9 +3819,9 @@ def test_judge_push_refuses_a_row_whose_upstream_copy_changed_since_its_base() -
         result = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
         out = _out(result)
         assert result.returncode == 1, out
-        assert rel in out and "upstream changed" in out and "pull --merge" in out, out
+        assert rel in out and "upstream changed" in out and "`pull`" in out, out
         assert "judged" not in _load_lock(root)["files"][rel], out
-        merged = _run_baseline(root, baseline, "pull", "--merge", rel)
+        merged = _run_baseline(root, baseline, "pull")
         assert merged.returncode == 0, _out(merged)
         again = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
         assert again.returncode == 0, _out(again)
@@ -5111,7 +5363,7 @@ def main(part: int = 1) -> int:
         assert (Path(__file__).parent / ("test_baseline_sync_part%d.py" % other)).is_file(), "missing part %d" % other
     cases = [
         test_pull_settles_a_tracked_row_at_the_copy_it_writes,
-        test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched,
+        test_bare_pull_refuses_a_diverged_binary_row_and_writes_nothing,
         test_pull_updates_the_running_engine_first_and_reruns_with_it,
         test_engine_pull_leaves_its_proofs_to_the_rest_of_the_pull,
         test_pull_stops_when_the_engine_pull_reports_a_conflict,
@@ -5144,13 +5396,18 @@ def main(part: int = 1) -> int:
         test_pull_retires_unmodified_file_removed_upstream,
         test_explicit_pull_keeps_modified_file_removed_upstream_as_local,
         test_pull_drops_row_of_file_removed_upstream_and_missing_locally,
-        test_pull_merge_reports_a_dirty_diverged_row_and_pulls_the_rest,
-        test_resolve_installs_a_marker_free_copy_and_refuses_one_with_markers,
-        test_resolve_refuses_when_upstream_moved_or_the_file_changed_since_the_merge,
+        test_bare_pull_with_a_dirty_diverged_row_writes_nothing,
+        test_a_conflict_resolved_in_its_copy_lands_with_every_other_row_on_the_next_pull,
+        test_a_resolved_copy_made_against_older_text_is_not_installed,
         test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it,
-        test_pull_merge_combines_both_sides_of_a_diverged_row,
-        test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched,
-        test_pull_merge_of_a_row_whose_base_lacks_the_file_writes_a_copy_resolve_installs,
+        test_a_never_ship_prefix_hides_an_upstream_offer_but_never_an_upstream_row_a_pull_delivers,
+        test_candidates_lists_an_unjudged_path_and_skips_a_never_ship_path,
+        test_v2_classify_local_declines_a_pulled_path_once_its_file_is_gone,
+        test_never_ship_command_sets_the_policy_and_drops_local_rows_under_it,
+        test_migrate_lock_drops_local_rows_under_never_ship_on_load,
+        test_bare_pull_merges_a_diverged_row_and_a_named_pull_still_refuses_it,
+        test_bare_pull_with_a_conflict_writes_no_live_file_and_names_it,
+        test_a_conflict_in_a_row_whose_base_lacks_the_file_resolves_through_the_next_pull,
         test_check_reports_layer_closure_and_strict_fails,
         test_bare_pull_skips_unrowed_offer_and_counts_it,
         test_named_pull_adopts_offer_as_tracked,
@@ -5206,12 +5463,20 @@ def main(part: int = 1) -> int:
         test_v2_concurrent_classify_keeps_both_rows,
         test_v2_classify_refuses_malformed_adaptation_contract,
         test_v2_compose_refuses_malformed_adaptation_contract,
+        test_v2_compose_names_a_retired_adaptation_key_and_check_fails_on_it,
         test_v2_many_concurrent_classifies_lose_no_row,
         test_v1_check_json_golden_is_read_only,
         test_pull_new_seed_row_is_local,
         test_pull_keeps_existing_seed_file,
         test_bare_pull_skips_unrowed_differing_local,
-        test_bare_pull_names_a_diverged_row_it_holds,
+        test_bare_pull_with_only_clean_merges_lands_every_row_in_one_run,
+        test_bare_pull_merges_a_forked_row_whose_upstream_moved_and_keeps_it_forked,
+        test_a_forked_row_with_a_conflict_keeps_its_fork_when_its_copy_is_resolved,
+        test_an_upstream_tool_needing_a_name_only_a_conflicting_helper_defines_is_never_written_alone,
+        test_merge_and_resolve_are_retired_and_name_the_pull_that_replaces_them,
+        test_a_red_pull_names_each_red_proof_once_by_file_name,
+        test_bare_pull_with_nothing_unsettled_writes_every_row_as_before,
+        test_engine_phase_writes_nothing_while_a_row_cannot_settle_and_the_rerun_lands_it_all,
         test_explicit_pull_refuses_unrowed_differing_local,
         test_pull_reports_a_local_caller_of_a_removed_module_attribute,
         test_pull_silent_when_the_pulled_copy_still_defines_the_name,
@@ -5309,6 +5574,8 @@ def main(part: int = 1) -> int:
         test_the_runner_stores_the_engine_reads_are_planted,
         test_pull_and_update_lock_with_layers_keep_the_lock_profile,
         test_a_copy_equal_to_upstream_at_the_pin_reconciles_there_whatever_older_base_it_records,
+        test_pull_proves_a_path_it_retires_like_one_it_writes,
+        test_a_committed_deletion_leaves_the_pull_journal,
     ]
     return run_cases(cases[part - 1::PARTS])
 

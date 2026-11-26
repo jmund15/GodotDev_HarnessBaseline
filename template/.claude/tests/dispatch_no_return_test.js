@@ -54,6 +54,13 @@ ck('4c spill run: route names the spill file before salvage', /\/tmp\/spill\/dea
 r = await run({ jobs: [J('scout', 'Explore')], results: [['scout', null]], spillDir: '/tmp/spill' })
 ck('5 a no-write agent type routes straight to salvage (no spill path)', /^scout -> \/salvage_fanout/.test(r.ret.noReturn.recover), r.ret.noReturn.recover)
 
+// a review seat (a schema job with a brief) records findings beside its brief: the route names that file before salvage
+r = await run({ jobs: [Object.assign(J('seat'), { schema: { type: 'object' }, promptPath: '/runs/p/brief_seat.md' })], results: [['seat', null]], spillDir: '/tmp/spill' })
+ck('6a a dead review seat names the findings file beside its brief before salvage',
+  /\/runs\/p\/brief_seat\.findings\.jsonl .* else \/salvage_fanout <transcriptDir> seat/.test(r.ret.noReturn.recover), r.ret.noReturn.recover)
+r = await run({ jobs: [Object.assign(J('plain'), { promptPath: '/runs/p/brief_plain.md' })], results: [['plain', null]] })
+ck('6b a job with no schema names no findings file', !/findings\.jsonl/.test(r.ret.noReturn.recover), r.ret.noReturn.recover)
+
 console.log('\n' + pass + ' pass, ' + fail + ' fail')
 process.exit(fail ? 1 : 0)
 })()

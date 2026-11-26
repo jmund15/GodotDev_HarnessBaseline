@@ -118,6 +118,52 @@ def case_catalog_views(root):
     }
 
 
+def case_deleted_file(root):
+    """A file deleted from the tree is still the file a proof imports or runs by path: every view selects the proofs
+    whose code reaches it, never one that only names it in prose, and a file that was never deleted selects as before."""
+    from _proof_runner.catalog import Catalog, View
+
+    gone, kept = ".claude/tools/gone_tool.py", ".claude/tools/kept_tool.py"
+    reaching = {
+        ".claude/tests/test_uses_import.py": "import gone_tool\n",
+        ".claude/tests/test_uses_from.py": "def case():\n    from gone_tool import x\n    return x\n",
+        ".claude/tests/test_uses_path.py": ("import os, subprocess, sys\n"
+                                            "subprocess.run([sys.executable, os.path.join('tools', 'gone_tool.py')])\n"),
+        ".claude/tests/test_uses_module.py": "import subprocess, sys\nsubprocess.run([sys.executable, '-m', 'gone_tool'])\n",
+        ".claude/tests/test_uses_import_part2.py": "import test_uses_import\n",
+    }
+    files = {
+        gone: "x = 1\n", kept: "y = 1\n", **reaching,
+        ".claude/tests/test_prose_only.py": "# gone_tool.py\nx = 1\n",
+        ".claude/tests/test_uses_kept.py": "import kept_tool\n",
+        ".claude/tests/test_unrelated.py": "import os\n",
+    }
+    for rel, text in files.items():
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8", newline="\n")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "fixture")
+    _git(root, "rm", "-q", gone)
+    staged = Catalog.open(View.index(str(root)))
+    _git(root, "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "delete")
+    wanted = sorted(reaching)
+    kept_hits = sorted(p for p in Catalog.open(View.worktree(str(root))).select([kept]).proofs)
+    return {
+        "a committed deletion selects the proofs that import, run or `-m` it":
+        sorted(Catalog.open(View.worktree(str(root))).select([gone]).proofs) == wanted,
+        "a staged deletion selects them from the index": sorted(staged.select([gone]).proofs) == wanted,
+        "a deletion selects them at a revision (the close's view)":
+        sorted(Catalog.open(View.revision(str(root), "HEAD")).select([gone]).proofs) == wanted,
+        "`select_for` (--for, --proofs-for) selects them over a deleted path":
+        sorted(Path(p).relative_to(root).as_posix() for p in ht.select_for(str(root), [gone])) == wanted,
+        "a file never deleted selects as before": kept_hits == [".claude/tests/test_uses_kept.py"],
+        "a deleted path beside a live one leaves the live one's proofs alone":
+        sorted(Catalog.open(View.worktree(str(root))).select([gone, kept]).proofs) == sorted(
+            [*wanted, ".claude/tests/test_uses_kept.py"]),
+    }
+
+
 def main() -> int:
     failures = 0
     with tempfile.TemporaryDirectory(dir=os.environ.get("TMP")) as tmp:
@@ -173,6 +219,12 @@ def main() -> int:
         except ModuleNotFoundError as exc:
             decisions = {f"catalog views: {exc}": False}
         for label, ok in decisions.items():
+            print(("ok   " if ok else "FAIL ") + label)
+            failures += not ok
+    with tempfile.TemporaryDirectory(dir=os.environ.get("TMP")) as tmp:
+        root = Path(tmp)
+        _git(root, "init", "-q")
+        for label, ok in case_deleted_file(root).items():
             print(("ok   " if ok else "FAIL ") + label)
             failures += not ok
     print("%d failure(s)" % failures if failures else "all cases pass")

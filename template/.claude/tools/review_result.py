@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO / ".claude/tools"))
 import tool_profiles  # noqa: E402
 import finding_bar  # noqa: E402
 import review_snapshot  # noqa: E402
+import seat_findings  # noqa: E402
 _EVIDENCE_KINDS = json.loads((REPO / '.claude/schemas/evidence.json').read_text(encoding='utf-8'))['items']['oneOf']
 
 _ACTIONS = {"FIX", "ASK", "PLAN"}
@@ -1053,11 +1054,13 @@ def ingest(seats):
         provenance_failed = any(not (named_block and error == "review stopped at 'blocked'") for error in errors)
         if checked is not None and missing:
             errors.append("mandates not accounted for: " + ", ".join(missing))
-        fatal = (record.get("exitCode") != 0 or record.get("schemaValid") is not True
-                 or record.get("engagement") == "unproven" or missing_attestation)
+        returned = record.get("recovered") or (record.get("exitCode") == 0 and record.get("schemaValid") is True)
+        fatal = (not returned or record.get("engagement") == "unproven" or missing_attestation)
         if missing_attestation:
             errors.append("required runtime model attestation missing")
-        if record.get("exitCode") != 0 or record.get("schemaValid") is not True:
+        if record.get("recovered"):
+            errors.append("structured return failed; findings read from the seat's findings file")
+        elif not returned:
             errors.append("sidecar record failed")
         if record.get("engagement") == "unproven":
             errors.append("target engagement was not proven")
@@ -1146,6 +1149,20 @@ def ingest(seats):
     return {"counts": counts, "coverage": coverage, "sources": sources}
 
 
+def record_of(run):
+    """The run record `run` names, {} when it names none or the file is unreadable."""
+    try:
+        return json.loads(Path(run["record"]).read_text(encoding="utf-8")) if run.get("record") else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def returned(run):
+    """True when the seat's structured return landed whole: a clean exit, a valid record and a result object."""
+    return (run.get("exit") == 0 and record_of(run).get("schemaValid") is True
+            and read_payload(run.get("stdout")) is not None)
+
+
 def prepare_review(jobs, results):
     validate_review_jobs(jobs)
     seats = []
@@ -1153,17 +1170,20 @@ def prepare_review(jobs, results):
         label = job["label"]
         run = results.get(label) or {}
         record_path = run.get("record")
-        try:
-            record = json.loads(Path(record_path).read_text(encoding="utf-8")) if record_path else {}
-        except (OSError, ValueError, TypeError):
-            record = {}
+        record = record_of(run)
         if run.get("exit") != record.get("exitCode"):
             record["exitCode"] = None
         if record.get("engagement") not in ("proven", "unproven"):
             record["engagement"] = "proven" if engaged(job, run.get("stream")) else "unproven"
+        payload = read_payload(run.get("stdout"))
+        # A seat the caller marked `recovered` holds the findings it recorded one by one in place of a return
+        # (`sidecar_fanout.recover_returns`); the same checks judge them, so only the return itself is excused.
+        rows = seat_findings.recover(job["promptFile"]) if run.get("recovered") else None
+        if rows:
+            payload, record = {"type": "result", "structured_output": rows}, {**record, "recovered": True}
         seats.append({"label": label, "mandates": job["mandates"], "mustRead": job.get("mustRead"),
                       "reads": called_reads(run.get("stream")),
-                      "payload": read_payload(run.get("stdout")), "record": record, "recordPath": record_path,
+                      "payload": payload, "record": record, "recordPath": record_path,
                       "tier": job.get("tier"), "effort": job.get("effort")})
     return ingest(seats)
 
