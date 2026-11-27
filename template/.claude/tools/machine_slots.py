@@ -489,6 +489,12 @@ _EXCLUSIVE = 'x'
 _ROUND_NS = 1_000_000
 
 
+def _queued(queue):
+    """The queue's finished tickets in name order. On POSIX `_file_lock` creates a lock as `<name>.<hex>.new` and
+    hard-links it to its name, so the queue briefly holds both; the staged twin is not a ticket."""
+    return sorted(t for t in os.listdir(queue) if t.endswith('.lock'))
+
+
 def _ticket_name(queue, exclusive, pid=None):
     """`<key>-<pid>-<n>-q[x].lock`: tickets are served in name order, and the name is fixed at enqueue, so every
     harness version that sorts names agrees on the order (a rank re-derived from the live queue would let an
@@ -504,7 +510,7 @@ def _ticket_name(queue, exclusive, pid=None):
     pid = os.getpid() if pid is None else pid
     key = time.time_ns()
     if not exclusive:
-        shared = [t.split('-') for t in os.listdir(queue) if not t.endswith(_EXCLUSIVE + '.lock')]
+        shared = [t.split('-') for t in _queued(queue) if not t.endswith(_EXCLUSIVE + '.lock')]
         shared = [(int(parts[0]), parts[1], len(parts) == 3) for parts in shared if len(parts) > 2 and parts[0].isdigit()]
         floors = [min(k for k, _, _ in shared) + 1] if shared else [key]
         floors += [k + 1 for k, _, old in shared if old]
@@ -519,7 +525,7 @@ def _live_ticket_before(queue, name):
     follows shared work pays one drain of the longest running lane, so exclusive takers queued together pay
     it once between them. A ticket whose owner died is reclaimed by the probe."""
     mine = name.endswith(_EXCLUSIVE + '.lock')
-    for other in sorted(os.listdir(queue)):
+    for other in _queued(queue):
         if other == name:
             continue
         ahead = (not mine or other < name) if other.endswith(_EXCLUSIVE + '.lock') else (not mine and other < name)

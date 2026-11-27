@@ -2707,6 +2707,8 @@ def test_publish_commit_message_names_rows_subject_and_ledger_reason() -> None:
              "signal": "old", "recommended": "apply", "outcome": "applied", "reason": "old reason"},
             {"date": "2026-11-02", "session": "s", "target": ".claude/tools/a.py",
              "signal": "new", "recommended": "apply", "outcome": "applied", "reason": "newest reason"},
+            {"date": "2026-11-03", "session": "s", "target": ".claude/tools/a.py",
+             "signal": "later", "recommended": "apply", "outcome": "recorded", "reason": "recorded, land nothing"},
             {"date": "2026-11-02", "session": "s", "target": ".claude/tools/elsewhere.py",
              "signal": "x", "recommended": "apply", "outcome": "applied", "reason": "not published"},
         ]
@@ -2741,6 +2743,7 @@ def test_publish_commit_message_names_rows_subject_and_ledger_reason() -> None:
     assert "- .claude/tools/a.py (M)" in body and "- .claude/tools/b.py (A)" in body, body
     assert ".claude/tools/a.py: newest reason" in body, body
     assert body.count("Why:") == 1 and "old reason" not in body and "elsewhere" not in body, body
+    assert "land nothing" not in body, body  # the Why is the newest row that landed the change, not a later record
     assert "Why:" not in body2, body2
 
 
