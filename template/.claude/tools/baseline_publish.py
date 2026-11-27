@@ -867,13 +867,14 @@ def _source_subject(source: dict) -> str:
 
 def _row_reasons(root: Path, rows: list[str]) -> list[tuple[str, str]]:
     """The newest `autolearn_outcomes.jsonl` reason per row whose target is a published relpath, in
-    publication order; a row with no matching ledger row or no reason gets no line."""
+    publication order, read from rows that landed a change (`outcome: applied`): a later row that recorded a
+    slip and landed nothing is not why the published text changed. A row with no such ledger row gets no line."""
     records, _bad = autolearn_outcomes.read_rows(str(root / ".claude" / "autolearn_outcomes.jsonl"))
     newest: dict[str, str] = {}
     for record in records:
         target = str(record.get("target") or "")
         reason = str(record.get("reason") or "").strip()
-        if target and reason:
+        if target and reason and record.get("outcome") == "applied":
             newest[target] = reason
     return [(relpath, newest[relpath]) for relpath in rows if relpath in newest]
 

@@ -20,7 +20,7 @@ A delegated judging fan-out pins a fanout-tier row for every row's first verdict
 
 ## Publish
 
-Every publication is one `publish` transaction: identity scan, manifest check, `audit_baseline.py --strict`, the template battery, then a PR. The PR merges once the ruleset's required `root` check passes. No other lane blocks it, and a red lane is a main-check row. A merge without that check needs `--no-ci`, permitted only when the pinned baseline has no workflow, reporting CI skipped, never passed. Once a commit carrying `push` verdicts reaches the default branch, publish those rows as one small PR then, never batched to session end, because each batch leaves every other consumer a session behind. Validation runs on the local commit, so fix every red before the one land.
+Every publication is one `publish` transaction: identity scan, manifest check, `audit_baseline.py --strict`, the template battery, then a PR. The PR merges once the ruleset's required `root` check passes. No other lane blocks it, and a red lane is a main-check row. A merge without that check needs `--no-ci`, permitted only when the pinned baseline has no workflow, reporting CI skipped, never passed. When to publish is `CLAUDE.interactive.md` §Landing what you finish; the rows one land carries publish as one small PR. Validation runs on the local commit, so fix every red before the one land.
 
 **Subject and proof travel together.** Publishing a row whose behavior an upstream proof asserts breaks that proof unless the proof publishes in the same transaction: the API it asserts arrives only with the publication. When the consumer's proof cannot publish (it names project content), the subject waits too, or the baseline copy is fixed in a companion PR that carries the subject.
 

@@ -470,7 +470,7 @@ class MachineSlots(unittest.TestCase):
         queue = Path(self.folder) / 'queue'
         until = time.monotonic() + 10
         while time.monotonic() < until:
-            if queue.is_dir() and len(list(queue.iterdir())) >= count:
+            if queue.is_dir() and len(slots._queued(str(queue))) >= count:
                 return
             time.sleep(.01)
         self.fail('the waiters never queued')
@@ -593,11 +593,21 @@ class MachineSlots(unittest.TestCase):
         for thread in threads:
             thread.start()
         self._wait_for_tickets(6)
-        keys = sorted(int(name.split('-')[0]) for name in os.listdir(Path(self.folder) / 'queue'))
+        keys = sorted(int(name.split('-')[0]) for name in slots._queued(str(Path(self.folder) / 'queue')))
         self.assertEqual(len(set(k // slots._ROUND_NS for k in keys)), 6, 'tickets queued together shared a round')
         slots.release_all(holder)
         for thread in threads:
             thread.join(10)
+
+    def test_a_ticket_being_created_is_not_a_ticket(self):
+        """On POSIX a lock is created as `<name>.<hex>.new` and hard-linked to its name, so the queue briefly holds
+        both. Ticket order and every count of the queue read only finished `.lock` names."""
+        queue = Path(self.folder) / 'queue'
+        queue.mkdir(parents=True, exist_ok=True)
+        (queue / ('%020d-424242-1-qx.lock.0011223344556677.new' % 5)).write_bytes(b'')
+        name = slots._ticket_name(str(queue), False)
+        self.assertGreater(int(name.split('-')[0]), 10 ** 9, 'a staged twin set the shared key floor')
+        self.assertEqual(slots._queued(str(queue)), [])
 
     def test_a_lone_caller_is_admitted_before_a_many_ticket_callers_second(self):
         os.environ['HARNESS_MACHINE_SLOTS'] = '1'
