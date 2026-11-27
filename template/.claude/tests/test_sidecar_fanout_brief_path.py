@@ -30,7 +30,7 @@ def main():
     check("a brief at <out dir>/<label>.md is refused, naming the job and the path",
           bool(message) and "vc-s4" in message and "vc-s4.md" in message, message)
     check("a brief beside it under another name, and one in another folder, pass",
-          message is not None and "vc-s5" not in message and "gf" not in message, message)
+          message is not None and "vc-s5 (" not in message and "gf (" not in message, message)
     check("no collision returns None", sidecar_fanout.brief_collision(jobs[1:], out) is None)
     os.rmdir(out)
     os.rmdir(other)

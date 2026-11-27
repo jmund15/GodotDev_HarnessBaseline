@@ -16,9 +16,11 @@ worktree path that workflow checks out.
    and run none of them: `gh api -X POST repos/:owner/:repo/actions/runners/registration-token --jq .token`,
    then, in the `<label>` runner directory (the runner version `reference/project_stack.md` pins),
    `.\config.cmd --url https://github.com/<owner>/<repo> --token <token> --name <label> --labels <label> --unattended`.
-2. **Starts at logon, never times out.** `Get-ScheduledTask '<label> runner'` exists and is Running. Its
-   action is `pwsh.exe -NoProfile -WindowStyle Hidden -Command .\run.cmd` in the runner directory, its
-   trigger is `MSFT_TaskLogonTrigger`, and `Settings.ExecutionTimeLimit` is `PT0S` (Task Scheduler's
+2. **Starts at logon, restarts on exit, never times out.** `Get-ScheduledTask '<label> runner'` exists and is Running. Its
+   action is `pwsh.exe -NoProfile -WindowStyle Hidden -Command "while ($true) { & .\run.cmd; Start-Sleep -Seconds 60 }"`
+   in the runner directory: the listener exits on an error its helper calls non-retryable (a session GitHub expired
+   during a network stall), `run.cmd` then returns, and without the loop the runner stays offline until the next logon
+   while every job for it queues. Its trigger is `MSFT_TaskLogonTrigger`, and `Settings.ExecutionTimeLimit` is `PT0S` (Task Scheduler's
    default limit would end a long land). Absent or wrong → replace it with `-Force`:
    `$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`,
    then `Register-ScheduledTask -Force -TaskName '<label> runner' -Action $a -Trigger $t -Settings $s -User '<DOMAIN\user>' -RunLevel Limited`.
