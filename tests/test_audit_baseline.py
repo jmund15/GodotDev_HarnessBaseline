@@ -380,6 +380,66 @@ def test_staleness_accepts_an_offer_memory_row() -> None:
     assert [i["path"] for i in stale.items if i["check"] == "manifest-staleness"] == [rel], stale.items
 
 
+def _planted_template(tmp: Path) -> Path:
+    """A template tree carrying the modules the audit's reader imports from it (every `.py` under
+    hooks, tools and scripts), with an empty `tests/` for the case to plant proofs in."""
+    template = tmp / "template"
+    for folder in ("hooks", "tools", "scripts"):
+        source = ROOT / "template" / ".claude" / folder
+        for path in source.rglob("*.py"):
+            target = template / ".claude" / folder / path.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+    (template / ".claude" / "tests").mkdir(parents=True)
+    _git(tmp, "init", "-q")
+    return template
+
+
+def test_unproven_check_reports_a_tool_with_no_bound_proof() -> None:
+    """The audit is the local surface a publish runs before its PR: it reports a shipped tool with no
+    shipped proof, clears one bound by name and one bound through its importer, and keeps one whose
+    only proof ships above its layer. Planted into a copy of the reader's own modules."""
+    audit = _load_audit()
+    tmp = Path(tempfile.mkdtemp(prefix="audit_baseline_unproven_"))
+    try:
+        template = _planted_template(tmp)
+        files: dict[str, dict] = {}
+
+        def plant(rel: str, layer: str = "coding", text: str = "VALUE = 0\n") -> None:
+            target = template / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8", newline="\n")
+            files[rel] = {"layer": layer}
+
+        def reported() -> list[str]:
+            findings = audit.Findings()
+            manifest = {"files": [{"path": rel, "layer": entry["layer"]}
+                                  for rel, entry in files.items()]}
+            audit.check_unproven_tools(findings, manifest, template)
+            return sorted(item["path"] for item in findings.items if item["check"] == "unproven")
+
+        plant(".claude/tools/planted_alpha.py")
+        assert reported() == [".claude/tools/planted_alpha.py"]
+
+        plant(".claude/tests/test_planted_alpha.py")
+        assert reported() == [], "a proof named for the tool clears it"
+
+        plant(".claude/scripts/lib/planted_beta.py")
+        plant(".claude/hooks/planted_gamma.py", text="import planted_beta\n")
+        assert reported() == [".claude/hooks/planted_gamma.py",
+                              ".claude/scripts/lib/planted_beta.py"]
+
+        plant(".claude/tests/test_planted_gamma.py")
+        assert reported() == [], "a proof named for the tool's importer clears it"
+
+        plant(".claude/tools/planted_delta.py", layer="pure")
+        plant(".claude/tests/test_planted_delta.py", layer="coding")
+        assert reported() == [".claude/tools/planted_delta.py"], \
+            "a proof above the tool's layer never reaches that tool's consumers"
+    finally:
+        _remove(tmp)
+
+
 def main() -> int:
     cases = [
         test_surface_check_flags_a_game_noun_in_a_pure_skill_description,
@@ -394,6 +454,7 @@ def main() -> int:
         test_identity_scan_flags_a_planted_leak,
         test_scanner_flags_every_identity_form_in_the_corpus,
         test_secret_scan_flags_a_planted_secret_shape,
+        test_unproven_check_reports_a_tool_with_no_bound_proof,
     ]
     failures = []
     for case in cases:

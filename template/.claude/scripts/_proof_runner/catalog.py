@@ -32,6 +32,13 @@ CORPUS = {
     "test_claudemd_citations.py": (".claude",),
     "test_guard_text.py": (".claude/guards",),
     "test_layer_closure.py": (".claude",),
+    "test_nested_root_git_forms.py": (".claude/tools", ".claude/scripts"),
+    "test_cli_usage.py": (".claude/tools", ".claude/scripts", ".claude/hooks"),
+    "test_rigor_doctrine.py": (".claude/commands", ".claude/skills", ".claude/tools"),
+    "test_workflow_tool_profiles.py": (".claude/workflows",),
+    "test_tool_profiles.py": (".claude/guards", ".claude/tools", ".claude/hooks"),
+    "test_dispatch_mechanism_guard.py": (".claude/commands",),
+    "test_machine_slots.py": (".claude/tests",),
 }
 _PART = re.compile(r"^(.+)_part\d+(\.\w+)$")
 _IMPORT_DIRS = tuple(f".claude/{d}{sub}" for d in ("hooks", "tools", "scripts") for sub in ("", "/lib"))
@@ -507,12 +514,14 @@ class Catalog:
         return [rel for rel in self.proofs if any(named_for(posixpath.basename(rel), stem) for stem in stems)]
 
     def tiers(self, inputs, known):
-        triggers = {p: [] for p in self.proofs}
-        for path, bound in self.bindings(sorted(set(inputs) - self.proofs_set), include_excluded=True).items():
+        """One row per proof `bindings` can select: the catalog's and the loss floor's table rows."""
+        everyone = self.proofs + self.floor
+        triggers = {p: [] for p in everyone}
+        for path, bound in self.bindings(sorted(set(inputs) - set(everyone)), include_excluded=True).items():
             for proof in bound:
                 triggers[proof].append(path)
         rows = []
-        for proof in self.proofs:
+        for proof in everyone:
             name = posixpath.basename(proof)
             seconds = known.get(name)
             numeric = isinstance(seconds, (int, float))

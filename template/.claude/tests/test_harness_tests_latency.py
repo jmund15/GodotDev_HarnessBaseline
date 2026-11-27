@@ -295,6 +295,23 @@ class TiersRows(Planted):
         self.assertIn("none", text)
 
 
+    def test_a_floor_row_is_a_tiers_row_triggered_by_the_floor_modules(self):
+        """A loss-floor row is a proof the floor table runs, so --tiers lists it with the floor modules that select it."""
+        git(self.repo, "init", "-q")
+        git(self.repo, "config", "user.email", "t@t")
+        git(self.repo, "config", "user.name", "t")
+        write(self.repo, ".claude/settings.json", "{}\n")
+        write(self.repo, ".claude/hooks/pre_bash.py", "P = 1\n")
+        write(self.repo, ".claude/tests/test_alpha.py", "import sys\n")
+        write(self.repo, ".claude/tests/floor/test_floor_planted.py", "import sys\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "add", "-f", ".claude/tests")
+        git(self.repo, "commit", "-q", "-m", "seed")
+        rows = {r["proof"]: r for r in runner.tiers(self.repo)}
+        self.assertEqual(set(rows), {"test_alpha.py", "test_floor_planted.py"})
+        self.assertEqual(rows["test_floor_planted.py"]["trigger"]["examples"], [".claude/hooks/pre_bash.py"])
+
+
 class CorpusBinding(Planted):
     def test_a_corpus_scanning_proof_binds_every_file_under_its_corpus(self):
         write(self.repo, ".claude/guards/unnamed.md", "rule\n")
@@ -308,6 +325,15 @@ class CorpusBinding(Planted):
         names = {t: [os.path.basename(p) for p in ps] for t, ps in bound.items()}
         self.assertIn("test_corpus.py", names[".claude/guards/unnamed.md"])
         self.assertNotIn("test_corpus.py", names[".claude/tools/elsewhere.py"])
+
+
+    def test_every_corpus_row_names_a_shipped_proof_and_folders_that_exist(self):
+        """A CORPUS row is data a typo silently voids: its proof never selects, and nothing says so."""
+        claude = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name, folders in runner._catalog.CORPUS.items():
+            self.assertTrue(os.path.isfile(os.path.join(claude, "tests", name)), name)
+            for folder in folders:
+                self.assertTrue(os.path.isdir(os.path.join(os.path.dirname(claude), folder)), (name, folder))
 
 
 class FlakyLog(Planted):
