@@ -35,13 +35,14 @@ def call(name, args, conv="c1"):
     return bridge.pre_tool_use({"conversationId": conv, "workspacePaths": [WS], "toolCall": {"name": name, "args": args}})
 
 
-# Real guards, through settings.json.
-got = call("run_command", {"CommandLine": "rm -rf /c/Users/someone/Documents"})
+# The guard protects its own checkout even when the consumer was bootstrapped under system temp.
+delete = 'rm -rf "' + bridge.ROOT.replace("\\", "/") + '"'
+got = call("run_command", {"CommandLine": delete})
 check("a real guard denies a recursive delete", got["decision"] == "deny", got)
 import subprocess  # noqa: E402
 spawned = subprocess.run([sys.executable, os.path.join(HERE, "..", "hooks", "agy_hook_bridge.py"), "PreToolUse"],
                          input=json.dumps({"conversationId": "c0", "workspacePaths": [WS], "toolCall": {
-                             "name": "run_command", "args": {"CommandLine": "rm -rf /c/Users/someone/Documents"}}}),
+                             "name": "run_command", "args": {"CommandLine": delete}}}),
                          capture_output=True, text=True, timeout=120)
 check("the registered command denies on stdout", json.loads(spawned.stdout or "{}").get("decision") == "deny",
       spawned.stdout + spawned.stderr)

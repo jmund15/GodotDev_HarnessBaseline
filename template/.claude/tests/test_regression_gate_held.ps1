@@ -14,9 +14,10 @@
   table, the owner-root resolution in a child whose own chain reaches no session, and the project's gate_guards table
   through the real Invoke-StaticGuards.
   Part G runs a copy of the real gate in a fixture checkout with every external stubbed: git, dotnet and the Godot
-  binary are fixture scripts, the suite wrapper is a stub that runs the real held-mode admission
+  binary are in-process fixture scripts, the suite wrapper is a stub that runs the real held-mode admission
   (Get-HeldCheckoutDenials) and prints canned wrapper output per label, and RuntimeSlots.ps1 is patched to fixture
-  mutex names and a fixture record dir. Every Part G case is a boundary the held gate really crosses: the checkout
+  mutex names and a fixture record dir. The fixture reads its live caller ancestry, not the machine's process table:
+  no editor or test runner exists in the fixture. Every Part G case is a boundary the held gate really crosses: the checkout
   lock handshake (wait, acquire, abandon, release), a held child's admission and status, the detached launcher's
   owner root, the activity record, and the baseline's git reads. G20 also pauses before the checkout take to force
   the late-open schedule. A case that only differs from another in its planted data is decided in Part D instead.
@@ -123,7 +124,7 @@ function Invoke-Case {
     param([string] $Id, [scriptblock] $Body)
     if ($selected.Count -gt 0 -and $Id -notin $selected -and ($Id -replace '\d+$', '') -notin $selected) { return }
     if (-not $IsWindows -and $Id -match '^G\d+$') {
-        if (-not $script:PartGSkipped) { Write-Host 'PLATFORM-SKIP-CASE Part G: its fixture gate runs Windows .cmd stubs for git and godot over backslash fixture paths'; $script:PartGSkipped = $true }
+        if (-not $script:PartGSkipped) { Write-Host 'PLATFORM-SKIP-CASE Part G: fixture ancestry uses the Windows Get-Process parent chain'; $script:PartGSkipped = $true }
         return
     }
     Write-Host "`n$Id"
@@ -819,8 +820,15 @@ diff --git a/Tests/Logic/Cases.cs b/Tests/Logic/Cases.cs
         if (-not $fn -or -not $probeFn) { return }
         . ([scriptblock]::Create($fn))
         . ([scriptblock]::Create($probeFn))
-        $stub = Join-Path $work 'd7-godot.cmd'
-        [IO.File]::WriteAllText($stub, "@echo off`r`necho 4.7.1.stable.mono.official`r`nexit /b 0`r`n", [System.Text.ASCIIEncoding]::new())
+        # PowerShell runs a .cmd only on Windows; elsewhere the engine stub is an executable sh script.
+        if ($IsWindows) {
+            $stub = Join-Path $work 'd7-godot.cmd'
+            [IO.File]::WriteAllText($stub, "@echo off`r`necho 4.7.1.stable.mono.official`r`nexit /b 0`r`n", [System.Text.ASCIIEncoding]::new())
+        } else {
+            $stub = Join-Path $work 'd7-godot'
+            [IO.File]::WriteAllText($stub, "#!/bin/sh`necho 4.7.1.stable.mono.official`nexit 0`n", [System.Text.ASCIIEncoding]::new())
+            [IO.File]::SetUnixFileMode($stub, [IO.UnixFileMode]'UserRead, UserWrite, UserExecute')
+        }
         $savedBin = $env:GODOT_BIN
         try {
             $env:GODOT_BIN = $stub
@@ -904,7 +912,49 @@ diff --git a/Tests/Logic/Cases.cs b/Tests/Logic/Cases.cs
     $tp = [System.IO.File]::ReadAllText($fxProc)
     if (-not $tp.Contains($lockAnchor)) { throw 'fixture patch anchor missing in GodotProcess.ps1: Test-InteractiveSessionLocked' }
     $plant = $lockAnchor + "    if (`$env:HARNESS_SESSION_LOCKED -eq '1') { return `$true }`n    if (`$env:HARNESS_SESSION_LOCKED -eq '0') { return `$false }`n"
-    [System.IO.File]::WriteAllText($fxProc, $tp.Replace($lockAnchor, $plant), [System.Text.UTF8Encoding]::new($false))
+    $snapshot = Get-FunctionText $fxProc @('Get-ProcSnapshot')
+    # This proof's own ancestry, read once from the Win32_Process rows production reads: .NET's Process.Parent can stop
+    # short of an ancestor those rows still name (under the test runner G1/G8 then saw no owner root), and a filtered
+    # CIM query per ancestor costs more than the whole-host scan it replaces.
+    $hostRows = @{}
+    if ($IsWindows) { foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) { $hostRows[[int] $p.ProcessId] = $p } }
+    $callerChain = [System.Collections.Generic.List[object]]::new()
+    for ($cur = $hostRows[[int] $PID]; $cur -and $callerChain.Count -lt 32; $cur = $hostRows[[int] $cur.ParentProcessId]) {
+        if (@($callerChain | Where-Object { $_.ProcessId -eq [int] $cur.ProcessId }).Count) { break }
+        $callerChain.Add([ordered]@{ ProcessId = [int] $cur.ProcessId; ParentProcessId = [int] $cur.ParentProcessId; Name = [string] $cur.Name
+                                     CommandLine = [string] $cur.CommandLine; ExecutablePath = [string] $cur.ExecutablePath
+                                     CreationTicks = $(if ($cur.CreationDate) { $cur.CreationDate.Ticks } else { 0 }) })
+    }
+    $callerChainPath = Join-Path $fix 'caller_chain.json'
+    [System.IO.File]::WriteAllText($callerChainPath, (ConvertTo-Json -InputObject @($callerChain) -Depth 3), [System.Text.UTF8Encoding]::new($false))
+    # The fixture's own processes are fresh descendants of this proof, so Process.Parent walks them; at this proof the
+    # walk takes the planted rows. A launcher that already exited ends the walk, as its absent row ends production's.
+    $fixtureSnapshot = @'
+function Get-ProcSnapshot {
+    $caller = @{}
+    foreach ($r in @(Get-Content -LiteralPath '__CALLER_CHAIN__' -Raw | ConvertFrom-Json)) {
+        $caller[[int] $r.ProcessId] = [pscustomobject]@{
+            ProcessId = [int] $r.ProcessId; ParentProcessId = [int] $r.ParentProcessId; Name = $r.Name
+            CommandLine = $r.CommandLine; ExecutablePath = $r.ExecutablePath
+            CreationDate = $(if ([long] $r.CreationTicks) { [datetime]::new([long] $r.CreationTicks, 'Local') } else { $null })
+        }
+    }
+    $map = @{}
+    for ($p = Get-Process -Id $PID; $p -and -not $map.ContainsKey($p.Id); $p = $parent) {
+        if ($caller.ContainsKey($p.Id)) { foreach ($k in $caller.Keys) { $map[$k] = $caller[$k] }; break }
+        $parent = $null
+        try { $parent = $p.Parent } catch { }
+        try {
+            $map[$p.Id] = [pscustomobject]@{
+                ProcessId = $p.Id; ParentProcessId = $(if ($parent) { $parent.Id } else { 0 })
+                Name = $p.Name; CommandLine = ''; ExecutablePath = ''; CreationDate = $p.StartTime
+            }
+        } catch { break }
+    }
+    $map
+}
+'@.Replace('__CALLER_CHAIN__', ($callerChainPath -replace "'", "''"))
+    [System.IO.File]::WriteAllText($fxProc, $tp.Replace($lockAnchor, $plant).Replace($snapshot, $fixtureSnapshot), [System.Text.UTF8Encoding]::new($false))
     $fxRoute = Join-Path $fxScripts 'CommentOnlyGate.ps1'
     $routeAnchor = "function Get-CommentOnlyRoute {`n    param([string] `$Repo, `$Tree, [string] `$LedgerDir)`n"
     $rt = [System.IO.File]::ReadAllText($fxRoute)
@@ -980,29 +1030,39 @@ $codeP = Join-Path $fix 'build_exit'
 exit $(if (Test-Path -LiteralPath $codeP) { [int](Get-Content -LiteralPath $codeP -Raw).Trim() } else { 0 })
 '@
     [System.IO.File]::WriteAllText((Join-Path $fxBin 'dotnet.ps1'), $dotnetStub, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText((Join-Path $fxBin 'git.cmd'), (@('@echo off', 'setlocal', 'set "all=%*"',
-        'if exist "%GH_FIX%\status-fail" echo "%all%" | %SystemRoot%\System32\findstr.exe /C:" status --porcelain -- Tests/" >nul && exit /b 1',
-        'if exist "%GH_FIX%\diff-fail" echo "%all%" | %SystemRoot%\System32\findstr.exe /C:" diff " >nul && exit /b 1',
-        'echo "%all%" | %SystemRoot%\System32\findstr.exe /C:" status " >nul',
-        'if %errorlevel%==0 (', 'if exist "%GH_FIX%\test-wip" type "%GH_FIX%\test-wip"', 'exit /b 0', ')',
-        'echo "%all%" | %SystemRoot%\System32\findstr.exe /C:" diff " >nul',
-        'if %errorlevel%==0 (',
-        'echo "%all%" | %SystemRoot%\System32\findstr.exe /C:"--unified=" >nul',
-        'if not errorlevel 1 if exist "%GH_FIX%\deleted.patch" type "%GH_FIX%\deleted.patch"',
-        'exit /b 0', ')',
-        'echo "%all%" | %SystemRoot%\System32\findstr.exe /C:"unreadable" >nul', 'if %errorlevel%==0 exit /b 1',
-        'echo "%all%" | %SystemRoot%\System32\findstr.exe /C:"rev-parse HEAD" >nul',
-        'if %errorlevel%==0 (', 'echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'exit /b 0', ')',
-        'echo "%all%" | %SystemRoot%\System32\findstr.exe /C:"branch --show-current" >nul',
-        'if %errorlevel%==0 (', 'echo fixture-branch', 'exit /b 0', ')',
-        'echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'exit /b 0') -join "`r`n") + "`r`n", [System.Text.ASCIIEncoding]::new())
-    $godotStub = Join-Path $fxBin 'godot.cmd'
-    [System.IO.File]::WriteAllText($godotStub, (@('@echo off',
-        'echo "%*" | %SystemRoot%\System32\findstr.exe /C:"--import" >nul',
-        'if %errorlevel%==0 if exist "%GH_FIX%\late-test-wip" echo  M Tests/Logic/Peer.cs>"%GH_FIX%\test-wip"',
-        'echo "%*" | %SystemRoot%\System32\findstr.exe /C:"--import" >nul',
-        'if %errorlevel%==0 if exist "%GH_FIX%\import_exit" for /f %%c in (%GH_FIX%\import_exit) do exit /b %%c',
-        'echo 4.7.1.stable.mono.official', 'exit /b 0') -join "`r`n") + "`r`n", [System.Text.ASCIIEncoding]::new())
+    $gitStub = @'
+$fix = $env:GH_FIX
+$command = $args -join ' '
+switch -Wildcard ($command) {
+    '* status *' {
+        if ($command -like '* status --porcelain -- Tests/*' -and (Test-Path (Join-Path $fix 'status-fail'))) { exit 1 }
+        $wip = Join-Path $fix 'test-wip'
+        if (Test-Path $wip) { Get-Content -LiteralPath $wip }
+    }
+    '* diff *' {
+        if (Test-Path (Join-Path $fix 'diff-fail')) { exit 1 }
+        $patch = Join-Path $fix 'deleted.patch'
+        if ($command -like '*--unified=*' -and (Test-Path $patch)) { Get-Content -LiteralPath $patch }
+    }
+    '*unreadable*' { exit 1 }
+    '*rev-parse HEAD' { 'b' * 40 }
+    '*branch --show-current' { 'fixture-branch' }
+    default { 'a' * 40 }
+}
+exit 0
+'@
+    [IO.File]::WriteAllText((Join-Path $fxBin 'git.ps1'), $gitStub)
+    $godotStub = Join-Path $fxBin 'godot.ps1'
+    [IO.File]::WriteAllText($godotStub, @'
+if ('--import' -in $args) {
+    $fix = $env:GH_FIX
+    if (Test-Path (Join-Path $fix 'late-test-wip')) { Set-Content -LiteralPath (Join-Path $fix 'test-wip') -Value ' M Tests/Logic/Peer.cs' }
+    $code = Join-Path $fix 'import_exit'
+    if (Test-Path $code) { exit [int](Get-Content -LiteralPath $code -Raw) }
+}
+'4.7.1.stable.mono.official'
+exit 0
+'@)
     [System.IO.File]::WriteAllText((Join-Path $fxRepo '.runsettings'), "<RunSettings><RunConfiguration><EnvironmentVariables><GODOT_BIN>$godotStub</GODOT_BIN></EnvironmentVariables></RunConfiguration></RunSettings>")
     [System.IO.File]::WriteAllText((Join-Path $fxRepo '{{PROJECT_NAME}}.csproj'), ('<Project Sdk="Godot.NET.Sdk/4.7.1"><PackageReference Include="gdUnit4.api" Version="{0}" /></Project>' -f $gatePin))
     $baselineJson = [ordered]@{
@@ -1347,9 +1407,15 @@ exit $(if (Test-Path -LiteralPath $codeP) { [int](Get-Content -LiteralPath $code
         $mine = @(& $ckRecord | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Where-Object { [int]$_.holderPid -eq $g.Proc.Id })
         Assert-True 'G17 while waiting, no checkout record names the gate' ($mine.Count -eq 0)
         Stop-FixtureHolder $h
+        # The record is written at acquisition and removed when the gate ends, so it is read while the gate runs: a
+        # one-shot read after the build can land after a fast fixture gate has already finished and cleared it.
         $deadline = (Get-Date).AddSeconds(60)
-        while ((Get-Date) -lt $deadline -and -not (Test-Path (Join-Path $fix 'build_started')) -and -not $g.Proc.HasExited) { Start-Sleep -Milliseconds 200 }
-        $act = if (Test-Path -LiteralPath $actP) { Get-Content -LiteralPath $actP -Raw | ConvertFrom-Json } else { $null }
+        $act = $null
+        while ((Get-Date) -lt $deadline -and -not $g.Proc.HasExited) {
+            try { $act = Get-Content -LiteralPath $actP -Raw | ConvertFrom-Json } catch { $act = $null }
+            if ($act -and $act.kind -eq 'gate') { break }
+            Start-Sleep -Milliseconds 50
+        }
         Assert-True 'G17 once it holds the lease, the record says kind=gate' ($act -and $act.kind -eq 'gate') "record=$($act | ConvertTo-Json -Compress)"
         $r = Wait-Gate $g
         Assert-True 'G17 the wait line names the holder: kind, pid, label, how long it has held, time left' (

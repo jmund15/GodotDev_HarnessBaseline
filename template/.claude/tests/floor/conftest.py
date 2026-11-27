@@ -20,6 +20,8 @@ for _p in (str(HOOKS), str(TOOLS), str(CLAUDE / "tests"), str(Path(__file__).res
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from _hook_call import copy_repo
+
 # Per test file: seconds and process spawns by image, printed after every run (K2: the suite reads its own timings, so
 # a slow file is diagnosed by cause as it lands, not found at the end).
 _COST = {}
@@ -120,9 +122,13 @@ def plant(tmp_path, monkeypatch, _planted_template):
     """A planted project root with one commit and an empty `.claude/scratch`, and a guard temp dir beside it
     (so the project is never "a plain temp path"). CLAUDE_PROJECT_DIR and the cwd point at the project. The repo
     is built once and copied per case, `.git` included, so no state crosses cases."""
+    return plant_project(tmp_path, monkeypatch, _planted_template)
+
+
+def plant_project(tmp_path, monkeypatch, template):
     project = tmp_path / "project"
     guard_temp = tmp_path / "guard_temp"
-    shutil.copytree(_planted_template, project)
+    copy_repo(template, project)
     guard_temp.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(guard_temp))
     for var in ("TEMP", "TMP", "TMPDIR"):

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import _msys
+from _hook_call import copy_repo
 import dangerous_shell_guard as dsg
 import pre_bash_dispatch
 from case import bash
@@ -45,15 +46,7 @@ def sh():
 @pytest.fixture(scope="module")
 def template(tmp_path_factory):
     repo = tmp_path_factory.mktemp("cm") / "repo"
-    (repo / ".claude").mkdir(parents=True)
-    shutil.copytree(CLAUDE / "githooks", repo / ".claude" / "githooks")
-    shutil.copytree(CLAUDE / "hooks", repo / ".claude" / "hooks", ignore=shutil.ignore_patterns("__pycache__"))
-    (repo / ".claude" / "tools").mkdir()
-    for name in os.listdir(CLAUDE / "tools"):  # the dispatcher's members import from tools/
-        if name.endswith(".py"):
-            shutil.copy2(CLAUDE / "tools" / name, repo / ".claude" / "tools" / name)
-    for name in os.listdir(repo / ".claude" / "githooks"):
-        os.chmod(repo / ".claude" / "githooks" / name, 0o755)
+    repo.mkdir()
     g(repo, "init", "-q")
     for key, value in (("user.email", "t@t"), ("user.name", "t"), ("core.autocrlf", "false"),
                        ("core.hooksPath", ".claude/githooks"), ("commit.gpgsign", "false")):
@@ -68,8 +61,27 @@ def template(tmp_path_factory):
 @pytest.fixture
 def repo(template, tmp_path):
     dest = tmp_path / "repo"
-    shutil.copytree(template, dest)
+    copy_repo(template, dest)
+    (dest / ".claude").mkdir()
     return dest
+
+
+@pytest.fixture(scope="module")
+def hook_install(tmp_path_factory):
+    root = tmp_path_factory.mktemp("commit_hook")
+    shutil.copytree(CLAUDE / "githooks", root / "githooks")
+    shutil.copytree(CLAUDE / "hooks", root / "hooks", ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "tools").mkdir()
+    for path in (CLAUDE / "tools").glob("*.py"):
+        shutil.copy2(path, root / "tools" / path.name)
+    for path in (root / "githooks").iterdir():
+        path.chmod(0o755)
+    return root
+
+
+@pytest.fixture
+def install_hook(repo, hook_install):
+    copy_repo(hook_install, repo / ".claude", overlay=True)
 
 
 def stale_index(repo, tmp):
@@ -102,6 +114,7 @@ def head_file(repo, name):
 
 
 # --- the githook script (spawned: git runs it) ------------------------------------------------------------------
+@pytest.mark.usefixtures("install_hook")
 def test_the_incident_a_stale_temp_index_is_refused_when_git_writes_the_commit(repo, tmp_path):
     index = stale_index(repo, tmp_path)
     head = g(repo, "rev-parse", "HEAD").stdout
@@ -118,6 +131,7 @@ def test_a_failed_repository_root_lookup_refuses(tmp_path):
     assert r.returncode == 1 and "BLOCKED commit" in r.stderr and "cannot find the repository root" in r.stderr
 
 
+@pytest.mark.usefixtures("install_hook")
 def test_a_guard_that_crashes_refuses_the_commit_and_names_the_repair(repo):
     guard = repo / ".claude" / "hooks" / "dangerous_shell_guard.py"
     body = guard.read_text(encoding="utf-8")
@@ -191,6 +205,7 @@ def test_the_commit_time_checks_refuse_what_each_commit_judge_refuses(repo, tmp_
     assert why and "Traceback" not in why, (judge, why)
 
 
+@pytest.mark.usefixtures("install_hook")
 @lane_lacks("prototype_containment_guard")
 def test_an_add_then_commit_the_floor_allows_is_refused_when_git_writes_the_commit(repo):
     """The D-IW incident (review S-F1): the chain judges the index before the add, so it allows the call; the hook
@@ -206,6 +221,7 @@ def test_an_add_then_commit_the_floor_allows_is_refused_when_git_writes_the_comm
     assert g(repo, "rev-parse", "HEAD").stdout == head
 
 
+@pytest.mark.usefixtures("install_hook")
 def test_an_ordinary_commit_passes_every_commit_judge_through_the_hook(repo):
     write(repo, "g.txt", "ordinary\n")
     g(repo, "add", "g.txt")
@@ -236,6 +252,7 @@ def test_the_commit_that_closes_a_merge_passes_the_commit_judges(repo, tmp_path)
     assert judged(repo, "merge side", tmp_path) is None
 
 
+@pytest.mark.usefixtures("install_hook")
 def test_a_missing_guard_refuses_the_commit_and_names_the_file(repo):
     os.remove(repo / ".claude" / "hooks" / "dangerous_shell_guard.py")
     write(repo, "g.txt", "noguard\n")
@@ -244,6 +261,7 @@ def test_a_missing_guard_refuses_the_commit_and_names_the_file(repo):
     assert r.returncode != 0 and "dangerous_shell_guard.py" in r.stderr and head_file(repo, "g.txt") == "base\n"
 
 
+@pytest.mark.usefixtures("install_hook")
 def test_a_hook_that_cannot_find_python3_refuses(repo, tmp_path):
     bare = tmp_path / "bare_bin"
     bare.mkdir()

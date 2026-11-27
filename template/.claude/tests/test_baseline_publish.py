@@ -26,21 +26,8 @@ from _git_fixture import (  # noqa: E402
     push_main as _push_main, remove as _remove, scratch,
 )
 import _git_fixture  # noqa: E402
+from _hook_call import copy_repo  # noqa: E402
 from _runner_fixture import copy_runner_deps  # noqa: E402
-
-_real_sleep = time.sleep
-
-
-def _quick_slot_poll(seconds: float) -> None:
-    """Step 5 (`_validate`) queues its checks behind the battery's exclusive machine hold, and
-    `harness_tests._take_slots` re-polls every 0.25 s: each full publish spent about a second
-    asleep for slots nobody else held. Only that poll is shortened; every other sleep is real."""
-    if seconds == 0.25 and sys._getframe(1).f_code.co_name == "_take_slots":
-        seconds = 0.01
-    _real_sleep(seconds)
-
-
-time.sleep = _quick_slot_poll
 
 PUBLISH = Path(__file__).resolve().parents[1] / "tools" / "baseline_publish.py"
 SYNC = PUBLISH.parent / "baseline_sync.py"
@@ -95,13 +82,12 @@ def _field(value, key):
     return value.get(key) if isinstance(value, dict) else getattr(value, key)
 
 
-def _fake_gh_main(script: Path):
-    """The fake `gh` script's own `main`, imported instead of started: one source for the state
-    machine, its env toggles and its argv contract, with no interpreter start per poll."""
+def _load_fake_gh(script: Path):
+    """Load the executable's own implementation without an interpreter start per poll."""
     spec = importlib.util.spec_from_file_location("fake_gh_in_process", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.main
+    return module
 
 
 def _load_publish():
@@ -126,7 +112,7 @@ def _load_publish():
         out, err = io.StringIO(), io.StringIO()
         argv = [str(item) for item in cmd[1:]]
         with contextlib.chdir(Path(cwd)), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = _fake_gh_main(script)(argv)
+            code = _load_fake_gh(script).main(argv)
         return subprocess.CompletedProcess(argv, code, out.getvalue().encode("utf-8"), err.getvalue().encode("utf-8"))
 
     module._gh_run = gh_run
@@ -164,9 +150,8 @@ def _patched_env(overrides: dict[str, str]):
 
 
 FAKE_GH_SOURCE = '''#!/usr/bin/env python3
-"""Fake `gh` for baseline publish proofs: a local stand-in that stores PR state in a JSON
-file (`GH_FAKE_STATE`) and performs `pr merge` against a local bare remote by reusing
-`baseline_publish._merge_local`, loaded from `GH_FAKE_TOOLS_DIR`. Env toggles simulate
+"""Fake `gh` for baseline publish proofs. It stores PR state in `GH_FAKE_STATE`
+and merges pushed branches directly in the local bare remote. Env toggles simulate
 specific failure shapes a real GitHub PR lifecycle can produce:
 
     GH_FAKE_FAIL_STEP=create|checks|merge   that gh subcommand exits 1 immediately (`pr checks --json` reports the
@@ -178,15 +163,14 @@ specific failure shapes a real GitHub PR lifecycle can produce:
     GH_FAKE_PENDING_POLLS=N                 the first N readable polls report the check PENDING (exit 8)
     GH_FAKE_FAIL_AFTER_MERGE=1              `pr merge` performs the real merge, then exits 1
 """
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.request import url2pathname
 
 STATE_PATH = Path(os.environ["GH_FAKE_STATE"])
-TOOLS_DIR = os.environ.get("GH_FAKE_TOOLS_DIR", "")
 
 
 def _load_state() -> dict:
@@ -207,13 +191,26 @@ def _current_branch(cwd) -> str:
     return _git(cwd, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
-def _load_publish_module():
-    spec = importlib.util.spec_from_file_location(
-        "baseline_publish_gh_fixture", os.path.join(TOOLS_DIR, "baseline_publish.py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _merge_local(repo, branch, expected_head):
+    remote = Path(url2pathname(repo[7:])) if repo.startswith("file:///") else Path(repo)
+    if not remote.is_dir():
+        raise ValueError("fake gh merge requires a local bare repository")
+
+    def git(*args):
+        result = _git(remote, *args)
+        if result.returncode != 0:
+            raise ValueError(result.stderr.strip())
+        return result.stdout.strip()
+
+    main_ref, branch_ref = "refs/heads/main", "refs/heads/" + branch
+    base, head = git("rev-parse", main_ref, branch_ref).splitlines()
+    if head != expected_head:
+        raise ValueError("published branch moved before merge")
+    tree = git("merge-tree", "--write-tree", base, head)
+    merged = git("-c", "user.email=baseline@invalid", "-c", "user.name=baseline-publisher",
+                 "commit-tree", tree, "-p", base, "-p", head, "-m", "merge baseline publication")
+    git("update-ref", main_ref, merged, base)
+    return merged
 
 
 def _find(state, url):
@@ -336,12 +333,9 @@ def main(argv):
             return 1
         expected_head = argv[argv.index("--match-head-commit") + 1] if "--match-head-commit" in argv else None
         remote = _git(cwd, "remote", "get-url", "origin").stdout.strip()
-        module = _load_publish_module()
-        merge_parent = STATE_PATH.parent / "gh-fake-merge-work"
-        merge_parent.mkdir(parents=True, exist_ok=True)
         try:
-            merged_sha = module._merge_local(remote, record["branch"], expected_head, merge_parent)
-        except module.PublishError as exc:
+            merged_sha = _merge_local(remote, record["branch"], expected_head)
+        except ValueError as exc:
             print("fake gh: %s" % exc, file=sys.stderr)
             return 1
         record["state"] = "MERGED"
@@ -363,8 +357,7 @@ if __name__ == "__main__":
 
 def _install_fake_gh(path: Path) -> dict[str, str]:
     """Write a fake `gh` (plus a Windows `.cmd`/POSIX shell launcher) into `path/bin`, and
-    return the environment overrides (`PATH`, `GH_FAKE_STATE`, `GH_FAKE_TOOLS_DIR`) a test
-    installs via `_patched_env` before calling `publish.run(...)` in-process."""
+    return the environment overrides the test installs before calling publish in process."""
     bin_dir = path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     script_path = bin_dir / "fake_gh.py"
@@ -382,7 +375,6 @@ def _install_fake_gh(path: Path) -> dict[str, str]:
     return {
         "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
         "GH_FAKE_STATE": str(state_path),
-        "GH_FAKE_TOOLS_DIR": str(PUBLISH.parent),
     }
 
 
@@ -390,17 +382,25 @@ def _remote_main_sha(remote: Path) -> str:
     return _git(remote, "show-ref", "-s", "refs/heads/main").decode().strip()
 
 
+def _baseline_seed() -> Path:
+    def build(work: Path) -> None:
+        _init_repo(work)
+        _write_baseline_stubs(work)
+        _write(work / "baseline.manifest.json", b'{"version": 2, "files": []}\n')
+        _commit(work, "seed empty baseline")
+
+    return _git_fixture.built("baseline_publish.baseline_seed", build)
+
+
 def _seed_commit_fixture(path: Path, rel: str, baseline_content: bytes, local_content: bytes,
                           *, placeholder_value: str = "fixture") -> tuple[Path, str, Path]:
     """A pushed baseline (with tool stubs) plus a consumer with one `push`-judged row,
     ready for `--from-commit`. Returns (remote, baseline_sha, consumer_root)."""
     placeholder = "{{" + "PROJECT_NAME" + "}}"
-    published_content = local_content.replace(placeholder_value.encode(), placeholder.encode())
     remote = _remote(path)
     baseline = path / "baseline-work"
-    _init_repo(baseline)
+    copy_repo(_baseline_seed(), baseline)
     _write(baseline / "template" / rel, baseline_content)
-    _write_baseline_stubs(baseline)
     manifest = {"version": 2, "files": [{"path": rel, "layer": "pure", "sync": "auto"}]}
     _write(baseline / "baseline.manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
     baseline_commit = _commit(baseline, "seed")
@@ -446,11 +446,8 @@ def _seed_bare_baseline(path: Path) -> tuple[Path, str]:
     fixtures that need no pre-existing lock rows. Returns (remote, baseline_sha)."""
     remote = _remote(path)
     work = path / "baseline-work"
-    _init_repo(work)
-    _write_baseline_stubs(work)
-    manifest = {"version": 2, "files": []}
-    _write(work / "baseline.manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
-    baseline_commit = _commit(work, "seed")
+    copy_repo(_baseline_seed(), work)
+    baseline_commit = _branch_sha(work)
     _push_main(work, remote)
     return remote, baseline_commit
 
@@ -537,6 +534,8 @@ def test_tracer_publishes_one_row_to_fixture_remote() -> None:
         ]
         assert all(step["status"] == "green" for step in steps), steps
         assert _git(remote, "show", "main:" + "template/" + rel) == published_content
+        merged, base, head = _git(remote, "rev-list", "--parents", "-n", "1", "main").decode().split()
+        assert (merged, base, head) == (journal["baseline_sha_after"], baseline_commit, journal["worktree"]["head"])
 
         updated = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
         assert updated["files"][rel]["hash"] == _sha(local_content)
@@ -749,16 +748,15 @@ def test_scrub_honors_the_hits_a_judge_accepted_on_each_row() -> None:
 
 
 def test_local_merge_refuses_remote_url() -> None:
-    publish = _load_publish()
-    with _fixture() as path:
+    with _fixture() as path, _patched_env(_install_fake_gh(path)):
+        fake_gh = _load_fake_gh(path / "bin" / "fake_gh.py")
         for remote in ("https://example.invalid/baseline.git", "git@example.invalid:o/baseline.git"):
             try:
-                publish._merge_local(remote, "publish/x", "0" * 40, path)
-            except publish.PublishError as exc:
+                fake_gh._merge_local(remote, "publish/x", "0" * 40)
+            except ValueError as exc:
                 assert "local" in str(exc), str(exc)
             else:
                 raise AssertionError("local merge accepted a network remote: " + remote)
-        assert not (path / "merge-checkout").exists()
 
 
 def test_no_ci_refuses_when_workflow_exists() -> None:
@@ -1240,81 +1238,79 @@ def test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes() -> None:
         assert resumed["baseline_sha_after"] == _remote_main_sha(remote)
 
 
-def test_ci_checks_not_yet_registered_are_waited_for() -> None:
-    # Real gh answers "no checks reported" (exit 1) for the first seconds after `pr create`;
-    # the first CI-on publication went red on exactly that. Step 6 must wait for checks to exist.
+def _ci_fixture(path: Path):
+    """Start at step 6 with real local Git and the fake GitHub transport; steps 1–5 are covered by the tracer."""
+    remote, pinned = _seed_bare_baseline(path)
+    work = path / "baseline-work"
     rel = ".claude/tools/fixture.py"
+    _write(work / "template" / rel, b"value = 'fixture'\n")
+    root = _seed_worktree_root(path, remote, pinned)
+    source = {"kind": "commit", "repo": str(root), "commit": _branch_sha(root)}
+    publish = _load_publish()
+    journal = publish._new_journal(source, [rel], {}, False, False, False, pinned, "ci-fixture", None)
+    return publish, journal, root, work, remote
+
+
+def _ci_step(publish, journal, root: Path, work: Path) -> None:
+    journal_path = publish._journal_path(root, journal["id"])
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    publish._step(journal, journal_path, 5, lambda: publish._publish(
+        work, journal, journal_path, root, False, "publish/ci-fixture", journal["id"], {}))
+
+
+def test_ci_checks_not_yet_registered_are_waited_for() -> None:
     with _fixture() as path:
-        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
+        publish, journal, root, work, _ = _ci_fixture(path)
         publish.CHECKS_POLL_S = 0.05
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_NO_CHECKS_CALLS"] = "2"
+        env = {**_install_fake_gh(path), "GH_FAKE_NO_CHECKS_CALLS": "2"}
         with _patched_env(env):
-            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                                  [rel], [], False, False, None)
-        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+            _ci_step(publish, journal, root, work)
+        assert journal["steps"][5]["status"] == "green"
         state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
-        assert state.get("checks_calls") == 4, state.get("checks_calls")  # 2 unregistered + 1 green + run-url read
+        assert state["checks_calls"] == 4  # 2 unregistered + 1 green + run-url read
 
 
 def test_pending_checks_are_polled_until_green() -> None:
-    # Step 6 polls short `--json` reads; a pending check has no verdict, so it polls again until green.
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
-        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
+        publish, journal, root, work, _ = _ci_fixture(path)
         publish.CHECKS_POLL_S = 0.05
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_PENDING_POLLS"] = "2"
+        env = {**_install_fake_gh(path), "GH_FAKE_PENDING_POLLS": "2"}
         with _patched_env(env):
-            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                                  [rel], [], False, False, None)
-        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+            _ci_step(publish, journal, root, work)
+        assert journal["steps"][5]["status"] == "green"
         state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
-        assert state.get("readable_polls") == 4, state.get("readable_polls")  # 3 polls + run-url read
+        assert state["readable_polls"] == 4  # 3 polls + run-url read
 
 
 def test_unreadable_poll_answers_are_polled_again() -> None:
-    # A poll that times out or returns junk has no verdict either; step 6 polls again.
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
-        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
+        publish, journal, root, work, _ = _ci_fixture(path)
         publish.CHECKS_POLL_S = 0.05
-        publish.sync.NETWORK_RETRY_DELAYS = (0, 0)  # the fake gh's timeout stderr reads as transient: no backoff sleeps
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_UNREADABLE_POLLS"] = "2"
+        publish.sync.NETWORK_RETRY_DELAYS = (0, 0)
+        env = {**_install_fake_gh(path), "GH_FAKE_UNREADABLE_POLLS": "2"}
         with _patched_env(env):
-            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                                  [rel], [], False, False, None)
-        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+            _ci_step(publish, journal, root, work)
+        assert journal["steps"][5]["status"] == "green"
         state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
-        assert state.get("checks_calls") == 4, state.get("checks_calls")  # 2 unreadable + 1 green + run-url read
+        assert state["checks_calls"] == 4  # 2 unreadable + 1 green + run-url read
 
 
 def test_unreadable_poll_answers_fail_step_six_after_the_wait() -> None:
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
-        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
+        publish, journal, root, work, remote = _ci_fixture(path)
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
         publish.sync.NETWORK_RETRY_DELAYS = (0, 0)
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_UNREADABLE_POLLS"] = "100000"
+        env = {**_install_fake_gh(path), "GH_FAKE_UNREADABLE_POLLS": "100000"}
         with _patched_env(env):
             try:
-                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                            [rel], [], False, False, None)
-            except publish.PublishError:
-                pass
+                _ci_step(publish, journal, root, work)
+            except publish.PublishError as exc:
+                assert journal["pr_url"] in str(exc), exc
             else:
                 raise AssertionError("expected step 6 to fail when no poll answer is readable")
+        assert journal["steps"][5]["status"] == "red"
+        assert _remote_main_sha(remote) == journal["baseline_sha_before"]
 
 
 def test_ci_on_publish_records_the_ci_run_url() -> None:
@@ -1333,86 +1329,59 @@ def test_ci_on_publish_records_the_ci_run_url() -> None:
 
 
 def test_ci_red_checks_record_the_ci_run_url() -> None:
-    # A red run is the one whose log gets read; the integration publication's red step 6 kept no URL.
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
-        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
-        publish.CHECKS_POLL_S = 0.05
-        publish.CHECKS_REGISTER_WAIT_S = 0.3
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_FAIL_STEP"] = "checks"
-        with _patched_env(env):
+        publish, journal, root, work, _ = _ci_fixture(path)
+        with _patched_env({**_install_fake_gh(path), "GH_FAKE_FAIL_STEP": "checks"}):
             try:
-                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                            [rel], [], False, False, None)
+                _ci_step(publish, journal, root, work)
             except publish.PublishError:
                 pass
             else:
                 raise AssertionError("red checks must stop step 6")
-        journals = sorted((root / ".claude" / ".cache" / "baseline-publish").glob("*.json"))
-        assert len(journals) == 1, journals
-        journal = json.loads(journals[0].read_text(encoding="utf-8"))
-        assert journal["ci_run_url"] == "https://example.invalid/actions/runs/77", journal["ci_run_url"]
+        saved = json.loads(publish._journal_path(root, journal["id"]).read_text(encoding="utf-8"))
+        assert saved["steps"][5]["status"] == "red"
+        assert saved["ci_run_url"] == "https://example.invalid/actions/runs/77", saved["ci_run_url"]
 
 
 def test_ci_checks_that_never_register_fail_step_six_after_the_wait() -> None:
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
-        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
+        publish, journal, root, work, remote = _ci_fixture(path)
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_NO_CHECKS_CALLS"] = "100000"
-        with _patched_env(env):
+        with _patched_env({**_install_fake_gh(path), "GH_FAKE_NO_CHECKS_CALLS": "100000"}):
             try:
-                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                            [rel], [], False, False, None)
+                _ci_step(publish, journal, root, work)
             except publish.PublishError as exc:
-                assert "checks registered" in str(exc), exc
+                assert journal["pr_url"] in str(exc), exc
+                assert journal["ci_run_url"] is None
             else:
                 raise AssertionError("expected step 6 to fail when checks never register")
+        assert journal["steps"][5]["status"] == "red"
+        assert _remote_main_sha(remote) == journal["baseline_sha_before"]
 
 
 def test_a_red_non_required_lane_does_not_refuse_the_merge() -> None:
-    # PR #128: the required `root` check passed while five Linux lanes went red, and the publish refused on them.
-    # The lanes report after the merge now (main-check rows), so step 6 merges on the required checks alone.
-    rel = ".claude/tools/fixture.py"
+    # PR #128: the required `root` check passed while five Linux lanes went red.
     with _fixture() as path:
-        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_LANE_RED"] = "1"
-        with _patched_env(env):
-            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                                  [rel], [], False, False, None)
-        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
-        assert _remote_main_sha(remote) != baseline_commit, "a red non-required lane must not block the merge"
+        publish, journal, root, work, remote = _ci_fixture(path)
+        with _patched_env({**_install_fake_gh(path), "GH_FAKE_LANE_RED": "1"}):
+            _ci_step(publish, journal, root, work)
+        assert journal["steps"][5]["status"] == "green"
+        assert _remote_main_sha(remote) == journal["baseline_sha_after"] != journal["baseline_sha_before"]
 
 
 def test_a_red_required_check_still_refuses_the_merge() -> None:
-    rel = ".claude/tools/fixture.py"
     with _fixture() as path:
-        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        commit = _branch_sha(root)
-        publish = _load_publish()
-        publish.CHECKS_POLL_S = 0.05
-        publish.CHECKS_REGISTER_WAIT_S = 0.3
-        env = dict(_install_fake_gh(path))
-        env["GH_FAKE_FAIL_STEP"] = "checks"
-        with _patched_env(env):
+        publish, journal, root, work, remote = _ci_fixture(path)
+        with _patched_env({**_install_fake_gh(path), "GH_FAKE_FAIL_STEP": "checks"}):
             try:
-                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
-                            [rel], [], False, False, None)
+                _ci_step(publish, journal, root, work)
             except publish.PublishError as exc:
                 assert "root" in str(exc), exc
             else:
                 raise AssertionError("a red required check must stop step 6")
-        assert _remote_main_sha(remote) == baseline_commit, "a red required check must not merge"
+        assert journal["steps"][5]["status"] == "red"
+        assert _remote_main_sha(remote) == journal["baseline_sha_before"]
 
 
 def test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes() -> None:
@@ -1445,13 +1414,15 @@ def test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes
         assert all(s["status"] == "green" for s in second["steps"]), second["steps"]
 
 
-def _move_baseline(path: Path, rel: str, content: bytes) -> str:
-    """Another consumer publishes a new copy of `rel`: the baseline's main moves past the consumer's pin."""
-    work, remote = path / "baseline-work", path / "remote.git"
+def _commit_baseline_row(path: Path, rel: str, content: bytes) -> str:
+    work = path / "baseline-work"
     _write(work / "template" / rel, content)
-    moved = _commit(work, "another consumer moves " + rel)
-    _git(work, "push", "-q", str(remote), "HEAD:refs/heads/main")
-    return moved
+    return _commit(work, "another consumer moves " + rel)
+
+
+def _move_baseline(path: Path, rel: str, content: bytes) -> None:
+    _commit_baseline_row(path, rel, content)
+    _git(path / "baseline-work", "push", "-q", str(path / "remote.git"), "HEAD:refs/heads/main")
 
 
 def _publish_dry(publish, root: Path, rel: str, **keywords):
@@ -1495,6 +1466,16 @@ def test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base() -> No
         assert "declined" not in lock["files"][rel], lock["files"][rel]
 
 
+def _collect_check(publish, path: Path, root: Path, rel: str, over_upstream=()) -> str:
+    # The local upstream history is already present; transport, journal and later steps have their own cases.
+    baseline = path / "baseline-work"
+    pinned = _branch_sha(baseline)
+    lock = publish.sync.load_lock(root)
+    source = {"kind": "commit", "repo": str(root), "commit": _branch_sha(root)}
+    records = publish._collect(root, source, [rel], lock, None, pinned)
+    return publish._read_check_states(root, lock, source, records, baseline, pinned, list(over_upstream))
+
+
 def test_publish_refuses_a_shipped_row_whose_bound_proof_stays_behind() -> None:
     """The baseline's older copy of a bound proof would run against the newer row: step 1 names the proof; once the
     baseline's copy matches the source's, step 1 passes."""
@@ -1502,7 +1483,7 @@ def test_publish_refuses_a_shipped_row_whose_bound_proof_stays_behind() -> None:
     new_proof = b"import fixture  # fixture.py\nassert True\n"
     with _fixture() as path:
         _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        _move_baseline(path, proof, b"import fixture  # fixture.py\nassert False\n")
+        _commit_baseline_row(path, proof, b"import fixture  # fixture.py\nassert False\n")
         _write(root / proof, new_proof)
         lock_path = root / ".claude" / "baseline.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -1510,18 +1491,14 @@ def test_publish_refuses_a_shipped_row_whose_bound_proof_stays_behind() -> None:
         _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
         _commit(root, "the proof moves with the row")
         publish = _load_publish()
-        with _patched_env(_install_fake_gh(path)):
-            try:
-                _publish_dry(publish, root, rel)
-            except publish.PublishError as exc:
-                text = str(exc)
-            else:
-                raise AssertionError("a publish that leaves a differing bound proof behind must refuse")
-            assert proof in text, text
-            _move_baseline(path, proof, new_proof)
-            _git(root, "commit", "--allow-empty", "-q", "-m", "a new source commit, so the repeat rule stays out")
-            journal = _publish_dry(publish, root, rel)
-        assert _field(journal, "steps")[0]["status"] == "green", _field(journal, "steps")[0]
+        try:
+            _collect_check(publish, path, root, rel)
+        except publish.PublishError as exc:
+            assert proof in str(exc), exc
+        else:
+            raise AssertionError("a publish that leaves a differing bound proof behind must refuse")
+        _commit_baseline_row(path, proof, new_proof)
+        assert "local-modified" in _collect_check(publish, path, root, rel)
 
 
 def test_a_forked_bound_proof_left_behind_passes_step_one() -> None:
@@ -1530,7 +1507,7 @@ def test_a_forked_bound_proof_left_behind_passes_step_one() -> None:
     rel, proof = ".claude/tools/fixture.py", ".claude/tests/test_fixture.py"
     with _fixture() as path:
         _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        _move_baseline(path, proof, b"import fixture  # fixture.py\nassert True  # theirs\n")
+        _commit_baseline_row(path, proof, b"import fixture  # fixture.py\nassert True  # theirs\n")
         _write(root / proof, b"import fixture  # fixture.py\nassert True  # ours\n")
         lock_path = root / ".claude" / "baseline.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -1538,34 +1515,27 @@ def test_a_forked_bound_proof_left_behind_passes_step_one() -> None:
         _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
         _commit(root, "the proof is forked")
         publish = _load_publish()
-        with _patched_env(_install_fake_gh(path)):
-            journal = _publish_dry(publish, root, rel)
-        assert _field(journal, "steps")[0]["status"] == "green", _field(journal, "steps")[0]
+        assert "local-modified" in _collect_check(publish, path, root, rel)
 
 
 def test_a_decline_is_recorded_where_a_later_publish_reads_it_and_holds_for_that_upstream_only() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
-        _move_baseline(path, rel, b"value = 'theirs'\n")
+        _commit_baseline_row(path, rel, b"value = 'theirs'\n")
         publish = _load_publish()
-        with _patched_env(_install_fake_gh(path)):
-            journal = _publish_dry(publish, root, rel, over_upstream=[rel])
-            assert _field(journal, "steps")[0]["status"] == "green", _field(journal, "steps")[0]
-            lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
-            declined = lock["files"][rel]["declined"]
-            assert declined["upstream"] and declined["at"], declined
-            _git(root, "commit", "--allow-empty", "-q", "-m", "a new source commit, so the repeat rule stays out")
-            again = _publish_dry(publish, root, rel)
-            assert _field(again, "steps")[0]["status"] == "green", "a recorded decline must satisfy the next publish"
-            _move_baseline(path, rel, b"value = 'theirs, again'\n")
-            _git(root, "commit", "--allow-empty", "-q", "-m", "and another")
-            try:
-                _publish_dry(publish, root, rel)
-            except publish.PublishError as exc:
-                assert "diverged" in str(exc) and rel in str(exc), str(exc)
-            else:
-                raise AssertionError("a decline of one upstream copy must not cover a later one")
+        assert "diverged" in _collect_check(publish, path, root, rel, [rel])
+        lock = publish.sync.load_lock(root)
+        declined = lock["files"][rel]["declined"]
+        assert declined["upstream"] and declined["at"], declined
+        assert "diverged" in _collect_check(publish, path, root, rel)
+        _commit_baseline_row(path, rel, b"value = 'theirs, again'\n")
+        try:
+            _collect_check(publish, path, root, rel)
+        except publish.PublishError as exc:
+            assert "diverged" in str(exc) and rel in str(exc), exc
+        else:
+            raise AssertionError("a decline of one upstream copy must not cover a later one")
 
 
 def test_a_publish_that_reaches_upstream_clears_the_decline() -> None:
@@ -3157,7 +3127,7 @@ def main(part: int = 1) -> int:
     slots = tempfile.mkdtemp(prefix="publish_slots_")
     os.environ["HARNESS_SLOT_DIR"] = slots
     try:
-        _git_fixture.warm()  # one layout for every case process to copy
+        _baseline_seed()  # case processes copy the committed baseline and the Git layout it warms
         return run_cases(cases[part - 1::PARTS])
     finally:
         shutil.rmtree(slots, ignore_errors=True)

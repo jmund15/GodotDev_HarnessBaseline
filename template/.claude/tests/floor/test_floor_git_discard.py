@@ -11,6 +11,7 @@ import os
 
 import pytest
 
+from _hook_call import copy_repo
 from case import bash
 from conftest import git, write
 
@@ -26,7 +27,7 @@ def _repo(factory, name):
 
 
 @pytest.fixture(scope="module")
-def fixtures(tmp_path_factory):
+def fixtures(tmp_path_factory, sq):
     out = {}
     # f.txt carries an uncommitted edit; clean.txt, crlf.txt (CRLF-only rewrite) committed; staged.txt staged.
     repo = _repo(tmp_path_factory, "advice")
@@ -121,8 +122,9 @@ def fixtures(tmp_path_factory):
     git(saved2, "hash-object", "-w", "g.txt")
     out["saved2"] = saved2
 
-    out["sq"] = _squashed(tmp_path_factory, "sq_rows")
-    norf = _squashed(tmp_path_factory, "norf")
+    out["sq"] = sq
+    norf = tmp_path_factory.mktemp("norf") / "repo"
+    copy_repo(sq, norf)
     git(norf, "config", "clean.requireForce", "false")
     write(norf, "junk/u.txt", "untracked\n")
     out["norf"] = norf
@@ -395,8 +397,7 @@ def test_discard_recommends_no_stash_and_no_show_overwrite(fixtures, command):
     assert got.denied and "git stash" not in got.reason and "git show" not in got.reason
 
 
-def test_observed_loss_denials_name_the_loss_not_an_owner_go_ahead(tmp_path_factory, fixtures):
-    sq = _squashed(tmp_path_factory, "sq_loss")
+def test_observed_loss_denials_name_the_loss_not_an_owner_go_ahead(fixtures, sq):
     for command, repo in (("git checkout -- f.txt", fixtures["repo"]), ("git restore f.txt", fixtures["repo"]),
                           ("git branch -D uniq", sq)):
         got = bash(command, repo)
@@ -409,9 +410,10 @@ def sq(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def sq_fixture_branch(tmp_path_factory):
+def sq_fixture_branch(tmp_path_factory, sq):
     """v1 added `scratch/fx` at uniq's tip after the uniq rows ran: a ref outside the deleted set holds it then."""
-    repo = _squashed(tmp_path_factory, "sq_fx")
+    repo = tmp_path_factory.mktemp("sq_fx") / "repo"
+    copy_repo(sq, repo)
     git(repo, "branch", "scratch/fx", "uniq")
     return repo
 
@@ -443,17 +445,24 @@ def test_branch_delete_of_a_scratch_fixture_branch(sq_fixture_branch, command, k
     assert bash(command, sq_fixture_branch).kind == kind
 
 
-@pytest.mark.parametrize("command", ["git branch -D sq", "git branch --delete --force sq"])
-def test_branch_delete_held_by_origin_head_only(tmp_path_factory, command):
-    repo = _squashed(tmp_path_factory, "sq_other")
+@pytest.fixture(scope="module")
+def sq_other(tmp_path_factory, sq):
+    repo = tmp_path_factory.mktemp("sq_other") / "repo"
+    copy_repo(sq, repo)
     git(repo, "checkout", "-q", "other")
-    assert bash(command, repo).kind == "allow"
+    return repo
 
 
-def test_branch_delete_holders(tmp_path_factory):
+@pytest.mark.parametrize("command", ["git branch -D sq", "git branch --delete --force sq"])
+def test_branch_delete_held_by_origin_head_only(sq_other, command):
+    assert bash(command, sq_other).kind == "allow"
+
+
+def test_branch_delete_holders(tmp_path, sq):
     """sec3: a ref outside the deleted set holding the tip admits the delete; the deny names every unmet
     branch and the preserve step only where a preserve would help."""
-    held = _squashed(tmp_path_factory, "held")
+    held = tmp_path / "held"
+    copy_repo(sq, held)
     got = bash("git branch -D uniq", held)
     assert got.denied and "uniq" in got.reason and "refs/preserve/" in got.reason
     got = bash("git branch -D uniq nosuch", held)
@@ -480,13 +489,8 @@ def test_branch_delete_holders(tmp_path_factory):
 STASHED_WORK = {"a.txt": "a-new\n", "b.txt": "b-new\n", "gone.txt": None}
 
 
-def _stash_scenario(factory, untracked=False, index_text=None):
-    repo = factory.mktemp("held_stash")
-    git(repo, "init", "-q", "-b", "main")
-    for name in ("a.txt", "b.txt", "gone.txt"):
-        write(repo, name, "base\n")
-    git(repo, "add", ".")
-    git(repo, "commit", "-q", "-m", "base")
+def _stash_scenario(base, repo, untracked=False, index_text=None):
+    copy_repo(base, repo)
     git(repo, "checkout", "-q", "-b", "feat")
     if index_text is not None:
         write(repo, "a.txt", index_text)
@@ -497,7 +501,6 @@ def _stash_scenario(factory, untracked=False, index_text=None):
     if untracked:
         write(repo, "n.txt", "n-new\n")
     git(repo, "stash", "push", "-q", *(["-u"] if untracked else []))
-    return repo
 
 
 def _land(repo, files):
@@ -527,9 +530,29 @@ STASH_HELD = [
 ]
 
 
+@pytest.fixture(scope="module")
+def stash_seeds(tmp_path_factory):
+    base = tmp_path_factory.mktemp("stash_seeds")
+    repo = base / "main"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    for name in ("a.txt", "b.txt", "gone.txt"):
+        write(repo, name, "base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "base")
+    seeds = {}
+    for _label, scenario, _work, _steps, _kind in STASH_HELD:
+        key = tuple(sorted(scenario.items()))
+        if key not in seeds:
+            seeds[key] = base / str(len(seeds))
+            _stash_scenario(repo, seeds[key], **scenario)
+    return seeds
+
+
 @pytest.mark.parametrize("label,scenario,work,steps,kind", STASH_HELD, ids=[r[0] for r in STASH_HELD])
-def test_stash_drop_held_by_a_ref_tip(tmp_path_factory, label, scenario, work, steps, kind):
-    repo = _stash_scenario(tmp_path_factory, **scenario)
+def test_stash_drop_held_by_a_ref_tip(tmp_path, stash_seeds, label, scenario, work, steps, kind):
+    repo = tmp_path / "held_stash"
+    copy_repo(stash_seeds[tuple(sorted(scenario.items()))], repo)
     if "detach-first" in steps:
         git(repo, "checkout", "-q", "--detach")
     _land(repo, work)

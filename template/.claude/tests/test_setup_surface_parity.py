@@ -175,16 +175,18 @@ def _workstation_profile():
     return module
 
 
+# (label, check, drift arms, surfaces the check reads). `.mcp.json` is project-local with no baseline
+# row, so a consumer that carries none proves only the surfaces it has.
 CHECKS = (("(a) the cloud script's engine pins and the loader's Godot pin match the SSOT",
-           godot_pin_agrees, ("godot_script", "godot_loader")),
-          ("(a) the cloud script's .NET channel matches the SSOT", dotnet_pin_agrees, ("dotnet",)),
-          ("(a) the cloud script's PowerShell version matches the SSOT", powershell_pin_agrees, ("pwsh_script",)),
+           godot_pin_agrees, ("godot_script", "godot_loader"), ()),
+          ("(a) the cloud script's .NET channel matches the SSOT", dotnet_pin_agrees, ("dotnet",), ()),
+          ("(a) the cloud script's PowerShell version matches the SSOT", powershell_pin_agrees, ("pwsh_script",), ()),
           ("(b) the MCP package version in .mcp.json and the cloud script matches the SSOT",
-           mcp_version_agrees, ("mcp_script", "mcp_json")),
+           mcp_version_agrees, ("mcp_script", "mcp_json"), (".mcp.json",)),
           ("(c) every .mcp.json server is named in the command and the cloud contract",
-           every_server_is_documented, ("extra_server",)),
+           every_server_is_documented, ("extra_server",), (".mcp.json",)),
           ("(d) the cloud script's stored fingerprint is current", fingerprint_is_current,
-           ("unstored_fingerprint",)))
+           ("unstored_fingerprint",), ()))
 
 
 # ---------------------------------------------------------------- the planted drift arms
@@ -193,6 +195,8 @@ def drift_root(tmp, edits):
     """A copy of the setup surface with `edits` applied. {SURFACES key: (old, new)}."""
     root = Path(tmp) / ("drift_" + re.sub(r"\W+", "_", "".join(edits))[:40])
     for key, rel in COPIES.items():
+        if not (REPO / rel).is_file():
+            continue
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO / rel, target)
@@ -219,12 +223,21 @@ DRIFT = {
 
 
 def main():
+    if "PROJECT-OWNED SEED" in (REPO / COPIES["project_stack.md"]).read_text(encoding="utf-8"):
+        print("SKIP this checkout's project_stack.md is the unfilled adoption seed (never synced), so it "
+              "carries no pins for a setup surface to agree with")
+        return
     tmp = Path(tempfile.mkdtemp(prefix="parity_"))
 
     # An unplanted copy and a planted one run through the SAME function: green on the first, red on
     # the second. Only the planted value differs, so the arm proves the assertion binds it.
     clean = drift_root(tmp, {})
-    for label, check, arms in CHECKS:
+    for label, check, arms, needs in CHECKS:
+        absent = [rel for rel in needs if not (REPO / rel).is_file()]
+        if absent:
+            print("SKIP %s -- this checkout carries no %s (project-local, no baseline row)"
+                  % (label, ", ".join(absent)))
+            continue
         case("green: " + label, lambda check=check: check(clean))
         for arm in arms:
             try:

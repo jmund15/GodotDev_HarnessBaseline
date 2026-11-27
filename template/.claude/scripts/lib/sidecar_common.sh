@@ -2134,6 +2134,16 @@ sc_below_normal_prefix() {
   printf '%s' "$SC_ROOT/scripts/lib/below_normal_shell.sh"
 }
 
+# sc_below_normal_nice -> the `nice -n` value that lands a bench arm's tree on below normal from this
+# process's own nice, never a relative step that takes a below-normal caller to idle: Git Bash reads a
+# below-normal caller as nice 8, where +10 would land on idle. One owner for the composition `oc_run`
+# and the proof of it read; lib/below_normal_shell.sh keeps its copy because it runs under the CLI.
+sc_below_normal_nice() {
+  local n
+  n="$(nice)"
+  printf '%s' "$(( n < 10 ? 10 - n : 0 ))"
+}
+
 # ------------------------------------------------------------------------ run record
 # `python3` may be native Windows Python, which cannot resolve an MSYS path — /tmp and /c/...
 # open as FileNotFoundError and the record is silently lost. Hand it native paths where

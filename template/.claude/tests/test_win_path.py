@@ -1,5 +1,6 @@
 """Path spelling is lexical; only native lookup depends on the host OS."""
 import importlib
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -63,26 +64,29 @@ class WinPathTests(unittest.TestCase):
 class IdentityTests(unittest.TestCase):
     """A path's checkout and its path inside it: one file has one identity whatever its spelling."""
 
+    root = "C:/Repo" if os.name == "nt" else "/repo"
+    alias = "/c/Repo" if os.name == "nt" else "/repo/../repo"
+    other = "C:/Other" if os.name == "nt" else "/other"
+
     def test_one_file_has_one_identity_in_every_spelling(self):
-        self.assertTrue(win.same(win.identity("C:/Repo/Plans/X.MD", "C:/Repo"),
-                                 win.identity("/c/Repo/Plans/X.md", "/c/Repo")))
+        self.assertTrue(win.same(win.identity(self.root + "/Plans/X.MD", self.root),
+                                 win.identity(self.alias + "/Plans/X.md", self.alias)))
 
     def test_a_relative_path_names_the_root_checkout(self):
-        self.assertTrue(win.same(win.identity("plans/x.md", "C:/Repo"),
-                                 win.identity("/c/Repo/plans/x.md", "/c/Repo")))
+        self.assertTrue(win.same(win.identity("plans/x.md", self.root),
+                                 win.identity(self.alias + "/plans/x.md", self.alias)))
 
     def test_another_checkouts_file_is_not_this_one(self):
-        # The real input: a seat read of /other/checkout/plans/x.md must not credit plans/x.md of C:/Repo.
-        self.assertFalse(win.same(win.identity("plans/x.md", "C:/Repo"),
-                                  win.identity("/other/checkout/plans/x.md", "C:/Repo")))
+        self.assertFalse(win.same(win.identity("plans/x.md", self.root),
+                                  win.identity(self.other + "/plans/x.md", self.root)))
 
     def test_the_same_relative_path_in_two_checkouts_differs(self):
-        self.assertFalse(win.same(win.identity("/c/Repo/plans/x.md", "C:/Repo"),
-                                  win.identity("/c/Other/plans/x.md", "C:/Other")))
+        self.assertFalse(win.same(win.identity(self.root + "/plans/x.md", self.root),
+                                  win.identity(self.other + "/plans/x.md", self.other)))
 
     def test_a_path_only_matches_by_suffix_is_not_the_same_file(self):
-        self.assertFalse(win.same(win.identity("x.md", "C:/Repo"),
-                                  win.identity("/c/Repo/plans/x.md", "/c/Repo")))
+        self.assertFalse(win.same(win.identity("x.md", self.root),
+                                  win.identity(self.alias + "/plans/x.md", self.alias)))
 
 
 if __name__ == "__main__":

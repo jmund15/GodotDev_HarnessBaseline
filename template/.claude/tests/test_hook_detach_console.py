@@ -5,7 +5,7 @@ A console-less worker (DETACHED_PROCESS) makes every console child it starts all
 default terminal; measured 2026-10-05 at 16-131 s per child against 0.02 s with CREATE_NO_WINDOW. Windows ignores
 CREATE_NO_WINDOW when DETACHED_PROCESS is also set, so the pair is still console-less.
 
-    python3 .claude/tests/test_hook_detach_console.py   (0 pass, 1 fail, 2 cannot run)
+    python3 .claude/tests/test_hook_detach_console.py   (0 pass or platform skip, 1 fail)
 """
 import importlib.util
 import os
@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from _platform_skip import skip_proof
 
 HOOKS = Path(__file__).resolve().parents[1] / 'hooks'
 FAILURES = []
@@ -57,8 +59,7 @@ def check(name, seen):
 
 def main():
     if os.name != 'nt':
-        print('CANNOT RUN: Windows creation flags')
-        return 2
+        skip_proof(Path(__file__).name, 'only Windows subprocesses use console creation flags')
     parity = load('login_parity_check')
     with tempfile.TemporaryDirectory() as tmp:
         check('login_parity_check.spawn', captured(lambda: parity.spawn([sys.executable, '-c', 'pass'], os.path.join(tmp, 'log.txt'))))

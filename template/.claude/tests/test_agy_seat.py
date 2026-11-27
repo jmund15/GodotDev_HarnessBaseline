@@ -13,7 +13,9 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import sys
+from pathlib import PureWindowsPath
 import tempfile
 import textwrap
 import time
@@ -26,8 +28,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "fixtures", "agy")
 TOOL = os.path.join(HERE, "..", "tools", "agy_seat.py")
 TMP = tempfile.mkdtemp(prefix="agy_seat_")
-ROOT = r"C:\Users\alice\Work\project\.claude\scratch\agy_probe"
-MAIN = r"C:\Users\alice\Work\project"
+CAPTURE_HOME = r"C:\Users\alice"
+FIXTURE_HOME = os.path.join(TMP, "home")
+MAIN = os.path.join(FIXTURE_HOME, "Work", "project")
+ROOT = os.path.join(MAIN, ".claude", "scratch", "agy_probe")
 SCOUT = ["Read", "Glob", "Grep"]
 
 CASES = []
@@ -47,7 +51,16 @@ def load():
 
 def text(name):
     with open(os.path.join(FIX, name), encoding="utf-8") as fh:
-        return fh.read()
+        capture = fh.read()
+    escaped_home = json.dumps(CAPTURE_HOME)[1:-1]
+    path_pattern = re.escape(escaped_home) + r'(?:\\\\[^"\\\\]+)*'
+
+    def local_path(match):
+        original = PureWindowsPath(json.loads('"' + match[0] + '"'))
+        parts = original.relative_to(CAPTURE_HOME).parts
+        return json.dumps(os.path.join(FIXTURE_HOME, *parts))[1:-1]
+
+    return re.sub(path_pattern, local_path, capture)
 
 
 def lines(name):
@@ -275,14 +288,14 @@ def browser_and_notebook_calls_are_out_of_profile():
 
 @case
 def a_read_outside_the_root_is_out_of_profile():
-    env = parse(load(), with_tool("view_file", r"C:\Users\alice\secrets.txt"))
+    env = parse(load(), with_tool("view_file", os.path.join(FIXTURE_HOME, "outside.txt")))
     return env["is_error"] and env["outsideProfile"][0]["why"] == "outside the root", str(env["outsideProfile"])
 
 
 @case
 def a_read_in_a_sibling_worktree_is_out_of_profile():
-    path = MAIN + r"\.claude\worktrees\other\notes.md"
-    inside = parse(load(), with_tool("view_file", MAIN + r"\README.md"), roots=(MAIN,))
+    path = os.path.join(MAIN, ".claude", "worktrees", "other", "notes.md")
+    inside = parse(load(), with_tool("view_file", os.path.join(MAIN, "README.md")), roots=(MAIN,))
     nested = parse(load(), with_tool("view_file", path), roots=(MAIN,))
     return (not inside["is_error"] and nested["is_error"]
             and nested["outsideProfile"][0].get("path") == path), f"{inside['outsideProfile']} {nested['outsideProfile']}"
@@ -291,7 +304,7 @@ def a_read_in_a_sibling_worktree_is_out_of_profile():
 @case
 def a_completed_write_on_a_scout_is_out_of_profile_and_a_denied_one_is_not():
     seat = load()
-    done = parse(seat, with_tool("write_file", ROOT + r"\x.txt"))
+    done = parse(seat, with_tool("write_file", os.path.join(ROOT, "x.txt")))
     denied = parse(seat, text("stream.jsonl"))
     return (done["outsideProfile"] and done["outsideProfile"][0]["why"] == "not granted to this kind"
             and not denied["outsideProfile"]), f"{done['outsideProfile']}"
