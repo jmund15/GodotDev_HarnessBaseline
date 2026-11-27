@@ -64,6 +64,9 @@ def drift():
 
 import atexit
 import shutil
+import _checkout_root
+import _git_fixture
+import _git_run
 import test_dispatch_table
 from test_dispatch_table import Env, SID, workflow_payload, stop_payload, bash_payload
 from _must_allow_cases import must_allow_cases
@@ -75,14 +78,36 @@ def _planted_project():
     """The session's project folder as every payload here names it (`cwd`): a repository planted in temp, so the
     audit's git commands (check-ignore, ls-files, grep, worktree list) read it, never this checkout."""
     root = tempfile.mkdtemp(prefix='dispatch_verify_project_')
-    atexit.register(shutil.rmtree, root, ignore_errors=True)
-    for args in (['init', '-q'], ['config', 'user.email', 't@t'], ['config', 'user.name', 't'],
-                 ['config', 'commit.gpgsign', 'false']):
-        subprocess.run(['git', '-C', root, *args], check=True)
-    Path(root, 'README.md').write_text('seed\n', encoding='utf-8')
-    subprocess.run(['git', '-C', root, 'add', 'README.md'], check=True)
-    subprocess.run(['git', '-C', root, 'commit', '-qm', 'seed'], check=True)
+    atexit.register(_git_fixture.remove, root)
+    _git_fixture.init_repo(root)
+    _git_fixture.history(root, ({'README.md': 'seed\n'}, 'seed'))
     return root
+
+
+_checkout_reads = {}
+
+
+def _remember_checkout_reads():
+    """Every Stop and launch asks git which checkout its cwd lies in (three `rev-parse` spawns, about half of this
+    proof's spawns). The memory spans the whole file run, so it holds only while no case changes which checkout an
+    already-asked folder lies in: every case plants fresh folders, and the shared project keeps its layout. The first
+    ask of each folder runs the real call; `test_checkout_root.py` owns what git answers."""
+    real = _git_run.run
+    asked = ('--show-toplevel', '--show-superproject-working-tree')
+
+    def run(args, *, cwd=None, **kwargs):
+        args = list(args)
+        if args == _checkout_root.LAYOUT_ARGS or (args[:1] == ['-C'] and args[2:3] == ['rev-parse'] and args[3:] and args[3] in asked and len(args) == 4):
+            key = (tuple(args), cwd)
+            if key not in _checkout_reads:
+                _checkout_reads[key] = real(args, cwd=cwd, **kwargs)
+            return _checkout_reads[key]
+        return real(args, cwd=cwd, **kwargs)
+
+    _git_run.run = run
+
+
+_remember_checkout_reads()
 
 
 test_dispatch_table.PROJECT = _planted_project()
@@ -813,7 +838,7 @@ def native_fold_run(snapshot_text, live_text, *, relative=False, repo_root=False
     import fold_check
     fixture = HERE / 'fixtures/stop_audit/review_fold_native'
     root = Path(tempfile.mkdtemp(prefix='fold_native_'))
-    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    _git_fixture.init_repo(root)
     plan = root / PLAN_REL
     plan.parent.mkdir(parents=True)
     plan.write_text(snapshot_text, encoding='utf-8', newline='\n')
@@ -919,7 +944,7 @@ def native_close_run(*, closed=True, edited=True):
             path, _, line = item['file'].rpartition(':')
             quotes.setdefault(path, []).append((item['file'], item['quote']))
     root = Path(tempfile.mkdtemp(prefix='close_native_'))
-    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    _git_fixture.init_repo(root)
     gone = set(_close_fixture('edited_after_close.json'))
 
     def plant(live):

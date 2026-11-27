@@ -122,7 +122,7 @@ printf '{"type":"result","session_id":"S-X","result":"done"}\n'
 STUB
 chmod +x "$TMPD/claude_stub.sh"
 export SIDECAR_WORK_KEY="launcher-cell-1"
-real_key="$(python3 "$(sc_to_native "$R/tools/work_key.py")" key --model "$SC_MODEL" --effort low --label rp-real)"
+real_key="$(python3 "$(sc_to_native "$R/tools/work_key.py")" gate --no-check --model "$SC_MODEL" --effort low --label rp-real)"
 plant_row "$TMPD/ledger.jsonl" "$real_key" rp-real 0 0.5
 : > "$CNT"
 SIDECAR_DISPATCH_OWNER=test_sidecar_repay HARNESS_SIDECAR_PREFLIGHT=0 CLAUDE_BIN="$TMPD/claude_stub.sh" bash "$R/scripts/anthropic_sidecar.sh" -m "$SC_MODEL" -e low -l rp-real -f "$BRIEF" > "$TMPD/real.out" 2> "$TMPD/real.err"; g=$?

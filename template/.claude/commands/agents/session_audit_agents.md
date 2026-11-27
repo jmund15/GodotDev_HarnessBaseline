@@ -145,7 +145,7 @@ You are sa-harness-quality, auditing this session's HARNESS edits (`.claude/**`,
 
 ## Per commit and decision
 Read every doctrine commit's `premises` block and its cited evidence in {{DOCTRINE_COMMITS}}, including deletion-only commits and renames out of doctrine. Judge the supplied session's new `task_record.py` decisions and their evidence items by the same checks (`/.claude/reference/evidence_contract.md`). Report a rule finding when:
-- A `decision` doctrine commit that rests on a cause, count or ruling has no `premises` block, or a premise is missing for a stated cause.
+- A `decision` doctrine commit that rests on a cause, count or ruling has no `premises` block, or a stated load-bearing premise lacks evidence in the block or task decision.
 - A count's command or evidence does not read every counted item: a category label or sample does not prove the count's claimed meaning.
 - The cited evidence does not show the diagnosis that drives the change or decision.
 Identify the commit SHA or task-record decision in each finding and cite the failing evidence. Return the per-commit and decision verdicts in the lens-level `report` field, including passed premises, so the report accounts for every supplied input.

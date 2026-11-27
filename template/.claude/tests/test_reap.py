@@ -585,14 +585,19 @@ def main():
         usr_bin = os.path.join(git_root, "Git", "usr", "bin")
         os.makedirs(usr_bin)
         open(os.path.join(usr_bin, "ps.exe"), "w").close()
-        reap.shutil.which = lambda name, *a, **k: os.path.join(usr_bin, "ps.exe") if name == "ps" and os.name != "nt" else None
+        reap.shutil.which = lambda name, *a, **k: (
+            os.path.join(usr_bin, name + ".exe") if name in ("ps", "bash") and os.name != "nt"
+            and os.path.exists(os.path.join(usr_bin, name + ".exe")) else None)
         reap._msys._GIT_ROOTS = (os.path.join(git_root, "Git"),)
+        told = os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
         try:
             without_bash = reap.git_bash()
             open(os.path.join(usr_bin, "bash.exe"), "w").close()
             b = reap.git_bash() or ""
         finally:
             reap.shutil.which, reap._msys._GIT_ROOTS = real_which, real_roots
+            if told is not None:
+                os.environ["CLAUDE_CODE_GIT_BASH_PATH"] = told
         ck("the environ read uses the bash.exe beside Git's ps, never a bare `bash` lookup",
            b == os.path.join(usr_bin, "bash.exe") and without_bash is None, f"resolved {b!r}, without {without_bash!r}")
     # 11. the reverse pid map: a Windows pid finds its MSYS row, an absent one does not

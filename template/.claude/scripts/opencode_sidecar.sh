@@ -317,24 +317,13 @@ if [ "${1:-}" = "--check" ]; then
     [ "$_check_rc" = 2 ] && echo "UNAVAILABLE (model '$SC_MODEL' does not resolve in the registry)" \
       || echo "UNAVAILABLE (credential unavailable: Go needs OPENCODE_API_KEY)"
     exit "$_check_rc"; }
-  _check_reg="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" 2>&1)" || {
-    echo "UNAVAILABLE (model registry unusable: ${_check_reg%%$'\n'*})"; exit 2; }
-  _check_apimode="$(printf '%s' "$_check_reg" | cut -d'|' -f12)"
+  sc_check_registry
+  _check_apimode="$SC_API_MODE"
   if [ "$_check_apimode" != "messages" ]; then
     _check_bin="$(oc_litellm_bin)" || { echo "UNAVAILABLE (litellm not installed; uv tool install 'litellm[proxy]' or set OC_LITELLM_BIN)"; exit 4; }
     oc_litellm_version_ok "$_check_bin" || { echo "UNAVAILABLE (litellm too old for the proxied path; see stderr)"; exit 4; }
   fi
   oc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
-  _check_state="$(python3 "$SC_REGISTRY_CLI" transport-status "$SC_TRANSPORT" 2>/dev/null \
-    | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("state", "available"))
-except Exception:
-    print("available")' 2>/dev/null)"
-  if [ "$_check_state" = "unavailable" ]; then
-    echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
-    exit 7
-  fi
   # Only Zen (transport opencode) publishes a catalog; go and local rows rest on the live probe below.
   if [ "$SC_TRANSPORT" = "opencode" ]; then
     _models="$(curl -s --max-time 20 "$ZEN_BASE_URL/models" 2>/dev/null)" || {
@@ -390,7 +379,7 @@ sc_build_disclosure
 sc_validate_effort
 
 # Registry-stated window, ALWAYS declared (header: the 200k default under-declares badly).
-SC_CONTEXT_TOKENS="$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" 2>/dev/null)"
+SC_CONTEXT_TOKENS="${SC_WINDOW_DEFAULT:-}"
 SC_MAX_OUTPUT="$(sc_max_output)"
 [ -n "$SC_CONTEXT_TOKENS" ] && \
   echo "[opencode-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry; CLI default is 200000)" >&2

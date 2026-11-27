@@ -172,6 +172,29 @@ check("the interactive orchestrator's raised timeout is clamped to the default i
       rc == 0 and updated is not None and not updated.get("run_in_background")
       and updated.get("timeout") == 120000 and updated.get("command") == RENDER, detail)
 
+# A never-woken caller's background Bash call ends with the same EXIT line, so run_wait.py ends on the call's output
+# file whether the client moved the command or the caller started it in the background.
+def background(command, tool="Bash"):
+    return {"session_id": "proof-fwg-3b", "hook_event_name": "PreToolUse", "tool_name": tool,
+            "tool_input": {"command": command, "run_in_background": True, "timeout": 1800000}}
+
+
+rc, updated, verdict, detail = rewrite(background(RENDER), "sdk-cli")
+check("a never-woken caller's background Bash call ends with the EXIT line, and the note names run_wait.py",
+      rc == 0 and verdict is None and updated is not None and updated.get("run_in_background")
+      and updated.get("command", "").startswith(RENDER)
+      and updated.get("command", "").rstrip().endswith('echo "EXIT $?"') and "run_wait.py" in detail, detail)
+rc, updated, verdict, detail = rewrite(background("pwsh -NoProfile -File build.ps1", tool="PowerShell"), "sdk-cli")
+check("a never-woken caller's background PowerShell call gets no EXIT line, and its note claims none",
+      rc == 0 and verdict is None and 'EXIT $?' not in json.dumps(updated or {})
+      and "run_wait.py" in detail and "EXIT <code>" not in detail and "<that file>" not in detail, detail)
+rc, updated, verdict, detail = rewrite(background("pwsh -NoProfile -File build.ps1", tool="PowerShell"), "sdk-cli")
+check("a later PowerShell call in the window repeats no wake note",
+      rc == 0 and verdict is None and not detail, detail)
+rc, updated, verdict, detail = rewrite(background(RENDER), "cli")
+check("the woken orchestrator's background call gets no EXIT line: its wake carries the exit code",
+      rc == 0 and verdict is None and 'EXIT $?' not in json.dumps(updated or {}), detail)
+
 LOOP_WAIT = "until grep -q done a2.log; do sleep 30; done"
 # The clamp is the child's prompt-cache lifetime: a child on the 1-hour cache (`CLAUDE_CODE_PROMPT_CACHE_TTL=1h`, set
 # by its launcher) waits to the Bash ceiling; a 5-minute or unknown one keeps SUBAGENT_WAIT_MS.
@@ -279,6 +302,81 @@ for label, entrypoint, agent in (("a print-mode child's", "sdk-cli", ""), ("a Wo
     check(label + " eight clamped waits on its own run's output are never denied for their length",
           all(rc == 0 and verdict is None and timeout == SUBAGENT_WAIT_MS for rc, verdict, timeout, _ in verdicts),
           [v[:3] for v in verdicts])
+
+# A hand-written loop over one runner log becomes run_wait.py, which ends at that runner's own terminal line: one wait
+# for every runner, bounded inside the call, ending at the verdict rather than the sleep grain. Shapes cut from a
+# drive's job transcripts; a loop on anything but runner terminal words, or inside a quoted body, is left alone.
+# STATUS= is the godot layer's suite row (tools/run_wait.godot.json); a project without that layer has no such runner.
+GODOT_ROWS = os.path.isfile(os.path.join(os.path.dirname(HOOK), "..", "tools", "run_wait.godot.json"))
+
+
+def runner_rewrite(command, timeout=600000, entrypoint="sdk-cli", **caller):
+    rc, updated, verdict, detail = rewrite(timed(command, timeout, **caller), entrypoint)
+    return rc, (updated or {}), verdict, detail
+
+
+for label, loop, rest in (
+        ("an until-loop on STATUS=",
+         'until grep -q "STATUS=" .claude/scratch/fix1/census_red.log 2>/dev/null; do sleep 15; done',
+         '; grep -nE "STATUS=|Passed!|Failed!" .claude/scratch/fix1/census_red.log'),
+        ("a for-seq loop that breaks on STATUS=",
+         'for i in $(seq 1 24); do grep -q "STATUS=" .claude/scratch/fix1/lint.log && break; sleep 10; done',
+         '; tail -6 .claude/scratch/fix1/lint.log'),
+        ("an extended-grep alternation of terminal words",
+         "until grep -qE '^(STATUS|VERDICT)=' run.log; do sleep 30; done", ""),
+        ("a loop on a clamped command's EXIT line",
+         'until grep -q "^EXIT " "C:/Users/u/AppData/Local/Temp/claude/s/tasks/b1.output"; do sleep 30; done', ""),
+        ("a loop on a named variable's log", 'F=out/run_red2.log; until grep -q "STATUS=DONE" "$F"; do sleep 30; done', ""),
+        ("a loop on a log under a named variable's folder",
+         'T=C:/Users/u/AppData/Local/Temp/claude/s/tasks; until grep -q "STATUS=" $T/b1.output; do sleep 30; done', ""),
+        ("a for-seq loop on STATUS=DONE, whose DONE is no shell keyword",
+         'for i in $(seq 1 8); do grep -q "STATUS=DONE" .claude/scratch/s6_red4.log 2>/dev/null && break; sleep 30; done',
+         '; tail -n 3 .claude/scratch/s6_red4.log'),
+        ("a loop with separate grep flags", "until grep -q -E 'STATUS=|EXIT' .claude/scratch/s6_base.log; do sleep 30; done", ""),
+        ("a loop that is the whole body of a timeout bash -c wrapper",
+         "timeout 290 bash -c 'until grep -q \"^EXIT\\|EXIT \" s3_red_run.log 2>/dev/null; do sleep 15; done'",
+         "; tail -n 30 s3_red_run.log")):
+    if "STATUS" in loop and not GODOT_ROWS:
+        continue
+    rc, updated, verdict, detail = runner_rewrite(loop + rest)
+    command = updated.get("command", "")
+    check("a print-mode child's %s becomes one bounded run_wait call" % label,
+          rc == 0 and verdict is None and "run_wait.py --max 255 " in command and "sleep" not in command
+          and command.endswith(rest) and updated.get("timeout") == SUBAGENT_WAIT_MS, detail)
+
+for label, loop in (
+        ("a loop on an agent's own chain marker", "until grep -q ALLDONE s6_a_chain.log; do sleep 20; done"),
+        ("a loop that also stops on a build error", 'until grep -q "STATUS=\\|error CS" a.log; do sleep 15; done'),
+        ("a loop quoted as data", "echo 'until grep -q \"STATUS=\" a.log; do sleep 30; done' > notes.txt"),
+        ("a wrapped loop followed by more of its body",
+         "timeout 270 bash -c 'until grep -q \"^EXIT\" s3_red_run.log; do sleep 15; done; tail -3 s3_red_run.log'"),
+        ("a loop on a log under a variable assigned twice",
+         'D=a; D=b; until grep -q "STATUS=" "$D/run.log"; do sleep 30; done'),
+        ("a loop on a file's existence", "until [ -f .claude/scratch/s1_done ]; do sleep 5; done"),
+        ("a loop counting terminal lines", "until [ \"$(grep -c 'STATUS=' \"$F\")\" -ge 2 ]; do sleep 30; done")):
+    rc, updated, verdict, detail = runner_rewrite(loop)
+    check("%s is not rewritten" % label,
+          rc == 0 and "run_wait.py" not in updated.get("command", loop), detail)
+
+rc, updated, verdict, detail = runner_rewrite("timeout 200 bash -c 'until grep -q ^EXIT a.log; do sleep 15; done'")
+check("a wrapper's own shorter bound is kept",
+      rc == 0 and updated.get("command", "").endswith("run_wait.py --max 200 a.log"), detail)
+
+rc, updated, verdict, detail = runner_rewrite('until grep -q "^EXIT " a.log; do sleep 30; done', timeout=600000,
+                                              entrypoint="cli")
+check("the orchestrator's long loop on a runner log becomes a background run_wait bounded by its check-in",
+      rc == 0 and updated.get("run_in_background") is True and "run_wait.py --max 3000 " in updated.get("command", "")
+      and "timeout 3000" not in updated.get("command", ""), detail)
+
+rc, updated, verdict, detail = runner_rewrite("python3 .claude/tools/run_wait.py run.log", timeout=120000)
+check("a print-mode child's direct run_wait call runs to its clamp",
+      rc == 0 and updated.get("timeout") == SUBAGENT_WAIT_MS and updated.get("command") == "python3 .claude/tools/run_wait.py run.log", detail)
+
+r = subprocess.run([sys.executable, HOOK], input=json.dumps(timed(RENDER, 600000)), capture_output=True, text=True,
+                   encoding="utf-8", timeout=30, env=dict(os.environ, CLAUDE_CODE_ENTRYPOINT="sdk-cli"))
+check("the clamp note names run_wait.py for the moved command's output file",
+      "run_wait.py" in (json.loads(r.stdout).get("hookSpecificOutput", {}).get("additionalContext", "") if r.stdout.strip() else ""),
+      r.stdout + r.stderr)
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

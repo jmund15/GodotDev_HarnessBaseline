@@ -266,11 +266,15 @@ function Get-SuiteDefaultCeilingMs {
 $script:SuiteProgressCeilingFactor = 3
 # A run whose progress file has not grown for this long is wedged: it is killed, not extended.
 # basis: measured max healthy silence 60.2 s (build phase, forced recompile; n=7 real runs 2026-11-06; boot max 6.0 s, test max 4.1 s), margin 5x.
+# That sample held no case that declares a long budget: a case prints nothing while it runs, so it is silent for up to the
+# `[TestCase(Timeout=)]` it declares (Get-FilterSilenceBudgetMs). -SilenceBudget is a script block returning that budget in ms;
+# it runs at most once, only when the bound is first reached (a healthy run never pays for it), and the bound becomes
+# StallMs + budget. A block that throws is a budget of 0: the bound stays at StallMs.
 $script:SuiteStallMs = 300000
 function Wait-SuiteAttempt {
     param($Process, [int] $TimeoutMs, [string] $GodotLog, [string] $WrapperLog = '', [switch] $NoGodotRuntime,
           [int] $BootTimeoutMs = $script:SuiteBootTimeoutMs, [int] $PollMs = 500,
-          [int] $StallMs = $script:SuiteStallMs)
+          [int] $StallMs = $script:SuiteStallMs, [scriptblock] $SilenceBudget = $null)
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $bootAt = -1L
     $connected = $false
@@ -278,6 +282,7 @@ function Wait-SuiteAttempt {
     $progPath = ''
     $grewAt = 0L
     $ceilingMs = [long] $TimeoutMs * $script:SuiteProgressCeilingFactor
+    $budgetMs = -1L
     while ($true) {
         # The progress file is the Godot log once it exists; before that, and for -NoGodotRuntime, the wrapper's log.
         $progress = if (-not $NoGodotRuntime -and $GodotLog -and [IO.File]::Exists($GodotLog)) { $GodotLog } else { $WrapperLog }
@@ -287,7 +292,14 @@ function Wait-SuiteAttempt {
         $progLen = $len
         $progPath = $progress
         $stallAt = $grewAt + $StallMs
-        if ($elapsed -ge $stallAt) { return 'stall-hang' }
+        if ($elapsed -ge $stallAt) {
+            if ($budgetMs -lt 0) {
+                $budgetMs = 0L
+                if ($SilenceBudget) { try { $budgetMs = [math]::Max(0L, [long] (& $SilenceBudget)) } catch { } }
+            }
+            $stallAt += $budgetMs
+            if ($elapsed -ge $stallAt) { return 'stall-hang' }
+        }
         $limit = if ($elapsed -ge $TimeoutMs) { $ceilingMs } else { [long] $TimeoutMs }
         if ($elapsed -ge $limit) { return 'cap-hang' }
         $remaining = [math]::Min($limit, $stallAt) - $elapsed

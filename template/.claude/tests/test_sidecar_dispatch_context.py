@@ -28,6 +28,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import types
 import sys
@@ -90,25 +91,15 @@ def checked_run(args, **kwargs):
 
 
 def arm_ladder(env, session):
-    state_dir = env["HARNESS_HOOK_STATE_DIR"]
-    os.makedirs(state_dir, exist_ok=True)
-    path = os.path.join(state_dir, (session or "default")[:8] + ".json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
-    except Exception:
-        state = {}
-    state["model_ladder_ready"] = True
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(state, fh)
+    """A full ladder Read in context, keyed by the text of the ladder the gate judges (CLAUDE_PROJECT_DIR's)."""
+    _hook_call.arm_doctrine(session or "", env["HARNESS_HOOK_STATE_DIR"],
+                            root=env.get("CLAUDE_PROJECT_DIR") or _hook_call.REPO, skill=False)
 
 
 def arm_skill(env, session):
-    """The orchestration skill in context, through the real marker seam (_hook_state)."""
-    sys.path.insert(0, os.path.join(REPO, "hooks"))
-    import _hook_state
-    with patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=env["HARNESS_HOOK_STATE_DIR"]):
-        _hook_state.mark_skill_in_context(session or "", "orchestration")
+    """The orchestration skill in context, keyed like `arm_ladder` to the root the gate judges."""
+    _hook_call.arm_doctrine(session or "", env["HARNESS_HOOK_STATE_DIR"],
+                            root=env.get("CLAUDE_PROJECT_DIR") or _hook_call.REPO, ladder=False)
 
 
 def names_ladder_route(reason):
@@ -892,9 +883,10 @@ def test_direct_launch_receipt_remains_one_use(checked_fanout, capsys):
 @pytest.mark.parametrize("spill", [False, True])
 def test_fanout_receipts_resolve_paths_at_the_calls_cwd(checked_fanout, monkeypatch, capsys, spill):
     _check, compact, launch, path, out = checked_fanout
+    doctrine_root = path.parent / "doctrine-root"
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(doctrine_root))
     arm_ladder(dict(os.environ), "fold0001")
     arm_skill(dict(os.environ), "fold0001")
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(path.parent / "doctrine-root"))
     if spill:
         monkeypatch.setattr(sidecar.sidecar_fanout, "REPO", path.parent / "tool-root")
         path.write_text(json.dumps({"jobs": json.loads(path.read_text()), "spillDir": "spill"}), encoding="utf-8")
@@ -1046,6 +1038,7 @@ def fixture():
         reference = source.read()
     with open(os.path.join(reference_dir, "sidecar_dispatch.md"), "w", encoding="utf-8") as target:
         target.write(reference)
+    shutil.copy(os.path.join(REPO, "reference", "model_ladder_evidence.md"), reference_dir)
     env = dict(_transport_fixture.hook_env(), HARNESS_HOOK_STATE_DIR=tmp, CLAUDE_PROJECT_DIR=project,
                CLAUDE_PROJECTS_ROOT=os.path.join(tmp, "projects"))
     env.pop("HARNESS_SIDECAR_PREFLIGHT", None)
@@ -1304,7 +1297,7 @@ def group_worktree_budget(fx):
     cases.append(("one ladder Read authorizes later sidecar dispatches without a re-read",
                   first.get("permissionDecision") is None
                   and second.get("permissionDecision") is None))
-    with patch.object(sidecar, "_git_bash", return_value="bash"), patch.object(
+    with patch.object(sidecar._msys, "bash", return_value="bash"), patch.object(
         sidecar,
         "run_bounded",
         return_value=types.SimpleNamespace(returncode=None, stdout="", stderr=""),
@@ -1319,7 +1312,7 @@ def group_worktree_budget(fx):
         asked.append(timeout)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    with patch.object(sidecar, "_git_bash", return_value="bash"), patch.object(
+    with patch.object(sidecar._msys, "bash", return_value="bash"), patch.object(
         sidecar, "run_bounded", side_effect=recording_bounded
     ):
         exhausted = sidecar.run_preflight(launch, project, time.monotonic() - 1)

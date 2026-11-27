@@ -43,7 +43,7 @@ def child_ttls(tmp):
 
 def kind_row_ttl(kind):
     out = subprocess.run([sys.executable, str(ROOT / ".claude" / "tools" / "tool_profiles.py"), "kind-row",
-                          f"--kind={kind}", "--field=cacheTtl"], capture_output=True, text=True, encoding="utf-8", timeout=60)
+                          f"--kind={kind}", "--fields=cacheTtl"], capture_output=True, text=True, encoding="utf-8", timeout=60)
     return out.stdout.strip()
 
 

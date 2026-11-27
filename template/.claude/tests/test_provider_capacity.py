@@ -673,6 +673,52 @@ def main():
                   and timeout_of({"timeoutSeconds": 20, "refresh": {"timeoutSeconds": 15}}) == 35
                   and timeout_of({"timeoutSeconds": 30, "refresh": {"timeoutSeconds": 15}}) == 35))
 
+    # ---- the launcher's gate fields ---------------------------------------
+    # host_band_fields reduces a reading to the band the launcher's floor gate decides on: the
+    # routing window's band and pressure, a spent allowance read as Hot, and the floor comparison
+    # answered in the same read. capacity_fields reduces the amount gate's six fields.
+    band_fields = pc.host_band_fields
+    amount_fields = pc.capacity_fields
+    cases.append(("host band: the routing band and its pressure pass a Surplus floor",
+                  band_fields(quota("available", band="On pace"), "Surplus") == ["available", "On pace", 0.5, 0]))
+    cases.append(("host band: the same reading is below a Hot floor",
+                  band_fields(quota("available", band="On pace"), "Hot") == ["available", "On pace", 0.5, 1]))
+    cases.append(("host band: a required name the roster lacks is invalid",
+                  band_fields(quota("available"), "Lukewarm") == ["available", "On pace", 0.5, 2]))
+    cases.append(("host band: an empty floor is invalid",
+                  band_fields(quota("available"), "") == ["available", "On pace", 0.5, 2]))
+    cases.append(("host band: a spent allowance reads Hot/spent",
+                  band_fields(quota("exhausted"), "Surplus") == ["exhausted", "Hot", "spent", 0]))
+    cases.append(("host band: a dispatch floor reads Hot/dispatch-floor",
+                  band_fields(quota("dispatch-floor"), "Surplus") == ["dispatch-floor", "Hot", "dispatch-floor", 0]))
+    cases.append(("host band: an unreadable reading names no band and no comparison",
+                  band_fields(quota("rate-limited"), "Surplus") == ["rate-limited", "On pace", 0.5, ""]))
+    routing = quota("available", band="On pace")
+    routing["quota"].update(routingBand="Ahead", routingWindow="thirty_day")
+    routing["quota"]["windows"].append({"name": "thirty_day", "pressure": 0.1})
+    cases.append(("host band: the routing window's own pressure is the one read",
+                  band_fields(routing, "Surplus")[1:3] == ["Ahead", 0.1]))
+    cases.append(("capacity fields: an available plan-quota window",
+                  amount_fields(quota("available")) == ["available", "On pace", "", "live", 0, ""]))
+    cases.append(("capacity fields: an insufficient balance carries its amount",
+                  amount_fields(balance(0)) == ["insufficient", "", 0.0, "live", 0, ""]))
+    floor_reading = quota("dispatch-floor")
+    floor_reading["quota"]["windows"][0]["dispatchFloorPercent"] = 20
+    floor_text = amount_fields(floor_reading)[5]
+    cases.append(("capacity fields: a dispatch floor carries the refusal evidence",
+                  amount_fields(floor_reading)[:5] == ["dispatch-floor", "On pace", "", "live", 0]
+                  and "dispatch floor" in floor_text))
+    unreadable = quota("network-error")
+    unreadable["error"] = {"kind": "network", "message": "the meter did not answer"}
+    cases.append(("capacity fields: an unreadable meter carries its reason",
+                  amount_fields(unreadable) == ["network-error", "On pace", "", "live", 1, "the meter did not answer"]))
+    try:
+        amount_fields({})
+        malformed = False
+    except KeyError:
+        malformed = True
+    cases.append(("capacity fields: a reading with no status is malformed, never empty", malformed))
+
     if saved_samples is None:
         os.environ.pop("HARNESS_USAGE_SAMPLES", None)
     else:

@@ -96,7 +96,7 @@ class Postprocess(unittest.TestCase):
         outside=str(self.root.parent/'unrelated')
         with patch.object(self.cache,'_real',wraps=self.cache._real) as real:
             self.assertIsNone(self.cache._locate(outside))
-        self.assertEqual(real.call_count,1)
+        self.assertEqual(len([c for c in real.call_args_list if c.args[0]==outside]),1)
         self.assertEqual(self.cache._locate(str(self.proof)),'checkout')
         sibling=str(self.root.parent/'peer')
         self.cache._siblings=[self.cache._real(sibling)]

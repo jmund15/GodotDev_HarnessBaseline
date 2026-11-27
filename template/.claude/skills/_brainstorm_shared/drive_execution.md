@@ -36,7 +36,8 @@
   The boundary's files are its slices' write sets that the Session File Identification Procedure reconciles. Each
   finding routes into the consuming slice's scope as a slice repair, a later round (`orchestration` §2 *Later
   rounds*), dispositioned before that slice's scoped verification closes it. Rigor and the bar: the Seam review row of `rigor_stages.md` and `orchestration` reference `rigor.md`. A skipped seam review is a
-  `task_record.py add <task id> decision` naming the boundary and the reason. It is not an absent lens result under
+  `task_record.py add <task id> decision` naming the boundary and the reason; cite any factual premise under
+  [Task decisions](../../reference/evidence_contract.md#task-decisions). It is not an absent lens result under
   H4, because `drive_close.md` §Close step 2 sweeps the seam files the ledger still shows uncovered.
 - Completion is proven by the artifacts the slice's change kind and oracle require under the project's test-first
   rule and `change_control` §Gate cadence. A run cited in a comparison records its command, filter and tree digest. An error-level log line in a run is

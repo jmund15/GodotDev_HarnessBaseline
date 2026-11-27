@@ -23,7 +23,6 @@ The whole text goes to `.claude/scratch/session_context_full.md`, and a last lin
 
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -39,6 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import adaptation  # noqa: E402
 import _optional_hooks
 import _git_run
+import _msys
 from _bounded_run import run_bounded
 from _checkout_root import linked_main_root
 from _claude_scope import is_cloud
@@ -258,36 +258,6 @@ def setup_submodule(root: Path) -> str:
     if blocked or any(prefix != " " for prefix, _, _ in after):
         return "BROKEN (" + done + "); " + (preserved or "other submodules are not at the recorded checkout")
     return "FIXED (" + done + ")"
-
-
-def resolve_bash() -> str | None:
-    """Resolve Git Bash, never WSL bash.
-
-    On Windows `bash` on PATH is C:\\Windows\\System32\\bash.exe — the WSL launcher,
-    which cannot see C:/... paths (it wants /mnt/c/...) and fails with a bare
-    "No such file or directory". Git Bash sits beside git.exe, so derive it from
-    git's own location rather than trusting PATH order.
-    """
-    if platform.system() != "Windows":
-        return "bash"
-    git_exe = shutil.which("git")
-    if git_exe:
-        # .../Git/cmd/git.exe -> .../Git/bin/bash.exe
-        candidate = Path(git_exe).parent.parent / "bin" / "bash.exe"
-        if candidate.exists():
-            return str(candidate)
-    for fallback in (
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ):
-        if Path(fallback).exists():
-            return fallback
-    found = shutil.which("bash")
-    # Reject WSL: it would report every POSIX-path probe as missing.
-    if found and "system32" not in found.lower():
-        return found
-    return None
 
 
 def sidecar_launchers(registry, seat: str):
@@ -522,7 +492,7 @@ def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh", alias: 
     script = root / ".claude" / "scripts" / script_name
     if not script.exists():
         return f"UNAVAILABLE ({script_name} not present)"
-    bash = resolve_bash()
+    bash = _msys.bash()
     if not bash:
         return "UNAVAILABLE (no Git Bash found; sidecar needs a POSIX shell)"
     try:

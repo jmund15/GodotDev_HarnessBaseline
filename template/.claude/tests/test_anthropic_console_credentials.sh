@@ -121,8 +121,12 @@ PARENT_AUTH_LEAK=parent-auth-leak
 # The dispatch-doctrine gate is not under test: a launch from a live session is denied until that session
 # loaded the doctrine, so the proof launches as its own session with the ladder and skill marked loaded.
 HOOK_STATE="$(mktemp -d)"
-printf '{"model_ladder_ready": true, "fired_since_compaction": {"skill_in_context:orchestration": true}}' \
-  > "$HOOK_STATE/consolep.json"
+python3 - "$ROOT/.claude/tests" "$HOOK_STATE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import _hook_call
+_hook_call.arm_doctrine("consolep-0000-0000-0000-000000000000", sys.argv[2])
+PY
 launch() { # <launcher> <record>; the parent carries a leak of every kind the scrub must remove
   ( cd "$ROOT" && \
     HARNESS_HOOK_STATE_DIR="$HOOK_STATE" CLAUDE_CODE_SESSION_ID="consolep-0000-0000-0000-000000000000" \

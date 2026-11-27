@@ -158,7 +158,7 @@ Then present findings grouped by action tier (FIX → ASK → PLAN) per the prot
 
 Issue **two** verdicts: **correctness** (findings tagged `bug` or `rule` — silent failures, regressions, violated project rules) and **design** (findings tagged `improvement` — structure, seams, naming, taste). Never average them into one rating: strong design plus one data-loss bug is `REVISE` on correctness and `APPROVE` on design, never "pretty good".
 
-Before `APPROVE` on correctness, run `python3 .claude/tools/task_record.py check --rerun <task_id>` on the session's active record: a STALE or MISSING row, or one whose evidence items check UNVERIFIED or UNCHECKED, is a decision whose premise is unverified and holds the axis at `REVISE` until it is re-run.
+Before a passing correctness verdict, run `python3 .claude/tools/task_record.py check <task_id> --rerun` for `--task`, or the session's active record if one exists. Read the flagged rows under [Task decisions](../reference/evidence_contract.md#task-decisions). Hold correctness at `REVISE` while a source is stale or missing, supplied evidence cannot be verified, or a load-bearing premise lacks evidence. For a row with no items, state why no premise needed checking or name the unchecked premise. A nonzero exit with no usable rows leaves the check incomplete.
 
 Each axis's verdict is set by its **worst surviving finding** that counts at the run's rigor (`orchestration` reference `rigor.md`); a finding below the bar is listed `below bar: noted` and moves no verdict — not the average, not the count:
 

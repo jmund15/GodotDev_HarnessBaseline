@@ -573,18 +573,10 @@ def msys_pid_for_winpid(winpid):
 
 
 def git_bash():
-    """Git Bash's bash.exe, never WSL's.
-
-    A bare `bash` from Windows Python resolves to `C:\\Windows\\System32\\bash.exe` -- WSL, a
-    different kernel whose /proc has never heard of our MSYS pids (measured 2026-09-18: `uname`
-    said `microsoft-standard-WSL2` and the read failed `No such file or directory`). `ps` is
-    Git's, so its directory is the reliable anchor.
-    """
-    ps = _msys.tool("ps")
-    if not os.path.isabs(ps):
-        return None
-    cand = os.path.join(os.path.dirname(ps), "bash.exe")
-    return cand if os.path.exists(cand) else None
+    """Git Bash for an MSYS pid's environ read, or None: `_msys.bash()`, never WSL's (its /proc cannot see MSYS
+    pids) and never a bare name (no absolute path means no Git Bash to read with)."""
+    found = _msys.bash()
+    return found if found and os.path.isabs(found) else None
 
 
 def native_environ(pid):

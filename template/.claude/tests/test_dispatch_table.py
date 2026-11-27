@@ -12,6 +12,7 @@ launcher, a computed Workflow pin, an Agent call with no model, a covered or Wor
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2203,6 +2204,44 @@ def test_fanout_whose_launcher_is_gone_without_exit_is_died():
     msg = e.run(stop_payload(), "--complete", projects_root=e.root)
     assert "⚠ sidecar gone1 ended without an exit file" in msg and "still running" not in msg, msg
     assert e.pending() == [], e.pending()
+
+
+def test_fanout_whose_record_directory_was_deleted_is_ended_not_running():
+    """A resolved job whose out dir is deleted (its worktree retired) can never write its record: it ends once,
+    reported lost, and leaves the pending table instead of holding every Stop as running."""
+    e = Env()
+    out_dir, _ = _late_registered_fanout(e, ["lost1"], exit_code=None, launcher_pid=os.getpid())
+    e.watch()
+    msg = e.run(stop_payload(), "--complete", projects_root=e.root)
+    assert "still running" in msg and e.pending()[0]["record"], (msg, e.pending())
+    shutil.rmtree(out_dir)
+    msg = e.run(stop_payload(), "--complete", projects_root=e.root)
+    assert "GONE lost1" in msg and "still running" not in msg, msg
+    assert e.pending() == [], e.pending()
+
+
+def test_a_sidecars_ledger_row_answers_after_its_record_directory_is_deleted():
+    """A non-fan-out sidecar's ledger row lives outside its record's directory, so deleting that directory loses
+    nothing the row holds: the row is its answer, and only a sidecar with no row is GONE."""
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    record = os.path.join(e.root, "deleted", "kept.record.json")
+    entry = {"kind": "sidecar", "id": "kept", "record": record, "issued_at": time.time() - 3600,
+             "jobs": [{"label": "kept"}]}
+    saved = os.environ.get("SIDECAR_LEDGER_PATH")
+    os.environ["SIDECAR_LEDGER_PATH"] = e.ledger
+    try:
+        open(e.ledger, "w").close()
+        assert dispatch_table._sidecar_record(dict(entry), {"session_id": SID}) is dispatch_table.GONE
+        _finish_row(e, "kept", "ended-before-result", 12, "REFUSED memory headroom")
+        found = dispatch_table._sidecar_record(dict(entry), {"session_id": SID})
+        assert found is not dispatch_table.GONE and found.get("exitCode") == 12, found
+    finally:
+        if saved is None:
+            os.environ.pop("SIDECAR_LEDGER_PATH", None)
+        else:
+            os.environ["SIDECAR_LEDGER_PATH"] = saved
 
 
 def test_an_earlier_launchs_inventory_never_satisfies_a_newer_call():

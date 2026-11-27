@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from collections import namedtuple
 
 _SHELL_VAR = re.compile(r"\$(?:\{[^}]*\}|\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)")
@@ -415,12 +416,34 @@ def _fanout_options():
 
 def fanout_out_dir(jobs_path, out_value, spill_value, repo):
     """The directory `sidecar_fanout.py` writes to: `--out-dir`, else the jobs file's `spillDir`
-    (relative to `repo`), else `<jobs parent>/fanout`. `out_value` arrives resolved by the caller."""
+    (relative to `repo`), else `<jobs parent>/fanout`. `out_value` arrives resolved by the caller.
+
+    A jobs file inside another checkout (a linked worktree whose briefs the launch reads) writes under `repo`'s
+    `.claude/scratch/fanout-<checkout name>/` instead: the run's records and dispatch rows belong to the launching
+    checkout, and beside the jobs file they die when that worktree retires."""
     if out_value:
         return out_value
     if spill_value:
         return spill_value if os.path.isabs(spill_value) else os.path.join(repo, spill_value)
-    return os.path.join(os.path.dirname(os.path.abspath(jobs_path)), "fanout")
+    parent = os.path.dirname(os.path.abspath(jobs_path))
+    home = _nearest_checkout(parent)
+    if home and repo and not _within(os.path.abspath(repo), home):
+        return os.path.join(repo, ".claude", "scratch", "fanout-" + os.path.basename(home),
+                            os.path.relpath(parent, home), "fanout")
+    return os.path.join(parent, "fanout")
+
+
+def _nearest_checkout(path):
+    hooks = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import _checkout_root  # lazy: a command that names no fan-out never loads it
+    return _checkout_root.nearest_checkout(path)
+
+
+def _within(path, root):
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    return path == root or path.startswith(root.rstrip("\\/") + os.sep)
 
 
 def fanout_repo(cwd, default):

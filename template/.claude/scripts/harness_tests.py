@@ -104,12 +104,18 @@ def _beside_stamp(override, name):
     return override or os.path.join(os.path.dirname(os.path.abspath(STAMP_PATH)), name)
 
 
+_COMMON_DIRS = {}  # {claude dir: its repository's common git dir} (`_shared_path`)
+
+
 def _shared_path(claude_dir, name):
     """`harness_<name>` as every checkout of `claude_dir`'s repository shares it, under its common git dir;
     beside the stamp when git cannot name that dir. The pass cache lives here because its rows key on input
-    bytes, so a pass recorded in one worktree holds in any other whose reached inputs match."""
-    common = (_git_run.soft_text(["-C", claude_dir, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                                 timeout=None) or "").strip()
+    bytes, so a pass recorded in one worktree holds in any other whose reached inputs match. The common dir is
+    asked of git once per process: no command moves its own checkout's git dir. An unanswered ask is not kept."""
+    common = _COMMON_DIRS.get(claude_dir) or (_git_run.soft_text(
+        ["-C", claude_dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], timeout=None) or "").strip()
+    if common:
+        _COMMON_DIRS[claude_dir] = common
     return (os.path.join(common, "harness", name) if common
             else os.path.join(os.path.dirname(os.path.abspath(_DEFAULT_STAMP)), "harness_" + name))
 
@@ -520,7 +526,6 @@ def _recorded_passes(repo_root, bound, cache):
         return set()
     rels = {p: _norm(os.path.relpath(p, repo_root)) for p in bound}
     cases = _behavior_plan(repo_root, list(rels.values())).get("cases", {})
-    cache.snapshot_git()
     held = set()
     for proof, rel in rels.items():
         try:
@@ -1072,7 +1077,9 @@ class _PassCache(_evidence.Reach):
         self._close_checkout = os.path.basename(os.path.abspath(self.root)).startswith(_CHECKOUT_PREFIX)
         self._repo_dirs, self._outer_git, common = self._repository_dirs()
         self._shared_dir = os.path.normcase(os.path.abspath(os.path.join(common, "harness"))) if common else None
-        self._siblings = self._other_worktrees()
+        self._siblings = None  # `_sibling_paths`, read from the snapshot's worktree list
+        self._scopes, self._snapshot_reads, self._snapshot_done = {}, {}, False
+        self._scope_lock = threading.RLock()
         self._temp_real = self._real(tempfile.gettempdir())
         self.runner = _launch_fingerprint()
         self._behavior, self._behavior_lock = None, threading.Lock()
@@ -1483,20 +1490,25 @@ class _PassCache(_evidence.Reach):
                 dirs.append(os.path.dirname(self._real(line)))
         return tuple(dirs), tuple(outer), (lines[1] if len(lines) > 1 else "")
 
-    def _other_worktrees(self):
+    def _sibling_paths(self):
         """The real paths of the repository's other worktrees (the main checkout and every linked one): each has
-        its own HEAD and files, none of which this checkout's key holds."""
-        try:
-            listed = self._git_read(["worktree", "list", "--porcelain"])
-        except (RuntimeError, OSError):
-            return ()
-        found = []
-        for line in listed.splitlines():
-            if line.startswith("worktree "):
-                real = self._real(line[len("worktree "):].strip())
-                if real != self._repo_dirs[0] and real not in found:
-                    found.append(real)
-        return tuple(found)
+        its own HEAD and files, none of which this checkout's key holds. Read once, from the worktree list the
+        `worktrees` scope digests (`snapshot_git`)."""
+        if self._siblings is None:
+            with self._scope_lock:
+                if self._siblings is None:
+                    try:
+                        listed = self._git_read(["worktree", "list", "--porcelain"], held=True)
+                    except (RuntimeError, OSError):
+                        listed = ""
+                    found = []
+                    for line in listed.splitlines():
+                        if line.startswith("worktree "):
+                            real = self._real(line[len("worktree "):].strip())
+                            if real != self._repo_dirs[0] and real not in found:
+                                found.append(real)
+                    self._siblings = tuple(found)
+        return self._siblings
 
     def _locate(self, path, resolved=None):
         """Where `path` lies: `checkout` (this one), `repository` (a git dir the worktrees share), `sibling` (inside
@@ -1508,7 +1520,7 @@ class _PassCache(_evidence.Reach):
         in_repository = any(real == d or real.startswith(d + os.sep) for d in self._repo_dirs)
         if ".git" in real.split(os.sep) and in_repository:
             return "repository"
-        if any(real == s or real.startswith(s + os.sep) for s in self._siblings):
+        if any(real == s or real.startswith(s + os.sep) for s in self._sibling_paths()):
             return "sibling"
         return "repository" if in_repository else None
 
@@ -1526,10 +1538,12 @@ class _PassCache(_evidence.Reach):
             at = os.path.dirname(at)
         return False
 
-    def _git_read(self, args):
+    def _git_read(self, args, held=False):
         """Git's answer in this checkout as a proof's own git gets it: the repository variables a caller set
-        (a commit's private index) are dropped, as `run_proof` drops them from a proof's environment."""
-        memo, key = getattr(self, "_snapshot_reads", None), tuple(args)
+        (a commit's private index) are dropped, as `run_proof` drops them from a proof's environment. A `held`
+        read is one of the snapshot's: scopes share reads (`repo` is the union of five others), so each distinct
+        one is asked once until the snapshot is complete. Any other read asks git."""
+        memo, key = self._snapshot_reads if held else None, tuple(args)
         if memo is not None and key in memo:
             return memo[key]
         env = {k: None for k in GIT_REPO_ENV}
@@ -1593,148 +1607,130 @@ class _PassCache(_evidence.Reach):
         hidden = self._hidden([rel + "/" + n for n in names])
         return sorted(n for n in names if rel + "/" + n not in hidden)
 
+    def _scope_state(self, name, fresh, read):
+        """Scope `name`'s digest, from `read(held)`, or None when git cannot give it. Without `fresh` it is the
+        snapshot's: read on the first ask and kept, so a lookup reads only the scopes its row's key holds and a run
+        that reuses every pass reads only those. The first proof launch completes it (`snapshot_git`), so every
+        kept digest predates every proof the cache's runs start. `fresh` reads git again and keeps nothing."""
+        if fresh:
+            return read(False)
+        if name not in self._scopes:
+            with self._scope_lock:
+                if name not in self._scopes:
+                    self._scopes[name] = read(True)
+        return self._scopes[name]
+
+    def _digest_reads(self, reads, held):
+        """sha256 of the reads' outputs joined by newlines, or None when one fails."""
+        try:
+            return hashlib.sha256("\n".join(self._git_read(a, held) for a in reads).encode("utf-8")).hexdigest()
+        except (RuntimeError, OSError):
+            return None
+
     def _repo_state(self, fresh=False):
         """What a git command in this checkout can print of the repository, untracked files aside: HEAD's commit and
         tree, every ref, the config, and the tracked files' uncommitted changes as status codes and as content (a
         second edit of a modified file moves no code). Untracked files are their own scope (`_untracked_names`): the
-        runner's own stamp, slots and pass rows are untracked, and counting them would rerun every git-using proof.
-        Read once per run (`snapshot_git`, before any proof starts); `fresh` reads it again without keeping it."""
-        if fresh or not hasattr(self, "_state"):
+        runner's own stamp, slots and pass rows are untracked, and counting them would rerun every git-using proof."""
+        def read(held):
+            reads = (["status", "--porcelain", "--untracked-files=no"], ["diff", "HEAD", "--binary"],
+                     ["for-each-ref", "--format=%(refname) %(objectname)"], ["config", "--list"],
+                     ["rev-parse", "HEAD^{tree}"], ["rev-parse", "HEAD"])
             try:
-                reads = (["status", "--porcelain", "--untracked-files=no"], ["diff", "HEAD", "--binary"],
-                         ["for-each-ref", "--format=%(refname) %(objectname)"], ["config", "--list"],
-                         ["rev-parse", "HEAD^{tree}"], ["rev-parse", "HEAD"])
                 with ThreadPoolExecutor(len(reads)) as pool:
-                    state = [hashlib.sha256(out.encode("utf-8")).hexdigest() for out in pool.map(self._git_read, reads)]
+                    return [hashlib.sha256(out.encode("utf-8")).hexdigest()
+                            for out in pool.map(lambda a: self._git_read(a, held), reads)]
             except (RuntimeError, OSError):
-                state = None
-            if fresh:
-                return state
-            self._state = state
-        return self._state
+                return None
+        return self._scope_state("repo", fresh, read)
 
     def _tracked_names(self, fresh=False):
-        """A digest of the names the index tracks: what a proof that only lists files can observe of git.
-        Read once per run like `_repo_state`; `fresh` reads it again without keeping it."""
-        if fresh or not hasattr(self, "_names_digest"):
-            try:
-                names = hashlib.sha256(self._git_read(["ls-files", "-z"]).encode("utf-8")).hexdigest()
-            except (RuntimeError, OSError):
-                names = None
-            if fresh:
-                return names
-            self._names_digest = names
-        return self._names_digest
+        """A digest of the names the index tracks: what a proof that only lists files can observe of git."""
+        return self._scope_state("tracked", fresh, lambda held: self._digest_reads([["ls-files", "-z"]], held))
 
     def _untracked_names(self, fresh=False):
         """A digest of the untracked files git does not ignore: what `git status` and `ls-files -o` list and
-        `_repo_state` leaves out. Read once per run like `_repo_state`; `fresh` reads it again without keeping it."""
-        if fresh or not hasattr(self, "_untracked"):
-            try:
-                names = hashlib.sha256(self._git_read(["ls-files", "-o", "--exclude-standard", "-z"]).encode("utf-8")).hexdigest()
-            except (RuntimeError, OSError):
-                names = None
-            if fresh:
-                return names
-            self._untracked = names
-        return self._untracked
+        `_repo_state` leaves out."""
+        return self._scope_state("untracked", fresh, lambda held: self._digest_reads(
+            [["ls-files", "-o", "--exclude-standard", "-z"]], held))
 
     def _head_state(self, fresh=False):
         """A digest of what this checkout's HEAD names: its branch, its commit and that commit's tree. A proof that
-        resolves HEAD prints one of them; a commit in another worktree moves none of them."""
-        if fresh or not hasattr(self, "_head_digest"):
+        resolves HEAD prints one of them; a commit in another worktree moves none of them. One `rev-parse` prints
+        all three, a line each, as the single reads would; when it fails (an unborn HEAD) the single reads answer,
+        so the digest is theirs either way. A held batch also answers `repo`'s two HEAD reads."""
+        singles = (["rev-parse", "--abbrev-ref", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["rev-parse", "HEAD"])
+
+        def read(held):
             try:
-                state = hashlib.sha256("\n".join(self._git_read(a) for a in (
-                    ["rev-parse", "--abbrev-ref", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["rev-parse", "HEAD"])
-                ).encode("utf-8")).hexdigest()
-            except (RuntimeError, OSError):
-                state = None
-            if fresh:
-                return state
-            self._head_digest = state
-        return self._head_digest
+                tree, commit, branch = self._git_read(["rev-parse", "HEAD^{tree}", "HEAD", "--abbrev-ref", "HEAD"],
+                                                      held).splitlines()
+            except (RuntimeError, OSError, ValueError):
+                return self._digest_reads(singles, held)
+            outs = [branch + "\n", tree + "\n", commit + "\n"]
+            if held and self._snapshot_reads is not None:
+                self._snapshot_reads.update((tuple(a), out) for a, out in zip(singles, outs))
+            return hashlib.sha256("\n".join(outs).encode("utf-8")).hexdigest()
+        return self._scope_state("head", fresh, read)
 
     def _changes_state(self, fresh=False):
         """A digest of the tracked files' uncommitted changes, staged and unstaged: their status codes and their
         content, so a second edit of an already modified file moves it."""
-        if fresh or not hasattr(self, "_changes_digest"):
-            try:
-                state = hashlib.sha256("\n".join(self._git_read(a) for a in (
-                    ["status", "--porcelain", "--untracked-files=no"], ["diff", "HEAD", "--binary"])
-                ).encode("utf-8")).hexdigest()
-            except (RuntimeError, OSError):
-                state = None
-            if fresh:
-                return state
-            self._changes_digest = state
-        return self._changes_digest
+        return self._scope_state("changes", fresh, lambda held: self._digest_reads(
+            [["status", "--porcelain", "--untracked-files=no"], ["diff", "HEAD", "--binary"]], held))
 
     def _refs_state(self, fresh=False):
         """A digest of every ref the repository holds: what any checkout of it moves with a commit, a checkout, a
         tag or a stash."""
-        if fresh or not hasattr(self, "_refs_digest"):
-            try:
-                state = hashlib.sha256(self._git_read(
-                    ["for-each-ref", "--format=%(refname) %(objectname)"]).encode("utf-8")).hexdigest()
-            except (RuntimeError, OSError):
-                state = None
-            if fresh:
-                return state
-            self._refs_digest = state
-        return self._refs_digest
+        return self._scope_state("refs", fresh, lambda held: self._digest_reads(
+            [["for-each-ref", "--format=%(refname) %(objectname)"]], held))
 
     def _config_state(self, fresh=False):
         """A digest of the config a proof reads: the repository's and, with `extensions.worktreeConfig`, its
         worktree's. The global and system files are the ones a proof cannot see (its environment points both at
         the null device), so the read pins them the same way."""
-        if fresh or not hasattr(self, "_config_digest"):
+        def read(_held):
             env = {k: None for k in GIT_REPO_ENV}
             env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
             try:
                 result = _git_run.run(["config", "--list"], cwd=self.root, env=env, timeout=None)
-                state = hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else None
+                return hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else None
             except OSError:
-                state = None
-            if fresh:
-                return state
-            self._config_digest = state
-        return self._config_digest
+                return None
+        return self._scope_state("config", fresh, read)
 
     def _worktrees_state(self, fresh=False):
         """A digest of the repository's worktree list: every worktree's path and HEAD, which no file of this
         checkout shows."""
-        if fresh or not hasattr(self, "_worktrees_digest"):
-            try:
-                state = hashlib.sha256(self._git_read(["worktree", "list", "--porcelain"]).encode("utf-8")).hexdigest()
-            except (RuntimeError, OSError):
-                state = None
-            if fresh:
-                return state
-            self._worktrees_digest = state
-        return self._worktrees_digest
+        return self._scope_state("worktrees", fresh, lambda held: self._digest_reads(
+            [["worktree", "list", "--porcelain"]], held))
 
     def _upstream_state(self, fresh=False):
         """A digest of the ref this checkout's branch tracks, which `git status` prints the divergence from: its
-        name and its commit, or a digest of nothing when the branch tracks none."""
-        if fresh or not hasattr(self, "_upstream_digest"):
+        name and its commit, or a digest of nothing when the branch tracks none. One `rev-parse` prints both; any
+        other answer than both lines or no upstream falls back to the two single reads the digest was built on."""
+        def read(_held):
             env = {k: None for k in GIT_REPO_ENV}
             try:
+                both = _git_run.run(["rev-parse", "@{upstream}", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                                    cwd=self.root, env=env, timeout=None)
+                lines = both.stdout.split(b"\n")
+                if both.returncode == 0 and len(lines) == 3 and not lines[2]:
+                    return hashlib.sha256(lines[1] + b"\n\n" + lines[0] + b"\n").hexdigest()
+                if b"no upstream configured" in both.stderr:
+                    return hashlib.sha256(b"").hexdigest()
                 name = _git_run.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
                                     cwd=self.root, env=env, timeout=None)
                 if name.returncode == 0:
                     value = _git_run.run(["rev-parse", "@{upstream}"], cwd=self.root, env=env, timeout=None)
-                    state = hashlib.sha256(name.stdout + b"\n" + value.stdout).hexdigest() \
+                    return hashlib.sha256(name.stdout + b"\n" + value.stdout).hexdigest() \
                         if value.returncode == 0 else None
-                elif b"no upstream configured" in name.stderr:
-                    state = hashlib.sha256(b"").hexdigest()
-                else:
-                    state = None
+                if b"no upstream configured" in name.stderr:
+                    return hashlib.sha256(b"").hexdigest()
+                return None
             except OSError:
-                state = None
-            if fresh:
-                return state
-            self._upstream_digest = state
-        return self._upstream_digest
+                return None
+        return self._scope_state("upstream", fresh, read)
 
     def _shared_value(self, kind, path, memo):
         """What a key holds of one touch of the runner's own state: the file's bytes for a read or a stat, the entry
@@ -1754,17 +1750,22 @@ class _PassCache(_evidence.Reach):
         return memo[token]
 
     def snapshot_git(self):
-        """Read the git state the keys use, before the run's proofs start. A pass records only when the state
-        its run ended on is this one (`observed_parts`): a proof that ran across a change observed a state
-        no row can name. Every part is read, `repo` included: an older manifest, or a child whose shell script
-        names git, still keys it. The scopes overlap (`repo` is the union of five others), so the snapshot asks git
-        each distinct read once; a `fresh` read at record time asks again."""
-        self._snapshot_reads = {}
-        try:
+        """Complete the git snapshot: read every scope not yet held, and the worktree list's sibling paths. The
+        runner calls it before each proof launch; after the first it returns at once. A pass records only when the
+        state its run ended on is this one (`observed_parts`): a proof that ran across a change observed a state no
+        row can name. Every scope is read, `repo` included, because what a launched proof's git observes is known
+        only from its new manifest: an older manifest, or a child whose shell script names git, still keys it.
+        Lookups before the first launch read only the scopes they ask (`_scope_state`), so a run that starts no
+        proof reads no other. The held reads are dropped once complete; a `fresh` read at record time asks again."""
+        if self._snapshot_done:
+            return
+        with self._scope_lock:
+            if self._snapshot_done:
+                return
             for method in _GIT_SCOPES.values():
                 getattr(self, method)()
-        finally:
-            self._snapshot_reads = None
+            self._sibling_paths()
+            self._snapshot_reads, self._snapshot_done = None, True
 
     def observed_parts(self, proof, manifest, fresh=False, memo=None, files=None, why=None):
         """The parts of the observed key, each a short digest, or None when the proof has no manifest, its
@@ -2530,8 +2531,6 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     durations = durations_path()
     known = read_json_salvage(durations) if os.path.exists(durations) else {}
     keys = {}
-    if cache:
-        cache.snapshot_git()
     deadline = _deadline()
     reused = set()
     partial = {}  # {proof: cases reused} for a run that skipped `_case_pool` cases
@@ -2582,6 +2581,8 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         launch_options = _launch_options(path, root, behavior_root, cases[path], observations[path], bool(key), reusable)
         reads = launch_options.get("reads_sink")
         timing = {}
+        if cache:
+            cache.snapshot_git()  # every git scope a proof's record compares is read before the proof starts
         result = _attempt._as_result(_launch(path, timeout, recheck=recheck if key or stop else None, timing=timing,
                                              ctx=ctx, **launch_options))
         if stop:

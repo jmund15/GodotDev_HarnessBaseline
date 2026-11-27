@@ -2,7 +2,7 @@ import importlib.util
 import io
 import subprocess
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,15 +82,17 @@ class ContinuationGateTests(unittest.TestCase):
 
     def test_sidecar_passes_gate_to_server_env(self):
         text = SIDECAR.read_text(encoding='utf-8')
-        start = text.index('ccp_start() {')
-        body = text[start:text.index('\n}\n', start)]
-        self.assertIn('"$CCP_PROBE" continuation "$ccp"', body)
-        self.assertIn('"$CCP_PROBE" server-compaction "$ccp"', body)
-        self.assertIn('CCP_CODEX_PREVIOUS_RESPONSE_ID="$continuation"', body)
-        self.assertIn('CCP_CODEX_SERVER_COMPACTION="$server_compaction"', body)
-        self.assertIn('continuation capability probe failed', body)
-        self.assertIn('server-compaction capability probe failed', body)
-        self.assertLess(body.index('continuation "$ccp"'), body.index('nohup "$ccp" serve'))
+
+        def body(name):
+            start = text.index(name + '() {')
+            return text[start:text.index('\n}\n', start)]
+        self.assertEqual(text.count('launch-facts --model'), 1, '--check and dispatch share one probe read')
+        self.assertIn('"$CCP_PROBE" launch-facts --model "$SC_MODEL"', body('ccp_read_facts'))
+        start = body('ccp_start')
+        self.assertIn('CCP_CODEX_PREVIOUS_RESPONSE_ID="$CCP_CONTINUATION"', start)
+        self.assertIn('CCP_CODEX_SERVER_COMPACTION="$CCP_SERVER_COMPACTION"', start)
+        self.assertIn('predates 0.1.36', start)
+        self.assertLess(start.index('ccp_read_facts'), start.index('nohup "$CCP_EXE" serve'))
 
     def test_g9_sidecar_finalizes_the_record_with_attested_effort(self):
         text = SIDECAR.read_text(encoding='utf-8')
@@ -104,6 +106,61 @@ class ContinuationGateTests(unittest.TestCase):
         self.assertLess(body.index("SC_LEDGER=''"), body.index('sc_write_record'))
         self.assertLess(body.index('sc_write_record'), body.index('"$CCP_PROBE" record-effort'))
 
+
+class LaunchFactsTests(unittest.TestCase):
+    """One dispatch-start read: the binary, its model list, its version and a port in one process."""
+
+    def facts(self, version, serves=(0, ''), exe='proxy.exe'):
+        with patch.object(probe, 'proxy_version_text', return_value=version), \
+                patch.object(probe, 'serves_check', return_value=serves), \
+                patch.object(probe, 'freeport', return_value=4321):
+            return probe.launch_facts(exe, 'model')
+
+    def test_a_tested_build_carries_both_capabilities(self):
+        self.assertEqual(self.facts('claude-code-proxy 0.1.39'), ['proxy.exe', 0, '', 4321, 1, 1])
+
+    def test_an_old_build_serves_the_model_and_loses_both_capabilities(self):
+        self.assertEqual(self.facts('claude-code-proxy 0.1.35'), ['proxy.exe', 0, '', 4321, 0, 0])
+
+    def test_an_unserved_model_carries_its_reason(self):
+        self.assertEqual(self.facts('claude-code-proxy 0.1.39', serves=(1, 'does not serve model'))[1:3],
+                         [1, 'does not serve model'])
+
+    def test_resolution_prefers_the_user_scope_value_unless_this_process_is_pinned(self):
+        with patch.object(probe, 'user_scope_ccp_bin', return_value='C:/scope/proxy.exe'), \
+                patch.dict('os.environ', {'CCP_BIN': 'C:/env/proxy.exe'}):
+            self.assertEqual(probe.resolve_bin(), 'C:/scope/proxy.exe')
+            self.assertEqual(probe.resolve_bin(scope_process=True), 'C:/env/proxy.exe')
+
+    def test_resolution_falls_through_to_the_installed_path_then_path(self):
+        with patch.object(probe, 'user_scope_ccp_bin', return_value=None), \
+                patch.dict('os.environ', {}, clear=True), \
+                patch.object(probe.os.path, 'expanduser', return_value='/nonexistent/proxy.exe'), \
+                patch.object(probe.os, 'access', return_value=False), \
+                patch.object(probe.shutil, 'which', return_value='/path/proxy.exe'):
+            self.assertEqual(probe.resolve_bin(), '/path/proxy.exe')
+
+    def test_the_cli_prints_the_six_fields(self):
+        out = io.StringIO()
+        argv = ['ccp_probe.py', 'launch-facts', '--bin', 'proxy.exe', '--model', 'model']
+        with patch.object(probe, 'launch_facts', return_value=['proxy.exe', 0, '', 4321, 1, 1]), redirect_stdout(out):
+            self.assertEqual(probe.main(argv), 0)
+        self.assertEqual(out.getvalue().strip().split('\x1f'), ['proxy.exe', '0', '', '4321', '1', '1'])
+
+
+    def test_no_installed_proxy_prints_an_empty_row(self):
+        """--check reads an empty bin as 'not installed' (exit 4); the probe itself answers, not fails."""
+        out = io.StringIO()
+        with patch.object(probe, 'resolve_bin', return_value=None), redirect_stdout(out):
+            self.assertEqual(probe.main(['ccp_probe.py', 'launch-facts', '--model', 'model']), 0)
+        self.assertEqual(out.getvalue().rstrip('\r\n').split('\x1f'), [''] * 6)
+
+    def test_a_bad_argument_refuses_with_its_shape(self):
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as stop:
+            probe.main(['ccp_probe.py', 'launch-facts', '--bin', 'proxy.exe'])
+        self.assertEqual(stop.exception.code, 2)
+        self.assertIn('example: ccp_probe.py launch-facts', err.getvalue())
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

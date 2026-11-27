@@ -67,7 +67,6 @@ import review_ledger  # noqa: E402
 import review_result  # noqa: E402
 import review_snapshot  # noqa: E402
 from cli_usage import usage  # noqa: E402
-from _git_run import run as _run_git  # noqa: E402
 
 Unusable = fold_check.Unusable
 COVERING = ("findings", "clean")
@@ -455,11 +454,8 @@ def reviewed_blobs(subject):
 
 
 def _common_dir(root):
-    def ask():
-        done = _run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(root), input=b"")
-        text = done.stdout.decode("utf-8", errors="replace").strip() if done.returncode == 0 else ""
-        return Path(text).resolve() if text else None
-    return review_snapshot.fact("common dir", root, ask)
+    found = review_snapshot.layout(root)
+    return Path(found.common_dir).resolve() if found else None
 
 
 def ledger_home(subjects, root):

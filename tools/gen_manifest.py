@@ -260,6 +260,10 @@ CODING_PATTERNS = [
     # Accepted candidates requiring an exact layer entry:
     ".claude/auto-memory/archive/feedback_session_end_full_scope.md",
     ".claude/reference/semantic_search.md",
+    ".claude/skills/benchmark_design/SKILL.md",
+    ".claude/skills/benchmark_design/reference/configuration_and_transport.md",
+    ".claude/skills/benchmark_design/reference/controls_and_subfloor.md",
+    ".claude/skills/benchmark_design/reference/staircase_construction.md",
 
 ]
 
@@ -352,6 +356,7 @@ PURE_PATTERNS = [
     ".claude/commands/session_end.md",
     ".claude/commands/reference/session_end_hot_set.md",
     ".claude/commands/sync_baseline.md",
+    ".claude/commands/reference/sync_baseline_publish.md",
     ".claude/commands/sync_permissions.md",
     ".claude/commands/test_skill.md",
     ".claude/commands/worklog.md",
@@ -452,6 +457,7 @@ PURE_PATTERNS = [
     '.claude/reference/sidecar_dispatch.md',
     '.claude/rules/harness_tooling.md',
     '.claude/scripts/lib/sidecar_common.sh',
+    '.claude/scripts/lib/launch_settings.py',
     '.claude/scripts/codex_proxy_sidecar.sh',
     '.claude/scripts/opencode_sidecar.sh',
     '.claude/workflows/explore_fanout.schema.json',
@@ -516,6 +522,7 @@ PURE_PATTERNS = [
     ".claude/tests/test_ladder_ingest_sources.py",
     ".claude/tests/test_ladder_prose_check.py",
     ".claude/tests/test_model_registry.py",
+    ".claude/tests/test_model_registry_launch_fields.py",
     ".claude/tests/test_model_tier.py",
     ".claude/tests/test_nested_fanout_guard.py",
     ".claude/tests/test_nested_root_git_forms.py",

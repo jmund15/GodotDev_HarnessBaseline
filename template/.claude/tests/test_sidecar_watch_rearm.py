@@ -93,19 +93,23 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     queued = root / "queued.record.json"
     never = root / "never.record.json"
     unknown = root / "unknown.record.json"
+    deleted = root / "removed-worktree" / "deleted.record.json"
     for path, fanout_pid in ((queued, os.getpid()), (never, 99999999)):
         (root / ("fanout-" + path.stem + ".inventory.json")).write_text(json.dumps({
             "parentSessionId": SID, "fanoutProcess": process(fanout_pid),
             "jobs": [{"label": path.stem, "recordPath": str(path)}]}))
     pending = []
-    for path in (finished, dead, queued, never, unknown):
+    for path in (finished, dead, queued, never, unknown, deleted):
         pending.append({**entry, "id": str(path), "record": str(path),
                         "jobs": [{"label": path.stem, "launcher": "test"}]})
+    pending[-1].update(launched_at=time.time() - 3600, issued_at=None)
     state_file.write_text(json.dumps({"dispatch_table_pending": pending}))
     output = run_hook("killed")
     for category, path in (("finished", finished), ("queued", queued), ("never started", never),
-                           ("died", dead), ("unknown", unknown)):
+                           ("died", dead), ("unknown", unknown), ("deleted", deleted)):
         check(category in output.lower() and str(path) in output, category + " names its record", output)
+    check([line.split(" ", 1)[0] for line in output.splitlines() if str(deleted) in line] == ["deleted"],
+          "a record whose directory is gone is grouped deleted, not unknown", output)
     group = output.split(GROUP, 1)[-1]
     check(str(queued) in group and str(never) not in group,
           "only running and queued records enter the uncovered group", output)

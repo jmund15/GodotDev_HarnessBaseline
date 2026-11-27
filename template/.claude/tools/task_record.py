@@ -26,10 +26,10 @@ writing a record is driving it, so a drive picked up by a new session is re-inje
 
 `add ... decision --evidence-item '<json>'` checks each repeatable four-kind item through
 `verify_claims.check_claims` and refuses anything not VERIFIED. Items retain their add-time root and
-session for later checks. `check` rehashes evidence paths (STALE / MISSING / fresh); `--rerun` also
-checks stored items, including command output. Without items a decision is `hash-only`: unchanged
-bytes are freshness, not a re-verified premise. The retired reproduction flag remains parseable,
-refuses the write and prints its replacement; legacy reproduction commands are never executed.
+session for later checks. `check` rehashes evidence paths; `--rerun` also checks stored items.
+Decisions without premise checks read UNCHECKED, even with unchanged hashes. See
+`reference/evidence_contract.md`. The retired reproduction flag refuses the write; legacy reproduction
+commands are never executed.
 
     task_record.py open <task_id> --spec <spec.json> [--reset]
     task_record.py open <task_id> --session <sid> --title <t> [--reset]
@@ -155,7 +155,7 @@ def record_dir(start=None):
 
 @functools.lru_cache(maxsize=None)
 def _store_root(start):
-    return linked_main_root(start) or start
+    return linked_main_root(start, review_snapshot.layout) or start
 
 
 def path_for(task_id, *, directory=None):
@@ -197,7 +197,7 @@ def all_decisions(task_id, *, directory=None):
     rec = load(task_id, directory=directory) or {}
     rows = ([r for r in archived_rows(task_id, directory=directory) if r.get("kind") == "decision"]
             + list(rec.get("archived") or []) + list(rec.get("decisions") or []))
-    return list({r["id"]: r for r in rows if isinstance(r, dict) and r.get("id")}.values())
+    return [_decision_view(r) for r in {r["id"]: r for r in rows if isinstance(r, dict) and r.get("id")}.values()]
 
 
 def _spill_closed(task_id, working):
@@ -493,6 +493,28 @@ def _next_decision_id(task_id, state):
     return "D%d" % n
 
 
+def _premise_gap(decision):
+    if decision.get("reproduction") is not None:
+        return REPRODUCTION_REPLACEMENT
+    items = decision.get("evidence_items")
+    if items is None or items == []:
+        return "no evidence items"
+    if not isinstance(items, list):
+        return "evidence_items is not a list"
+    if not isinstance(decision.get("evidence_root"), str) or not decision["evidence_root"]:
+        return "no evidence root"
+    return None
+
+
+def _decision_view(decision):
+    return dict(decision, premise_check="UNCHECKED" if _premise_gap(decision) else "stored")
+
+
+def _record_view(record):
+    return dict(record, **{key: [_decision_view(d) if isinstance(d, dict) else d for d in record[key]]
+                           for key in ("decisions", "archived") if isinstance(record.get(key), list)})
+
+
 def _check_evidence_items(decision):
     import verify_claims
     result = verify_claims.check_claims(
@@ -559,7 +581,7 @@ def add_item(task_id, kind, text, evidence=None, reproduction=None, evidence_ite
             for old_id in supersedes or []:
                 _archive_superseded(state, task_id, old_id, row["id"])
             state.setdefault("decisions", []).append(row)
-            return row
+            return _decision_view(row)
         state.setdefault(field, []).append(text)
         return text
 
@@ -577,23 +599,8 @@ def _same_run(a, b):
 JOB_ROLES = ("architect", "drafter", "transcriber", "executor", "fold")
 
 
-def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, base_files=None,
-            inputs=None, units=None, origins=None):
-    """Upsert acceptance on the dispatch row, retaining bases even across the append-only archive.
-
-    Subjects use review_ledger's blob owner; acceptance reads the index for staged paths, disk otherwise.
-    Inline session authorship is bound to the writing session's transcript, never a caller-supplied model.
-    inputs (CLI --input) captures consumed blobs through that same owner. units and origins carry only
-    the checker's per-path unit names and digest source/ledger references; omitted fields retain earlier
-    values. base_files is the checked fold's reviewed snapshot, not HEAD or caller-supplied output hashes.
-    Explicit acceptance with role, subjects and runtime evidence also backfills a legacy done row.
-    """
-    if role is not None and role not in JOB_ROLES:
-        raise KeyError("unknown job role %r" % role)
-    import model_registry
-    import review_ledger
-    import review_snapshot
-    repo = Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()
+def _job_blobs(repo, state, subject, inputs):
+    """(files, bases, input_files) for a job's subject and input paths, each None when not given."""
     files = bases = None
 
     def hashes(source, paths):
@@ -629,6 +636,28 @@ def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, b
         input_files = hashes(review_snapshot.Disk(), paths)
         if any(blob is None for blob in input_files.values()):
             raise KeyError("job inputs must name readable files")
+    return files, bases, input_files
+
+
+def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, base_files=None,
+            inputs=None, units=None, origins=None):
+    """Upsert acceptance on the dispatch row, retaining bases even across the append-only archive.
+
+    Subjects use review_ledger's blob owner; acceptance reads the index for staged paths, disk otherwise.
+    Inline session authorship is bound to the writing session's transcript, never a caller-supplied model.
+    inputs (CLI --input) captures consumed blobs through that same owner. units and origins carry only
+    the checker's per-path unit names and digest source/ledger references; omitted fields retain earlier
+    values. base_files is the checked fold's reviewed snapshot, not HEAD or caller-supplied output hashes.
+    Explicit acceptance with role, subjects and runtime evidence also backfills a legacy done row.
+    """
+    if role is not None and role not in JOB_ROLES:
+        raise KeyError("unknown job role %r" % role)
+    import model_registry
+    import review_ledger
+    import review_snapshot
+    repo = Path(os.environ.get("CLAUDE_PROJECT_DIR") or harness_root()).resolve()
+    with review_snapshot.repo_facts():  # one command: nothing below moves the repository it reads
+        files, bases, input_files = _job_blobs(repo, state, subject, inputs)
     if base_files is not None:
         if role != "fold" or state != "accepted" or files is None or set(base_files) != set(files):
             raise KeyError("reviewed bases require an accepted fold and exactly its subject paths")
@@ -989,20 +1018,20 @@ def check_record(task_id, rerun=False):
     rows = []
     for d in rec.get("decisions", []):
         row = {"id": d.get("id"), "kind": "decision", "status": "fresh", "detail": None}
-        _apply_evidence_status(row, d.get("evidence", []))
-        if "evidence_items" in d:
-            if rerun:
-                verdict = _check_evidence_items(d)
-                row["repro"] = verdict["verdict"]
-                row["evidence_verdict"] = verdict
-                if verdict["verdict"] != "VERIFIED":
-                    row["detail"] = "; ".join(filter(None, (row["detail"], _evidence_detail(verdict))))
-            else:
-                row["repro"] = "stored"
+        _apply_evidence_status(row, d.get("evidence") or [])
+        gap = _premise_gap(d)
+        if gap:
+            if row["status"] == "fresh":
+                row["status"] = "UNCHECKED"
+            row["detail"] = "; ".join(filter(None, (row["detail"], gap)))
+        elif rerun:
+            verdict = _check_evidence_items(d)
+            row["repro"] = verdict["verdict"]
+            row["evidence_verdict"] = verdict
+            if verdict["verdict"] != "VERIFIED":
+                row["detail"] = "; ".join(filter(None, (row["detail"], _evidence_detail(verdict))))
         else:
-            row["repro"] = "hash-only"
-        if d.get("reproduction") is not None:
-            row.update(status="UNCHECKED", detail=REPRODUCTION_REPLACEMENT)
+            row["repro"] = "stored"
         rows.append(row)
     rows += [_condition_row(c) for c in rec.get("conditions", [])]
     return rows
@@ -1055,7 +1084,8 @@ def render_block(task_id, max_bytes=BLOCK_BYTES):
     head += ["- exclusion: %s" % r for r in rec.get("exclusions", [])]
     footer_worst = "omitted: 9999 decisions, 9999 slices, 9999 jobs. Full record: " + SHOW % task_id
     budget = max_bytes - size(head) - len(footer_worst.encode("utf-8")) - 2
-    decisions = ["- %s: %s" % (d.get("id"), d.get("text", "")) for d in rec.get("decisions", [])]
+    decisions = ["- %s [%s]: %s" % (d.get("id"), d["premise_check"], d.get("text", ""))
+                 for d in map(_decision_view, rec.get("decisions", []))]
     jobs = ["- job %s %s %s" % (j.get("run_id"), j.get("label"), j.get("state")) for j in rec.get("active_jobs", [])]
     slices = ["- slice %s %s" % (r.get("id"), r.get("state")) for r in rec.get("slices", [])]
     kept, omitted = [], {"decisions": 0, "slices": 0, "jobs": 0}
@@ -1125,7 +1155,7 @@ def main(argv=None):
                 if a.session or a.title or a.owner:
                     raise _spec_refusal("--spec supplies session, title and scope.owner; drop --session, --title "
                                         "and --owner")
-                print(json.dumps(open_from_spec(a.task_id, a.spec, reset=a.reset), indent=1))
+                print(json.dumps(_record_view(open_from_spec(a.task_id, a.spec, reset=a.reset)), indent=1))
             else:
                 if not a.session or not a.title:
                     raise _spec_refusal("open needs --session and --title, or --spec <spec.json>")
@@ -1133,7 +1163,7 @@ def main(argv=None):
         elif a.cmd == "set":
             set_fields(a.task_id, phase=a.phase, next_action=a.next, owner=a.owner, files=a.files, rigor=a.rigor,
                        mode=a.mode)
-            print(json.dumps(load(a.task_id), indent=1))
+            print(json.dumps(_record_view(load(a.task_id)), indent=1))
         elif a.cmd == "supersede":
             print(json.dumps(supersede(a.task_id, a.old_id, a.by), indent=1))
         elif a.cmd == "add":
@@ -1155,7 +1185,7 @@ def main(argv=None):
             if not rec:
                 print("no record for %s" % a.task_id, file=sys.stderr)
                 return 1
-            print(json.dumps(rec, indent=1))
+            print(json.dumps(_record_view(rec), indent=1))
         elif a.cmd == "triage":
             fields = {"reach": a.reach, "reversibility": a.reversibility, "design": a.design,
                       "grounding": a.grounding, "oracle": parse_oracle(a.oracle), "size": a.size}
@@ -1167,7 +1197,7 @@ def main(argv=None):
             print(json.dumps(record_condition(a.task_id, a.kind, a.quote, a.effect, until=a.until), indent=1))
         elif a.cmd == "active":
             rec = active(a.session)
-            print(json.dumps(rec, indent=1) if rec else "")
+            print(json.dumps(_record_view(rec), indent=1) if rec else "")
         elif a.cmd == "block":
             print(render_block(a.task_id, a.max_bytes))
         elif a.cmd == "check":

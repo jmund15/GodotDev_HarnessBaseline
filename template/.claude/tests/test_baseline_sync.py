@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 ENGINE = Path(__file__).resolve().parents[1] / "tools" / "baseline_sync.py"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -585,6 +586,590 @@ def _assert_no_change(result: subprocess.CompletedProcess[bytes]) -> None:
     assert "no change" in output.lower(), output
 
 
+def _facts(engine, rows, *, sha="a" * 40, at=None, root_rows=None, touches=None, ancestors=None,
+           exec_paths=()):
+    """A baseline at one pin, as facts: each row's bytes at the pin and at named older commits, files
+    outside `template/` (the manifest), the commits that touched each path on the published line
+    (`touches`), and which commits are ancestors (`ancestors`, pairs). Every `BaselineSource` read is
+    answered here, so a decision case needs no remote, clone, repository or child process."""
+    at = at or {}
+    root_rows = root_rows or {}
+    ancestors = set(ancestors or ())
+
+    class _Batch:
+        def blob(self, spec):
+            commit, _, path = spec.partition(":")
+            held = rows if commit == sha else at.get(commit, {})
+            if path.startswith("template/"):
+                return held.get(path[len("template/"):])
+            return root_rows.get(path)
+
+        def close(self):
+            pass
+
+    class _Source(engine.BaselineSource):
+        def __init__(self):
+            super().__init__(Path("planted-baseline"), sha, _Batch())
+
+        def read(self, relpath):
+            return rows.get(relpath)
+
+        def read_at(self, commit, relpath):
+            return (rows if commit == sha else at.get(commit, {})).get(relpath)
+
+        def exec_relpaths(self):
+            return frozenset(exec_paths)
+
+        def touches(self, *, at_pin=True):
+            return dict(touches or ())
+
+        def is_ancestor(self, older, newer):
+            return (older, newer) in ancestors
+
+    return _Source()
+
+
+def _facts_manifest(files: dict[str, dict]) -> bytes:
+    return (json.dumps({"version": 2, "files": [
+        {"path": relpath, **item} for relpath, item in files.items()]}, indent=2) + "\n").encode()
+
+
+def _planted_lock(sha, files, *, substitutions=None, identity=None, schema=2):
+    return {
+        "schema": schema,
+        "profile": "pure,coding,godot",
+        "substitutions": substitutions or {},
+        "baseline_repo": "planted",
+        "baseline_ref": "main",
+        "synced_commit": sha,
+        "identity": identity if identity is not None else {"abbreviations": []},
+        "files": files,
+    }
+
+
+def test_check_state_vocabulary_is_a_table() -> None:
+    """One row per state `check` decides, and the strict finding each yields, from planted baseline facts.
+
+    The state is decided by the row's bytes at the pin, at its base and on disk, which this table
+    states directly. Cases whose subject is a write, a merge, a conflict, a proof run, a git read or
+    the CLI's own transport stay live."""
+    engine = _load_engine()
+    pin, base = "a" * 40, "b" * 40
+    T = ".claude/tools/"
+    # rel, bytes at the pin (None: absent), bytes at base (None: absent), lock entry (None: no row),
+    # working bytes (None: no file), expected state, expected strict finding
+    rows = [
+        ("sync.py", b"same\n", b"same\n",
+         {"status": "tracked", "layer": "pure", "base": base}, b"same\n", "in-sync", None),
+        ("upd.py", b"new\n", b"same\n",
+         {"status": "tracked", "layer": "pure", "base": base}, b"same\n", "upstream-updated", None),
+        ("mod.py", b"same\n", b"same\n",
+         {"status": "tracked", "layer": "pure", "base": base}, b"edited\n", "local-modified", "local-modified"),
+        ("div.py", b"new\n", b"same\n",
+         {"status": "tracked", "layer": "pure", "base": base}, b"mine\n", "diverged", "diverged"),
+        ("removed.py", None, b"old\n",
+         {"status": "tracked", "layer": "pure", "base": base}, b"old\n", "removed-upstream", "removed-upstream"),
+        ("missing.py", b"new\n", b"new\n",
+         {"status": "tracked", "layer": "pure", "base": base}, None, "missing-local", "missing-local"),
+        ("unpublished.py", None, None,
+         {"status": "tracked", "layer": "pure"}, b"v1\n", "unpublished", "unpublished"),
+        ("unknown.py", b"new\n", None,
+         {"status": "tracked", "layer": "pure", "base": None}, b"local\n", "base-unknown", "base-unknown"),
+        ("fork.py", b"up\n", b"up\n",
+         {"status": "forked", "layer": "pure", "base": base}, b"mine\n", "forked", "needs-judgment"),
+        ("forkmoved.py", b"up2\n", b"up1\n",
+         {"status": "forked", "layer": "pure", "base": base}, b"mine\n", "forked-upstream-moved",
+         "forked-upstream-moved"),
+        ("forkunknown.py", b"up\n", None,
+         {"status": "forked", "layer": "pure"}, b"mine\n", "forked-base-unknown", "forked-base-unknown"),
+        ("local.py", b"up\n", b"up\n",
+         {"status": "local", "layer": "pure"}, b"mine\n", "local", "needs-judgment"),
+        # A local row the baseline seeds or offers is the consumer's own file, never a shadow.
+        ("seeded.py", b"up\n", b"up\n",
+         {"status": "local", "layer": "pure"}, b"mine\n", "local", None),
+        ("declined.py", b"up\n", b"up\n",
+         {"status": "local", "layer": "pure"}, b"mine\n", "local", "needs-judgment"),
+        ("watch.py", b"up\n", b"up\n",
+         {"status": "watch", "layer": "pure"}, b"mine\n", "watch", "watch"),
+        ("shadows.py", b"up\n", b"up\n",
+         {"status": "local", "layer": "pure"}, b"mine\n", "local-shadows-upstream", "local-shadows-upstream"),
+        ("composed.py", b"up\n", b"up\n",
+         {"status": "composed", "layer": "pure", "inputs": []}, b"mine\n", "composed-drift", "composed-drift"),
+        ("judge.py", b"same\n", b"same\n",
+         {"status": "tracked", "layer": "pure", "base": base,
+          "judged": {"sha": _sha(b"old\n"), "verdict": "keep-local"}}, b"edited\n", "local-modified",
+         "local-modified"),
+        ("current.py", b"same\n", b"same\n",
+         {"status": "tracked", "layer": "pure", "base": base,
+          "judged": {"sha": _sha(b"edited\n"), "verdict": "keep-local"}}, b"edited\n", "local-modified", None),
+    ]
+    manifest = {T + rel: {"layer": "pure"} for rel in (
+        "sync.py", "upd.py", "mod.py", "div.py", "removed.py", "missing.py", "fork.py",
+        "forkmoved.py", "forkunknown.py", "shadows.py", "judge.py", "current.py", "new.py")}
+    manifest[T + "offer.py"] = {"layer": "pure", "sync": "offer"}
+    manifest[T + "seeded.py"] = {"layer": "pure", "sync": "seed"}
+    manifest[T + "declined.py"] = {"layer": "pure", "sync": "offer"}
+    with _fixture() as path:
+        root = path / "consumer"
+        _init_repo(root)
+        for rel, _pin_bytes, _base_bytes, _entry, local, _state, _finding in rows:
+            if local is not None:
+                _write(root / T / rel, local)
+        _commit(root, "consumer")
+        # Committed bytes differ from the working copy only for the rows whose finding needs the index
+        # (needs-judgment). `judge.py` and `local.py` are edited after the commit.
+        _write(root / T / "judge.py", b"edited\n")
+        _write(root / T / "local.py", b"mine\n")
+        source = _facts(
+            engine,
+            {T + rel: pin_bytes for rel, pin_bytes, _b, _e, _l, _s, _f in rows if pin_bytes is not None},
+            sha=pin,
+            at={base: {T + rel: base_bytes for rel, _p, base_bytes, _e, _l, _s, _f in rows
+                       if base_bytes is not None}},
+            root_rows={"baseline.manifest.json": _facts_manifest(manifest)},
+        )
+        lock = _planted_lock(pin, {T + rel: entry for rel, _p, _b, entry, _l, _s, _f in rows
+                                   if entry is not None})
+        results, outside = engine._check_results(root, lock, source, ["pure", "coding", "godot"])
+        assert outside == 0, outside
+        got = {rel: results.get(T + rel) for rel, *_rest in rows}
+        assert got == {rel: state for rel, _p, _b, _e, _l, state, _f in rows}, got
+        assert results[T + "new.py"] == "new-upstream" and results[T + "offer.py"] == "offered", results
+        findings = dict(engine._strict_findings(root, source, lock, results))
+        expected = {T + rel: finding for rel, _p, _b, _e, _l, _s, finding in rows if finding}
+        expected[T + "new.py"] = "new-upstream"
+        assert findings == expected, findings
+        assert engine.layer_drift(lock, source) == []
+
+
+def test_check_unproven_and_closure_findings_are_a_table() -> None:
+    """The shipped-proof and layer findings `check --strict` reports, from lock rows and a manifest.
+
+    A tool counts as proven only by a shipped proof at or below its layer; a lock row whose layer
+    differs from the manifest is drift; a tracked row citing a file its consumers lack is a closure
+    finding. `check --strict` prints a line naming each finding and exits 1 on any, which the text arm
+    drives in process over the same facts."""
+    engine = _load_engine()
+    pin = "c" * 40
+    T = ".claude/"
+    # (rel, layer, status, proof body or None, expected unproven)
+    tools = [
+        (T + "tools/bare.py", "pure", "tracked", None, True),
+        (T + "tools/mention.py", "pure", "tracked", None, True),
+        (T + "tools/proven.py", "pure", "tracked", b"import mentioned\n", False),
+        (T + "tools/localproof.py", "pure", "tracked", None, True),
+        (T + "tools/high.py", "pure", "tracked", None, True),
+        (T + "tools/level.py", "coding", "tracked", b"pass\n", False),
+    ]
+    with _fixture() as path:
+        root = path / "consumer"
+        _init_repo(root)
+        files = {}
+        for rel, layer, status, proof, _unproven in tools:
+            _write(root / rel, b"x = 1\n")
+            files[rel] = {"status": status, "layer": layer}
+        _write(root / (T + "tests/test_unrelated.py"), b"# exercises mention.py\n")
+        files[T + "tests/test_unrelated.py"] = {"status": "tracked", "layer": "pure"}
+        _write(root / (T + "tests/test_proven.py"), b"pass\n")
+        files[T + "tests/test_proven.py"] = {"status": "tracked", "layer": "pure"}
+        _write(root / (T + "tests/test_localproof.py"), b"pass\n")
+        files[T + "tests/test_localproof.py"] = {"status": "local", "layer": "pure"}
+        _write(root / (T + "tests/test_high.py"), b"pass\n")
+        files[T + "tests/test_high.py"] = {"status": "tracked", "layer": "godot"}
+        _write(root / (T + "tests/test_level.py"), b"pass\n")
+        files[T + "tests/test_level.py"] = {"status": "tracked", "layer": "coding"}
+        _write(root / (T + "commands/drifted.md"), b"x\n")
+        files[T + "commands/drifted.md"] = {"status": "tracked", "layer": "pure"}
+        skill = T + "skills/demo/SKILL.md"
+        _write(root / skill, b"Read [detail](reference/detail.md) first.\n")
+        files[skill] = {"status": "tracked", "layer": "pure"}
+        _write(root / (T + "skills/demo/reference/detail.md"), b"detail\n")
+        files[T + "skills/demo/reference/detail.md"] = {"status": "local", "layer": "pure"}
+        judge = T + "commands/mine.md"
+        _write(root / judge, b"mine\n")
+        files[judge] = {"status": "local", "layer": "pure"}
+        _commit(root, "consumer")
+        manifest = {rel: {"layer": layer} for rel, layer, _s, _p, _u in tools}
+        manifest[T + "commands/drifted.md"] = {"layer": "godot"}
+        manifest[T + "skills/demo/SKILL.md"] = {"layer": "pure"}
+        source = _facts(engine, {**{rel: (root / rel).read_bytes() for rel in files}, judge: b"up\n"}, sha=pin,
+                        root_rows={"baseline.manifest.json": _facts_manifest(manifest)})
+        lock = _planted_lock(pin, files)
+        unproven = engine.unproven_tools(root, files, sorted(files))
+        assert sorted(unproven) == sorted(rel for rel, _l, _s, _p, expected in tools if expected), unproven
+        assert engine.layer_drift(lock, source) == [(T + "commands/drifted.md", "pure", "godot")]
+        closure = engine.layer_closure_findings(root, lock, source)
+        assert len(closure) == 1 and closure[0].startswith(skill + ": local-only"), closure
+        results, _outside = engine._check_results(root, lock, source, ["pure", "coding", "godot"])
+        # The drifted row is in sync with the manifest byte for byte: its only finding is the drift above.
+        assert results[T + "commands/drifted.md"] == "in-sync", results
+        layers = ["pure", "coding", "godot"]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = engine.v2_check(root, lock, source, False, layers, strict=True)
+        lines = out.getvalue().splitlines()
+        assert code == 1, out.getvalue()
+        named = {"needs-judgment: " + judge, "  " + closure[0],
+                 f"layer-drift: {T}commands/drifted.md (lock pure, manifest godot)",
+                 *("unproven: " + rel for rel in unproven)}
+        assert named <= set(lines), (named - set(lines), lines)
+        assert any(line.startswith("layer-closure") for line in lines), lines
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert engine.v2_check(root, lock, source, False, layers, strict=False) == 0
+        # The same citation is no finding once the cited file ships too (the negative arm).
+        shipped = dict(files)
+        shipped[T + "skills/demo/reference/detail.md"]["status"] = "tracked"
+        manifest[T + "skills/demo/reference/detail.md"] = {"layer": "pure"}
+        source = _facts(engine, {rel: (root / rel).read_bytes() for rel in shipped}, sha=pin,
+                        root_rows={"baseline.manifest.json": _facts_manifest(manifest)})
+        assert engine.layer_closure_findings(root, _planted_lock(pin, shipped), source) == []
+
+
+PULL_REL = ".claude/tools/row.py"
+
+
+def _pull_facts(engine, case, pin, root):
+    """The planted source, lock and working files one pull-table row states."""
+    for path, data in case.get("local", {}).items():
+        _write(root / path, data)
+    lock = _planted_lock(case.get("lock_pin", pin), {
+        path: {key: (pin if value == "@pin" else value) for key, value in entry.items()}
+        for path, entry in case.get("lock", {}).items()})
+    if "never_ship" in case:
+        lock["never_ship"] = case["never_ship"]
+    source = _facts(engine, case["rows"], sha=pin, at=case.get("at"),
+                    root_rows={"baseline.manifest.json": _facts_manifest(
+                        case.get("manifest", {PULL_REL: {"layer": "pure"}}))},
+                    touches=case.get("touches"), ancestors=case.get("ancestors"),
+                    exec_paths=case.get("exec_paths", ()))
+    return source, lock
+
+
+def test_pull_plan_actions_are_a_table() -> None:
+    """Every action `pull` plans and every refusal its planner raises, from planted facts.
+
+    A row's plan is decided by its bytes at the pin, at its recorded base and on disk, its lock row,
+    the manifest's sync class and the profile. This table states those combinations directly. Cases whose subject is
+    a write, a 3-way merge, a conflict copy, a proof run, a git read or the CLI's own output stay live.
+
+    `@pin` in a lock row is the row's source pin; `touches`/`ancestors` are the reconcile path's
+    baseline facts, and the working tree is planted clean (`_git_clean_path`).
+    """
+    engine = _load_engine()
+    old, mid = "b" * 40, "d" * 40
+    rel = PULL_REL
+    layers = ["pure", "coding", "godot"]
+    tracked = {"status": "tracked", "layer": "pure", "base": old}
+    auto = {rel: {"layer": "pure"}}
+    cases = [
+        # (bytes at the pin, bytes at `old`, lock row, working bytes) -> the plan or the refusal
+        dict(label="in sync", rows={rel: b"same\n"}, at={old: {rel: b"same\n"}}, lock={rel: tracked},
+             local={rel: b"same\n"}, plan=[(rel, "noop", "same\n")]),
+        dict(label="upstream updated", rows={rel: b"new\n"}, at={old: {rel: b"same\n"}}, lock={rel: tracked},
+             local={rel: b"same\n"}, plan=[(rel, "update", "new\n")]),
+        dict(label="local copy missing", rows={rel: b"new\n"}, at={old: {rel: b"new\n"}}, lock={rel: tracked},
+             plan=[(rel, "update", "new\n")]),
+        dict(label="local modified needs --force", rows={rel: b"same\n"}, at={old: {rel: b"same\n"}},
+             lock={rel: tracked}, local={rel: b"mine\n"},
+             refuse="pull requires --force for local-modified: " + rel),
+        dict(label="local modified forced", rows={rel: b"same\n"}, at={old: {rel: b"same\n"}},
+             lock={rel: tracked}, local={rel: b"mine\n"}, force=True, plan=[(rel, "update", "same\n")]),
+        dict(label="a named pull refuses a diverged row", rows={rel: b"new\n"}, at={old: {rel: b"same\n"}},
+             lock={rel: tracked}, local={rel: b"mine\n"},
+             refuse="pull requires --force for diverged: " + rel + "; a bare `pull` merges both sides"),
+        dict(label="a local row needs --force", rows={rel: b"up\n"},
+             lock={rel: {"status": "local", "layer": "pure"}}, local={rel: b"mine\n"},
+             refuse="pull requires --force for local: " + rel),
+        dict(label="a watch row needs --force", rows={rel: b"up\n"},
+             lock={rel: {"status": "watch", "layer": "pure"}}, local={rel: b"mine\n"},
+             refuse="pull requires --force for watch: " + rel),
+        dict(label="a fork at the pin needs --force", rows={rel: b"up\n"},
+             lock={rel: {"status": "forked", "layer": "pure", "base": "@pin"}}, local={rel: b"mine\n"},
+             refuse="pull requires --force for forked: " + rel),
+        dict(label="a fork whose base is unknown needs --force", rows={rel: b"up\n"},
+             lock={rel: {"status": "forked", "layer": "pure"}}, local={rel: b"mine\n"},
+             refuse="pull requires --force for forked-base-unknown: " + rel),
+        dict(label="a base-unknown row takes upstream", rows={rel: b"new\n"},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": None}}, local={rel: b"old\n"},
+             plan=[(rel, "update", "new\n")]),
+        dict(label="retire an unmodified row", rows={}, at={old: {rel: b"old\n"}}, lock={rel: tracked},
+             local={rel: b"old\n"}, plan=[(rel, "retire", None)]),
+        dict(label="retire a row whose copy is gone", rows={}, at={old: {rel: b"old\n"}}, lock={rel: tracked},
+             plan=[(rel, "retire", None)]),
+        dict(label="keep a modified row local", rows={}, at={old: {rel: b"old\n"}}, lock={rel: tracked},
+             local={rel: b"mine\n"}, plan=[(rel, "keep-local", None)]),
+        dict(label="a bare pull leaves a never-published row alone", rows={},
+             lock={rel: {"status": "tracked", "layer": "pure"}}, local={rel: b"v1\n"}, relpaths=[]),
+        dict(label="keep a never-published row local", rows={},
+             lock={rel: {"status": "tracked", "layer": "pure"}}, local={rel: b"v1\n"},
+             plan=[(rel, "keep-local", None)]),
+        dict(label="adopt a named new row", rows={rel: b"new\n"}, manifest=auto,
+             plan=[(rel, None, "new\n")]),
+        dict(label="adopt a named row whose local copy is equal", rows={rel: b"new\n"}, manifest=auto,
+             local={rel: b"new\n"}, plan=[(rel, None, "new\n")]),
+        dict(label="a named new row with a differing local refuses", rows={rel: b"new\n"}, manifest=auto,
+             local={rel: b"mine\n"}, refuse="pull requires --force: " + rel),
+        dict(label="a named new row with a differing local forced", rows={rel: b"new\n"}, manifest=auto,
+             local={rel: b"mine\n"}, force=True, plan=[(rel, None, "new\n")]),
+        dict(label="seed writes a new row", rows={rel: b"seed\n"},
+             manifest={rel: {"layer": "pure", "sync": "seed"}}, plan=[(rel, "seed", "seed\n")]),
+        dict(label="seed keeps an existing file", rows={rel: b"seed\n"},
+             manifest={rel: {"layer": "pure", "sync": "seed"}}, local={rel: b"mine\n"},
+             plan=[(rel, "seed", None)]),
+        dict(label="composed drift refuses", rows={rel: b"up\n"},
+             lock={rel: {"status": "composed", "layer": "pure", "inputs": ["a", "b"]}},
+             refuse="pull refuses composed-drift: " + rel),
+        dict(label="a row outside the profile is skipped", rows={rel: b"new\n"},
+             lock={rel: {"status": "tracked", "layer": "godot"}}, layers=["pure"], skipped=1),
+        dict(label="a bare pull takes only a row it settles",
+             rows={".claude/tools/same.py": b"same\n", ".claude/tools/moved.py": b"new\n",
+                   ".claude/tools/offer.py": b"offered\n"},
+             at={old: {".claude/tools/same.py": b"same\n"}},
+             lock={".claude/tools/same.py": {"status": "tracked", "layer": "pure", "base": old}},
+             local={".claude/tools/same.py": b"same\n"},
+             manifest={".claude/tools/same.py": {"layer": "pure"},
+                       ".claude/tools/moved.py": {"layer": "pure"},
+                       ".claude/tools/offer.py": {"layer": "pure", "sync": "offer"}},
+             relpaths=[], plan=[(".claude/tools/moved.py", None, "new\n")],
+             offered=[".claude/tools/offer.py"]),
+        dict(label="never_ship hides an offer but never an auto row",
+             rows={".claude/tools/offered.py": b"offered\n", ".claude/tools/shipped.py": b"up\n"},
+             manifest={".claude/tools/offered.py": {"layer": "pure", "sync": "offer"},
+                       ".claude/tools/shipped.py": {"layer": "pure"}},
+             never_ship=[".claude/tools/"], relpaths=[], offered=[],
+             plan=[(".claude/tools/shipped.py", None, "up\n")]),
+        dict(label="a bare pull reports an unrowed differing local", rows={rel: b"theirs\n"},
+             manifest=auto, local={rel: b"mine\n"}, relpaths=[],
+             unrowed_differs=[rel]),
+        dict(label="a bare pull seeds an unrowed seed row", rows={rel: b"seed\n"},
+             manifest={rel: {"layer": "pure", "sync": "seed"}}, relpaths=[],
+             plan=[(rel, "seed", "seed\n")]),
+        dict(label="a pin copy equal to local reconciles at the pin", rows={rel: b"newest\n"},
+             at={old: {rel: b"oldest\n"}, mid: {rel: b"current\n"}},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old}},
+             lock_pin=mid, local={rel: b"current\n"}, plan=[(rel, "update", "newest\n")]),
+        dict(label="a carried copy on the published line reconciles there", rows={rel: b"v3\n"},
+             at={old: {rel: b"v1\n"}, mid: {rel: b"v2\n"}},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old}},
+             touches={rel: [mid, old]}, ancestors=[(old, mid)], local={rel: b"v2\n"},
+             plan=[(rel, "update", "v3\n")]),
+        dict(label="a matching blob off the published line is no carry", rows={rel: b"v3\n"},
+             at={old: {rel: b"v1\n"}, mid: {rel: b"v2\n"}},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old}},
+             touches={rel: [old]}, local={rel: b"v2\n"},
+             refuse="pull requires --force for diverged: " + rel),
+    ]
+    for index, case in enumerate(cases):
+        pin = "%040x" % (index + 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, lock = _pull_facts(engine, case, pin, root)
+            try:
+                with mock.patch.object(engine, "_git_clean_path", return_value=True):
+                    plan = engine.plan_pull(root, source, lock, case.get("relpaths", [rel]),
+                                            case.get("layers", layers), case.get("force", False))
+            except engine.BaselineError as exc:
+                assert "refuse" in case, (case["label"], str(exc))
+                assert case["refuse"] in str(exc), (case["label"], str(exc))
+                continue
+            assert "refuse" not in case, (case["label"], [(r, a) for r, a, _text in plan.rows])
+            got = [(r, a, text) for r, a, text in plan.rows]
+            assert got == case.get("plan", []), (case["label"], got)
+            assert plan.offered == case.get("offered", []), (case["label"], plan.offered)
+            assert plan.unrowed_differs == case.get("unrowed_differs", []), (case["label"], plan.unrowed_differs)
+            assert plan.skipped == case.get("skipped", 0), (case["label"], plan.skipped)
+
+
+def test_pull_apply_actions_are_a_table() -> None:
+    """Every write and lock mutation an applied pull makes, one row per action class, from planted facts.
+
+    The plan is the planner's own where it reaches the action on planted facts; a 3-way merge runs
+    `git merge-file`, so its rows state the plan the live merge cases produce. `v2_pull` keeps its
+    cases for the proof run, the journal, the pin move through git and the CLI's own lines.
+    """
+    engine = _load_engine()
+    old = "b" * 40
+    rel = PULL_REL
+    layers = ["pure", "coding", "godot"]
+    auto = {rel: {"layer": "pure"}}
+    cases = [
+        dict(label="adopt", rows={rel: b"new\n"}, manifest=auto,
+             files={rel: b"new\n"}, lock_after={rel: {"status": "tracked", "layer": "pure"}},
+             report=dict(changed=[rel])),
+        dict(label="update clears the verdict, the base and an absence", rows={rel: b"new\n"},
+             at={old: {rel: b"same\n"}},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old,
+                         "judged": {"sha": "c" * 64}, "absent": True}},
+             local={rel: b"same\n"}, files={rel: b"new\n"},
+             lock_after={rel: {"status": "tracked", "layer": "pure"}}, report=dict(changed=[rel])),
+        dict(label="a forced update of a fork keeps its status and base", rows={rel: b"up\n"},
+             at={old: {rel: b"base\n"}},
+             lock={rel: {"status": "forked", "layer": "pure", "base": old}}, local={rel: b"mine\n"},
+             force=True, files={rel: b"up\n"},
+             lock_after={rel: {"status": "forked", "layer": "pure", "base": old}},
+             report=dict(changed=[rel])),
+        dict(label="a forced update of a local row keeps its status", rows={rel: b"up\n"},
+             lock={rel: {"status": "local", "layer": "pure"}}, local={rel: b"mine\n"}, force=True,
+             files={rel: b"up\n"}, lock_after={rel: {"status": "local", "layer": "pure"}},
+             report=dict(changed=[rel])),
+        dict(label="keep local", rows={}, at={old: {rel: b"old\n"}}, lock={rel: {"status": "tracked",
+             "layer": "pure", "base": old}}, local={rel: b"mine\n"}, files={rel: b"mine\n"},
+             lock_after={rel: {"status": "local", "layer": "pure"}}, report=dict(changed=[rel],
+                                                                                  kept_local=[rel])),
+        dict(label="retire", rows={}, at={old: {rel: b"old\n"}},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old}}, local={rel: b"old\n"},
+             files={rel: None}, lock_after={}, report=dict(changed=[rel], retired=[rel])),
+        dict(label="noop", rows={rel: b"same\n"}, at={old: {rel: b"same\n"}},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old}}, local={rel: b"same\n"},
+             files={rel: b"same\n"},
+             lock_after={rel: {"status": "tracked", "layer": "pure", "base": old}}),
+        dict(label="seed writes", rows={rel: b"seed\n"},
+             manifest={rel: {"layer": "pure", "sync": "seed"}}, files={rel: b"seed\n"},
+             lock_after={rel: {"status": "local", "layer": "pure"}}, report=dict(changed=[rel])),
+        dict(label="seed keeps an existing file", rows={rel: b"seed\n"},
+             manifest={rel: {"layer": "pure", "sync": "seed"}}, local={rel: b"mine\n"},
+             files={rel: b"mine\n"}, lock_after={rel: {"status": "local", "layer": "pure"}},
+             report=dict(changed=[rel], kept_seeds=[rel])),
+        dict(label="a seed composes settings.json after the same pull wrote its base",
+             rows={".claude/settings.base.json": b'{"a": 1}\n', ".claude/settings.project.json": b"{}\n"},
+             manifest={".claude/settings.base.json": {"layer": "pure"},
+                       ".claude/settings.project.json": {"layer": "pure", "sync": "seed"}},
+             relpaths=[".claude/settings.base.json", ".claude/settings.project.json"],
+             files={".claude/settings.base.json": b'{"a": 1}\n', ".claude/settings.project.json": b"{}\n"},
+             lock_after={".claude/settings.base.json": {"status": "tracked", "layer": "pure"},
+                         ".claude/settings.project.json": {"status": "local", "layer": "pure"},
+                         ".claude/settings.json": {"status": "composed", "layer": "pure",
+                                                   "inputs": [".claude/settings.base.json",
+                                                              ".claude/settings.project.json"]}},
+             report=dict(changed=[".claude/settings.base.json", ".claude/settings.project.json"])),
+        dict(label="a memory row is written without provenance keys",
+             rows={".claude/auto-memory/feedback_pull.md":
+                   (b"---\nname: r\nmetadata:\n  node_type: memory\n  originSessionId: s\n"
+                    b"  modified: 2026-01-01T00:00:00Z\n---\nBody\n")},
+             manifest={".claude/auto-memory/feedback_pull.md": {"layer": "pure"}},
+             relpaths=[".claude/auto-memory/feedback_pull.md"],
+             files={".claude/auto-memory/feedback_pull.md":
+                    b"---\nname: r\nmetadata:\n  node_type: memory\n---\nBody\n"},
+             lock_after={".claude/auto-memory/feedback_pull.md": {"status": "tracked", "layer": "pure"}},
+             report=dict(changed=[".claude/auto-memory/feedback_pull.md"])),
+        dict(label="a binary row is written byte for byte", rows={rel: b"\x00asm\r\n\xff\xfe"},
+             manifest=auto, files={rel: b"\x00asm\r\n\xff\xfe"},
+             lock_after={rel: {"status": "tracked", "layer": "pure"}}, report=dict(changed=[rel])),
+        dict(label="a 100755 row is chmodded and a 100644 row is not", rows={rel: b"#!/bin/sh\n",
+             ".claude/tools/plain.py": b"x = 1\n"},
+             manifest={rel: {"layer": "pure"}, ".claude/tools/plain.py": {"layer": "pure"}},
+             relpaths=[rel, ".claude/tools/plain.py"], exec_paths=(rel,),
+             files={rel: b"#!/bin/sh\n", ".claude/tools/plain.py": b"x = 1\n"},
+             lock_after={rel: {"status": "tracked", "layer": "pure"},
+                         ".claude/tools/plain.py": {"status": "tracked", "layer": "pure"}},
+             report=dict(changed=[rel, ".claude/tools/plain.py"]), chmods=[(rel, 0o755)]),
+        # A merge is planned live (`git merge-file`); these two rows state the plan it produces.
+        dict(label="a merge lands, takes the base and drops the conflict copy",
+             stated=[(rel, "merge", "merged\n")], rows={},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old,
+                         "judged": {"sha": "c" * 64}}},
+             copy=rel, files={rel: b"merged\n"},
+             lock_after={rel: {"status": "tracked", "layer": "pure", "judged": {"sha": "c" * 64}}},
+             report=dict(changed=[rel], merged=[rel])),
+        dict(label="a forked merge records its new base and judges the merged content",
+             stated=[(rel, "merge", "merged\n")], rows={},
+             lock={rel: {"status": "forked", "layer": "pure", "base": old}}, copy=rel,
+             files={rel: b"merged\n"},
+             lock_after={rel: {"status": "forked", "layer": "pure", "base": "@pin",
+                               "judged": {"sha": _sha(b"merged\n")}}},
+             report=dict(changed=[rel], merged=[rel])),
+        dict(label="an unsettled plan writes nothing",
+             stated=[(rel, "update", "new\n")], unsettled=[(rel, "1 hunks", None)], rows={},
+             lock={rel: {"status": "tracked", "layer": "pure", "base": old}},
+             files={rel: None}, lock_after={rel: {"status": "tracked", "layer": "pure", "base": old}}),
+    ]
+    for index, case in enumerate(cases):
+        pin = "%040x" % (index + 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, lock = _pull_facts(engine, case, pin, root)
+            if "copy" in case:
+                _write(root / engine.MERGE_COPY_DIR / case["copy"], b"<<<<<<< local\n")
+                _write(root / (str(engine.MERGE_COPY_DIR / case["copy"]) + ".base"), b"inputs\n")
+            chmods = []
+            real_chmod = engine.os.chmod
+
+            def recording_chmod(target, mode, *args, **kwargs):
+                chmods.append((Path(target).relative_to(root).as_posix(), mode))
+                return real_chmod(target, mode, *args, **kwargs)
+
+            with mock.patch.object(engine, "_git_clean_path", return_value=True), \
+                    mock.patch.object(engine.os, "chmod", recording_chmod):
+                if "stated" in case:
+                    plan = engine.PullPlan(
+                        rows=case["stated"], unsettled=case.get("unsettled", []), offered=[],
+                        unrowed_differs=[], skipped=0,
+                        manifest_layers={path: item.get("layer") for path, item in
+                                         case.get("manifest", auto).items()}, layers=layers)
+                else:
+                    plan = engine.plan_pull(root, source, lock, case.get("relpaths", [rel]), layers,
+                                            case.get("force", False))
+                applied = engine.apply_pull_plan(root, lock, plan, source)
+            if case.get("report") is None:
+                assert applied is None, (case["label"], applied)
+            else:
+                assert applied is not None, case["label"]
+                got = dict(changed=applied.changed, retired=applied.retired,
+                           kept_local=applied.kept_local, kept_seeds=applied.kept_seeds,
+                           merged=applied.merged)
+                expected = {key: case["report"].get(key, []) for key in got}
+                assert got == expected, (case["label"], got)
+            for path, expected in case.get("files", {}).items():
+                if expected is None:
+                    assert not (root / path).exists(), (case["label"], path)
+                else:
+                    assert (root / path).is_file() and (root / path).read_bytes() == expected, \
+                        (case["label"], path, (root / path).read_bytes() if (root / path).is_file() else None)
+            for path, entry in case.get("lock_after", {}).items():
+                entry = {key: (pin if value == "@pin" else value) for key, value in entry.items()}
+                assert lock["files"][path] == entry, (case["label"], path, lock["files"].get(path))
+            if case.get("report") is not None:
+                assert set(lock["files"]) == set(case.get("lock_after", {})), \
+                    (case["label"], sorted(lock["files"]))
+                assert lock["synced_commit"] == pin, (case["label"], lock["synced_commit"])
+            else:
+                assert lock["synced_commit"] == case.get("lock_pin", pin), case["label"]
+            if "copy" in case:
+                assert not (root / engine.MERGE_COPY_DIR / case["copy"]).exists(), case["label"]
+                assert not (root / (str(engine.MERGE_COPY_DIR / case["copy"]) + ".base")).exists(), case["label"]
+            assert chmods == case.get("chmods", []), (case["label"], chmods)
+
+
+def test_pull_source_reads_the_published_line_and_ancestry() -> None:
+    """`BaselineSource.touches` and `is_ancestor` answer the reconcile path from the object store: the
+    commits that changed each path newest first along the pinned first-parent line (every ref for a
+    legacy hash search), and whether one commit is an ancestor of another. The pull tables above plant
+    both; this keeps their real reads."""
+    engine = _load_engine()
+    rel = ".claude/tools/touched.py"
+    with _fixture() as path:
+        baseline = path / "baseline"
+        _init_repo(baseline)
+        _write(baseline / "template" / rel, b"v1\n")
+        first = _commit(baseline, "v1")
+        _write(baseline / "template" / rel, b"v2\n")
+        second = _commit(baseline, "v2")
+        _git(baseline, "checkout", "-q", "-b", "side")
+        _write(baseline / "template" / rel, b"side\n")
+        side = _commit(baseline, "a matching blob off the published line")
+        _git(baseline, "checkout", "-q", "main")
+        _write(baseline / "template" / rel, b"v3\n")
+        third = _commit(baseline, "v3")
+        source = engine.BaselineSource(baseline, third, engine._BatchReader(baseline, third))
+        try:
+            assert source.touches()[rel] == [third, second, first], source.touches()[rel]
+            assert side not in source.touches()[rel], "a side branch commit is off the published line"
+            assert side in source.touches(at_pin=False)[rel], "every ref is searched for a legacy hash"
+            assert source.is_ancestor(first, third) and not source.is_ancestor(third, first)
+            assert not source.is_ancestor(side, third), "a side branch commit is no ancestor of the pin"
+        finally:
+            source.close()
+
+
 def test_v2_classify_success_refusal_and_repeat() -> None:
     rel = ".claude/tools/classify.py"
     with _fixture() as path:
@@ -970,78 +1555,9 @@ def _proof_rows(*specs: tuple[str, str, bytes]) -> dict[str, dict]:
     return {rel: {"status": status, "upstream": body, "manifest": status != "local"} for rel, status, body in specs}
 
 
-def test_check_strict_lists_each_tool_without_a_shipped_proof() -> None:
-    bare, mention, named = ".claude/tools/bare.py", ".claude/tools/mention.py", ".claude/tools/named.py"
-    rows = _proof_rows(
-        (bare, "tracked", b"x = 1\n"),
-        (mention, "tracked", b"x = 2\n"),
-        (named, "tracked", b"x = 3\n"),
-        (".claude/tests/test_unrelated.py", "tracked", b"# exercises mention.py\n"),
-        (".claude/tests/test_named.py", "tracked", b"pass\n"),
-    )
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
-        result = _run_baseline(root, baseline, "check", "--strict")
-        text = _out(result)
-        assert result.returncode == 1, text
-        assert "unproven: " + bare in text, text
-        assert "unproven: " + mention in text, text
-        assert "unproven: " + named not in text, text
-        assert "unproven: .claude/tests/" not in text, text
 
 
-def test_check_strict_counts_a_local_proof_as_no_proof() -> None:
-    tool = ".claude/tools/lonely.py"
-    rows = _proof_rows((tool, "tracked", b"x = 1\n"), (".claude/tests/test_lonely.py", "local", b"pass\n"))
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
-        assert "unproven: " + tool in _out(_run_baseline(root, baseline, "check", "--strict"))
 
-
-def test_check_strict_counts_a_proof_above_its_tools_layer_as_no_proof() -> None:
-    """A pure consumer receives the pure tool and not its godot proof, so it reads the tool unproven;
-    a checkout holding every layer must report that gap too."""
-    high, level = ".claude/tools/high.py", ".claude/tools/level.py"
-    rows = {
-        high: {"upstream": b"x = 1\n", "layer": "pure"},
-        ".claude/tests/test_high.py": {"upstream": b"pass\n", "layer": "godot"},
-        level: {"upstream": b"x = 2\n", "layer": "coding"},
-        ".claude/tests/test_level.py": {"upstream": b"pass\n", "layer": "coding"},
-    }
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
-        text = _out(_run_baseline(root, baseline, "check", "--strict"))
-        assert "unproven: " + high in text, text
-        assert "unproven: " + level not in text, text
-
-
-def test_check_strict_names_a_shipped_row_whose_layer_differs_from_the_manifest() -> None:
-    """A row relayered here differs from the manifest until a publish; the layer-closure and unproven checks
-    read the lock's layer, so check names the drift."""
-    drifted, kept = ".claude/commands/drifted.md", ".claude/commands/kept.md"
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(
-            path, {drifted: {"layer": "pure"}, kept: {"layer": "pure"}})
-        lock = _load_lock(root)
-        lock["files"][drifted]["layer"] = "godot"
-        (root / ".claude" / "baseline.lock.json").write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
-        result = _run_baseline(root, baseline, "check", "--strict")
-        text = _out(result)
-        assert result.returncode == 1, text
-        assert "layer-drift" in text and drifted in text, text
-        assert kept not in text, text
-
-
-def test_check_text_names_every_strict_finding() -> None:
-    """A strict finding the state buckets do not list (a row needing judgment) still prints its path."""
-    rel = ".claude/commands/judge_me.md"
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {rel: {"upstream": b"one\n"}})
-        (root / rel).write_bytes(b"two\n")
-        _commit(root, "local edit")
-        (root / rel).write_bytes(b"one\n")  # the working file matches upstream; the committed bytes differ
-        text = _out(_run_baseline(root, baseline, "check", "--strict"))
-        assert "needs-judgment: " + rel in text, text
 
 
 def _new_tool_fixture(path: Path, proof_status: str):
@@ -1159,24 +1675,6 @@ def test_triage_relists_a_fork_edited_since_its_verdict() -> None:
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         assert [row["relpath"] for row in _json_output(result)] == [edited]
 
-
-def test_check_names_a_local_row_that_shadows_a_shipped_file() -> None:
-    shadow = ".claude/tools/shadow.py"
-    seed = ".claude/reference/seeded.md"
-    with _fixture() as path:
-        rows = {
-            shadow: {"status": "local", "local": b"mine = 1\n", "judged": _verdict(b"mine = 1\n", "keep-local")},
-            seed: {"status": "local", "sync": "seed", "local": b"mine\n", "judged": _verdict(b"mine\n", "keep-local")},
-        }
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
-        result = _run_baseline(root, baseline, "check", "--json")
-        assert result.returncode == 0, result.stderr.decode(errors="replace")
-        states = _json_output(result)["results"]
-        assert states[shadow] == "local-shadows-upstream", states
-        assert states[seed] == "local", states
-        strict = _run_baseline(root, baseline, "check", "--strict")
-        assert strict.returncode != 0
-        assert shadow in strict.stdout.decode(errors="replace")
 
 
 def test_v2_forget_success_refusal_and_repeat() -> None:
@@ -1324,33 +1822,6 @@ def test_pull_and_update_lock_with_layers_keep_the_lock_profile() -> None:
         assert _load_lock(root)["profile"] == "pure,coding"
 
 
-def test_a_copy_equal_to_upstream_at_the_pin_reconciles_there_whatever_older_base_it_records() -> None:
-    """A lock row can keep a `base` older than the pin its copy already matches (a hand-edited lock, or
-    one written before the pin move learned to clear it). Read at that stale base, a copy upstream
-    later changed looks diverged, and a 3-way merge over it re-applies what both sides share: a
-    function added twice. The pin is the copy's reconcile point."""
-    rel = ".claude/tools/shared.py"
-    v1, v2 = b"a = 1\n", b"a = 1\n\ndef warm():\n    return 1\n"
-    v3 = b"a = 1\n\ndef warm():\n    return 1\n\ndef cold():\n    return 0\n"
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {rel: {"upstream": v2}})
-        _write(baseline / "template" / rel, v1)
-        stale = _commit(baseline, "an older copy, recorded as the row's base")
-        _write(baseline / "template" / rel, v3)
-        _commit(baseline, "upstream moves on")
-        lock = _load_lock(root)
-        lock["files"][rel]["base"] = stale
-        _write_json(root / ".claude" / "baseline.lock.json", lock)
-        _commit(root, "stale base")
-
-        state = _run_baseline(root, baseline, "check", "--json")
-        found = _json_output(state)["results"].get(rel)
-        assert found == "upstream-updated", found
-        pulled = _run_baseline(root, baseline, "pull", rel)
-        assert pulled.returncode == 0, (pulled.stdout + pulled.stderr).decode(errors="replace")
-        assert (root / rel).read_bytes() == v3
-
-
 def test_v2_fork_success_and_repeat() -> None:
     rel = ".claude/tools/fork.py"
     with _fixture() as path:
@@ -1440,47 +1911,6 @@ def test_v2_check_strict_success_refusal_and_repeat() -> None:
         assert refusal.returncode == 2
 
 
-def test_v2_check_strict_forked_drift_states() -> None:
-    moved = ".claude/tools/forked_moved.py"
-    unknown = ".claude/tools/forked_unknown.py"
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(
-            path,
-            {
-                moved: {"status": "forked", "upstream": b"value = 1\n", "base": "0" * 40},
-                unknown: {"status": "forked", "upstream": b"value = 2\n", "base": None},
-            },
-        )
-        result = _run_baseline(root, baseline, "check", "--strict", "--json")
-        assert result.returncode == 1
-        data = _json_output(result)
-        assert data["results"][moved] == "forked-upstream-moved"
-        assert data["results"][unknown] == "forked-base-unknown"
-
-
-def test_v2_forked_row_moves_only_when_its_own_upstream_file_changed() -> None:
-    """A publish moves the pinned commit for every row. A forked row reports
-    `forked-upstream-moved` only when ITS upstream file differs between the fork base and the
-    pin; an unrelated upstream change leaves it `forked`."""
-    stays = ".claude/tools/forked_stays.py"
-    moves = ".claude/tools/forked_moves.py"
-    with _fixture() as path:
-        root, baseline, _remote_path, first_commit = _v2_fixture(
-            path,
-            {
-                stays: {"status": "forked", "upstream": b"stays = 1\n", "local": b"stays = 'local'\n"},
-                moves: {"status": "forked", "upstream": b"moves = 1\n", "local": b"moves = 'local'\n"},
-            },
-        )
-        lock = _load_lock(root)
-        for rel in (stays, moves):
-            lock["files"][rel]["base"] = first_commit
-        _write_json(root / ".claude" / "baseline.lock.json", lock)
-        _write(baseline / "template" / moves, b"moves = 2\n")
-        _commit(baseline, "second: only the moves file changes")
-        data = _json_output(_run_baseline(root, baseline, "check", "--json"))
-        assert data["results"][stays] == "forked", data["results"]
-        assert data["results"][moves] == "forked-upstream-moved", data["results"]
 
 
 def test_v2_paths_filters_success_refusal_and_repeat() -> None:
@@ -1543,55 +1973,22 @@ def test_paths_unshipped_names_a_push_row_edited_after_its_verdict() -> None:
         assert "--carry" not in stderr, stderr
 
 
-def test_v2_pull_explicit_states_and_new_row() -> None:
-    existing = ".claude/tools/existing.py"
-    new = ".claude/tools/new.py"
-    local = ".claude/tools/local_pull.py"
-    forked = ".claude/tools/forked_pull.py"
-    missing = ".claude/tools/missing_pull.py"
+def test_forced_pull_refuses_a_dirty_path_and_a_repeat_writes_nothing() -> None:
+    """`--force` takes upstream over a committed local edit, but never over an uncommitted one: the
+    working copy is the owner's work, not a state the pull may resolve. A second pull is a no-op."""
+    rel = ".claude/tools/existing.py"
     with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(
-            path,
-            {
-                existing: {"upstream": b"existing\n"},
-                local: {"status": "local", "upstream": b"local upstream\n"},
-                forked: {"status": "forked", "upstream": b"fork upstream\n"},
-                missing: {"local": None, "upstream": b"missing upstream\n"},
-            },
-        )
-        local_refusal = _run_baseline(root, baseline, "pull", local)
-        assert local_refusal.returncode == 1
-        local_pull = _run_baseline(root, baseline, "pull", local, "--force")
-        assert local_pull.returncode == 0, local_pull.stderr.decode(errors="replace")
-        local_entry = _load_lock(root)["files"][local]
-        assert local_entry["status"] == "local" and "hash" not in local_entry
-        forked_pull = _run_baseline(root, baseline, "pull", forked, "--force")
-        assert forked_pull.returncode == 0, forked_pull.stderr.decode(errors="replace")
-        forked_entry = _load_lock(root)["files"][forked]
-        assert forked_entry["status"] == "forked" and "judged" not in forked_entry
-        missing_pull = _run_baseline(root, baseline, "pull", missing)
-        assert missing_pull.returncode == 0, missing_pull.stderr.decode(errors="replace")
-        assert (root / missing).read_bytes() == b"missing upstream\n"
-        _write(baseline / "template" / existing, b"existing new\n")
-        _commit(baseline, "stale upstream")
-        _write(root / existing, b"existing new\n")
-        _commit(root, "same content, new pin")
-        stale = _run_baseline(root, baseline, "pull")
-        assert stale.returncode == 0, _out(stale)
-        assert _load_lock(root)["files"][existing].get("base") is None
-        assert (root / existing).read_bytes() == b"existing new\n"
-        # Add a new upstream row after the consumer lock was created.
-        _write(baseline / "template" / new, b"new\n")
-        _commit(baseline, "new upstream")
-        first = _run_baseline(root, baseline, "pull", new)
-        assert first.returncode == 0, first.stderr.decode(errors="replace")
-        entry = _load_lock(root)["files"][new]
-        assert entry["status"] == "tracked" and "judged" not in entry and "base" not in entry, entry
-        repeat = _run_baseline(root, baseline, "pull", new)
-        _assert_no_change(repeat)
-        (root / existing).write_bytes(b"changed\n")
-        refusal = _run_baseline(root, baseline, "pull", existing)
-        assert refusal.returncode == 1
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {rel: {"upstream": b"existing\n"}})
+        _write(root / rel, b"uncommitted\n")
+        dirty = _run_baseline(root, baseline, "pull", rel, "--force")
+        assert dirty.returncode == 1 and "dirty path" in _out(dirty), _out(dirty)
+        assert (root / rel).read_bytes() == b"uncommitted\n"
+        _git(root, "checkout", "--", rel)
+        _write(baseline / "template" / rel, b"newer\n")
+        _commit(baseline, "upstream moves")
+        taken = _run_baseline(root, baseline, "pull", rel)
+        assert taken.returncode == 0 and (root / rel).read_bytes() == b"newer\n", _out(taken)
+        _assert_no_change(_run_baseline(root, baseline, "pull", rel))
 
 
 def test_v2_migrate_covers_every_status_mapping_source_row() -> None:
@@ -1902,6 +2299,150 @@ def test_v2_check_strict_git_spawns_do_not_grow_with_rows() -> None:
     assert counts[0] == counts[1], "git spawns grew with rows: 3 rows -> %d, 12 rows -> %d" % tuple(counts)
 
 
+def _git_bounded(path: Path):
+    """The in-process engine's git calls stop looking for a repository above `path`, as `_env` makes a child's."""
+    return mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(path), "GIT_TERMINAL_PROMPT": "0"})
+
+
+def test_open_source_tells_a_non_repository_from_a_missing_or_another_origin() -> None:
+    """One `remote get-url` settles a baseline that has an origin; a failed answer still names its case. A path that
+    is no repository is refused (a cache that is none is never replaced); no origin and another origin refuse a
+    `--baseline-dir`, and a cache cloned from another origin is recloned from the lock's."""
+    engine = _load_engine()
+    with _fixture() as path, _git_bounded(path):
+        remote, pin, _work = _baseline_one(path, "fixture.md", b"one\n")
+        lock = {"baseline_repo": str(remote), "baseline_ref": "main"}
+        plain = path / "plain"
+        plain.mkdir()
+        bare = path / "no-origin"
+        _init_repo(bare)
+        (path / "other").mkdir()
+        other_remote = _remote(path / "other")
+        other = path / "other-origin"
+        _init_repo(other)
+        _git(other, "remote", "add", "origin", str(other_remote))
+        for baseline_dir, not_repository in ((plain, True), (bare, False), (other, False)):
+            try:
+                engine.ensure_baseline(lock, path, str(baseline_dir)).close()
+            except engine.BaselineError as exc:
+                assert isinstance(exc, engine._NotRepository) is not_repository, (baseline_dir, exc)
+            else:
+                raise AssertionError("opened a baseline at %s" % baseline_dir)
+        root = path / "consumer"
+        cache = root / engine.CACHE_CLONE
+        cache.mkdir(parents=True)
+        (cache / "keep").write_bytes(b"")
+        try:
+            engine.ensure_baseline(lock, root, None).close()
+        except engine._NotRepository:
+            pass
+        else:
+            raise AssertionError("opened a cache that is no repository")
+        assert (cache / "keep").is_file(), "a cache that is no repository was replaced"
+        shutil.rmtree(cache)
+        _git(cache.parent, "clone", "-q", str(other_remote), cache.name)
+        source = engine.ensure_baseline(lock, root, None)
+        source.close()
+        assert source.sha == pin, (source.sha, pin)
+        origin = _git(cache, "remote", "get-url", "origin").decode().strip()
+        assert Path(origin).resolve() == remote.resolve(), origin
+
+
+def test_a_source_starts_its_reader_at_its_first_read_and_reads_its_pin_after_the_cache_moves() -> None:
+    """A source opened and closed unread spawns no object reader (publish's pin reads nothing through it). One read
+    after a later fetch moved the cache's refs answers at its pin: its reader names the pinned commit, never a ref."""
+    engine = _load_engine()
+    rel = "fixture.md"
+    with _fixture() as path, _git_bounded(path):
+        remote, pin, work = _baseline_one(path, rel, b"one\n")
+        lock = {"baseline_repo": str(remote), "baseline_ref": "main"}
+        root = path / "consumer"
+        (root / ".claude").mkdir(parents=True)
+        readers = []
+        real_popen = engine.subprocess.Popen
+
+        def counting_popen(args, *a, **k):
+            if "cat-file" in args and "--batch" in args:
+                readers.append(tuple(args))
+            return real_popen(args, *a, **k)
+
+        engine.subprocess.Popen = counting_popen
+        try:
+            engine.ensure_baseline(lock, root, None).close()
+            assert readers == [], readers
+            source = engine.ensure_baseline(lock, root, None)
+            try:
+                _write(work / "template" / rel, b"two\n")
+                _commit(work, "second")
+                _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+                _git(source.path, "fetch", "-q", "origin", "main")
+                assert source.sha == pin and source.read(rel) == b"one\n", source.read(rel)
+            finally:
+                source.close()
+        finally:
+            engine.subprocess.Popen = real_popen
+        assert len(readers) == 1, readers
+
+
+def test_classify_reads_its_rows_once_under_the_lock() -> None:
+    """classify reads its rows once, under the lock mutex. A row a writer deletes and commits away while classify
+    waits for the lock is the gone row classify then finds: a `local` classify declines it as a path only upstream
+    carries. A second read before the lock had found it present and refused the row it later could not read."""
+    rel = ".claude/commands/vanishing.md"
+    engine = _load_engine()
+    with _fixture() as path, _git_bounded(path):
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"upstream\n"}})
+        real = engine.mutate_lock
+
+        def writer_first(*args, **kwargs):
+            _git(root, "rm", "-q", rel)
+            _git(root, "commit", "-q", "-m", "a peer removes the row")
+            return real(*args, **kwargs)
+
+        engine.mutate_lock = writer_first
+        try:
+            with contextlib.chdir(root), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                code = engine.main(["classify", rel, "--status", "local", "--baseline-dir", str(baseline)])
+        finally:
+            engine.mutate_lock = real
+        assert code == 0, err.getvalue()
+        entry = _load_lock(root)["files"][rel]
+        assert entry["status"] == "local" and entry.get("absent") is True, entry
+
+
+def test_judge_scans_the_bytes_whose_sha_it_records() -> None:
+    """A judge call reads each row once. A writer that restages a row mid-call cannot make the identity scan read
+    other bytes than the ones whose sha the verdict records: with two reads a clean restage hid a planted hit and
+    the push verdict recorded the sha of the leaking bytes."""
+    rel = ".claude/commands/restaged.md"
+    subsystem_id = "brew" + "Cauldron"
+    engine = _load_engine()
+    with _fixture() as path, _git_bounded(path):
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"clean\n"}})
+        skill_md = "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: " + subsystem_id + "\n    paths: []\n```\n"
+        _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", skill_md.encode())
+        _write(root / rel, ("The " + subsystem_id + " owns this file.\n").encode())
+        _git(root, "add", "-A")
+        real = engine._git_contents
+
+        def restaging(at, relpaths):
+            found = real(at, relpaths)
+            _write(root / rel, b"clean now\n")
+            _git(root, "add", "-A")
+            return found
+
+        engine._git_contents = restaging
+        try:
+            with contextlib.chdir(root), contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                code = engine.main(["judge", rel, "--verdict", "push", "--baseline-dir", str(baseline)])
+        finally:
+            engine._git_contents = real
+        assert code == 1 and "--accept-hit" in err.getvalue(), (code, out.getvalue(), err.getvalue())
+        assert "judged" not in _load_lock(root)["files"][rel], _load_lock(root)["files"][rel]
+
+
 # v1 `check --json` from engine 008b8c3, recorded on `_golden_fixture` with its baseline commit
 # replaced by GOLDEN_COMMIT, so neither a shallow CI checkout nor a consumer copy needs baseline history.
 V1_CHECK_GOLDEN = Path(__file__).resolve().parent / "fixtures" / "v1_check_golden.json"
@@ -2158,34 +2699,6 @@ def _out(result: subprocess.CompletedProcess[bytes]) -> str:
     return (result.stdout + result.stderr).decode("utf-8", errors="replace")
 
 
-def test_pull_new_seed_row_is_local() -> None:
-    seed = ".claude/skills/seeded/SKILL.md"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            ".claude/tools/a.py": {},
-            seed: {"sync": "seed", "row": False, "local": None, "upstream": b"seed text\n"},
-        })
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        assert (root / seed).read_bytes() == b"seed text\n"
-        row = _load_lock(root)["files"][seed]
-        assert row["status"] == "local", row
-        assert "judged" not in row, row
-
-
-def test_pull_keeps_existing_seed_file() -> None:
-    seed = ".claude/skills/seeded/SKILL.md"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            ".claude/tools/a.py": {},
-            seed: {"sync": "seed", "row": False, "local": b"project text\n", "upstream": b"seed text\n"},
-        })
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        assert (root / seed).read_bytes() == b"project text\n"
-        assert _load_lock(root)["files"][seed]["status"] == "local"
-
-
 _STUB_HARNESS = """import sys, pathlib
 paths = sys.argv[2:]
 pathlib.Path(__file__).with_name('seen.txt').write_text(' '.join(paths))
@@ -2363,30 +2876,24 @@ def test_pull_that_wrote_nothing_runs_no_proof() -> None:
         assert not (root / ".claude/scripts/seen.txt").exists()
 
 
-def test_bare_pull_skips_unrowed_differing_local() -> None:
-    clash = ".claude/tools/clash.py"
-    fresh = ".claude/tools/fresh.py"
+def test_pull_reports_an_unrowed_clash_and_force_takes_it() -> None:
+    """A bare pull leaves a differing local file with no lock row and reports it, beside the row it
+    adopts; a named pull refuses that file, and `--force` takes upstream."""
+    clash, fresh = ".claude/tools/clash.py", ".claude/tools/fresh.py"
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {
             clash: {"row": False, "local": b"mine\n", "upstream": b"theirs\n"},
             fresh: {"row": False, "local": None, "upstream": b"fresh\n"},
         })
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        assert (root / clash).read_bytes() == b"mine\n"
-        assert clash not in _load_lock(root)["files"]
-        assert "local file differs" in _out(pull) and clash in _out(pull), _out(pull)
+        bare = _run_baseline(root, baseline, "pull")
+        assert bare.returncode == 0, _out(bare)
+        out = _out(bare)
+        assert "skipped (local file differs, no lock row): " + clash in out, out
+        assert (root / clash).read_bytes() == b"mine\n" and clash not in _load_lock(root)["files"]
         assert (root / fresh).read_bytes() == b"fresh\n"
-
-
-def test_explicit_pull_refuses_unrowed_differing_local() -> None:
-    clash = ".claude/tools/clash.py"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            clash: {"row": False, "local": b"mine\n", "upstream": b"theirs\n"},
-        })
+        _commit(root, "the bare pull")
         refusal = _run_baseline(root, baseline, "pull", clash)
-        assert refusal.returncode == 1, _out(refusal)
+        assert refusal.returncode == 1 and "--force" in _out(refusal), _out(refusal)
         assert (root / clash).read_bytes() == b"mine\n"
         forced = _run_baseline(root, baseline, "pull", clash, "--force")
         assert forced.returncode == 0, _out(forced)
@@ -2662,22 +3169,6 @@ def test_upgrade_names_unparseable_settings() -> None:
         assert _load_lock(root)["schema"] == 1
 
 
-def test_pull_seed_project_settings_makes_composed_row() -> None:
-    base = (json.dumps({"permissions": {"allow": ["A"]}}, indent=2) + "\n").encode()
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            ".claude/tools/a.py": {},
-            ".claude/settings.base.json": {"row": False, "local": None, "upstream": base},
-            ".claude/settings.project.json": {"row": False, "local": None, "sync": "seed",
-                                              "upstream": b"{}\n"},
-        })
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        files = _load_lock(root)["files"]
-        assert files[".claude/settings.json"]["status"] == "composed", files
-        assert files[".claude/settings.project.json"]["status"] == "local", files
-
-
 def test_pull_seed_project_settings_records_layer_overlay_inputs() -> None:
     base = (json.dumps({"permissions": {"allow": ["A"]}}, indent=2) + "\n").encode()
     overlay = (json.dumps({"permissions": {"allow": ["G"]}}, indent=2) + "\n").encode()
@@ -2691,7 +3182,10 @@ def test_pull_seed_project_settings_records_layer_overlay_inputs() -> None:
         })
         pull = _run_baseline(root, baseline, "pull")
         assert pull.returncode == 0, _out(pull)
-        row = _load_lock(root)["files"][".claude/settings.json"]
+        files = _load_lock(root)["files"]
+        assert files[".claude/settings.json"]["status"] == "composed", files
+        assert files[".claude/settings.project.json"]["status"] == "local", files
+        row = files[".claude/settings.json"]
         assert row["inputs"] == [".claude/settings.base.json", ".claude/settings.godot.json",
                                  ".claude/settings.project.json"], row
         compose = _run_baseline(root, baseline, "compose")
@@ -2723,6 +3217,8 @@ def test_pull_keeps_existing_seed_file_says_kept() -> None:
         pull = _run_baseline(root, baseline, "pull")
         assert "kept" in _out(pull) and seed in _out(pull), _out(pull)
         assert (root / seed).read_bytes() == b"project text\n"
+        row = _load_lock(root)["files"][seed]
+        assert row["status"] == "local" and "judged" not in row, row
 
 
 OFFER = ".claude/auto-memory/foreign_memory.md"
@@ -2741,31 +3237,6 @@ def test_bare_pull_skips_unrowed_offer_and_counts_it() -> None:
         assert "offered: 1 file(s)" in _out(pull), _out(pull)
 
 
-def test_named_pull_adopts_offer_as_tracked() -> None:
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            ".claude/tools/a.py": {},
-            OFFER: {"sync": "offer", "row": False, "local": None, "upstream": b"memory\n"},
-        })
-        pull = _run_baseline(root, baseline, "pull", OFFER)
-        assert pull.returncode == 0, _out(pull)
-        assert (root / OFFER).read_bytes() == b"memory\n"
-        assert _load_lock(root)["files"][OFFER]["status"] == "tracked"
-
-
-def test_bare_pull_updates_rowed_offer() -> None:
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            ".claude/tools/a.py": {},
-            OFFER: {"sync": "offer", "local": b"old\n", "hash": _sha(b"old\n"), "upstream": b"new\n"},
-        })
-        before = _json_output(_run_baseline(root, baseline, "check", "--json"))["results"]
-        assert before[OFFER] == "upstream-updated", before
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        assert (root / OFFER).read_bytes() == b"new\n"
-
-
 def test_check_reports_offered_and_strict_passes() -> None:
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {
@@ -2781,31 +3252,6 @@ def test_check_reports_offered_and_strict_passes() -> None:
         strict = _run_baseline(root, baseline, "check", "--strict")
         assert strict.returncode == 0, _out(strict)
 
-
-def test_check_reports_layer_closure_and_strict_fails() -> None:
-    skill = ".claude/skills/demo/SKILL.md"
-    detail = ".claude/skills/demo/reference/detail.md"
-    cites = b"Read [detail](reference/detail.md) first.\n"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            skill: {"upstream": cites},
-            detail: {"status": "local", "manifest": False, "local": b"detail\n"},
-        })
-        data = _json_output(_run_baseline(root, baseline, "check", "--json"))
-        closure = data.get("layer_closure", [])
-        assert len(closure) == 1 and closure[0].startswith(skill + ": local-only"), data
-        strict = _run_baseline(root, baseline, "check", "--strict")
-        assert strict.returncode == 1, _out(strict)
-        assert "layer-closure" in _out(strict) and skill in _out(strict), _out(strict)
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            skill: {"upstream": cites},
-            detail: {"upstream": b"detail\n"},
-        })
-        data = _json_output(_run_baseline(root, baseline, "check", "--json"))
-        assert "layer_closure" not in data, data
-        strict = _run_baseline(root, baseline, "check", "--strict")
-        assert strict.returncode == 0, _out(strict)
 
 
 def _drop_layer(root: Path, rel: str) -> None:
@@ -3006,53 +3452,30 @@ def _delete_upstream(baseline: Path, relpath: str) -> None:
     _commit(baseline, "upstream deletes " + relpath)
 
 
-def test_pull_retires_unmodified_file_removed_upstream() -> None:
-    gone = ".claude/tools/gone_unmodified.py"
+def test_pull_retires_an_unmodified_row_and_keeps_a_modified_one_local() -> None:
+    """A bare pull retires a row whose file upstream removed when its copy is unmodified or gone, and
+    keeps a modified copy as the project's own; each path takes its own report line."""
+    gone, modified, missing = (".claude/tools/gone.py", ".claude/tools/modified.py",
+                               ".claude/tools/missing.py")
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {gone: {"upstream": b"old\n"}})
-        _delete_upstream(baseline, gone)
+        root, baseline, _r, _c = _v2_fixture(path, {
+            gone: {"upstream": b"old\n"}, modified: {"upstream": b"old\n"},
+            missing: {"upstream": b"old\n", "local": None},
+        })
+        _write(root / modified, b"project edit\n")
+        for rel in (gone, modified, missing):
+            (baseline / "template" / rel).unlink()
+        _commit(baseline, "upstream deletes three rows")
         pull = _run_baseline(root, baseline, "pull")
         assert pull.returncode == 0, _out(pull)
-        assert not (root / gone).exists()
-        assert gone not in _load_lock(root)["files"]
-        assert f"retired: {gone}" in _out(pull), _out(pull)
-
-
-def test_explicit_pull_keeps_modified_file_removed_upstream_as_local() -> None:
-    gone = ".claude/tools/gone_modified.py"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {gone: {"upstream": b"old\n"}})
-        _delete_upstream(baseline, gone)
-        _write(root / gone, b"project edit\n")
-        pull = _run_baseline(root, baseline, "pull", gone)
-        assert pull.returncode == 0, _out(pull)
-        assert (root / gone).read_bytes() == b"project edit\n"
-        entry = _load_lock(root)["files"][gone]
-        assert entry["status"] == "local" and "hash" not in entry, entry
-
-
-def test_pull_drops_row_of_file_removed_upstream_and_missing_locally() -> None:
-    gone = ".claude/tools/gone_missing.py"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {gone: {"upstream": b"old\n", "local": None}})
-        _delete_upstream(baseline, gone)
-        pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
-        assert gone not in _load_lock(root)["files"]
-        assert f"retired: {gone}" in _out(pull), _out(pull)
-
-
-def test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it() -> None:
-    mine = ".claude/tools/mine_unpublished.py"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {mine: {"manifest": False, "local": b"v1\n"}})
-        check = _run_baseline(root, baseline, "check", "--json")
-        assert _json_output(check)["results"][mine] == "unpublished", _out(check)
-        pull = _run_baseline(root, baseline, "pull")
-        _assert_no_change(pull)
-        assert (root / mine).is_file() and _load_lock(root)["files"][mine]["status"] == "tracked", _out(pull)
-        update = _run_baseline(root, baseline, "update-lock")
-        assert update.returncode == 2 and "relpaths" in _out(update), _out(update)
+        out = _out(pull)
+        assert f"retired: {gone}" in out and f"retired: {missing}" in out, out
+        assert f"kept local (modified, removed upstream): {modified}" in out, out
+        assert not (root / gone).exists() and not (root / missing).exists()
+        assert (root / modified).read_bytes() == b"project edit\n"
+        files = _load_lock(root)["files"]
+        assert gone not in files and missing not in files, sorted(files)
+        assert files[modified]["status"] == "local" and "base" not in files[modified], files[modified]
 
 
 def _diverge(root: Path, baseline: Path, rel: str, local: bytes, upstream: bytes) -> None:
@@ -3122,6 +3545,17 @@ def test_bare_pull_with_a_conflict_writes_no_live_file_and_names_it() -> None:
         (root / ".claude" / "searchignore.harness").write_bytes(b"planted-entry/\n")
         (root / ".searchignore").write_bytes(b"project-entry/\n")
         lock_before = (root / ".claude" / "baseline.lock.json").read_bytes()
+        engine = _load_engine()
+        lock = engine.load_lock(root)
+        source = engine.ensure_baseline(lock, root, str(baseline))
+        try:
+            plan = engine.plan_pull(root, source, lock, [], engine.resolve_layers_v2(lock, None), False)
+        finally:
+            source.close()
+        assert [rel for rel, _, _ in plan.unsettled] == [clash], plan.unsettled
+        assert [rel for rel, _, _ in plan.rows] == [updated], plan.rows
+        assert not (root / engine.MERGE_COPY_DIR).exists()
+        assert (root / ".claude" / "baseline.lock.json").read_bytes() == lock_before
         pull = _run_baseline(root, baseline, "pull")
         out = _out(pull)
         assert pull.returncode == 1, out
@@ -3371,29 +3805,6 @@ def _keep_local_judgment(content: bytes) -> dict:
             "borderline": False, "confirmed_at": None}
 
 
-def test_v2_check_strict_clears_only_a_current_keep_local_verdict() -> None:
-    kept = ".claude/tools/kept_local.py"
-    stale = ".claude/tools/stale_local.py"
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(
-            path,
-            {kept: {"upstream": b"value = 1\n", "local": b"value = 2\n",
-                    "judged": _keep_local_judgment(b"value = 2\n")},
-             ".claude/tests/test_kept_local.py": {}},
-        )
-        current = _run_baseline(root, baseline, "check", "--strict", "--json")
-        assert current.returncode == 0, _out(current)
-        assert _json_output(current)["results"][kept] == "local-modified"
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(
-            path,
-            {stale: {"upstream": b"value = 1\n", "local": b"value = 3\n",
-                     "judged": _keep_local_judgment(b"value = 2\n")}},
-        )
-        moved = _run_baseline(root, baseline, "check", "--strict", "--json")
-        assert moved.returncode == 1, _out(moved)
-        assert _json_output(moved)["results"][stale] == "local-modified"
-
 
 MEMORY_UPSTREAM = b"---\nname: rule\ntype: feedback\nmetadata:\n  node_type: memory\n---\nBody line\n"
 MEMORY_WITH_PROVENANCE = (
@@ -3411,20 +3822,6 @@ def test_v2_memory_provenance_keys_never_make_a_row_differ() -> None:
         result = _run_baseline(root, baseline, "check", "--strict", "--json")
         assert result.returncode == 0, _out(result)
         assert _json_output(result)["results"][memory] == "in-sync"
-
-
-def test_v2_pull_writes_memory_without_provenance_keys() -> None:
-    memory = ".claude/auto-memory/feedback_pull.md"
-    old = b"---\nname: pull\n---\nOld body\n"
-    upstream = (b"---\nname: pull\nmetadata:\n  node_type: memory\n  originSessionId: session-two\n"
-                b"  modified: 2026-01-02T00:00:00Z\n---\nBody\n")
-    with _fixture() as path:
-        root, baseline, _remote_path, _commit_sha = _v2_fixture(
-            path, {memory: {"upstream": upstream, "local": old, "hash": _sha(old)}},
-        )
-        pull = _run_baseline(root, baseline, "pull", memory)
-        assert pull.returncode == 0, _out(pull)
-        assert (root / memory).read_bytes() == b"---\nname: pull\nmetadata:\n  node_type: memory\n---\nBody\n"
 
 
 def test_v2_provenance_strip_leaves_non_memory_files_alone() -> None:
@@ -4529,49 +4926,36 @@ def test_remote_git_carries_the_network_timeout_and_local_git_does_not() -> None
     assert len(seen) == 2 and seen[0] and seen[0] > 0 and seen[1] is None, seen
 
 
-def test_pull_settles_a_tracked_row_at_the_copy_it_writes() -> None:
-    rel = ".claude/reference/repulled.md"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {
-            rel: {"upstream": b"v2\n", "local": b"v1\n", "hash": _sha(b"v1\n"), "judged": _judged_push(b"v1\n")},
-        })
-        result = _run_baseline(root, baseline, "pull")
-        assert result.returncode == 0, _out(result)
-        lock = _load_lock(root)
-        row = lock["files"][rel]
-        assert "judged" not in row and "base" not in row, row
-        assert lock["synced_commit"] == _branch_sha(baseline)
-        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "in-sync"
-
-
-def test_pull_updates_the_running_engine_first_and_reruns_with_it() -> None:
+def test_self_pull_delivers_both_ends_of_an_api_change_before_checking() -> None:
     engine_rel = ".claude/tools/baseline_sync.py"
+    provider, caller = ".claude/tools/provider.py", ".claude/hooks/caller.py"
     old = ENGINE.read_bytes()
-    anchor = b"_TOOLS_DIR = Path(__file__).resolve().parent\n"
-    new = old.replace(anchor, anchor + b'Path.cwd().joinpath(".new_engine_ran").write_text("1")\n', 1)
-    assert new != old
-    other = ".claude/reference/other.md"
+    new = old + b"\n# a newer engine\n"
+    old_provider, new_provider = b"old_api = 1\n", b"new_api = 1\n"
+    old_caller, new_caller = b"import provider\nvalue = provider.old_api\n", b"from provider import new_api\n"
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {
-            engine_rel: {"upstream": new, "local": old, "hash": _sha(old)},
-            other: {"upstream": b"new other\n", "local": b"old other\n", "hash": _sha(b"old other\n")},
+            rel: {"upstream": after, "local": before, "hash": _sha(before)}
+            for rel, before, after in [(engine_rel, old, new), (provider, old_provider, new_provider),
+                                       (caller, old_caller, new_caller)]
         })
         for module in ENGINE.parent.glob("*.py"):
             if module.name != "baseline_sync.py":
                 shutil.copy(module, root / ".claude" / "tools" / module.name)
+        for module in (ENGINE.parents[1] / "hooks").glob("_*.py"):
+            shutil.copy(module, root / ".claude" / "hooks" / module.name)
         _commit(root, "engine siblings")
         result = subprocess.run([sys.executable, str(root / engine_rel), "pull", "--baseline-dir", str(baseline)],
                                 cwd=root, env=_env(root), stdin=subprocess.DEVNULL, capture_output=True)
-        out = _out(result)
-        assert result.returncode == 0, out
-        assert (root / engine_rel).read_bytes() == new, "the engine row was not pulled"
-        assert (root / ".new_engine_ran").exists(), "the rest of the pull did not run on the pulled engine: " + out
-        assert (root / other).read_bytes() == b"new other\n", out
+        assert result.returncode == 0, _out(result)
+        assert (root / engine_rel).read_bytes() == new
+        assert (root / provider).read_bytes() == new_provider
+        assert (root / caller).read_bytes() == new_caller
+        assert _load_lock(root)["synced_commit"] == _branch_sha(baseline)
 
 
-def test_engine_pull_leaves_its_proofs_to_the_rest_of_the_pull() -> None:
-    # The engine phase writes only `.claude/tools/*.py` rows, and a pulled tool can need a row the rest of the
-    # pull brings (a tool calling a hook helper's new signature): proving it alone fails on the stale helper.
+def test_pull_proves_the_engine_and_its_dependencies_together() -> None:
+    # A tool can need a hook helper the same pull brings; one proof run must see both.
     engine_rel, tool, hook = ".claude/tools/baseline_sync.py", ".claude/tools/needs_hook.py", ".claude/hooks/helper.py"
     old = ENGINE.read_bytes()
     new = old + b"\n# a newer engine\n"
@@ -4599,36 +4983,6 @@ with open(pathlib.Path(__file__).with_name('runs.txt'), 'a') as out:
         runs = (root / ".claude" / "scripts" / "runs.txt").read_text(encoding="utf-8").splitlines()
         assert len(runs) == 1, "the pull proved in %d runs, not one over every row it wrote: %s" % (len(runs), runs)
         assert {engine_rel, tool, hook} <= set(runs[0].split()), runs
-
-
-def test_pull_stops_when_the_engine_pull_reports_a_conflict() -> None:
-    # v2_pull's return code is the engine pull's verdict: a nonzero one must end the bare pull before the
-    # re-exec. The stub is the seam's contract (v2_pull with merge=False returns 0 on today's inputs).
-    engine = _load_engine()
-    ENGINE_RELPATH_TAIL = "baseline_sync.py"
-    with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {"other.md": {"upstream": b"new other\n"}})
-        reexec = []
-        real_run = engine.subprocess.run
-        real_pending, real_pull = engine._pending_engine_rows, engine.v2_pull
-        engine._pending_engine_rows = lambda *a, **k: [engine.ENGINE_RELPATH]
-        engine.v2_pull = lambda *a, **k: 1
-        def recording_run(cmd, *a, **k):
-            if ENGINE_RELPATH_TAIL in " ".join(map(str, cmd)):
-                reexec.append(cmd)
-                return subprocess.CompletedProcess(cmd, 0)
-            return real_run(cmd, *a, **k)
-
-        engine.subprocess.run = recording_run
-        try:
-            with contextlib.chdir(root), contextlib.redirect_stdout(io.StringIO()) as out:
-                code = engine.main(["pull", "--baseline-dir", str(baseline)])
-        finally:
-            engine.subprocess.run = real_run
-            engine._pending_engine_rows, engine.v2_pull = real_pending, real_pull
-        assert code == 1, "a conflicted engine pull exited %s" % code
-        assert not reexec, "the rest of the pull ran on the old engine"
-        assert "engine updated" not in out.getvalue(), out.getvalue()
 
 
 def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
@@ -4677,6 +5031,7 @@ SAMPLE_ONE_IN = 27
 _HISTORIC_STATE_DRIVER = '''\
 import importlib.util, json, subprocess, sys
 from pathlib import Path
+from unittest import mock
 tools, repo, commit, lock_path, root = (Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(),
                                         sys.argv[3], Path(sys.argv[4]).resolve(),
                                         Path(sys.argv[5]).resolve())
@@ -5293,11 +5648,9 @@ def main(part: int = 1) -> int:
     for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
         assert (Path(__file__).parent / ("test_baseline_sync_part%d.py" % other)).is_file(), "missing part %d" % other
     cases = [
-        test_pull_settles_a_tracked_row_at_the_copy_it_writes,
         test_bare_pull_refuses_a_diverged_binary_row_and_writes_nothing,
-        test_pull_updates_the_running_engine_first_and_reruns_with_it,
-        test_engine_pull_leaves_its_proofs_to_the_rest_of_the_pull,
-        test_pull_stops_when_the_engine_pull_reports_a_conflict,
+        test_self_pull_delivers_both_ends_of_an_api_change_before_checking,
+        test_pull_proves_the_engine_and_its_dependencies_together,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
         test_unproven_tools_reads_a_loss_floor_row_as_the_proof_of_a_floor_module,
@@ -5324,13 +5677,9 @@ def main(part: int = 1) -> int:
         test_j3_relpath_with_control_or_edge_whitespace_refuses,
         test_j3_layer_on_an_existing_row_needs_relayer,
         test_j3_relayer_of_a_fork_keeps_its_base,
-        test_pull_retires_unmodified_file_removed_upstream,
-        test_explicit_pull_keeps_modified_file_removed_upstream_as_local,
-        test_pull_drops_row_of_file_removed_upstream_and_missing_locally,
         test_bare_pull_with_a_dirty_diverged_row_writes_nothing,
         test_a_conflict_resolved_in_its_copy_lands_with_every_other_row_on_the_next_pull,
         test_a_resolved_copy_made_against_older_text_is_not_installed,
-        test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it,
         test_a_never_ship_prefix_hides_an_upstream_offer_but_never_an_upstream_row_a_pull_delivers,
         test_candidates_lists_an_unjudged_path_and_skips_a_never_ship_path,
         test_v2_classify_local_declines_a_pulled_path_once_its_file_is_gone,
@@ -5339,10 +5688,9 @@ def main(part: int = 1) -> int:
         test_bare_pull_merges_a_diverged_row_and_a_named_pull_still_refuses_it,
         test_bare_pull_with_a_conflict_writes_no_live_file_and_names_it,
         test_a_conflict_in_a_row_whose_base_lacks_the_file_resolves_through_the_next_pull,
-        test_check_reports_layer_closure_and_strict_fails,
+        test_check_state_vocabulary_is_a_table,
+        test_check_unproven_and_closure_findings_are_a_table,
         test_bare_pull_skips_unrowed_offer_and_counts_it,
-        test_named_pull_adopts_offer_as_tracked,
-        test_bare_pull_updates_rowed_offer,
         test_check_reports_offered_and_strict_passes,
         test_unimported_layer_files_names_each_overlay_claude_md_never_loads,
         test_env_strips_every_git_local_env_var,
@@ -5382,11 +5730,18 @@ def main(part: int = 1) -> int:
         test_v2_track_success_refusal_and_repeat,
         test_v2_ignore_alias_success_refusal_and_repeat,
         test_v2_check_strict_success_refusal_and_repeat,
-        test_v2_check_strict_forked_drift_states,
         test_v2_check_strict_git_spawns_do_not_grow_with_rows,
-        test_v2_forked_row_moves_only_when_its_own_upstream_file_changed,
+        test_open_source_tells_a_non_repository_from_a_missing_or_another_origin,
+        test_a_source_starts_its_reader_at_its_first_read_and_reads_its_pin_after_the_cache_moves,
+        test_classify_reads_its_rows_once_under_the_lock,
+        test_judge_scans_the_bytes_whose_sha_it_records,
         test_v2_paths_filters_success_refusal_and_repeat,
-        test_v2_pull_explicit_states_and_new_row,
+        test_forced_pull_refuses_a_dirty_path_and_a_repeat_writes_nothing,
+        test_pull_retires_an_unmodified_row_and_keeps_a_modified_one_local,
+        test_pull_reports_an_unrowed_clash_and_force_takes_it,
+        test_pull_plan_actions_are_a_table,
+        test_pull_apply_actions_are_a_table,
+        test_pull_source_reads_the_published_line_and_ancestry,
         test_v2_pull_keeps_placeholder_ok_files_verbatim,
         test_placeholder_ok_files_skip_both_substitution_directions,
         test_v2_migrate_covers_every_status_mapping_source_row,
@@ -5397,9 +5752,6 @@ def main(part: int = 1) -> int:
         test_v2_compose_names_a_retired_adaptation_key_and_check_fails_on_it,
         test_v2_many_concurrent_classifies_lose_no_row,
         test_v1_check_json_golden_is_read_only,
-        test_pull_new_seed_row_is_local,
-        test_pull_keeps_existing_seed_file,
-        test_bare_pull_skips_unrowed_differing_local,
         test_bare_pull_with_only_clean_merges_lands_every_row_in_one_run,
         test_bare_pull_merges_a_forked_row_whose_upstream_moved_and_keeps_it_forked,
         test_a_forked_row_with_a_conflict_keeps_its_fork_when_its_copy_is_resolved,
@@ -5408,7 +5760,6 @@ def main(part: int = 1) -> int:
         test_a_red_pull_names_each_red_proof_once_by_file_name,
         test_bare_pull_with_nothing_unsettled_writes_every_row_as_before,
         test_engine_phase_writes_nothing_while_a_row_cannot_settle_and_the_rerun_lands_it_all,
-        test_explicit_pull_refuses_unrowed_differing_local,
         test_pull_reports_a_local_caller_of_a_removed_module_attribute,
         test_pull_silent_when_the_pulled_copy_still_defines_the_name,
         test_pull_silent_when_no_local_file_reads_the_removed_name,
@@ -5423,21 +5774,16 @@ def main(part: int = 1) -> int:
         test_migrate_refuses_dirty_claude_md,
         test_upgrade_refuses_bad_subsystems_before_writing,
         test_upgrade_names_unparseable_settings,
-        test_pull_seed_project_settings_makes_composed_row,
         test_pull_seed_project_settings_records_layer_overlay_inputs,
         test_migrate_derives_project_settings_over_layer_overlays,
         test_pull_keeps_existing_seed_file_says_kept,
-        test_v2_check_strict_clears_only_a_current_keep_local_verdict,
         test_v2_memory_provenance_keys_never_make_a_row_differ,
-        test_v2_pull_writes_memory_without_provenance_keys,
         test_v2_provenance_strip_leaves_non_memory_files_alone,
         test_carry_walks_the_range_and_leaves_a_peer_row_alone,
         test_carry_lists_a_row_the_range_adds_deletes_or_leaves_alone,
         test_carry_names_a_broken_chain,
         test_carry_refuses_an_identity_hit_and_a_layerless_new_row,
         test_carry_usage_errors_exit_two_naming_the_flag,
-        test_check_strict_lists_each_tool_without_a_shipped_proof,
-        test_check_strict_counts_a_local_proof_as_no_proof,
         test_judge_push_refuses_a_new_tool_whose_proof_is_local,
         test_judge_push_allows_a_new_tool_with_a_shipped_proof,
         test_judge_push_allows_a_new_tool_and_its_new_proof_in_one_range,
@@ -5481,14 +5827,10 @@ def main(part: int = 1) -> int:
         test_intent_to_add_path_reads_its_working_bytes,
         test_many_paths_read_without_one_oversized_command_line,
         test_relpaths_after_an_option_parse_on_every_python,
-        test_check_strict_counts_a_proof_above_its_tools_layer_as_no_proof,
-        test_check_strict_names_a_shipped_row_whose_layer_differs_from_the_manifest,
-        test_check_text_names_every_strict_finding,
         test_carry_leaves_a_row_judged_keep_local_alone,
         test_carry_starts_from_a_pulled_row_whose_judged_sha_is_older,
         test_triage_relists_a_local_row_edited_since_its_keep_local_verdict,
         test_triage_relists_a_fork_edited_since_its_verdict,
-        test_check_names_a_local_row_that_shadows_a_shipped_file,
         test_historic_817_lock_reads_its_twelve_upstream_updated_rows,
         test_historic_240_lock_reads_its_stale_rows_in_sync,
         test_v2_state_old_and_new_agree_over_the_sampled_lock_versions,
@@ -5504,7 +5846,6 @@ def main(part: int = 1) -> int:
         test_a_red_pull_stays_in_the_journal_that_check_and_the_next_pull_read,
         test_the_runner_stores_the_engine_reads_are_planted,
         test_pull_and_update_lock_with_layers_keep_the_lock_profile,
-        test_a_copy_equal_to_upstream_at_the_pin_reconciles_there_whatever_older_base_it_records,
         test_pull_proves_a_path_it_retires_like_one_it_writes,
         test_a_committed_deletion_leaves_the_pull_journal,
     ]

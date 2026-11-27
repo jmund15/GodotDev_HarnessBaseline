@@ -9,6 +9,9 @@ calls the tool's `main` in-process. The real tool never reaches the network, a r
 ledger: `_gh_json` is replaced by a planted stand-in, and one subprocess case runs the CLI end to end
 against a fake `gh` on PATH. The ported `scope`/`project` cases run against `review_ledger.py`. Each coverage
 clause also runs against a tool copy with only that clause disabled, which must stop printing the pair.
+The reads a plain fixture repo's own facts decide (rigor, checkout layout, a file's or rule's blob id, an object
+question) are answered in process by `_planted_reads`; `PlantedReadParityTests` runs each beside real git, and the
+history reads (merge-base, rev-list, blame, log) and the submodule and worktree cases stay real git.
 """
 from __future__ import annotations
 
@@ -26,7 +29,6 @@ import sys
 import tempfile
 import types
 import unittest
-import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +37,7 @@ TOOL = TOOLS / "review_ledger.py"
 LIVE_CLAUDE = TOOLS.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ledger_rows import ledger_row  # noqa: E402
+from _planted_reads import NotPlanted, Planted, blob_id, is_plain, planted_reads, write_object  # noqa: E402
 
 GITLINK_OLD = "1" * 40
 GITLINK_NEW = "2" * 40
@@ -172,6 +175,41 @@ def setUpModule():
 
 def tearDownModule():
     shutil.rmtree(_TEMPLATE["root"], ignore_errors=True)
+    for held in _PROTOTYPES.values():
+        shutil.rmtree(held["folder"], ignore_errors=True)
+
+
+_PROTOTYPES: dict = {}
+_ROOT_PATHS = (".gitmodules", ".git/config", ".git/modules/lib/config")
+
+
+class BuiltOnce:
+    """A fixture whose setup runs real git (a submodule clone) builds it once per process, in `build()`, and keeps a
+    copy of its folders and facts; each later case restores that copy under its own root, with the old root's
+    path rewritten in the files that hold one, so no case sees another's commits or refs."""
+    FOLDERS = ("repo", "lib_origin")
+
+    def setUp(self):
+        super().setUp()
+        held = _PROTOTYPES.get(type(self))
+        if held is None:
+            facts = self.build()
+            folder = Path(tempfile.mkdtemp(prefix="rl_proto_"))
+            for name in self.FOLDERS:
+                shutil.copytree(self.root / name, folder / name, symlinks=True)
+            _PROTOTYPES[type(self)] = {"folder": folder, "facts": facts, "root": str(self.root)}
+            return
+        shutil.rmtree(self.repo)
+        for name in self.FOLDERS:
+            shutil.copytree(held["folder"] / name, self.root / name, symlinks=True)
+        for rel in _ROOT_PATHS:
+            path = self.repo / rel
+            if path.is_file():
+                text = path.read_text(encoding="utf-8")
+                for old, new in ((held["root"], str(self.root)), (Path(held["root"]).as_posix(), self.root.as_posix())):
+                    text = text.replace(old, new)
+                path.write_text(text, encoding="utf-8", newline="")
+        self.restore(held["facts"])
 
 
 class Result:
@@ -197,13 +235,7 @@ class Repo:
         self.clock = 1_700_000_000
 
     def _object(self, kind: str, data: bytes) -> str:
-        body = b"%s %d\0" % (kind.encode(), len(data)) + data
-        sha = hashlib.sha1(body).hexdigest()
-        path = self.root / ".git" / "objects" / sha[:2] / sha[2:]
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(zlib.compress(body))
-        return sha
+        return write_object(self.root, kind, data)
 
     def _tree(self, entries: dict) -> str:
         nested: dict = {}
@@ -224,7 +256,7 @@ class Repo:
 
     @staticmethod
     def blob_sha(data: bytes) -> str:
-        return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+        return blob_id(data)
 
     def write(self, rel: str, text: str):
         data = text.encode("utf-8")
@@ -350,6 +382,7 @@ class Repo:
 class Fixture(unittest.TestCase):
     tool = TOOL
     record_cmd = "record"
+    live_reads = False  # a class that proves a real read of its own (a submodule, a linked worktree) sets it
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -455,10 +488,17 @@ class Fixture(unittest.TestCase):
         if args and args[0] == "record" and self.record_cmd != "record":
             args[0] = self.record_cmd
         # The live `_pick` probes provider capacity through ~11 subprocesses (2.6 s a plan); only the seam cases below use it.
-        overrides = dict({"_pick": NO_PICK["_pick"]}, **(attrs or {}), _gh_json=self._fake_gh_json(module))
+        planted, snap_planted, ask = ({}, {}, None) if self.live_reads else planted_reads(module)
+        overrides = {**NO_PICK, **planted, **(attrs or {}), "_gh_json": self._fake_gh_json(module)}
         originals = {name: getattr(module, name) for name in overrides}
+        snap_originals = {name: getattr(module.review_snapshot, name) for name in snap_planted}
+        real_ask = module.review_snapshot._Objects.ask
+        if ask:
+            module.review_snapshot._Objects.ask = ask
         for name, value in overrides.items():
             setattr(module, name, value)
+        for name, value in snap_planted.items():
+            setattr(module.review_snapshot, name, value)
         saved = dict(os.environ)
         cwd = os.getcwd()
         out, err = io.StringIO(), io.StringIO()
@@ -478,6 +518,9 @@ class Fixture(unittest.TestCase):
             os.environ.update(saved)
             for name, value in originals.items():
                 setattr(module, name, value)
+            for name, value in snap_originals.items():
+                setattr(module.review_snapshot, name, value)
+            module.review_snapshot._Objects.ask = real_ask
         return Result(code, out.getvalue(), err.getvalue())
 
     def scope(self, pr=1):
@@ -2656,13 +2699,14 @@ class OwedTests(LedgerFixture):
         self._write("src/b.cs", "b\n")
         self._commit("C new file")
         module = load_module(TOOL)
-        real = module.review_snapshot._git
+        objects = module.review_snapshot._Objects
+        real = objects.ask
 
-        def broken(args, cwd=None, input=None):
-            if args[:2] == ["cat-file", "--batch-check"]:
-                return Result(128, b"", b"fatal: broken")
-            return real(args, cwd=cwd, input=input)
-        with patch.object(module.review_snapshot, "_git", broken):
+        def broken(reader, verb, name):
+            if verb == "info" and "^{" not in name:  # an object's type, not a revision's commit
+                return module.review_snapshot.Unreadable("git cat-file failed: broken")
+            return real(reader, verb, name)
+        with patch.object(objects, "ask", broken):
             result = self.run_tool("owed", "--base-ref", "main", extra_env=self.keys)
         self.assertEqual(result.returncode, 2, result.stdout.decode() + result.stderr.decode())
         self.assertEqual(result.stdout.decode().strip(), "")
@@ -4432,8 +4476,9 @@ class LedgerPathInSubmoduleTests(unittest.TestCase):
         self.assertIn("submodule", str(caught.exception))
 
 
-class SubmoduleReviewTests(RecordBase):
+class SubmoduleReviewTests(BuiltOnce, RecordBase):
     """A review rooted at a superproject records and covers files under its submodules like parent files."""
+    live_reads = True
 
     GIT = ["git", "-c", "protocol.file.allow=always", "-c", "user.name=t", "-c", "user.email=t@t"]
 
@@ -4442,8 +4487,7 @@ class SubmoduleReviewTests(RecordBase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()
 
-    def setUp(self):
-        super().setUp()
+    def build(self):
         lib = self.root / "lib_origin"
         subprocess.run(["git", "init", "-q", "-b", "main", str(lib)], check=True)
         (lib / "core").mkdir()
@@ -4458,9 +4502,18 @@ class SubmoduleReviewTests(RecordBase):
         self.sub = self.repo / "lib"
         self.tip = self.sh(self.repo, "rev-parse", "HEAD")
         self.sub_blob = self.sh(self.sub, "rev-parse", "HEAD:core/g.cs")
-        self.diffs = {"lib": self.save_text("lib.diff", self.sh(self.sub, "diff", "HEAD~1", "HEAD")),
+        return self.facts_of(self.sh(self.sub, "diff", "HEAD~1", "HEAD"))
+
+    def facts_of(self, lib_diff):
+        self.diffs = {"lib": self.save_text("lib.diff", lib_diff),
                       "app": self.save_text(
                           "app.diff", "diff --git a/src/a.cs b/src/a.cs\n--- a/src/a.cs\n+++ b/src/a.cs\n@@ -1 +1 @@\n-x\n+one\n")}
+        return {"tip": self.tip, "sub_blob": self.sub_blob, "lib_diff": lib_diff}
+
+    def restore(self, facts):
+        self.sub = self.repo / "lib"
+        self.tip, self.sub_blob = facts["tip"], facts["sub_blob"]
+        self.facts_of(facts["lib_diff"])
 
     def save_text(self, name, text):
         path = self.root / name
@@ -4593,16 +4646,16 @@ class WorktreeBlobTests(unittest.TestCase):
         self.assertIsNone(module.worktree_split("src/a.cs"))
 
 
-class SubmodulePointerMoveTests(RecordBase):
+class SubmodulePointerMoveTests(BuiltOnce, RecordBase):
     """A superproject commit that moves a gitlink owes the files the submodule changed between the two pins,
     as `<gitlink>/<file>`; a deleted one owes its submodule tombstone; an unreadable pin fails closed."""
+    live_reads = True
 
     GIT = SubmoduleReviewTests.GIT
     sh = SubmoduleReviewTests.sh
     MOVED = ["lib/core/gone.cs", "lib/core/mod.cs", "lib/core/new.cs"]
 
-    def setUp(self):
-        super().setUp()
+    def build(self):
         self.origin = self.root / "lib_origin"
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.origin)], check=True)
         (self.origin / "core").mkdir()
@@ -4624,6 +4677,11 @@ class SubmodulePointerMoveTests(RecordBase):
         self.sh(self.sub, "pull", "-q", "origin", "main")
         self.sh(self.repo, "commit", "-q", "-am", "S2 move lib")
         self.tip = self.sh(self.repo, "rev-parse", "HEAD")
+        return {"base": self.base, "l2": self.l2, "tip": self.tip}
+
+    def restore(self, facts):
+        self.origin, self.sub = self.root / "lib_origin", self.repo / "lib"
+        self.base, self.l2, self.tip = facts["base"], facts["l2"], facts["tip"]
 
     def module(self):
         module = load_module(TOOL)
@@ -4747,6 +4805,94 @@ class FilesFromTests(RecordBase):
         self.assertEqual(by_file.returncode, flagged.returncode, by_file.stderr.decode())
         self.assertTrue(by_flag)
         self.assertEqual([row["files"] for row in self.rows()], by_flag)
+
+
+class PlantedReadParityTests(LedgerFixture):
+    """Each in-process plant of `planted_reads` answers as the real read does, on a repository real git built: a plant
+    that drifts from git would turn every case that relies on it into a claim about the plant."""
+    live_reads = True
+    GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
+    PLANTED = ["HEAD", "main", "feat", "refs/heads/main", "origin/main", "v1", "main^{commit}", "HEAD^", "HEAD^1", "HEAD^2",
+               "HEAD^3", "HEAD^{blob}", "HEAD:./a/b.txt", "HEAD^:./a/b.txt", "HEAD^2:./c.txt", "HEAD:./a", "HEAD:./nope",
+               "HEAD:./a/nope", "HEAD:./a/b.txt/x", "nope", "f" * 40]
+    FALL_THROUGH = ["HEAD~1", "HEAD^{commit}^2", "HEAD^{tree}", "av1", "abcdef1", "HEAD:a/b.txt"]
+
+    reader = None
+
+    def sh(self, *args, cwd=None):
+        done = subprocess.run(self.GIT + list(args), cwd=cwd or self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def setUp(self):
+        super().setUp()
+        for rel, text in (("a/b.txt", "b\n"), ("c.txt", "caf\u00e9\n"), ("empty.txt", "")):
+            self._write(rel, text)
+        self.sh("add", "-A")
+        self.sh("commit", "-q", "-m", "real")
+        self.sh("checkout", "-q", "-b", "feat")
+        self._write("c.txt", "feat\n")
+        self.sh("commit", "-q", "-am", "feat")
+        self.sh("checkout", "-q", "main")
+        self._write("a/b.txt", "main\n")
+        self.sh("commit", "-q", "-am", "main")
+        self.sh("merge", "-q", "--no-ff", "-m", "merge", "feat")
+        self.sh("tag", "v1")
+        self.sh("tag", "-a", "-m", "annotated", "av1")
+        self.sh("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.module = load_module(TOOL)
+        self.snapshot = self.module.review_snapshot
+
+    def real(self, verb, name):
+        if self.reader is None:
+            self.reader = self.snapshot._Objects(self.repo)
+            self.addCleanup(self.reader.close)
+        return type(self.reader).ask(self.reader, verb, name)
+
+    def test_an_object_question_is_answered_as_git_answers_it(self):
+        planted = Planted(self.repo)
+        blob = self.sh("rev-parse", "HEAD:./c.txt")
+        for verb in ("info", "contents"):
+            for name in self.PLANTED + [self.sh("rev-parse", "HEAD"), blob, blob + "^{blob}", blob + "^{commit}"]:
+                with self.subTest(verb=verb, name=name):
+                    self.assertEqual(planted.ask(verb, name), self.real(verb, name))
+
+    def test_a_form_the_plant_does_not_understand_falls_through_to_real_git(self):
+        planted = Planted(self.repo)
+        for name in self.FALL_THROUGH:
+            with self.subTest(name=name), self.assertRaises(NotPlanted):
+                planted.ask("info", name)
+
+    def test_the_layout_the_hash_and_the_rule_blob_match_the_real_reads(self):
+        module, snapshot = self.module, self.snapshot
+        overrides, snap_overrides, _ask = planted_reads(module)
+        real_layout = snapshot.layout(self.repo)
+        self.assertEqual([os.path.normcase(part) for part in snap_overrides["layout"](self.repo)],
+                         [os.path.normcase(part) for part in real_layout])
+        paths = ["a/b.txt", "c.txt", "empty.txt"]
+        self.assertEqual(snap_overrides["hash_objects"](self.repo, paths), snapshot.hash_objects(self.repo, paths))
+        (self.repo / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")  # the real read applies the machine's clean filter
+        self.assertEqual(snap_overrides["hash_objects"](self.repo, ["crlf.txt"], write=True),
+                         snapshot.hash_objects(self.repo, ["crlf.txt"], write=True))
+        planted_blob = overrides["rule_blob"](self.repo, "cq.D", self.claude, CATALOG)
+        self.assertEqual(planted_blob, self.rule_blob("cq.D"))
+        self.assertEqual(self.sh("cat-file", "-t", planted_blob), "blob")
+
+    def test_the_real_rule_blob_is_the_blob_the_plant_names(self):
+        with patch.dict(os.environ, self.env()):
+            real = self.module.rule_blob(self.repo, "cq.D", self.claude, CATALOG)
+        self.assertEqual(real, self.rule_blob("cq.D"))
+        self.assertEqual(self.sh("cat-file", "-t", real), "blob")
+
+    def test_the_rigor_of_a_working_tree_is_read_from_its_status_and_the_project_defaults(self):
+        self.assertEqual(self.module._rigor(None, self.repo), "normal")
+        defaults = self.repo / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+        defaults.parent.mkdir(parents=True)
+        defaults.write_text(json.dumps({"rigor_defaults": {"sensitive": {"level": "thorough", "paths": ["src/*"]}}}),
+                            encoding="utf-8")
+        (self.repo / "src" / "x.cs").write_text("x\n", encoding="utf-8")
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            self.assertEqual(self.module._rigor(None, self.repo), "thorough")
 
 
 class GitCallTimeoutTests(unittest.TestCase):

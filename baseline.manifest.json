@@ -1357,6 +1357,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/reference/sync_baseline_publish.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/reference/update_roadmap_close.md",
       "layer": "coding",
       "sync": "auto"
@@ -2787,6 +2792,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/lib/launch_settings.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/lib/litellm_compaction_hook.py",
       "layer": "pure",
       "sync": "auto"
@@ -3113,6 +3123,16 @@
     },
     {
       "path": ".claude/skills/godot_architecture/SKILL.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/godot_architecture/reference/component_initialization.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/godot_architecture/reference/tool_attribute_policy.md",
       "layer": "godot",
       "sync": "auto"
     },
@@ -3632,6 +3652,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/_planted_reads.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/_platform_skip.py",
       "layer": "pure",
       "sync": "auto"
@@ -3958,6 +3983,11 @@
     },
     {
       "path": ".claude/tests/fixtures/main_check/baseline_linux_failed.log",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/main_check/close_quiet_tail.log",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4373,6 +4403,11 @@
     },
     {
       "path": ".claude/tests/floor/test_floor_retire.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/floor/test_floor_retire_verdict.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5397,16 +5432,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_harness_tests_pass_cache_part2.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/test_harness_tests_pass_cache_part3.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_harness_tests_postprocess.py",
       "layer": "pure",
       "sync": "auto"
@@ -5602,6 +5627,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_lease_log.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_lens.py",
       "layer": "pure",
       "sync": "auto"
@@ -5747,6 +5777,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_model_registry_launch_fields.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_model_registry_plans.py",
       "layer": "pure",
       "sync": "auto"
@@ -5773,6 +5808,11 @@
     },
     {
       "path": ".claude/tests/test_module_closure.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_msys.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6252,6 +6292,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_regression_gate_ratchet.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_regression_gate_reuse.py",
       "layer": "godot",
       "sync": "auto"
@@ -6394,6 +6439,11 @@
     {
       "path": ".claude/tests/test_run_test_suite_userdir.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_run_wait.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -7727,6 +7777,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/lease_log.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/lens.py",
       "layer": "pure",
       "sync": "auto"
@@ -7903,6 +7958,16 @@
     },
     {
       "path": ".claude/tools/run_cost.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/run_wait.godot.json",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/run_wait.py",
       "layer": "pure",
       "sync": "auto"
     },

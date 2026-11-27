@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +13,9 @@ spec = importlib.util.spec_from_file_location('ccp_probe_subject', ROOT / '.clau
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
 MINE = '11111111-2222-4333-8444-555555555555'
-BASH = next((c for c in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe") if os.path.exists(c)), "bash")
+sys.path.insert(0, str(ROOT / '.claude' / 'hooks'))
+import _msys  # noqa: E402
+BASH = _msys.bash() or 'bash'
 PEER = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
 
@@ -192,37 +196,35 @@ class ProbeServesTests(unittest.TestCase):
         with patch.object(probe, 'proxy_models_text', return_value=MODELS_0142):
             self.assertEqual(probe.serves_check('C:/p/ccp.exe', 'gpt-6-luna')[0], 0)
 
+    def launcher_check(self, models_line):
+        """`codex_proxy_sidecar.sh --check -m luna` against a stub proxy whose `models` prints `models_line`, with
+        the proxy login and the claude CLI planted, so the probe read is the first check that can refuse."""
+        with tempfile.TemporaryDirectory() as d:
+            auth = Path(d) / '.config' / 'claude-code-proxy' / 'codex' / 'auth.json'
+            auth.parent.mkdir(parents=True)
+            auth.write_text('{}', encoding='utf-8')
+            stub = Path(d) / 'ccp.cmd'
+            stub.write_text('@echo off\r\nif "%%1"=="models" %s\r\n' % models_line, encoding='utf-8')
+            env = dict(os.environ, HOME=Path(d).as_posix(), CCP_BIN=stub.as_posix(), CCP_BIN_SCOPE='process',
+                       CLAUDE_BIN=stub.as_posix())
+            r = subprocess.run([BASH, (ROOT / '.claude/scripts/codex_proxy_sidecar.sh').as_posix(), '--check', '-m', 'luna'],
+                               capture_output=True, text=True, env=env, timeout=120, cwd=str(ROOT))
+        return r.returncode, r.stdout + r.stderr
+
     @unittest.skipUnless(os.name == 'nt', 'the stub proxy is a .cmd file')
     def test_the_launcher_check_refuses_a_proxy_that_does_not_serve_the_model(self):
         """Wiring: `codex_proxy_sidecar.sh --check` runs the served-model check before any quota read."""
-        import subprocess
-        with tempfile.TemporaryDirectory() as d:
-            stub = Path(d) / 'oldccp.cmd'
-            stub.write_text('@echo off\r\nif "%1"=="models" echo codex: gpt-5.6-luna, gpt-6-astra\r\n', encoding='utf-8')
-            env = dict(os.environ, CCP_BIN=stub.as_posix(), CCP_BIN_SCOPE='process')
-            r = subprocess.run([BASH, (ROOT / '.claude/scripts/codex_proxy_sidecar.sh').as_posix(), '--check', '-m', 'luna'],
-                               capture_output=True, text=True, env=env, timeout=120, cwd=str(ROOT))
-        out = r.stdout + r.stderr
-        if 'no ' in out and 'auth.json' in out:
-            self.skipTest('no proxy login on this machine')
-        self.assertEqual(r.returncode, 4, out)
+        rc, out = self.launcher_check('echo codex: gpt-5.6-luna, gpt-6-astra')
+        self.assertEqual(rc, 4, out)
         self.assertIn('gpt-6-luna', out)
 
-    def test_user_scope_bin_cli_prints_the_owner_value(self):
-        with patch.object(probe, 'user_scope_ccp_bin', return_value='C:/p/ccp-0.1.42.exe'), \
-             patch('sys.stdout') as out:
-            self.assertEqual(probe.main(['ccp_probe.py', 'user-scope-bin']), 0)
-        self.assertIn('C:/p/ccp-0.1.42.exe', ''.join(c.args[0] for c in out.write.call_args_list))
-        with patch.object(probe, 'user_scope_ccp_bin', return_value=None):
-            self.assertEqual(probe.main(['ccp_probe.py', 'user-scope-bin']), 1)
-
-    def test_the_launcher_reads_the_user_scope_bin_first(self):
-        """A session launched before the owner moved CCP_BIN keeps the old value in its env; the hook's
-        preflight inherits that env too, so the launcher itself must read the owner's current value."""
-        text = (ROOT / '.claude/scripts/codex_proxy_sidecar.sh').read_text(encoding='utf-8')
-        body = text[text.index('ccp_bin() {'):text.index('\n}\n', text.index('ccp_bin() {'))]
-        self.assertLess(body.index('user-scope-bin'), body.index('CCP_BIN:-'))
-        self.assertIn('CCP_BIN_SCOPE', body)
+    @unittest.skipUnless(os.name == 'nt', 'the stub proxy is a .cmd file')
+    def test_the_launcher_check_refuses_an_unreadable_model_list_as_dispatch_does(self):
+        """A proxy whose model list cannot be read is a proxy fault, exit 4 as dispatch returns it; exit 8 would send
+        the reader to the capacity check, which read nothing here."""
+        rc, out = self.launcher_check('rem prints nothing')
+        self.assertEqual(rc, 4, out)
+        self.assertIn('cannot read the model list', out)
 
 
 class PruneTrafficTests(unittest.TestCase):

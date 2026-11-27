@@ -149,7 +149,7 @@ out="$( ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1
          sc_parse_flags -m flash -e max >/dev/null 2>&1; SC_REGISTRY_CLI="$stubcli"
          sc_validate_effort ) 2>&1; echo "rc=$?")"
 rm -f "$stubcli"
-case "$out" in *"rc=2") ok "effort-values lookup failure refuses (exit 2), never reads as unrestricted" ;; *) bad "effort lookup failure: $out" ;; esac
+case "$out" in *"rc=2") ok "an unreadable registry refuses the effort check (exit 2), never reads as unrestricted" ;; *) bad "effort check registry failure: $out" ;; esac
 
 # ---- 10. a rung the row's evidence marks wasteful (effort.avoid) is refused unless the driver declares a comparison (SC_COMPARISON); free-text SC_MEASUREMENT never lifts it ----
 avoid_probe() {  # $1 model, $2 effort, $3 SC_COMPARISON (may be empty) -> "<output>rc=<n>"
@@ -159,7 +159,8 @@ avoid_probe() {  # $1 model, $2 effort, $3 SC_COMPARISON (may be empty) -> "<out
     SC_COMPARISON="$3"; export SC_COMPARISON
     sc_validate_effort ) 2>&1; echo "rc=$?"
 }
-avoided="$(python3 "$SCRIPTS/../tools/model_registry.py" effort-avoid sonnet max 2>&1)"
+avoided="$(f="$(mktemp)"; python3 "$SCRIPTS/../tools/model_registry.py" launch-fields sonnet --effort max > "$f" 2>/dev/null
+  . "$f"; rm -f "$f"; printf '%s' "$SC_EFFORT_AVOIDED")"
 out="$(avoid_probe sonnet max "")"
 case "$out" in
   *"effort.avoid"*"$avoided"*"rc=2") ok "an avoided rung without a comparison exits 2 (free-text SC_MEASUREMENT set) naming effort.avoid and the row's evidence" ;;
@@ -171,8 +172,11 @@ case "$(avoid_probe sonnet xhigh "")" in *"rc=0") ok "an avoiding row's other ru
 stubcli="$(mktemp --suffix=.py)"
 cat > "$stubcli" <<'PY'
 import sys
-if sys.argv[1] == "effort-values":
-    print('["low", "max"]')
+if sys.argv[1] == "launch-fields":
+    # The launch's read answered, but its own vocabulary question failed: the fact travels and
+    # the effort gate refuses on it, as it did when effort-values exited nonzero.
+    print("SC_FACTS_EFFORT=max")
+    print("SC_EFFORT_ERROR='planted: no effort rung its transport can forward'")
     sys.exit(0)
 sys.exit(3)
 PY
@@ -180,10 +184,40 @@ out="$( ( SC_TRANSPORT=anthropic; . "$LIB" >/dev/null 2>&1
          sc_parse_flags -m sonnet -e max >/dev/null 2>&1; SC_REGISTRY_CLI="$stubcli"
          sc_validate_effort ) 2>&1; echo "rc=$?")"
 rm -f "$stubcli"
-case "$out" in *"rc=2") ok "an unreadable avoid lookup refuses (exit 2), never reads as nothing avoided" ;; *) bad "avoid lookup failure: $out" ;; esac
+case "$out" in
+  *"planted: no effort rung"*"rc=2") ok "an effort read that reports its own failure refuses (exit 2), never reads as nothing avoided" ;;
+  *) bad "effort read failure: $out" ;;
+esac
 
-# 25 fixed cases plus one per launcher this tree ships (4 in a consumer, 3 upstream).
-_expected=$((25 + _launchers))
+# ---- 11. every launcher's --check reads the registry through one function ------------------------
+# An unusable registry is exit 2 naming the first error line; a row the roster excludes is exit 7.
+stubcli="$(mktemp --suffix=.py)"
+cat > "$stubcli" <<'PY2'
+import os, sys
+if os.environ.get("PLANT_STATE") == "broken":
+    sys.stderr.write("planted: registry unreadable\nsecond line\n"); sys.exit(2)
+print("SC_TRANSPORT_STATE=%s" % os.environ["PLANT_STATE"])
+PY2
+reg_check() {  # $1 planted state -> "<stdout>rc=<n>"
+  ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1; SC_MODEL=flash; SC_REGISTRY_CLI="$stubcli"
+    PLANT_STATE="$1" sc_check_registry 2>/dev/null; echo "after" ); echo "rc=$?"
+}
+expect "an unusable registry exits 2 naming its first error line" \
+  "UNAVAILABLE (model registry unusable: planted: registry unreadable)
+rc=2" "$(reg_check broken)"
+expect "a row the roster excludes exits 7" "UNAVAILABLE (excluded from the roster; see model_registry.py available)
+rc=7" "$(reg_check unavailable)"
+expect "an available row passes on" "after
+rc=0" "$(reg_check available)"
+rm -f "$stubcli"
+_reg_calls=0
+for launcher in anthropic_sidecar.sh codex_proxy_sidecar.sh deepseek_sidecar.sh opencode_sidecar.sh; do
+  grep -q -E '^[[:space:]]*sc_check_registry$' "$SCRIPTS/$launcher" 2>/dev/null && _reg_calls=$((_reg_calls + 1))
+done
+expect "every launcher's --check calls sc_check_registry" "$_launchers" "$_reg_calls"
+
+# 29 fixed cases plus one per launcher this tree ships (4 in a consumer, 3 upstream).
+_expected=$((29 + _launchers))
 [ "$ran" -eq "$_expected" ] || { echo "FAIL expected $_expected cases, ran $ran"; fail=1; }
 [ "$fail" = 0 ] && echo "PASS test_sidecar_price_window" || echo "FAIL test_sidecar_price_window"
 exit "$fail"

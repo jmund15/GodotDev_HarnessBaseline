@@ -53,6 +53,7 @@ for _d in (str(REPO / ".claude" / "hooks"), str(Path(__file__).resolve().parent)
     if _d not in sys.path:
         sys.path.insert(0, _d)
 import _checkout_root  # noqa: E402
+import review_snapshot  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
 
 VERIFIED, UNVERIFIED, UNCHECKED = "VERIFIED", "UNVERIFIED", "UNCHECKED"
@@ -222,7 +223,7 @@ class _Context:
 def _main_root(root):
     """The main checkout of `root`'s repository (`_checkout_root`'s one answer), for the process: a repository's first
     worktree does not move, and `resolve_path` opens a context per cited path."""
-    return Path(_checkout_root.main_checkout_root(root)).resolve()
+    return Path(_checkout_root.main_checkout_root(root, review_snapshot.layout)).resolve()
 
 
 def _result(kind, verdict, reason, **extra):

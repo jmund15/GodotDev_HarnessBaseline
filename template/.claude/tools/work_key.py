@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """work_key.py — the key a paid call's work is known by, and the refusal to pay for finished work twice.
 
-    python3 .claude/tools/work_key.py key --model M --effort E --label L [--prompt-file F | --prompt-text-file F] [--harness H]
-    python3 .claude/tools/work_key.py check --key K [--ledger PATH]
+    python3 .claude/tools/work_key.py gate --model M --effort E --label L [--prompt-file F | --prompt-text-file F]
+                                           [--harness H] [--ledger PATH] [--no-check]
+                                           the launcher's one read: prints the key; exit 15 when the ledger holds
+                                           finished work under it (or cannot be read); --no-check for a resume
 
-`key` prints sha256 over the JSON list [caller part, model, effort, label]. The caller part is the
+The key (`work_key`) is sha256 over the JSON list [caller part, model, effort, label]. The caller part is the
 SIDECAR_WORK_KEY a job-starting tool declared for its unit of work, else {"brief": sha256 of the prompt FILE's
 bytes, "harness": H}: the bytes the caller wrote, before any text the launcher appends. A tool that knows
 what its work is (the score daemon: the cell and its judged inputs) declares it; every other launch is known
 by its brief, its harness revision, its pin and its label.
 
-`check` looks the key up in the spend ledger (default SIDECAR_LEDGER_PATH, else ~/.claude/sidecar_ledger.jsonl)
+`gate` looks the key up in the spend ledger (default SIDECAR_LEDGER_PATH, else ~/.claude/sidecar_ledger.jsonl)
 and exits 15 with one stderr line naming the matching row's timestamp, label and launchId when the ledger holds
-a FINISHED row with that `workKey`; exit 0 otherwise. Finished means exitCode 0, costUSD above 0, schemaValid
+a FINISHED row with that `workKey` (`repay_refusal`); otherwise it prints the key and exits 0. Finished means exitCode 0, costUSD above 0, schemaValid
 not false, and no loopStop: a call that failed, spent nothing, returned an invalid result or was
 stopped did not finish its work, so repeating it is not a re-pay. A missing ledger holds nothing (exit 0). A
 ledger that exists but cannot be read exits 15 and says so, because spend that cannot be read is not proven new.
@@ -91,6 +93,19 @@ def find_finished(key, ledger):
     return next((row for row in done if row.get("launchId") not in voided), None)
 
 
+def repay_refusal(key, ledger):
+    """The stderr line refusing a launch under `key`, or None when the ledger proves the work new."""
+    try:
+        row = find_finished(key, ledger)
+    except OSError as exc:
+        return ("[sidecar] the spend ledger %s exists but cannot be read (%s); unchecked spend is not proven new"
+                % (ledger, exc))
+    if row:
+        return ("[sidecar] this work already finished and was paid: ledger row %s, label %s, launchId %s"
+                % (row.get("timestamp"), row.get("label"), row.get("launchId")))
+    return None
+
+
 def void(key, launch_id, reason, ledger):
     """Append the row that cancels one launch's finished row: its caller saw the launch return no deliverable."""
     row = {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -132,32 +147,27 @@ def record_paths(key, ledger=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    k = sub.add_parser("key")
-    k.add_argument("--model", required=True)
-    k.add_argument("--effort", default="")
-    k.add_argument("--label", default="")
-    k.add_argument("--harness", default="")
-    group = k.add_mutually_exclusive_group()
+    g = sub.add_parser("gate", help="the launcher's key and re-pay read in one process")
+    g.add_argument("--model", required=True)
+    g.add_argument("--effort", default="")
+    g.add_argument("--label", default="")
+    g.add_argument("--harness", default="")
+    group = g.add_mutually_exclusive_group()
     group.add_argument("--prompt-file")
     group.add_argument("--prompt-text-file")
-    c = sub.add_parser("check")
-    c.add_argument("--key", required=True)
-    c.add_argument("--ledger")
+    g.add_argument("--ledger")
+    g.add_argument("--no-check", action="store_true", help="a resume continues the call; compute the key only")
     args = parser.parse_args(argv)
-    if args.cmd == "key":
-        print(work_key(args.model, args.effort, args.label, args.prompt_file or args.prompt_text_file, args.harness))
-        return 0
-    ledger = args.ledger or default_ledger()
     try:
-        row = find_finished(args.key, ledger)
+        key = work_key(args.model, args.effort, args.label, args.prompt_file or args.prompt_text_file, args.harness)
     except OSError as exc:
-        print("[sidecar] the spend ledger %s exists but cannot be read (%s); unchecked spend is not proven new" % (ledger, exc),
-              file=sys.stderr)
+        print("[sidecar] the prompt file could not be read: %s" % exc, file=sys.stderr)
+        return 2
+    refusal = None if args.no_check else repay_refusal(key, args.ledger or default_ledger())
+    if refusal:
+        print(refusal, file=sys.stderr)
         return REPAID
-    if row:
-        print("[sidecar] this work already finished and was paid: ledger row %s, label %s, launchId %s"
-              % (row.get("timestamp"), row.get("label"), row.get("launchId")), file=sys.stderr)
-        return REPAID
+    print(key)
     return 0
 
 

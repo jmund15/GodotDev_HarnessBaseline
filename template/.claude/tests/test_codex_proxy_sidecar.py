@@ -20,10 +20,10 @@ LAUNCHER = ROOT / ".claude" / "scripts" / "codex_proxy_sidecar.sh"
 def resolved_model(env):
     """The id the registry gives the launcher's model alias, read from the same CLI the launcher calls."""
     r = subprocess.run([sys.executable, str(ROOT / ".claude" / "tools" / "model_registry.py"),
-                        "sidecar-fields", "luna"], cwd=str(ROOT), env=env, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=120)
+                        "resolve", "luna", "--field", "id"], cwd=str(ROOT), env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, (r.returncode, r.stderr[-300:])
-    return r.stdout.split("|")[0].strip()
+    return r.stdout.strip()
 
 
 def proxy_stub(bin_dir, listed):

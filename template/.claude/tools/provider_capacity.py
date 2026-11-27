@@ -578,6 +578,61 @@ def floor_refusal(reading, now=None):
             (reading["transport"], name, row["usedPercent"], row["dispatchFloorPercent"], when, minutes))
 
 
+FIELD_SEP = "\x1f"
+
+
+def host_band_fields(reading, min_band=None):
+    """The host-band gate's fields, in the launcher's own band vocabulary.
+
+    `[status, band, pressure, satisfies]`: `band` is the window that routes, `pressure` its
+    number (or the word that says why a spent allowance reads Hot), and `satisfies` is the
+    floor comparison -- 0 at or above, 1 below, 2 a band name the roster does not know, empty
+    when the reading names no band to compare. The launcher prints its refusals; this reduces
+    the reading so the shell no longer carries a copy of the schema.
+    """
+    quota = reading.get("quota") or {}
+    windows = quota.get("windows") or []
+    window = (next((w for w in windows if w.get("name") == quota.get("routingWindow")), None)
+              or next((w for w in windows if w.get("name") == quota.get("bindingWindow")), {}))
+    status = reading.get("status") or ""
+    band = quota.get("routingBand") or ""
+    pressure = window.get("pressure") if window.get("pressure") is not None else ""
+    if status == "exhausted":
+        band, pressure = "Hot", "spent"
+    elif status == "dispatch-floor":
+        band, pressure = "Hot", "dispatch-floor"
+    satisfies = ""
+    if min_band is not None and status in ("available", "exhausted", "dispatch-floor") and band:
+        try:
+            satisfies = 0 if model_registry.band_satisfies(band, min_band) else 1
+        except model_registry.RegistryError:
+            satisfies = 2
+    return [status, band, pressure, satisfies]
+
+
+def capacity_fields(reading):
+    """The amount gate's fields: `[status, dispatchBand, amount, sourceKind, unreadable, detail]`.
+
+    `detail` is the floor refusal's evidence or the unreadable meter's own reason; a malformed
+    reading raises so the caller can name that, rather than reading a missing key as empty.
+    """
+    status = reading["status"]
+    source = reading["sourceKind"]
+    quota = reading.get("quota") or {}
+    balance = reading.get("balance") or {}
+    unreadable = 1 if status in UNREADABLE else 0
+    detail = ""
+    if status == "dispatch-floor":
+        detail = floor_refusal(reading)
+    elif unreadable:
+        detail = (reading.get("error") or {}).get("message") or ""
+    amount = balance.get("amount")
+    # One line per read: a provider message that carried a newline would otherwise cut the line
+    # protocol, and the launcher prints this text into one refusal line anyway.
+    detail = " ".join(str(detail).split())
+    return [status, quota.get("dispatchBand") or "", "" if amount is None else amount, source, unreadable, detail]
+
+
 def _cache_fallback(cached, kind, now, message=None):
     """The cached reading served where a live probe failed, typed with that failure."""
     fallback = copy.deepcopy(cached)
@@ -848,15 +903,59 @@ def _sample_usage(transport, cost_model, reading, now, cache_path=None):
         return
 
 
+USAGE = ("usage: provider_capacity.py <transport> [--fields] | "
+         "provider_capacity.py host-band <plan> [--min-band <band>]")
+
+
 def main(argv):
-    if len(argv) != 1:
-        print("usage: provider_capacity.py <transport>", file=sys.stderr)
+    if argv[:1] == ["host-band"]:
+        seat = None
+        min_band = None
+        rest = argv[1:]
+        index = 0
+        while index < len(rest):
+            if rest[index] == "--min-band" and index + 1 < len(rest):
+                min_band = rest[index + 1]
+                index += 2
+            elif rest[index].startswith("-") or seat is not None:
+                print(USAGE, file=sys.stderr)
+                return 2
+            else:
+                seat = rest[index]
+                index += 1
+        if not seat:
+            print(USAGE, file=sys.stderr)
+            return 2
+        try:
+            value = reading(seat)
+        except CapacityError as exc:
+            print("provider capacity failed: %s" % exc, file=sys.stderr)
+            return 2
+        try:
+            row = host_band_fields(value, min_band)
+        except (AttributeError, TypeError) as exc:
+            print("provider capacity output is malformed: %s" % exc, file=sys.stderr)
+            return 3
+        print(FIELD_SEP.join(str(item) for item in row))
+        return 0
+    fields = argv[-1:] == ["--fields"]
+    args = argv[:-1] if fields else argv
+    if len(args) != 1:
+        print(USAGE, file=sys.stderr)
         return 2
     try:
-        value = reading(argv[0])
+        value = reading(args[0])
     except CapacityError as exc:
         print("provider capacity failed: %s" % exc, file=sys.stderr)
         return 2
+    if fields:
+        try:
+            row = capacity_fields(value)
+        except (KeyError, AttributeError, TypeError) as exc:
+            print("provider capacity output is malformed: %s" % exc, file=sys.stderr)
+            return 3
+        print(FIELD_SEP.join(str(item) for item in row))
+        return 0
     print(json.dumps(value, separators=(",", ":")))
     return 0
 

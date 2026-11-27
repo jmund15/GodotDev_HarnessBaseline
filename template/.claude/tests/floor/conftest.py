@@ -16,7 +16,7 @@ import pytest
 CLAUDE = Path(__file__).resolve().parents[2]
 HOOKS = CLAUDE / "hooks"
 TOOLS = CLAUDE / "tools"
-for _p in (str(HOOKS), str(TOOLS), str(Path(__file__).resolve().parent)):
+for _p in (str(HOOKS), str(TOOLS), str(CLAUDE / "tests"), str(Path(__file__).resolve().parent)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

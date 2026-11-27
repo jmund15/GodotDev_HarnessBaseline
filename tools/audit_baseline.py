@@ -134,6 +134,7 @@ CORE_DOMAIN_ALLOWLIST = {
     # inert where no such files exist.
     ".claude/hooks/_delete_rule.py",
     ".claude/tests/floor/test_floor_retire.py",
+    ".claude/tests/floor/test_floor_retire_verdict.py",
     ".claude/tests/floor/test_floor_ported.md",
     # Fixtures: scene/resource paths prove change classification, and dotnet rows prove runtime-test routing.
     ".claude/tests/test_close_predicates.py",

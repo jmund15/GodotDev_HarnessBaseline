@@ -1,6 +1,6 @@
 # Handoff readiness and per-cluster routing
 
-The detail of the Step 5 subsections of `SKILL.md` that assign a cluster's Routing action, moved verbatim. The headings keep the names `SKILL.md` and its citers use.
+The detail of the Step 5 subsections of `SKILL.md` that assign a cluster's Routing action. The headings keep the names `SKILL.md` and its citers use.
 
 ## Per-cluster handoff-readiness gate
 

@@ -211,7 +211,7 @@ autonomy_says() {  # $1 disclosure, $2 phrase (default: 'turn') -> yes when an a
 }
 check "full: the autonomy rail names the child's turn" "yes" "$(autonomy_says full)"
 check "full: the autonomy rail overrides the background default without citing a section the child may not load" "yes" "$(autonomy_says full 'run_in_background')"
-check "full: the autonomy rail names the until-loop wait" "yes" "$(autonomy_says full 'until-loop')"
+check "full: the autonomy rail points a long run's wait at the rails" "yes" "$(autonomy_says full 'guards/common.md')"
 check "full: the autonomy rail names the foreground action" "yes" "$(autonomy_says full 'foreground')"
 
 # --------------------------------------------------------------- B. each launcher's own argv
@@ -301,13 +301,14 @@ for launcher in "${LAUNCHERS[@]}"; do
 done
 done
 
-# sc_max_output resolves the cap: the env override when it is a number, else the registry's max-output
-# (--max under -M), bounded by a quarter of a window the launcher declares in place of the registry's.
+# sc_max_output resolves the cap: the env override when it is a number, else the registry cap the
+# launch's ONE facts read carries (its long-context variant under -M), bounded by a quarter of a
+# window the launcher declares in place of the registry's.
 cat > "$WORK/stub_registry.py" <<'PY'
 import os, sys
 with open(os.environ["STUB_REG_ARGV"], "w") as fh:
     fh.write(" ".join(sys.argv[1:]))
-sys.stdout.write(os.environ.get("STUB_CAP", ""))
+print("SC_MAX_OUTPUT_REGISTRY=%s" % os.environ.get("STUB_CAP", ""))
 PY
 max_output() {  # $1 SIDECAR_MAX_OUTPUT_TOKENS, $2 registry stub output, $3 SC_LONG_CONTEXT, $4 declared window
   ( . "$LIB" >/dev/null 2>&1
@@ -321,7 +322,7 @@ check "a zero SIDECAR_MAX_OUTPUT_TOKENS falls back to the registry cap"        "
 check "a zero-padded zero SIDECAR_MAX_OUTPUT_TOKENS falls back to the registry cap" "5000" "$(max_output 00 5000 '' '')"
 check "a non-numeric registry answer prints nothing"                ""     "$(max_output '' abc '' '')"
 : > "$WORK/reg.argv"; max_output '' 5000 1 '' >/dev/null
-check "-M asks the registry for the max-window cap"                 "max-output m --max" "$(tr -d '\r' < "$WORK/reg.argv")"
+check "-M asks the facts read for the long-context cap"             "launch-fields m --long" "$(tr -d '\r' < "$WORK/reg.argv")"
 check "a declared window bounds the registry cap at a quarter of it" "2000" "$(max_output '' 5000 '' 8000)"
 check "a declared window above four caps leaves the cap alone"      "5000" "$(max_output '' 5000 '' 400000)"
 

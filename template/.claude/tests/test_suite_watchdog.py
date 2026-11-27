@@ -79,6 +79,27 @@ Need ((Get-Content (Join-Path $r 'godot_test.hang2.log')) -eq 'other attempt') '
 $p | Add-Member ScriptMethod WaitForExit { param($ms) return $true } -Force
 Need ((Wait-SuiteAttempt -Process $p -TimeoutMs 100 -GodotLog $log -BootTimeoutMs 20) -eq 'exited') 'healthy exited attempt'
 Need ((Get-SuiteDefaultCeilingMs -Repo $r) -eq 301000) 'the default ceiling sums every recorded unit and tier duration (AI 100 + Art 1 + Logic 200 s), with no filter or last-green input'
+# A case silent inside its declared budget outlives the stall bound; one silent past budget + bound still ends at it.
+$script:SuiteStallMs=100
+$repoB=Join-Path $r 'budget'
+New-Item -ItemType Directory -Force -Path (Join-Path $repoB 'Tests/Stress') | Out-Null
+"namespace Sample.Tests.Stress;`n[TestSuite]`npublic partial class SilentTests`n{`n    [TestCase(Timeout = 400)]`n    public void Slow() { }`n}`n" | Set-Content (Join-Path $repoB 'Tests/Stress/SilentTests.cs')
+. (Join-Path (Split-Path $env:PROOF_LIB) 'IntegrationBatches.ps1')
+$silent=Join-Path $r 'silent.log'; 'Waiting for client connecting' | Set-Content $silent
+$sleeper=[pscustomobject]@{ T=[Diagnostics.Stopwatch]::StartNew() }
+$sleeper | Add-Member ScriptMethod WaitForExit { param($ms) Start-Sleep -Milliseconds $ms; return ($this.T.ElapsedMilliseconds -ge 350) }
+$res=Wait-SuiteAttempt -Process $sleeper -TimeoutMs 5000 -GodotLog $silent -BootTimeoutMs 20 -PollMs 10 -SilenceBudget { Get-FilterSilenceBudgetMs -Repo $repoB -Filter 'FullyQualifiedName~Tests.Stress.SilentTests' }
+Need ($res -eq 'exited') "a run silent for 350 ms with a declared 400 ms case budget on a 100 ms bound is not a hang (got $res)"
+$sleeper.T.Restart()
+$res=Wait-SuiteAttempt -Process $sleeper -TimeoutMs 5000 -GodotLog $silent -BootTimeoutMs 20 -PollMs 10
+Need ($res -eq 'stall-hang') "the same silent run with no declared budget ends at the stall bound (got $res)"
+$hang=[pscustomobject]@{}
+$hang | Add-Member ScriptMethod WaitForExit { param($ms) Start-Sleep -Milliseconds $ms; return $false }
+$clock=[Diagnostics.Stopwatch]::StartNew()
+$res=Wait-SuiteAttempt -Process $hang -TimeoutMs 5000 -GodotLog $silent -BootTimeoutMs 20 -PollMs 10 -SilenceBudget { Get-FilterSilenceBudgetMs -Repo $repoB -Filter 'FullyQualifiedName~Tests.Stress.SilentTests' }
+Need ($res -eq 'stall-hang' -and $clock.ElapsedMilliseconds -ge 450 -and $clock.ElapsedMilliseconds -lt 3000) "a run silent past its budget plus the bound is a hang, ended there and not at the run cap (took $($clock.ElapsedMilliseconds) ms, got $res)"
+$res=Wait-SuiteAttempt -Process $hang -TimeoutMs 5000 -GodotLog $silent -BootTimeoutMs 20 -PollMs 10 -SilenceBudget { throw 'unreadable source' }
+Need ($res -eq 'stall-hang') "a budget that cannot be read leaves the bound where it was: the run still ends as a hang (got $res)"
 'WATCHDOG=PASS'
 '''
     p = subprocess.run(['pwsh', '-NoProfile', '-Command', script], env=env, capture_output=True, text=True, timeout=60)
@@ -103,7 +124,9 @@ $script:SuiteBootTimeoutMs=10
 $repo=$env:PROOF_ROOT; $runDir=$repo; $godotLog=Join-Path $repo 'godot_test.log'
 $log=Join-Path $repo 'native.log'; $errLog=Join-Path $repo 'native.err'
 'native output' | Set-Content $log
-$Label='planted'; $Filter='FullyQualifiedName~Tests.Logic.X'; $TimeoutMs=[int]$env:PROOF_TIMEOUT_MS
+if ($env:PROOF_STALL_MS) { $script:SuiteStallMs=[int]$env:PROOF_STALL_MS }
+. (Join-Path (Split-Path $env:PROOF_LIB) 'IntegrationBatches.ps1')
+$Label='planted'; $Filter=$(if ($env:PROOF_FILTER) { $env:PROOF_FILTER } else { 'FullyQualifiedName~Tests.Logic.X' }); $TimeoutMs=[int]$env:PROOF_TIMEOUT_MS
 $HeldCheckout=$true; $ResultsRoot=$env:PROOF_RESULTS_ROOT; $NoGodotRuntime=$false
 $iso=@{AppDataArg='TestRunParameters.Parameter(name="APPDATA", value="plant")'}
 $noBuild=$true; $trxPath=''; $passTrx=Join-Path $repo 'plant.trx'; $safe='plant'; $lease=$null; $maxAttempts=2; $attempt=0; $global:launches=0
@@ -133,13 +156,19 @@ $loop=$ast.Find({param($a) $a -is [System.Management.Automation.Language.WhileSt
 '''
     env['PROOF_SUITE'] = str(SUITE)
 
-    def run_loop(name, log_mode, timeout_ms, results_root=None, stale=False):
+    def run_loop(name, log_mode, timeout_ms, results_root=None, stale=False, filter_text='', stall_ms=0, timed_ms=0):
         root = target / name
         root.mkdir()
+        if timed_ms:
+            (root / 'Tests/Stress').mkdir(parents=True)
+            body = ['namespace Sample.Tests.Stress;', '[TestSuite]', 'public partial class SilentTests', '{',
+                    f'    [TestCase(Timeout = {timed_ms})]', '    public void Slow() { }', '}', '']
+            (root / 'Tests/Stress/SilentTests.cs').write_text(chr(10).join(body))
         if stale:
             (root / 'godot_test.log').write_text('GodotGdUnit4RestApi:: Waiting for client connecting\nstale')
         run_env = dict(env, PROOF_ROOT=str(root), PROOF_LOG_MODE=log_mode, PROOF_TIMEOUT_MS=str(timeout_ms),
-                       PROOF_RESULTS_ROOT=str(root) if results_root is None else results_root)
+                       PROOF_RESULTS_ROOT=str(root) if results_root is None else results_root,
+                       PROOF_FILTER=filter_text, PROOF_STALL_MS=str(stall_ms) if stall_ms else '')
         proc = subprocess.run(['pwsh', '-NoProfile', '-Command', attempt_loop], env=run_env,
                               capture_output=True, text=True, timeout=30)
         return root, proc
@@ -161,6 +190,21 @@ $loop=$ast.Find({param($a) $a -is [System.Management.Automation.Language.WhileSt
           (root / 'godot_test.hang1.log').read_text().strip() == 'No runtime Godot log was created by this attempt.' and
           (root / 'godot_test.hang2.log').read_text().strip() == 'No runtime Godot log was created by this attempt.',
           p.stdout + p.stderr)
+    import re
+
+    def hang_secs(p):
+        m = re.search(r'STATUS=HANG\s.*?elapsed=([0-9.]+)s', p.stdout)
+        return float(m.group(1)) if m else None
+
+    stall_filter = 'FullyQualifiedName~Tests.Stress.SilentTests'
+    root, p = run_loop('silent-control', 'connected', 20000, filter_text='FullyQualifiedName~Tests.Logic.X', stall_ms=100, timed_ms=1500)
+    quick = hang_secs(p)
+    check('a silent run whose filter selects no timed case ends at the bare stall bound (control)',
+          p.returncode == 124 and 'reason=stall-hang' in p.stdout and quick is not None and quick < 1.0, p.stdout + p.stderr)
+    root, p = run_loop('silent-timed', 'connected', 20000, filter_text=stall_filter, stall_ms=100, timed_ms=1500)
+    waited = hang_secs(p)
+    check('the shipped attempt loop gives a run silent in a selected case its declared budget before ending it as a stall',
+          p.returncode == 124 and 'reason=stall-hang' in p.stdout and waited is not None and waited >= 1.4, p.stdout + p.stderr)
     for tagged, results_root in (('tagged', None), ('non-tagged', '')):
         root, p = run_loop('args-' + tagged, 'plain', 50, results_root=results_root)
         launches = (root / 'launch.args').read_text().splitlines()

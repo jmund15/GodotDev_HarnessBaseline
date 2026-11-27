@@ -1631,12 +1631,6 @@ def _avoid_cases():
             return "validator missing"
         return ""
 
-    def cli(*argv):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            code = mr.main(list(argv))
-        return code, buf.getvalue().strip()
-
     cases = [
         ("a row with no avoid passes", err({"evidence": "see-ladder"}) == ""),
         ("an empty avoid passes", err({"evidence": "see-ladder", "avoid": []}) == ""),
@@ -1661,11 +1655,13 @@ def _avoid_cases():
             ("LIVE: a current row avoids a rung and cites its evidence",
              bool(avoiding) and bool(mr.avoid_evidence(avoiding).strip())),
             ("LIVE: a current row serves that rung without avoiding it", bool(free)),
-            ("LIVE: effort-avoid prints the evidence for an avoided rung",
-             bool(avoiding) and cli("effort-avoid", avoiding["alias"], rung) == (0, mr.avoid_evidence(avoiding))),
-            ("LIVE: effort-avoid prints nothing for a rung the row does not avoid",
-             bool(avoiding and free and other) and cli("effort-avoid", avoiding["alias"], other) == (0, "")
-             and cli("effort-avoid", free["alias"], rung) == (0, "")),
+            ("LIVE: the launch facts carry the evidence for an avoided rung",
+             bool(avoiding) and mr.launch_facts(avoiding["alias"], effort=rung)["SC_EFFORT_AVOIDED"]
+             == mr.avoid_evidence(avoiding)),
+            ("LIVE: the launch facts carry no evidence for a rung the row does not avoid",
+             bool(avoiding and free and other)
+             and mr.launch_facts(avoiding["alias"], effort=other)["SC_EFFORT_AVOIDED"] == ""
+             and mr.launch_facts(free["alias"], effort=rung)["SC_EFFORT_AVOIDED"] == ""),
             ("LIVE: no row's avoidRef carries a provenance label or a date (instruction_quality section 5)",
              not any(re.search(r"owner|ruling|\d{4}-\d{2}-\d{2}", mr.avoid_evidence(m), re.I)
                      for m in live["models"] if mr.avoided_rungs(m))),

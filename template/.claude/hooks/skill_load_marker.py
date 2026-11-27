@@ -10,9 +10,10 @@ Read records nothing. The ladder note fires once per compaction.
 Each load also sets the compaction-scoped `skill_in_context:<name>` key, which a compaction clears. A subagent
 shares its parent's session_id, so its load (payload `agent_id`) sets `skill_in_context:<name>@<agent_id>` and
 leaves `skills_loaded` and the ladder note to the parent: one agent's load never puts a skill in another's context.
-A load records the `SKILL.md` body it delivered: a session holding a copy the file has since left behind is not
-in context until it reloads, as a skill re-attached whole after a compaction counts only while its body still
-matches the file (`_hook_state.skill_in_context`).
+A load records the digest of the `SKILL.md` body it delivered: a Read, the file it read (any checkout's); a Skill
+call or typed command, the session project's copy, which the client delivers. A session holding a copy the file has
+since left behind is not in context until it reloads, as a skill re-attached whole after a compaction counts only
+while its body still matches the file (`_hook_state.skill_in_context`).
 Consumers: harness_edit_skill_reminder.py denies harness-file edits until `skill_in_context` holds for
 "instruction_quality"; workflow_provider_guard.py skips its ladder fallback once "orchestration" is in
 `skills_loaded`, which survives compaction (keyed by session_id, which persists across /compact).
@@ -99,7 +100,8 @@ def process(input_data):
 
     if not agent_id:
         update_json_locked(state_path(session_id), record)
-    mark_skill_in_context(session_id, bare, agent_id, digest=_loaded_digest(bare, input_data))
+    digest = _read_digest(input_data) if tool == "Read" else _loaded_digest(bare, input_data)
+    mark_skill_in_context(session_id, bare, agent_id, digest=digest)
     if bare == "orchestration" and not agent_id and fire_once_since_compaction(session_id, "skill_load_marker:ladder"):
         return ladder_note()
     if bare == "workflow-authoring" and not agent_id and fire_once_since_compaction(session_id, "skill_load_marker:dispatch"):
@@ -121,9 +123,25 @@ def typed_command_name(prompt):
     return match.group(1).split(":")[-1] if match else ""
 
 
+def _read_digest(payload):
+    """The body digest of the `SKILL.md` a full Read just delivered, whichever checkout holds it; None when it
+    cannot be read."""
+    try:
+        import _compaction_record
+        import _win_path
+        path = _win_path.native_path(str((payload.get("tool_input") or {}).get("file_path") or ""))
+        if not os.path.isabs(path):
+            path = os.path.join(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd(), path)
+        with open(path, encoding="utf-8") as fh:
+            return _compaction_record.skill_body_digest(fh.read())
+    except Exception:
+        return None
+
+
 def _loaded_digest(name, payload):
-    """The `SKILL.md` body now on disk for skill `name`, which the load just delivered: kept with the record so a
-    session holding it is denied once the file changes (`_hook_state.skill_in_context`). None when it cannot be read."""
+    """The `SKILL.md` body now on disk under the session project for skill `name`, which a Skill call or typed
+    command just delivered: kept with the record so a session holding it is denied once the file changes
+    (`_hook_state.skill_in_context`). None when it cannot be read."""
     try:
         import _compaction_record
         import _win_path

@@ -31,6 +31,8 @@ DISPATCH = HOOKS_DIR / "pre_workflow_dispatch.py"
 FAILURES = []
 
 sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(HERE))
+import _hook_call  # noqa: E402
 
 
 def check(label, ok, detail=""):
@@ -94,16 +96,6 @@ def capacity_cache(path, status):
     path.write_text(json.dumps(cache), encoding="utf-8")
 
 
-def arm_doctrine(state_dir, session_id):
-    """The state `skill_load_marker` and `model_ladder_gate` record once the doctrine is in context."""
-    import _hook_state
-    import model_ladder_gate
-    with patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=state_dir):
-        _hook_state.mark_skill_in_context(session_id, "orchestration")
-        model_ladder_gate.update_json_locked(
-            model_ladder_gate.state_path(session_id), lambda s: s.__setitem__(model_ladder_gate.STATE_KEY, True))
-
-
 class World:
     """One planted environment: capacity, doctrine, a fresh HOME. `run` feeds a payload to the dispatcher."""
 
@@ -117,7 +109,7 @@ class World:
         cache = self.root / "capacity.json"
         capacity_cache(cache, capacity)
         if doctrine:
-            arm_doctrine(self.state, session_id)
+            _hook_call.arm_doctrine(session_id, self.state)
         self.env = dict(
             os.environ, HOME=str(self.home), USERPROFILE=str(self.home), CLAUDE_PROJECT_DIR=str(REPO),
             CLAUDE_CODE_TRANSPORT="anthropic", PROVIDER_CAPACITY_CACHE=str(cache),

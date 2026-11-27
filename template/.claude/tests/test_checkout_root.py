@@ -84,6 +84,14 @@ class CheckoutRootTests(unittest.TestCase):
         self.assertEqual([Path(p) for p in _checkout_root.worktree_chain(self.main, rev_parse)], [self.main])
         self.assertEqual(list(_checkout_root.worktree_chain(self.plain, rev_parse)), [])
 
+    def test_nearest_checkout_is_the_closest_folder_a_git_file_or_folder_marks(self):
+        import _checkout_root
+        (self.linked / "sub" / "f.txt").write_text("x\n", encoding="utf-8")
+        self.assertEqual(Path(_checkout_root.nearest_checkout(self.main)), self.main)
+        for inside in (self.linked, self.linked / "sub", self.linked / "sub" / "f.txt"):
+            self.assertEqual(Path(_checkout_root.nearest_checkout(inside)), self.linked, inside)
+        self.assertEqual(_checkout_root.nearest_checkout(self.plain), _checkout_root.nearest_checkout(self.plain.parent))
+
     def test_repo_arg_pops_the_flag_and_returns_the_resolved_checkout(self):
         import _checkout_root
         argv = ["guard.py", "--repo", str(self.linked / "sub" / ".."), "--quiet"]

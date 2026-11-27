@@ -354,9 +354,13 @@ def plain_bash_hooks(root):
     return sorted(names)
 
 
-def list_items(repo, ref, prefix, pattern):
-    files = git(repo, "ls-tree", "-r", "--name-only", ref, "--", prefix).splitlines()
-    return [f for f in files if pattern.search(f)]
+def tree_files(repo, ref):
+    """Every path under `.claude/` at `ref`, listed once for the whole build."""
+    return git(repo, "ls-tree", "-r", "--name-only", ref, "--", ".claude").splitlines()
+
+
+def list_items(files, prefix, pattern):
+    return [f for f in files if f.startswith(prefix + "/") and pattern.search(f)]
 
 
 def line_count(repo, path):
@@ -514,14 +518,14 @@ def most_fixed(repo, ref, days, prior, today):
              "sinceListing": hist[p].get("sinceListing") or {"fixes": 0, "cited": 0}} for p in top]
 
 
-def size_block(repo, ref, rows, prior):
+def size_block(repo, files, rows, prior):
     """Code and test lines per area and the `unassigned` row, over the `ref` tree's `CODE_EXT` files under `.claude/`
     (scratch excluded). `change` is each row's delta against `prior` (a reading row), or None when there is no prior
     row or it has no such row."""
     buckets = collections.OrderedDict((name, {"code": 0, "tests": 0}) for name, _ in rows)
     unassigned = {"code": 0, "tests": 0, "files": []}
     totals = {"code": 0, "tests": 0, "codeFiles": 0, "testsFiles": 0}
-    for path in list_items(repo, ref, ".claude", re.compile(r"\.(py|ps1|sh|js|mjs)$")):
+    for path in list_items(files, ".claude", re.compile(r"\.(py|ps1|sh|js|mjs)$")):
         if path.startswith(".claude/scratch/"):
             continue
         kind = "tests" if path.startswith(".claude/tests/") else "code"
@@ -583,8 +587,10 @@ def build(args):
     repo = os.path.abspath(args.repo)
     now = _now(args)
     cut_epoch = now.timestamp() - args.days * 86400
-    roots = args.checkout or worktrees(repo)
-    main_root = worktrees(repo)[0] if worktrees(repo) else repo
+    trees = worktrees(repo)
+    roots = args.checkout or trees
+    main_root = trees[0] if trees else repo
+    tree = tree_files(repo, args.ref)
     transcript_dirs = args.transcripts or [os.path.expanduser(
         "~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", main_root))]
 
@@ -650,12 +656,12 @@ def build(args):
         return [{"sha": c["sha"][:9], "date": c["date"], "subject": c["subject"]}
                 for c in fixes if path in c["files"]]
 
-    proofs_live = [f for f in list_items(repo, args.ref, ".claude/tests", PROOF_RE) if f.count("/") == 2]
+    proofs_live = [f for f in list_items(tree, ".claude/tests", PROOF_RE) if f.count("/") == 2]
     proof_names = {os.path.basename(p): p for p in proofs_live}
-    tool_files = [f for f in list_items(repo, args.ref, ".claude/tools", re.compile(r"\.(py|ps1|sh|js|mjs)$"))
-                  + list_items(repo, args.ref, ".claude/scripts", re.compile(r"\.(py|ps1|sh|js|mjs)$"))
+    tool_files = [f for f in list_items(tree, ".claude/tools", re.compile(r"\.(py|ps1|sh|js|mjs)$"))
+                  + list_items(tree, ".claude/scripts", re.compile(r"\.(py|ps1|sh|js|mjs)$"))
                   if "/lib/" not in f and "/fixtures/" not in f and not os.path.basename(f).startswith("_")]
-    hook_files = [f for f in list_items(repo, args.ref, ".claude/hooks", re.compile(r"\.py$"))
+    hook_files = [f for f in list_items(tree, ".claude/hooks", re.compile(r"\.py$"))
                   if not os.path.basename(f).startswith("_")]
     entry_names = {os.path.basename(f): f for f in tool_files}
 
@@ -730,7 +736,7 @@ def build(args):
     head = git(repo, "rev-parse", args.ref).strip()
     readings_path = args.readings or os.path.join(repo, ".claude", "census_readings.jsonl")
     prior = (load_readings(readings_path) or [None])[-1]
-    size = size_block(repo, args.ref, area_rows(repo), prior)
+    size = size_block(repo, tree, area_rows(repo), prior)
     reading = reading_row(now, args, head, size)
     reading["mostFixed"] = most_fixed(repo, args.ref, args.days, prior, now.strftime("%Y-%m-%d"))
 

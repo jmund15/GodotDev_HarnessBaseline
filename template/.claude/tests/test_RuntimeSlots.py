@@ -5,6 +5,7 @@ Drives the tool through `pwsh -NoProfile` on planted input under its own temp ro
 The decision cases share one pwsh (`Cases`, a runspace each); the lock cases spawn holder processes because
 the lock between processes is what they decide.
 """
+import json
 import os
 import shutil
 import signal
@@ -39,9 +40,21 @@ def main(tmp):
     batch.add("$n = @(Get-RuntimeSlotNames); \"count=$($n.Count) unique=$(@($n | Sort-Object -Unique).Count)\"",
               lambda rc, out, _: check("slot names are distinct", rc == 0 and "count=8 unique=8" in out, f"rc={rc} {out!r}"))
     isolation(tmp, batch)
+    trim = ("$script:LeaseLogCapBytes = 1; $script:LeaseLogKeepRows = 1; $d = Join-Path $env:PROOF_TMP 'trim'; "
+            "foreach ($n in 0..2) { Add-LeaseRow -RecordDir $d -Row ([ordered]@{ id = \"r$n\" }) }; "
+            "'ROWS=' + ((Get-Content -LiteralPath (Join-Path $d 'leases.jsonl') | ForEach-Object { ($_ | ConvertFrom-Json).id }) -join ',')")
+    batch.add(trim, lambda rc, out, _: check("a runtime history past its cap keeps its newest rows before the next one",
+                                            rc == 0 and "ROWS=r1,r2" in out, f"rc={rc} {out!r}"))
+    sys.path.insert(0, os.path.join(REPO, ".claude", "tools"))
+    import lease_log
+    bounds = f"CAP={lease_log.CAP_BYTES} KEEP={lease_log.KEEP_ROWS}"
+    batch.add("'CAP=' + $script:LeaseLogCapBytes + ' KEEP=' + $script:LeaseLogKeepRows",
+              lambda rc, out, _: check("the runtime history keeps lease_log's cap and row count", rc == 0 and bounds in out,
+                                       f"want {bounds}: rc={rc} {out!r}"))
     batch.run(tmp, TOOL)
     wait_run_lock(tmp)
     machine_lane(tmp)
+    broker_exit(tmp)
 
 
 HOLDER = """param([string] $Name, [string] $Own, [string] $Backend, [string] $Tool)
@@ -115,6 +128,13 @@ def wait_run_lock_on(tmp, backend):
         got = kv(out)
         check(f"Wait-RunLock returns -1 after the timeout when every handle is held [{backend}]",
               rc == 0 and got.get("IDX") == "-1" and 600 <= int(got.get("MS", "0")) < 3000, f"rc={rc} {out!r}")
+        held_ck = ("$script:LockWaitNoticeMs = 100; $l = Enter-RunLocks -Repo '%s' -CheckoutLockName $env:NAME_C "
+                   "-RecordDir '%s' -TimeoutMs 500; ('R=' + $l.Acquired + ':' + $l.Blocker); Exit-RunLocks $l"
+                   % (REPO, os.path.join(tmp, "records-ck-" + backend)))
+        if backend == ("mutex" if sys.platform == "win32" else "file"):  # the backend Enter-RunLocks takes on this host
+            rc, out, _ = drive(held_ck, tmp, {**env, "HARNESS_SLOT_BUDGET": "1"})
+            check(f"a checkout-lock wait past the notice bound prints one line naming the checkout stage [{backend}]",
+                  rc == 0 and "R=False:checkout" in out and out.count("LOCKWAIT stage=checkout") == 1, f"rc={rc} {out!r}")
         kill_holder(holders[0])
         rc, out, _ = drive(body % 3000, tmp, env)
         got = kv(out)
@@ -189,15 +209,61 @@ def machine_lane(tmp):
     os.environ.update({"HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_SLOTS": "1"})
     os.environ.pop("HARNESS_SLOT_BUDGET", None)
     held = machine_slots.take(True)
+    notice = "$script:LockWaitNoticeMs = 100; "
     try:
-        rc, out, err = drive(body, tmp, env)
+        rc, out, err = drive(notice + body, tmp, env)
         check("a runtime lane waits behind a full common pool and names it", rc == 0 and "R=False:machine-slots" in out, f"rc={rc} {out!r} {err[-200:]!r}")
-        rc, out, err = drive(body, tmp, {**env, "HARNESS_SLOT_BUDGET": "1"})
+        # A tailed log otherwise shows the last phase line (module load) for the whole lock queue.
+        check("a lane wait past the notice bound prints one line naming the lane stage",
+              out.count("LOCKWAIT stage=lane") == 1 and "stage=checkout" not in out, f"{out!r}")
+        rc, out, err = drive(notice + body, tmp, {**env, "HARNESS_SLOT_BUDGET": "1"})
         check("a runtime lane under a parent's loan takes no second pool lane", rc == 0 and "R=True:" in out, f"rc={rc} {out!r} {err[-200:]!r}")
+        check("a lease taken inside the notice bound prints no wait line", "LOCKWAIT" not in out, f"{out!r}")
     finally:
         machine_slots.release_all(held)
         for name, value in old.items():
             os.environ.pop(name, None) if value is None else os.environ.__setitem__(name, value)
+    lease_rows(tmp, pool)
+
+
+def broker_exit(tmp):
+    """A broker that dies with no output reports its exit code, so a killed broker and a crash read apart."""
+    import re
+    for code in (7, 143):
+        script = os.path.join(tmp, "dead_broker_%d.py" % code)
+        with open(script, "w", encoding="utf-8", newline="\n") as f:
+            f.write("import sys\nsys.exit(%d)\n" % code)
+        body = "try { Enter-MachineWorkLease -TimeoutMs 2000 | Out-Null; 'NOERR' } catch { 'MSG=' + $_.Exception.Message }"
+        rc, out, err = drive(body, tmp, {"HARNESS_SLOT_SCRIPT": script, "HARNESS_SLOT_BUDGET": ""})
+        check("a broker that exits %d with no output names that exit code" % code,
+              rc == 0 and "broker failed" in out and re.search(r"(?<!\d)%d(?!\d)" % code, out) is not None,
+              f"rc={rc} {out!r} {err[-200:]!r}")
+
+
+def read_rows(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+    except OSError:
+        return []
+
+
+def lease_rows(tmp, pool):
+    """machine_lane's two leases in the history: the one that gave up at the lane, and the loaned one, take to release."""
+    rows = read_rows(os.path.join(tmp, "records", "leases.jsonl"))
+    shape = [(r.get("event"), r.get("ended")) for r in rows]
+    check("a lease that gives up at the lane writes one end row; a held lease writes take, then end",
+          shape == [("end", "timeout:lane"), ("take", None), ("end", "released")], f"{shape!r}")
+    if len(rows) == 3:
+        gave_up, take, end = rows
+        check("the held lease's rows share an id and name its checkout lock and slot",
+              take["id"] == end["id"] and take["checkoutLock"] == "mp-%s-ck" % os.getpid() and take["got"]["slots"] == [1]
+              and take["ask"]["runtime"] == "one" and take["ask"]["of"] == 2, f"{take!r} {end!r}")
+        check("the lease that gave up records where its wait went", gave_up["wait"]["lane"] >= 0.2 and gave_up["wait"]["checkout"] >= 0,
+              f"{gave_up!r}")
+    lanes = read_rows(os.path.join(pool, "leases.jsonl"))
+    check("the brokered lane that missed its deadline is in the pool history, named for the run it waited for",
+          any(r.get("ended") == "deadline" and str(r.get("command", "")).startswith("RuntimeSlots") for r in lanes), f"{lanes!r}")
 
 
 if __name__ == "__main__":

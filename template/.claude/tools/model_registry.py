@@ -42,11 +42,11 @@ CLI:
                                                     at most a quarter of its effective window
     model_registry.py rail-tier <model>             print detailed|condensed|minimal; detailed when unknown
     model_registry.py price <id> <fresh> <cache_read> <output> [cache_write] [cache_write_1h]   (list price at the current window)
-    model_registry.py price-window <model>          billing window now (SC_PRICE_AT overrides), rates
+    model_registry.py price-window <model> [--fields]  billing window now (SC_PRICE_AT overrides), rates;
+                                                    --fields prints the gate's six fields unit-separated
     model_registry.py effort-values <model>         effort rungs the row may request; [] = undeclared
-    model_registry.py effort-avoid <model> <rung>   the row's evidence when it avoids <rung>, else nothing
-    model_registry.py band-satisfies <current> <required>   exit 0 yes, 1 no, 2 bad name
-    model_registry.py sidecar-fields <model> [--plan <plan>]   launcher fields; 8-10 are the plan's
+    model_registry.py launch-fields <model> [--plan P] [--effort E] [--long] [--client anthropic]
+                                                    every fact ONE launcher's gates read, as shell assignments
     model_registry.py plan-for-launcher <path>      plan, configDir, default flag, credential source; exit 1 if none
     model_registry.py review-state <alias> <tier>   probation basis or none
     model_registry.py ladder-slice <tier>...        RETIRED (exit 2): `for-role <tier>...` prints the same cut
@@ -55,12 +55,13 @@ CLI:
 import sys as _cli_usage_sys
 from pathlib import Path as _cli_usage_path
 _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
-from cli_usage import refusal, usage
+from cli_usage import ShapeParser, refusal, usage
 
 
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -3134,15 +3135,16 @@ def claimed_tiers(data=None):
 
 def _doctrine_in_context():
     """True when this session's context window already holds the ladder doctrine: a `for-role` print the gate
-    credited, or a full Read of the ladder. Both clear on compaction, so the next print carries it again. False
-    with no session id or unreadable state, so an unknown context prints the whole doctrine."""
+    credited, or a full Read of the ladder, judged against the ladder this run cuts from. Both clear on compaction,
+    so the next print carries it again. False with no session id or unreadable state, so an unknown context prints
+    the whole doctrine."""
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return False
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
         import model_ladder_gate
-        credit = model_ladder_gate.ladder_credit(session_id, root=Path(__file__).resolve().parents[2])
+        credit = model_ladder_gate.ladder_credit(session_id, root=ladder_path().parents[2])
         return credit.status == model_ladder_gate.CURRENT
     except (ImportError, OSError, ValueError):
         return False
@@ -3243,12 +3245,6 @@ def _cmd_price(argv):
     return 0
 
 
-def _cmd_band_satisfies(argv):
-    if len(argv) != 2:
-        raise RegistryError("band-satisfies needs: <current-band> <required-band>")
-    return 0 if band_satisfies(argv[0], argv[1]) else 1
-
-
 def _cmd_plan_for_launcher(argv):
     """`<plan>\t<expanded configDir>\t<1 when it is ~/.claude, else 0>\t<credentialVar>\t<expanded
     credentialFile>` for the launcher at argv[0]; exit 1 with no output when no single plan owns
@@ -3276,51 +3272,98 @@ def _cmd_plan_for_launcher(argv):
     return 0
 
 
-def _cmd_sidecar_fields(argv):
-    """Everything deepseek_sidecar.sh needs, pipe-delimited, in ONE call.
+def launch_facts(model, plan=None, effort=None, long_context=False, client=None):
+    """Every registry fact one launcher's gates read, from one process.
 
-    Python startup dominates here; five `resolve --field` calls would cost the
-    common dispatch path most of a second for data that is one dict lookup.
+    Each answer keeps the shape its gate consumes. A question that can refuse on its own -- the effort
+    vocabulary, the Anthropic client window -- reports its failure as a fact (`*_ERROR`) instead of
+    failing this call, so the shell still refuses at that gate and in its order.
+
+    `client="anthropic"` adds the Claude client's window contract; its inputs are the SIDECAR_*
+    environment this process already carries. `long_context` is `-M`.
     """
-    if not argv or len(argv) not in (1, 3) or (len(argv) == 3 and argv[1] != "--plan"):
-        raise RegistryError("sidecar-fields needs: <model> [--plan <plan>]")
     data = load()
-    entry = resolve(argv[0], data)
+    entry = resolve(model, data)
     gate = entry["gate"]
-    plan = argv[2] if len(argv) == 3 else entry["transport"]
-    if plan not in data["transports"] or route_of(plan, data) != entry["transport"]:
-        raise RegistryError(f"plan {plan!r} does not pay for {entry['id']} on route {entry['transport']}")
-    transport = data["transports"][plan]
+    chosen = plan or entry["transport"]
+    if chosen not in data["transports"] or route_of(chosen, data) != entry["transport"]:
+        raise RegistryError(f"plan {chosen!r} does not pay for {entry['id']} on route {entry['transport']}")
+    transport = data["transports"][chosen]
     plan_state = (transport.get("status") or {}).get("state")
     usable = model_available(entry["id"], data) and plan_state != "unavailable"
     reason = ("" if usable else (unavailable_reasons(data).get(entry["id"], "")
                                  or (transport.get("status") or {}).get("reason", "")))
-    print("|".join(str(v) for v in (
-        entry["id"],
-        entry["alias"],
-        entry["authTier"],
-        gate["minBand"],
-        gate.get("minBalanceUSD", ""),
-        (entry.get("price") or {}).get("cacheMissPer1M", ""),
-        "",  # retired balanceUrl slot; kept empty until every external consumer moves past v1
-        # Appended rather than inserted so an older consumer reading only the first seven fields
-        # keeps working. The suspension travels on THIS call because the sidecar already pays one
-        # Python startup here and a second process spawn to ask "may I run at all" would double
-        # the cost of the check on the common path.
-        # With --plan, fields 8-10 are the paying plan's: its own suspension refuses the launch.
-        "available" if usable else "unavailable",
-        reason,
-        # Fields 10-11: which currency this dispatch spends, and a slot that used to carry the
-        # row's provider-band ceiling. That ceiling is retired (a plan-quota window refuses only on
-        # exhaustion or an unreadable band), and the slot stays EMPTY rather than being dropped:
-        # `opencode_sidecar.sh --check` reads apiMode as field 12 positionally, so removing a
-        # column here would silently renumber it.
-        transport["costModel"],
-        "",
-        # Field 12: which OpenAI-compatible call shape the backend actually answers on. Absent
-        # (empty string) means the ordinary Chat Completions surface a launcher already assumes.
-        entry.get("apiMode", ""),
-    )))
+    limits = entry.get("limits") or {}
+    facts = {
+        "SC_MODEL": entry["id"],
+        "SC_ALIAS": entry["alias"],
+        "SC_AUTH_TIER": entry["authTier"],
+        "SC_MIN_BAND": gate["minBand"],
+        "SC_MIN_BALANCE": gate.get("minBalanceUSD", ""),
+        "SC_FRESH_RATE": (entry.get("price") or {}).get("cacheMissPer1M", ""),
+        "SC_TRANSPORT_STATE": "available" if usable else "unavailable",
+        "SC_TRANSPORT_REASON": reason,
+        "SC_COST_MODEL": transport["costModel"],
+        "SC_API_MODE": entry.get("apiMode", ""),
+        "SC_WINDOW_DEFAULT": effective_window(entry, False),
+        "SC_WINDOW_MAX": effective_window(entry, True),
+        "SC_MAX_OUTPUT_REGISTRY": output_cap(limits, long_context, _tier_of(entry)),
+    }
+    if effort:
+        facts.update(SC_EFFORT_VALUES_JSON="", SC_EFFORT_LEGAL="", SC_EFFORT_AVOIDED="", SC_EFFORT_ERROR="",
+                     SC_FACTS_EFFORT=effort)
+        try:
+            values = effort_values(entry, data)
+        except RegistryError as exc:
+            facts["SC_EFFORT_ERROR"] = str(exc)
+        else:
+            facts["SC_EFFORT_VALUES_JSON"] = json.dumps(values)
+            facts["SC_EFFORT_LEGAL"] = "|".join(values)
+            facts["SC_EFFORT_AVOIDED"] = avoid_evidence(entry) if effort in avoided_rungs(entry) else ""
+    if client == "anthropic":
+        cap = os.environ.get("SIDECAR_MAX_OUTPUT_TOKENS", "")
+        override = os.environ.get("SIDECAR_COMPACT_AT_TOKENS", "")
+        facts.update(SC_AC_CLIENT_MODEL="", SC_AC_AUTO_COMPACT_WINDOW="", SC_AC_MAX_CONTEXT_TOKENS="",
+                     SC_CONTEXT_TOKENS="", SC_CONTEXT_WINDOW_SOURCE="", SC_AC_ERROR="")
+        try:
+            if override and not override.isdigit():
+                raise RegistryError("SIDECAR_COMPACT_AT_TOKENS must be a positive integer")
+            window = anthropic_window(entry, long_context,
+                                      int(cap) if cap.isdigit() and int(cap) > 0 else None,
+                                      int(override) if override else None,
+                                      os.environ.get("SIDECAR_FULL_WINDOW") == "1")
+        except RegistryError as exc:
+            facts["SC_AC_ERROR"] = str(exc)
+        else:
+            facts["SC_AC_CLIENT_MODEL"] = window["model"]
+            facts["SC_AC_AUTO_COMPACT_WINDOW"] = window.get("autoCompactWindow") or ""
+            facts["SC_AC_MAX_CONTEXT_TOKENS"] = window.get("maxContextTokens") or ""
+            facts["SC_CONTEXT_TOKENS"] = window.get("contextWindow") or ""
+            facts["SC_CONTEXT_WINDOW_SOURCE"] = window.get("contextWindowSource") or ""
+    return facts
+
+
+def print_launch_facts(facts):
+    """The facts as shell assignments (`NAME='value'`) a launcher sources."""
+    for name, value in facts.items():
+        print("%s=%s" % (name, shlex.quote("" if value is None else str(value))))
+
+
+def _cmd_launch_fields(argv):
+    ap = ShapeParser(prog="model_registry.py launch-fields", add_help=False)
+    ap.accepts = "<model> [--plan <plan>] [--effort <rung>] [--long] [--client anthropic]"
+    ap.example = "model_registry.py launch-fields sonnet --effort high --client anthropic"
+    ap.add_argument("model")
+    ap.add_argument("--plan")
+    ap.add_argument("--effort")
+    ap.add_argument("--long", action="store_true")
+    ap.add_argument("--client", choices=("anthropic",))
+    args = ap.parse_args(argv)
+    # The launcher sources this block as a file: a CRLF would land in every value.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(newline="\n")
+    print_launch_facts(launch_facts(args.model, plan=args.plan, effort=args.effort,
+                                    long_context=args.long, client=args.client))
     return 0
 
 
@@ -3388,19 +3431,6 @@ def _cmd_transport_meta(argv):
     if meta is None:
         raise RegistryError(f"unknown transport {argv[0]!r}")
     print(json.dumps(meta))
-    return 0
-
-
-def _cmd_transport_status(argv):
-    """Availability of a transport, for consumers that have no model in hand.
-
-    budget_posture.py needs this to describe routing without naming a model, and it must not
-    re-parse the registry itself: a local copy of the suspension would drift from the gate that
-    enforces it, which is the whole failure this registry exists to remove.
-    """
-    if not argv:
-        raise RegistryError("transport-status needs a transport name")
-    print(json.dumps(transport_status(argv[0]), indent=2))
     return 0
 
 
@@ -3537,13 +3567,7 @@ def _cmd_anthropic_window(argv):
 
 
 def _cmd_context_window(argv):
-    """Print a model's effective default or max context window, if declared.
-
-    Its own command rather than another `sidecar-fields` column: that contract is a
-    pipe-delimited positional read, and appending to it silently pollutes the LAST variable of
-    any reader still expecting the old count -- measured, with no error raised. A separate
-    command cannot corrupt an existing caller.
-    """
+    """Print a model's effective default or max context window, if declared."""
     if len(argv) not in (1, 2) or (len(argv) == 2 and argv[1] != "--max"):
         print("usage: model_registry.py context-window <model> [--max]", file=sys.stderr)
         return 2
@@ -3623,9 +3647,14 @@ def _cmd_rail_tier(argv):
 
 
 def _cmd_price_window(argv):
-    """The billing window a dispatch of <model> starts in now, and the rates it would pay."""
-    if len(argv) != 1:
-        print("usage: model_registry.py price-window <model>", file=sys.stderr)
+    """The billing window a dispatch of <model> starts in now, and the rates it would pay.
+
+    `--fields` prints the gate's own six fields, unit-separated (window, multiplier, changesAt,
+    hhmm, policy, output rate), so the launcher reads its decision without a second interpreter.
+    """
+    fields = argv[1:] == ["--fields"]
+    if len(argv) != 1 and not fields:
+        print("usage: model_registry.py price-window <model> [--fields]", file=sys.stderr)
         return 2
     data = load()
     entry = resolve(argv[0], data)
@@ -3634,6 +3663,11 @@ def _cmd_price_window(argv):
     rates = {k: price[k] * win["multiplier"]
              for k in ("cacheHitPer1M", "cacheMissPer1M", "outputPer1M") if k in price}
     policy = (entry.get("gate") or {}).get("peakPolicy", "allow")
+    if fields:
+        changes = win.get("changesAt") or ""
+        print("\x1f".join((win["window"], str(win["multiplier"]), changes, changes[11:16], policy,
+                           str(rates.get("outputPer1M", "")))))
+        return 0
     print(json.dumps(dict(win, model=entry["id"], peakPolicy=policy, rates=rates)))
     return 0
 
@@ -3672,31 +3706,13 @@ def effort_values(entry, data):
 
 
 def _cmd_effort_values(argv):
-    """The effort rungs <model>'s transport actually serves, as a JSON array; [] = undeclared.
-
-    Its own command, not a sidecar-fields column, for the reason _cmd_context_window states.
-    """
+    """The effort rungs <model>'s transport actually serves, as a JSON array; [] = undeclared."""
     if len(argv) != 1:
         print("usage: model_registry.py effort-values <model>", file=sys.stderr)
         return 2
     data = load()
     entry = resolve(argv[0], data)
     print(json.dumps(effort_values(entry, data)))
-    return 0
-
-
-def _cmd_effort_avoid(argv):
-    """The evidence for <model>'s avoiding <rung>, or nothing when the row does not avoid it.
-
-    Exit 0 either way: a launcher reads the line, and an empty one means the rung is not avoided.
-    """
-    if len(argv) != 2:
-        print("usage: model_registry.py effort-avoid <model> <rung>", file=sys.stderr)
-        return 2
-    data = load()
-    entry = resolve(argv[0], data)
-    if argv[1] in avoided_rungs(entry):
-        print(avoid_evidence(entry))
     return 0
 
 
@@ -3713,15 +3729,17 @@ def _cmd_review_state(argv):
 
 
 def _stage_ladder_receipt(text, tiers):
-    """Stage the stdout this run is about to deliver, with the tiers it prints. The Bash PostToolUse entry
-    (`model_ladder_gate.mark_loaded`) credits them when that text appears whole inside the delivered output;
-    an output cut by a pipe, `head`, a filter or a redirect leaves the tiers uncredited. True when staged."""
+    """Stage the stdout this run is about to deliver, with the tiers it prints and the digest of the ladder it cut
+    them from. The Bash PostToolUse entry (`model_ladder_gate.mark_loaded`) credits them, for that ladder's text,
+    when that text appears whole inside the delivered output; an output cut by a pipe, `head`, a filter or a
+    redirect leaves the tiers uncredited. True when staged."""
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return False
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
     import _hook_state
-    return _hook_state.stage_ladder_receipt(session_id, _hook_state.stdout_sha256(text), tiers, text)
+    return _hook_state.stage_ladder_receipt(session_id, _hook_state.stdout_sha256(text), tiers, text,
+                                            ladder=_hook_state.ladder_text_digest(ladder_path()))
 
 
 def _cmd_ladder_slice(argv):
@@ -3737,7 +3755,6 @@ _COMMANDS = {
     "ladder-slice": _cmd_ladder_slice,
     "price-window": _cmd_price_window,
     "effort-values": _cmd_effort_values,
-    "effort-avoid": _cmd_effort_avoid,
     "context-window": _cmd_context_window,
     "anthropic-window": _cmd_anthropic_window,
     "max-output": _cmd_max_output,
@@ -3745,11 +3762,9 @@ _COMMANDS = {
     "resolve": _cmd_resolve,
     "for-role": _cmd_for_role,
     "price": _cmd_price,
-    "band-satisfies": _cmd_band_satisfies,
-    "sidecar-fields": _cmd_sidecar_fields,
+    "launch-fields": _cmd_launch_fields,
     "plan-for-launcher": _cmd_plan_for_launcher,
     "transport-meta": _cmd_transport_meta,
-    "transport-status": _cmd_transport_status,
     "set-status": _cmd_set_status,
     "available": _cmd_available,
     "review-state": _cmd_review_state,

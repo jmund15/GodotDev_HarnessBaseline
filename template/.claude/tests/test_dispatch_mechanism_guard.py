@@ -16,6 +16,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 
 ALLOW, DENY = "allow", "deny"
@@ -37,32 +39,10 @@ def checked_run(args, **kwargs):
     return result
 
 
-def arm_ladder(session_id):
-    path = os.path.join(STATE, (session_id or "default")[:8] + ".json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
-    except Exception:
-        state = {}
-    state["model_ladder_ready"] = True
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(state, fh)
-
-
-def arm_skill(session_id):
-    sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
-    import _hook_state
-    from unittest.mock import patch
-    with patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE):
-        _hook_state.mark_skill_in_context(session_id or "", "orchestration")
-
-
 def run(payload, ladder=True, cwd=None, project_dir=None, skill=True):
-    if isinstance(payload, dict) and payload.get("tool_name") in ("Workflow", "Agent"):
-        if ladder:
-            arm_ladder(payload.get("session_id") or "")
-        if skill:
-            arm_skill(payload.get("session_id") or "")
+    if isinstance(payload, dict) and payload.get("tool_name") in ("Workflow", "Agent") and (ladder or skill):
+        root = project_dir or os.environ.get("CLAUDE_PROJECT_DIR") or cwd or os.getcwd()
+        _hook_call.arm_doctrine(payload.get("session_id") or "", STATE, root=root, skill=skill, ladder=ladder)
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE)
     if project_dir:
         env["CLAUDE_PROJECT_DIR"] = project_dir
