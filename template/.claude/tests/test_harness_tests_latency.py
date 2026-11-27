@@ -327,13 +327,23 @@ class CorpusBinding(Planted):
         self.assertNotIn("test_corpus.py", names[".claude/tools/elsewhere.py"])
 
 
-    def test_every_corpus_row_names_a_shipped_proof_and_folders_that_exist(self):
-        """A CORPUS row is data a typo silently voids: its proof never selects, and nothing says so."""
+    def test_every_corpus_row_names_a_real_proof_and_folders_that_exist(self):
+        """A CORPUS row is data a typo silently voids: its proof never selects, and nothing says so. A layer
+        profile ships only its layers' proofs, so a row whose proof this tree lacks is checked by name against the
+        base's manifest where the tree carries one (the template), and its folders only where the proof ships."""
         claude = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        manifest = os.path.join(os.path.dirname(os.path.dirname(claude)), "baseline.manifest.json")
+        shipped = None
+        if os.path.isfile(manifest):
+            with open(manifest, encoding="utf-8") as fh:
+                shipped = {row["path"] for row in json.load(fh)["files"]}
         for name, folders in runner._catalog.CORPUS.items():
-            self.assertTrue(os.path.isfile(os.path.join(claude, "tests", name)), name)
-            for folder in folders:
-                self.assertTrue(os.path.isdir(os.path.join(os.path.dirname(claude), folder)), (name, folder))
+            here = os.path.isfile(os.path.join(claude, "tests", name))
+            if shipped is not None:
+                self.assertIn(".claude/tests/" + name, shipped, name)
+            if here:
+                for folder in folders:
+                    self.assertTrue(os.path.isdir(os.path.join(os.path.dirname(claude), folder)), (name, folder))
 
 
 class FlakyLog(Planted):
