@@ -557,6 +557,7 @@
     ".claude/tests/fixtures/sidecar_journal/failed_launch/failed.record.json.pid": "pure",
     ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json": "pure",
     ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.exit": "pure",
+    ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.journal.jsonl": "pure",
     ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.out": "pure",
     ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.pid": "pure",
     ".claude/tests/fixtures/sidecar_watch_rearm/workflow_launch.jsonl": "pure",

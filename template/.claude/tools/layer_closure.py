@@ -97,6 +97,7 @@ OPTIONAL_DATA = {
     ".claude/tools/lens.py": ("commands/agents/*_agents.md",),
     ".claude/tools/lens_briefs.py": ("commands/checklists/*.md",),
     ".claude/tools/mechanism_census.py": ("tools/identity_digests.json", "tools/layer_entries.json"),
+    ".claude/tools/baseline_identity.py": ("tools/identity_digests.json",),
     ".claude/tools/review_ledger.py": ("skills/_brainstorm_shared/execution_depth.md",),
     ".claude/tools/workstation_profile.py": ("commands/workstation_setup.md",),
     ".claude/tools/semantic_search_idle_install.py": ("package.json",),

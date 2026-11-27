@@ -19,6 +19,14 @@ spec = importlib.util.spec_from_file_location("agy_hook_bridge", os.path.join(HE
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 REGISTERED = bridge._registered  # the real settings reader; plant() swaps the module's copy
+sys.path.insert(0, HERE)
+import _settings_probe  # noqa: E402
+
+# A consumer carries a composed settings.json; the baseline template composes at install, so the bridge reads the
+# composed copy the probe builds there.
+BRIDGE = os.path.join(HERE, "..", "hooks", "agy_hook_bridge.py")
+COMPOSED = os.path.isfile(bridge.SETTINGS)
+bridge.SETTINGS = _settings_probe.settings_path(os.path.join(HERE, ".."))
 
 TMP = tempfile.mkdtemp(prefix="agy_bridge_")
 WS = tempfile.mkdtemp(prefix="agy_bridge_ws_")
@@ -35,16 +43,34 @@ def call(name, args, conv="c1"):
     return bridge.pre_tool_use({"conversationId": conv, "workspacePaths": [WS], "toolCall": {"name": name, "args": args}})
 
 
-# The guard protects its own checkout even when the consumer was bootstrapped under system temp.
-delete = 'rm -rf "' + bridge.ROOT.replace("\\", "/") + '"'
+def spawn(event, payload):
+    """The bridge as a process: its registered command where settings.json is composed, else the same module run
+    with the probe's composed copy, since a raw template has no settings.json for the command to read."""
+    if COMPOSED:
+        argv = [sys.executable, BRIDGE, event]
+    else:
+        loader = ("import importlib.util, sys; spec = importlib.util.spec_from_file_location('agy_hook_bridge', sys.argv[1]); "
+                  "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); m.SETTINGS = sys.argv[2]; "
+                  "sys.argv = [sys.argv[1], sys.argv[3]]; m.main()")
+        argv = [sys.executable, "-c", loader, BRIDGE, bridge.SETTINGS, event]
+    return subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True, timeout=120)
+
+
+# The guard protects the checkout holding the bridge even when the consumer was bootstrapped under system temp. In a
+# consumer that is the bridge's ROOT; in the baseline repository ROOT is its `template/` folder, so the target is the
+# git top level above it.
+import subprocess  # noqa: E402
+CHECKOUT = subprocess.run(["git", "-C", bridge.ROOT, "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True).stdout.strip() or bridge.ROOT
+delete = 'rm -rf "' + CHECKOUT.replace("\\", "/") + '"'
 got = call("run_command", {"CommandLine": delete})
 check("a real guard denies a recursive delete", got["decision"] == "deny", got)
 import subprocess  # noqa: E402
-spawned = subprocess.run([sys.executable, os.path.join(HERE, "..", "hooks", "agy_hook_bridge.py"), "PreToolUse"],
-                         input=json.dumps({"conversationId": "c0", "workspacePaths": [WS], "toolCall": {
-                             "name": "run_command", "args": {"CommandLine": delete}}}),
-                         capture_output=True, text=True, timeout=120)
-check("the registered command denies on stdout", json.loads(spawned.stdout or "{}").get("decision") == "deny",
+spawned = spawn("PreToolUse", {"conversationId": "c0", "workspacePaths": [WS], "toolCall": {
+    "name": "run_command", "args": {"CommandLine": delete}}})
+answer = json.loads(spawned.stdout or "{}")
+check("the registered command denies on stdout, from the guard and not from its own failure",
+      answer.get("decision") == "deny" and not str(answer.get("reason", "")).startswith("agy_hook_bridge failed"),
       spawned.stdout + spawned.stderr)
 got = call("run_command", {"CommandLine": "echo ok"})
 check("a plain command is allowed", got == {"decision": "allow"}, got)
@@ -87,10 +113,8 @@ post({"Path": SKILL, "StartLine": 1, "EndLine": 5}, "ranged")
 check("a read with a range loads nothing", not loaded("ranged"))
 post({"Path": SKILL}, "failed", error="file not found")
 check("a failed read loads nothing", not loaded("failed"))
-spawned = subprocess.run([sys.executable, os.path.join(HERE, "..", "hooks", "agy_hook_bridge.py"), "PostToolUse"],
-                         input=json.dumps({"conversationId": "c0", "workspacePaths": [WS], "error": "",
-                                           "toolCall": {"name": "read_file", "args": {"Path": "x"}}}),
-                         capture_output=True, text=True, timeout=120)
+spawned = spawn("PostToolUse", {"conversationId": "c0", "workspacePaths": [WS], "error": "",
+                                "toolCall": {"name": "read_file", "args": {"Path": "x"}}})
 check("the registered PostToolUse command exits 0 with no decision",
       spawned.returncode == 0 and json.loads(spawned.stdout or "null") == {}, spawned.stdout + spawned.stderr)
 
