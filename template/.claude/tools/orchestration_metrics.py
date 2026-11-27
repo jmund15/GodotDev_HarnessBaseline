@@ -69,7 +69,7 @@ Usage:
                                                 price the whole session: orchestrator O, every dispatch attempt D<n>,
                                                 proofs P, totals T, waste X; never archive
 """
-import argparse, glob, hashlib, itertools, json, os, re, sys, time, zlib
+import argparse, glob, hashlib, itertools, json, os, re, statistics, sys, time, zlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -2137,6 +2137,7 @@ def _sidecar_record_row(path, record=None, diagnostics=None, claims=None, priced
     timestamp = rec.get('timestamp') or '?'
     launch_id = rec.get('launchId')
     duration = _optional_number(rec.get('durationMs'))
+    model_ms = _optional_number(rec.get('apiDurationMs'))
     requested_effort = rec.get('effort') or '?'
     identity = model_registry.record_identity(rec, token=rec.get('requestedModel'))
     return dict(
@@ -2161,7 +2162,8 @@ def _sidecar_record_row(path, record=None, diagnostics=None, claims=None, priced
         cr=_optional_number(rec.get('cacheReadTokens')), recs=None,
         turns=_optional_number(rec.get('numTurns')),
         tools=_optional_number(rec.get('toolCalls')),
-        secs=duration / 1000.0 if duration is not None else None, **recorded)
+        secs=duration / 1000.0 if duration is not None else None,
+        model_secs=model_ms / 1000.0 if model_ms is not None else None, **recorded)
 
 
 def collect_sidecar_records(record_dir, diagnostics=None):
@@ -3558,21 +3560,37 @@ ROLLUP_UNIT = ("tokens by column plus `list`, a per-request list-price weight, n
 # 1-hour prompt-cache TTL (F9).
 IDLE_REWRITE_GAP_S = 3600
 IDLE_REWRITE_MIN_TOKENS = 50000
-CONTEXT_CALL_TOKENS = 400000
 _EPOCH_MS_THRESHOLD = 1e11
 
 
+def context_spread(contexts, compactions):
+    """{min, p10, median, p90, max, compactions} over per-call context sizes; the five values are None
+    with no calls. Deciles interpolate between ranks (`statistics.quantiles`, inclusive)."""
+    out = dict(min=None, p10=None, median=None, p90=None, max=None, compactions=compactions)
+    if not contexts:
+        return out
+    ordered = sorted(contexts)
+    deciles = statistics.quantiles(ordered, n=10, method='inclusive') if len(ordered) > 1 else [ordered[0]] * 9
+    out.update(min=ordered[0], p10=round(deciles[0]), median=round(deciles[4]), p90=round(deciles[8]),
+               max=ordered[-1])
+    return out
+
+
 def orchestrator_row(transcript_path, data=None):
-    """Row `O`: the main transcript's deduped calls priced at list, its wall-time partition and the
-    waste measures read off its calls. An unpriced model adds to `unpriced_calls`, never to `list`."""
+    """Row `O`: the main transcript's deduped calls priced at list, its tokens in the `tokens` shape every
+    priced row shares, the context spread over its calls (context = input + cache read + cache write), its
+    wall-time partition and the waste measures read off its calls. An unpriced model adds to
+    `unpriced_calls`, never to `list`."""
     data = data if data is not None else _registry()
     wall = session_timeline.partition(transcript_path)
     bookkeeping_ids = set(wall.pop('bookkeeping_ids'))
     big_results = wall.pop('big_results')
     tool_messages = wall.pop('tool_messages')
-    row = dict(id='O', kind='orchestrator', state=wall['state'], calls=0, fresh=0, cache_read=0,
-               cache_write_5m=0, cache_write_1h=0, output=0, list=0.0, tier_basis='per-request', unpriced_calls=0,
-               calls_over_400k=0, idle_rewrites=dict(n=0, tokens=0, list=0.0),
+    tokens = dict(fresh=0, cache_read=0, cache_write=0, cache_write_5m=0, cache_write_1h=0, output=0)
+    contexts = []
+    row = dict(id='O', kind='orchestrator', state=wall['state'], calls=0, tokens=tokens, list=0.0,
+               tier_basis='per-request', unpriced_calls=0, context=context_spread([], wall['compactions']),
+               idle_rewrites=dict(n=0, tokens=0, list=0.0),
                bookkeeping=dict(messages=0, of=tool_messages, list=0.0), big_results=big_results, wall=wall)
     if wall['state'] != 'ok':
         return row
@@ -3586,17 +3604,17 @@ def orchestrator_row(transcript_path, data=None):
             c['model'] or '?', fresh, cache_read, output, data=data, cache_write=written - written_1h,
             cache_write_1h=written_1h, multiplier=1.0, requests=[c])
         row['calls'] += 1
-        row['fresh'] += fresh
-        row['cache_read'] += cache_read
-        row['cache_write_5m'] += written - written_1h
-        row['cache_write_1h'] += written_1h
-        row['output'] += output
+        tokens['fresh'] += fresh
+        tokens['cache_read'] += cache_read
+        tokens['cache_write'] += written
+        tokens['cache_write_5m'] += written - written_1h
+        tokens['cache_write_1h'] += written_1h
+        tokens['output'] += output
         if usd is None:
             row['unpriced_calls'] += 1
         else:
             row['list'] += usd
-        if fresh + cache_read + written > CONTEXT_CALL_TOKENS:
-            row['calls_over_400k'] += 1
+        contexts.append(fresh + cache_read + written)
         if (previous_ts is not None and c['ts'] is not None and c['ts'] - previous_ts > IDLE_REWRITE_GAP_S
                 and written >= IDLE_REWRITE_MIN_TOKENS):
             row['idle_rewrites']['n'] += 1
@@ -3607,6 +3625,7 @@ def orchestrator_row(transcript_path, data=None):
             row['bookkeeping']['list'] += usd or 0.0
         if c['ts'] is not None:
             previous_ts = c['ts']
+    row['context'] = context_spread(contexts, wall['compactions'])
     return row
 
 
@@ -3730,7 +3749,8 @@ def _dispatch_row(row, kind, number, rerun, journal):
         rerun=rerun, journal=journal,
         tokens=dict(fresh=row.get('inp'), cache_read=row.get('cr'), cache_write=row.get('cw'),
                     output=row.get('out')),
-        list=_row_list(row), tier_basis=row.get('tier_basis', 'untiered'), secs=row.get('secs'), outcome='n/a', waste=None, waste_list=0.0, waste_min=0.0,
+        list=_row_list(row), tier_basis=row.get('tier_basis', 'untiered'), secs=row.get('secs'),
+        model_secs=_optional_number(row.get('model_secs')), outcome='n/a', waste=None, waste_list=0.0, waste_min=0.0,
         **{'yield': None})
 
 
@@ -3909,20 +3929,25 @@ def build_rollup(session, diagnostics=None, overlaps=None):
                 waste_spans.setdefault(row.get('run'), []).append(
                     spans.get((row.get('run'), row.get('agent_id')), (None, d_row['secs'] or 0.0)))
     list_groups = dict(orchestrator=o_row['list'], workflow=0.0, sidecar=0.0, agent_tool=0.0, instrument=0.0)
-    tokens = dict(fresh=o_row['fresh'], cache_read=o_row['cache_read'], cache_write_5m=o_row['cache_write_5m'],
-                  cache_write_1h=o_row['cache_write_1h'], cache_write_unsplit=0, output=o_row['output'])
+    tokens = dict(o_row['tokens'], cache_write_unsplit=0)
     for d_row in dispatch:
         list_groups[d_row['kind']] += d_row['list'] or 0.0
         t = d_row['tokens']
         tokens['fresh'] += t['fresh'] or 0
         tokens['cache_read'] += t['cache_read'] or 0
+        tokens['cache_write'] += t['cache_write'] or 0
         tokens['cache_write_unsplit'] += t['cache_write'] or 0
         tokens['output'] += t['output'] or 0
     total_list = sum(list_groups.values())
     wasted = [d for d in dispatch if d['waste']]
     waste_list = sum(d['waste_list'] for d in wasted)
+    timed = [d for d in dispatch if d['model_secs'] is not None]
+    walled = [d['secs'] for d in dispatch if _optional_number(d['secs']) is not None]
     total = dict(id='T', kind='total', tokens=tokens, list=dict(list_groups, total=total_list),
                  wall=dict(span=o_row['wall']['span'], split=_wall_split(o_row['wall']['buckets'])),
+                 secs=sum(walled) if walled else None,
+                 model_secs=sum(d['model_secs'] for d in timed) if timed else None, model_rows=len(timed),
+                 model_rows_secs=sum(_optional_number(d['secs']) or 0.0 for d in timed),
                  priced_rows=len(dispatch) + 1)
     waste = dict(id='X', kind='waste', rows=[d['id'] for d in wasted], list=waste_list,
                  minutes=sum(_union_seconds(run_spans) for run_spans in waste_spans.values()) / 60.0,
@@ -3931,24 +3956,39 @@ def build_rollup(session, diagnostics=None, overlaps=None):
                 rows=[o_row] + dispatch + [proofs_row(sid, o_row), total, waste])
 
 
+def _kilo(tokens):
+    return 'n/a' if tokens is None else '%dk' % round(tokens / 1000.0)
+
+
+def _secs(value):
+    return 'n/a' if value is None else '%.0fs' % value
+
+
 def report_rollup(doc):
     w('Scope: ' + doc['scope'] + '.')
     w('Unit: ' + doc['unit'] + '.')
     for row in doc['rows']:
         if row['kind'] == 'orchestrator':
-            w("O  orchestrator  calls %d  list %.2f  wall %.0fs  state %s"
-              % (row['calls'], row['list'], row['wall']['span'], row['state']))
+            ctx = row['context']
+            w("O  orchestrator  calls %d  list %.2f  wall %.0fs  context min %s p10 %s median %s p90 %s max %s  "
+              "compactions %d  state %s"
+              % (row['calls'], row['list'], row['wall']['span'],
+                 *(_kilo(ctx[k]) for k in ('min', 'p10', 'median', 'p90', 'max')), ctx['compactions'],
+                 row['state']))
         elif row['id'].startswith('D'):
-            w("%-4s %-10s %-34s %-10s %-9s list %s  %s"
+            w("%-4s %-10s %-34s %-10s %-9s list %s  secs %s  model %s  %s"
               % (row['id'], row['kind'], str(row['label'])[:34], row['attempt'], row['outcome'],
-                 'n/a' if row['list'] is None else '%.2f' % row['list'], row['waste'] or ''))
+                 'n/a' if row['list'] is None else '%.2f' % row['list'], _secs(row['secs']),
+                 _secs(row['model_secs']), row['waste'] or ''))
         elif row['id'] == 'P':
             w("P  proofs  %d run(s)  wall %.0fs  queue %.0fs  reused %d  ran %d  foreground test %.0fs  "
               "commits %d (%d over %ds)  state %s"
               % (row['runs'], row['wall_s'], row['queue_s'], row['reused'], row['ran'], row['fg_test_s'],
                  row['commits']['n'], row['commits']['over_budget'], row['commits']['budget_s'], row['state']))
         elif row['id'] == 'T':
-            w("T  total list %.2f over %d row(s)" % (row['list']['total'], row['priced_rows']))
+            w("T  total list %.2f over %d row(s)  dispatch wall %s  model %s over %d row(s) whose wall is %s"
+              % (row['list']['total'], row['priced_rows'], _secs(row['secs']), _secs(row['model_secs']),
+                 row['model_rows'], _secs(row['model_rows_secs'])))
         elif row['id'] == 'X':
             w("X  waste list %.2f (%.1f min, %.1f%% of total)" % (row['list'], row['minutes'], 100 * row['share']))
 

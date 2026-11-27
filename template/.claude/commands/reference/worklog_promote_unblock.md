@@ -16,7 +16,7 @@ Read `## Future Scope` from Obsidian and match the argument against the `FSLINE`
 
 ### Step 2 — Reconstruct a `BLOCK` from the `FSLINE`
 
-Title line gains ` (promoted from Future Scope YYYY-MM-DD-today)`; `Context:` takes the parenthetical's text; `Source: promoted from Future Scope on YYYY-MM-DD`; no other sub-bullets. Preserve the original `added` date — promotion is a state change, not a new add.
+The title line keeps the `BLOCK` header shape (`worklog_formats.md`); `Context:` takes the parenthetical's text; `Source: promoted from Future Scope on YYYY-MM-DD`; no other sub-bullets. Preserve the original `added` date — promotion is a state change, not a new add.
 
 ### Step 3 — Apply the move
 

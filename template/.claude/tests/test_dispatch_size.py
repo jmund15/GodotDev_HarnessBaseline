@@ -32,7 +32,9 @@ class Plant(unittest.TestCase):
         self.root = self.temp.name
         self.login = os.path.join(self.root, "login")
         os.mkdir(self.login)
+        self.ledger = os.path.join(self.root, "sidecar_ledger.jsonl")
         for name, value in (("CLAUDE_CONFIG_DIR", self.login),
+                            ("SIDECAR_LEDGER_PATH", self.ledger),
                             ("PROVIDER_CAPACITY_CACHE", os.path.join(self.root, "no_capacity_cache.json"))):
             saved = os.environ.get(name)
             os.environ[name] = value
@@ -273,7 +275,7 @@ class WindowFitTests(Plant):
     @staticmethod
     def haiku_usable():
         import model_registry
-        return model_registry.usable_window(model_registry.resolve("haiku", model_registry.load()))
+        return model_registry.compaction_point(model_registry.resolve("haiku", model_registry.load()))[0]
 
     def test_a_job_reading_more_than_its_pins_window_is_marked_over(self):
         usable = self.haiku_usable()
@@ -296,7 +298,7 @@ class WindowFitTests(Plant):
     def test_a_job_listing_rows_is_sized_against_its_tightest_row(self):
         import model_registry
         data = model_registry.load()
-        windows = {alias: model_registry.usable_window(model_registry.resolve(alias, data))
+        windows = {alias: model_registry.compaction_point(model_registry.resolve(alias, data))[0]
                    for alias in ("haiku", "opus")}
         self.assertNotEqual(windows["haiku"], windows["opus"], "the proof needs two rows with different windows")
         small = self.file("small.md", 10)
@@ -499,6 +501,127 @@ class WindowFitTests(Plant):
         self.assertIsNone(dispatch_size.line("not a spec", self.root))
 
 
+class HarnessLoadTests(Plant):
+    """What the harness loads before a job's brief, read from the spend ledger's own `turn1ContextTokens` rows
+    (`spend_ledger.iter_lines`), added to the fit so a job is judged on load plus reading against the point."""
+
+    def rows(self, transport, kind, tokens, days_ago=0, tier="full"):
+        import time
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days_ago * 86400))
+        with open(self.ledger, "a", encoding="utf-8") as fh:
+            for value in tokens:
+                fh.write(json.dumps({"transport": transport, "turn1ContextTokens": value, "timestamp": stamp,
+                                     "disclosureTier": tier, "toolProfile": {"kind": kind} if kind else {}}) + "\n")
+
+    def sidecar(self, kind="author", **extra):
+        return dict({"label": "j", "promptFile": self.file("brief.md", 1), "kind": kind}, **extra)
+
+    def test_a_route_and_kind_with_enough_rows_loads_their_median(self):
+        self.rows("anthropic", "author", [30000, 28000, 32000, 29000, 31000, 90000])
+        load = dispatch_size.harness_load("anthropic", "author", sidecar=True)
+        self.assertEqual((load["tokens"], load["n"]), (30500, 6))
+
+    def test_an_anthropic_plan_variant_counts_toward_its_route(self):
+        self.rows("anthropic", "author", [30000] * 3)
+        self.rows("anthropic-secondary", "author", [30000] * 3)
+        self.assertEqual(dispatch_size.harness_load("anthropic", "author", sidecar=True)["n"], 6)
+
+    def test_only_the_newest_rows_of_a_group_count(self):
+        self.rows("anthropic", "author", [90000] * 10, days_ago=2)
+        self.rows("anthropic", "author", [30000] * dispatch_size.HARNESS_LOAD_ROWS, days_ago=1)
+        self.assertEqual(dispatch_size.harness_load("anthropic", "author", sidecar=True)["tokens"], 30000)
+
+    def test_rows_past_the_window_and_rows_with_no_kind_or_no_reading_count_nothing(self):
+        self.rows("anthropic", "author", [90000] * 6, days_ago=dispatch_size.HARNESS_LOAD_DAYS + 2)
+        self.rows("anthropic", None, [20000] * 6)
+        self.rows("anthropic", "author", [None] * 6)
+        self.assertIsNone(dispatch_size.harness_load("anthropic", "author", sidecar=True)["tokens"])
+
+    def test_a_route_short_of_rows_takes_the_lightest_route_that_has_them_as_a_floor(self):
+        self.rows("anthropic", "author", [30000] * 6)
+        self.rows("codex", "author", [19000] * 6)
+        self.rows("go", "author", [21000] * 3)
+        load = dispatch_size.harness_load("go", "author", sidecar=True)
+        self.assertEqual(load["tokens"], 19000)
+        self.assertIn("floor", load["source"])
+
+    def test_a_native_job_takes_the_floor_never_a_sidecar_route_median(self):
+        self.rows("anthropic", "author", [30000] * 6)
+        self.rows("codex", "author", [19000] * 6)
+        load = dispatch_size.harness_load("anthropic", "author", sidecar=False)
+        self.assertEqual(load["tokens"], 19000)
+
+    def test_no_rows_for_the_kind_anywhere_is_unmeasured_never_a_guess(self):
+        self.rows("anthropic", "scout", [10000] * 6)
+        load = dispatch_size.harness_load("anthropic", "author", sidecar=True)
+        self.assertEqual((load["tokens"], load["source"]), (None, None))
+        self.assertIsNone(dispatch_size.harness_load("anthropic", None, sidecar=True)["tokens"])
+
+    def test_rows_loaded_at_another_disclosure_tier_never_stand_for_the_kinds_current_load(self):
+        # A scout loaded `bare` until A5 made it `full`: its old rows understate the chain it now loads.
+        self.rows("anthropic", "scout", [11600] * 6, tier="bare")
+        load = dispatch_size.harness_load("anthropic", "scout", sidecar=True)
+        self.assertEqual((load["tokens"], load["source"]), (None, None))
+
+    def test_a_kind_reads_only_its_current_tier_for_both_its_route_median_and_its_floor(self):
+        self.rows("anthropic", "scout", [11600] * 6, tier="bare")
+        self.rows("anthropic", "scout", [21000] * 5, tier="full")
+        self.rows("codex", "scout", [8800] * 6, tier="bare")
+        self.assertEqual(dispatch_size.harness_load("anthropic", "scout", sidecar=True)["tokens"], 21000)
+        floor = dispatch_size.harness_load("go", "scout", sidecar=True)
+        self.assertEqual((floor["tokens"], "floor" in floor["source"]), (21000, True))
+
+    def test_a_kind_with_no_disclosure_in_its_row_reads_every_tier(self):
+        self.rows("anthropic", "arm", [9000] * 3, tier="bare")
+        self.rows("anthropic", "arm", [9000] * 3, tier="pointer")
+        self.assertEqual(dispatch_size.harness_load("anthropic", "arm", sidecar=True)["n"], 6)
+
+    def test_an_author_group_is_untouched_by_a_scouts_tier_rows(self):
+        self.rows("anthropic", "scout", [11600] * 6, tier="bare")
+        self.rows("anthropic", "author", [30000, 28000, 32000, 29000, 31000, 90000])
+        self.assertEqual(dispatch_size.harness_load("anthropic", "author", sidecar=True)["tokens"], 30500)
+
+    def test_a_missing_ledger_is_unmeasured(self):
+        self.assertIsNone(dispatch_size.harness_load("anthropic", "author", sidecar=True)["tokens"])
+
+    def test_the_fit_adds_the_load_to_the_reading_before_comparing_with_the_point(self):
+        self.rows("anthropic", "author", [30000] * 6)
+        import model_registry
+        point = model_registry.compaction_point(model_registry.resolve("haiku", model_registry.load()))[0]
+        fit = dispatch_size.fit_tokens("haiku", point - 20000, None, self.sidecar())
+        self.assertEqual((fit["load"], fit["over"]), (30000, 10000))
+        self.assertEqual(dispatch_size.fit_tokens("haiku", point - 40000, None, self.sidecar())["over"], 0)
+
+    def test_a_job_with_no_load_data_is_fit_on_its_reading_and_says_the_load_is_unmeasured(self):
+        fit = dispatch_size.fit_tokens("haiku", 1000, None, self.sidecar())
+        self.assertEqual((fit["load"], fit["loadSource"]), (0, None))
+        size = dispatch_size.dispatch_size([self.sidecar(model="haiku", effort="low")])
+        self.assertIn("harness load unmeasured", dispatch_size.fit_lines(size)[0])
+
+    def test_a_resident_seat_whose_reading_fits_but_whose_reading_and_load_do_not_is_refused(self):
+        self.rows("anthropic", "reviewer", [31000] * 6)
+        import model_registry
+        point = model_registry.compaction_point(model_registry.resolve("haiku", model_registry.load()))[0]
+        big = self.file("ctx.md", math.ceil((point - 20000) * dispatch_size.CHARS_PER_TOKEN / KB))
+        job = self.sidecar(kind="reviewer", model="haiku", effort="low", contextFiles=[big])
+        size = dispatch_size.dispatch_size([job])
+        per = size["perJob"][0]
+        self.assertLess(per["residentTokens"], point)
+        self.assertEqual((per["load"], per["residentOver"] > 0), (31000, True))
+        self.assertEqual(len(dispatch_size.over_window_lines(size)), 1)
+
+    def test_the_ceiling_counts_the_load_too(self):
+        self.rows("anthropic", "author", [30000] * 6)
+        import model_registry
+        point = model_registry.compaction_point(model_registry.resolve("haiku", model_registry.load()))[0]
+        self.file("spans.py", math.ceil((point - 20000) * dispatch_size.CHARS_PER_TOKEN / KB))
+        brief = "Edit `spans.py`.\n```task\n" + json.dumps({"tier": "executor", "check": ["true"],
+                                                              "writeSet": ["spans.py"]}) + "\n```\n"
+        job = {"label": "c", "prompt": brief, "kind": "author", "model": "haiku", "effort": "low", "workdir": self.root}
+        per = dispatch_size.dispatch_size([job], root=self.root)["perJob"][0]
+        self.assertEqual((per["over"], per["ceilingOver"]), (0, True))
+
+
 class CompactionPointTests(Plant):
     """A job's fit counts the files its brief names, against the input point it compacts at, for its own flags."""
 
@@ -534,15 +657,12 @@ class CompactionPointTests(Plant):
         self.assertLessEqual(per["tokens"], dispatch_size.IMAGE_TOKENS + 100)
         self.assertGreaterEqual(per["tokens"], dispatch_size.IMAGE_TOKENS)
 
-    def test_a_full_window_job_is_sized_against_the_models_own_window(self):
+    def test_no_job_field_lifts_the_login_cap(self):
         import model_registry
         entry = model_registry.resolve("opus", model_registry.load())
         plain = model_registry.compaction_point(entry, {"transport": "anthropic"})
-        full = model_registry.compaction_point(entry, {"transport": "anthropic", "window": "full"})
         self.assertEqual(plain, (467000, "auto-compact"))
-        self.assertGreater(full[0], plain[0])
-        job, _big = self.named_job("full", 1300, window="full")
-        self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], full[0])
+        self.assertEqual(model_registry.compaction_point(entry, {"transport": "anthropic", "window": "full"}), plain)
 
     def test_an_anthropic_job_is_measured_against_the_login_capped_point_whatever_its_marks(self):
         job, _big = self.named_job("res", 700, resident=True, kind="author")
@@ -568,7 +688,7 @@ class CompactionPointTests(Plant):
 
     def test_another_transport_keeps_its_current_point(self):
         import model_registry
-        sol = model_registry.usable_window(model_registry.resolve("sol", model_registry.load()))
+        sol = model_registry.compaction_point(model_registry.resolve("sol", model_registry.load()))[0]
         job, _big = self.named_job("sol", 1, resident=True)
         job["model"] = "sol"
         self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], sol)
@@ -600,14 +720,14 @@ class CompactionPointTests(Plant):
         lines = dispatch_size.fit_lines(dispatch_size.dispatch_size([job, unpinned]))
         self.assertEqual(len(lines), 1, lines)
         self.assertRegex(lines[0], r"^fit: `res` \(opus\) reading \d+ tokens \(\d+ if every named file is read whole\), \d+% of its "
-                                   r"compaction point, 467000 tokens \(auto-compact\); largest: .*named-res\.md \d+k; "
+                                   r"compaction point, 467000 tokens \(auto-compact\); harness load unmeasured[^;]*; largest: .*named-res\.md \d+k; "
                                    r"1 named path not resolved, counted 0$")
 
     def test_the_lens_seat_overage_inherits_the_fix_through_the_shared_fit(self):
         import lens_briefs
         import model_registry
         data = model_registry.load()
-        point = model_registry.usable_window(model_registry.resolve("haiku", data))
+        point = model_registry.compaction_point(model_registry.resolve("haiku", data))[0]
         big = self.file("named-big.md", math.ceil(point * dispatch_size.CHARS_PER_TOKEN / KB) + 40)
         context = self.file("ctx.md", 1)
         refusal = lens_briefs.seat_overage(key="k", token="haiku", body="Read the list.", context_path=context,
@@ -846,6 +966,28 @@ class PreflightTests(Plant):
         self.assertTrue(any("job codify-derive: Write on kind 'lens': a job that writes is an author: "
                             "use kind author" in line for line in lines), lines)
 
+    def test_a_job_field_the_fan_out_refuses_is_unmet_never_clean(self):
+        """`plan_job` refuses a retired `window`, a bad `cacheTtl`, a string where a list is due and a conflicting
+        `rows` + `alias` from the job's fields alone; the preflight runs those same predicates, so a clean
+        preflight never precedes that refusal."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        brief = self.text("brief2.md", "Do the work.\n")
+        base = {"label": "j1", "promptFile": brief, "kind": "author", "model": "opus", "effort": "high",
+                "tier": "executor"}
+        for extra, token in (({"window": "full"}, "`window` is retired"),
+                             ({"cacheTtl": "forever"}, "`cacheTtl` must be"),
+                             ({"contextFiles": "a.md"}, "`contextFiles` must be a list"),
+                             ({"excludePlans": "x"}, "`excludePlans` must be a list"),
+                             ({"rows": {"opus": "high"}}, "`rows` or `alias` + `effort`")):
+            lines = self.lines([dict(base, **extra)])
+            unmet = [line for line in lines if line.startswith("preflight: unmet:") and token in line]
+            self.assertEqual(len(unmet), 1, (extra, lines))
+            self.assertIn("job j1", unmet[0], unmet[0])
+            self.assertFalse(any("preflight: clean" in line for line in lines), lines)
+        self.assertEqual(self.lines([dict(base, cacheTtl="1h")]), ["preflight: clean: every launch precondition is met"])
+
     def test_a_malformed_pin_basis_is_refused_naming_its_field_and_accepted_shape(self):
         """A job's `pick`/`spec` is one of the strings `slice_pins.md` names; a dict once reached the size
         reading and crashed it with a traceback instead of the preflight naming the field."""
@@ -1045,6 +1187,11 @@ class PreflightTests(Plant):
         self.assertRegex(hit[0], r"reading \d+ tokens")
         self.assertFalse(any(line.startswith("preflight: clean") for line in lines), lines)
 
+    def test_a_resident_seat_past_its_point_is_refused_even_carrying_window_full(self):
+        job, _point = self.over_window_job("lens")
+        job["window"] = "full"
+        self.assertEqual(len(dispatch_size.over_window_lines(dispatch_size.dispatch_size([job], self.root))), 1)
+
     def named_only_reviewer(self):
         """A reviewer whose brief only names two files that together pass its window; neither is listed or inlined."""
         import _hook_state
@@ -1072,7 +1219,7 @@ class PreflightTests(Plant):
         import lens_briefs
         import model_registry
         data = model_registry.load()
-        point = model_registry.usable_window(model_registry.resolve("haiku", data))
+        point = model_registry.compaction_point(model_registry.resolve("haiku", data))[0]
         half_kb = math.ceil(point * dispatch_size.CHARS_PER_TOKEN * 0.6 / KB)
         body = "Search `%s` and `%s`." % (self.file("seat-a.md", half_kb), self.file("seat-b.md", half_kb))
         self.assertIsNone(lens_briefs.seat_overage(key="k", token="haiku", body=body, context_path=self.file("sctx.md", 1),

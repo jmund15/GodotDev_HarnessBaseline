@@ -22,7 +22,8 @@ copy of the band list would drift from the thresholds it gates on, which is the 
 this registry removes.
 
 `gate.minBand` is a FLOOR on THIS session's own pressure: a paid transport declares `On pace`
-so it refuses to spend dollars at Surplus, where prepaid quota is expiring unused. There is no
+so it refuses to spend dollars at Surplus, where prepaid quota is expiring unused. A row on a
+`free` transport spends no dollars, so it declares none. There is no
 per-row CEILING on the provider's own pressure. A plan-quota window refuses exactly where the
 native route does — exhausted, or a band it cannot read — because a per-row ceiling (`Ahead` on
 every codex row) refused at pressure the provider was nowhere near while the native Anthropic
@@ -117,11 +118,12 @@ WORKFLOW_TERMINAL_STATES = ("completed", "failed", "killed", "cancelled", "error
 _LEGAL_STATUS_SCOPES = {"all", "sidecar"}
 
 # WHICH CURRENCY a transport spends, which is the axis suspension decisions turn on. `marginal-usd`
-# bills real money per call; `plan-quota` draws on prepaid allowance that expires unused. The two
-# are not comparable and the cheaper one flips with circumstance, so the cost model is recorded
-# rather than inferred from price fields -- a plan-quota transport can carry per-token prices for
-# accounting and still cost nothing marginal to run.
-_LEGAL_COST_MODELS = {"marginal-usd", "plan-quota"}
+# bills real money per call; `plan-quota` draws on prepaid allowance that expires unused; `free`
+# spends neither (a local GPU, a free cloud tier) and is limited only by its slots and its service.
+# The first two are not comparable and the cheaper one flips with circumstance, so the cost model is
+# recorded rather than inferred from price fields -- a plan-quota transport can carry per-token
+# prices for accounting and still cost nothing marginal to run.
+_LEGAL_COST_MODELS = {"marginal-usd", "plan-quota", "free"}
 
 # The call shape a model's backend answers on. Absent keeps the Chat Completions default;
 # `messages` takes the native Anthropic path, and `chat`/`responses` use a proxy.
@@ -408,6 +410,9 @@ def _validate(data, target):
             raise RegistryError(f"{target}: transport {tname!r} must be an object")
         _validate_driver_notes(tcfg.get("driverNotes"), f"{target}: transport {tname}")
         _validate_image_route(tcfg.get("imageRoute"), f"{target}: transport {tname}")
+        cap = tcfg.get("childOutputCap")
+        if cap is not None and (type(cap) is not int or cap <= 0):
+            raise RegistryError(f"{target}: transport {tname} childOutputCap must be a positive integer")
         if "longContextTier" in tcfg:
             _validate_long_context_tier(tcfg["longContextTier"], f"{target}: transport {tname}")
         cost = tcfg.get("costModel")
@@ -421,6 +426,10 @@ def _validate(data, target):
             raise RegistryError(
                 f"{target}: transport {tname} needs exactly one capacityProbe or "
                 "capacityUnsupported declaration")
+        if cost == "free" and capacity_probe is not None:
+            raise RegistryError(
+                f"{target}: transport {tname} is free, so it has no amount to probe: declare "
+                "capacityUnsupported with the reason")
         if capacity_probe is not None:
             if not isinstance(capacity_probe, dict):
                 raise RegistryError(f"{target}: transport {tname} capacityProbe must be an object")
@@ -623,6 +632,9 @@ def _validate(data, target):
                 value = price.get(field)
                 if field in price and (isinstance(value, bool) or not isinstance(value, (int, float))):
                     raise RegistryError(f"{target}: model {mid} price {field!r} must be a number")
+                if field in price and value and transports[transport].get("costModel") == "free":
+                    raise RegistryError(f"{target}: model {mid} carries a nonzero price {field!r} on free transport "
+                                        f"{transport}; a route that charges is marginal-usd or plan-quota")
 
         # A callable row declares its context window, or a `windowGap` saying where the window was
         # looked for and not found: a dispatch is sized against `context-window`, and a silent absence
@@ -650,9 +662,14 @@ def _validate(data, target):
         if not isinstance(gate, dict):
             raise RegistryError(f"{target}: model {mid} missing 'gate' object")
         min_band = gate.get("minBand")
-        if not min_band:
+        if transports[transport].get("costModel") == "free":
+            if min_band:
+                raise RegistryError(f"{target}: model {mid} declares gate.minBand on free transport {transport}; the "
+                                    f"floor saves dollars while plan quota expires, and a free row spends none")
+        elif not min_band:
             raise RegistryError(f"{target}: model {mid} gate missing 'minBand'")
-        band_rank(min_band)  # raises naming the legal set
+        else:
+            band_rank(min_band)  # raises naming the legal set
         if auth == "gated" and not isinstance(gate.get("minBalanceUSD"), (int, float)):
             raise RegistryError(f"{target}: gated model {mid} needs a numeric gate.minBalanceUSD")
         if (transports[transport].get("capacityUnsupported") is not None
@@ -2429,7 +2446,7 @@ def set_transport_state(transport, state, path=None, data=None, reason=None):
 
 
 def cost_model_for(transport, data=None):
-    """Which currency the transport spends: 'marginal-usd' or 'plan-quota'."""
+    """Which currency the transport spends: 'marginal-usd', 'plan-quota' or 'free' (neither)."""
     data = data if data is not None else load()
     cfg = (data.get("transports") or {}).get(transport)
     if cfg is None:
@@ -3298,7 +3315,7 @@ def launch_facts(model, plan=None, effort=None, long_context=False, client=None)
         "SC_MODEL": entry["id"],
         "SC_ALIAS": entry["alias"],
         "SC_AUTH_TIER": entry["authTier"],
-        "SC_MIN_BAND": gate["minBand"],
+        "SC_MIN_BAND": gate.get("minBand", ""),  # a free route declares no floor
         "SC_MIN_BALANCE": gate.get("minBalanceUSD", ""),
         "SC_FRESH_RATE": (entry.get("price") or {}).get("cacheMissPer1M", ""),
         "SC_TRANSPORT_STATE": "available" if usable else "unavailable",
@@ -3330,8 +3347,7 @@ def launch_facts(model, plan=None, effort=None, long_context=False, client=None)
                 raise RegistryError("SIDECAR_COMPACT_AT_TOKENS must be a positive integer")
             window = anthropic_window(entry, long_context,
                                       int(cap) if cap.isdigit() and int(cap) > 0 else None,
-                                      int(override) if override else None,
-                                      os.environ.get("SIDECAR_FULL_WINDOW") == "1")
+                                      int(override) if override else None)
         except RegistryError as exc:
             facts["SC_AC_ERROR"] = str(exc)
         else:
@@ -3402,9 +3418,9 @@ def _cmd_available(argv):
         # cheaper one flips with circumstance: a dollar rate is only meaningful against a
         # balance, a plan-quota row against an allowance that expires unused either way.
         # A plan-quota row's list rate is an internal weight (plan_usage_calc.py), never a price
-        # this dispatch pays, so it prints no dollars.
+        # this dispatch pays, so it prints no dollars; a free row has none to print.
         cost = data["transports"][m["transport"]]["costModel"]
-        money = f"; ${rate}/1M in" if rate is not None and cost != "plan-quota" else ""
+        money = f"; ${rate}/1M in" if rate is not None and cost == "marginal-usd" else ""
         monthly_cap = (m.get("planCapUSD") or {}).get("monthly")
         cap = (f"; monthly plan cap ${monthly_cap:g}"
                if cost == "plan-quota" and isinstance(monthly_cap, (int, float)) else "")
@@ -3473,8 +3489,9 @@ def _effective_window(limits, use_max, tier=None):
 def effective_window(entry, use_max=False):
     """The registry window a launcher declares (max under `use_max`), held under its price step.
 
-    Proxy consumers reserve the output cap. Anthropic launchers use anthropic_window instead:
-    Claude Code does not honor MAX_CONTEXT_TOKENS for Claude names. None means no stated window.
+    This is the window a launcher declares, not where its child compacts: `compaction_point` owns that.
+    Anthropic launchers use anthropic_window: Claude Code does not honor MAX_CONTEXT_TOKENS for Claude names.
+    None means no stated window.
     """
     return _effective_window(entry.get("limits") or {}, use_max, _tier_of(entry))
 
@@ -3496,7 +3513,20 @@ def login_compact_window():
     return value if type(value) is int and 100000 <= value <= 1000000 else None
 
 
-def anthropic_window(entry, use_max=False, max_output=None, compact_override=None, full_window=False):
+# The client's reserve below its window, the same on every transport that runs the Claude Code client
+# (`anthropic_window` docstring): the output it sets aside, clamped, plus a fixed margin no launcher moves.
+CLIENT_DEFAULT_OUTPUT = 32000  # the output cap a child that is passed none carries
+CLIENT_OUTPUT_RESERVE = 20000
+CLIENT_RESERVE = 13000
+
+
+def client_reserve(cap):
+    """Tokens the Claude Code client holds back below its window: `min(cap, 20000) + 13000`, the client's own
+    32000 default standing in for an unstated `cap`. The one place the clamp and the margin are written."""
+    return min(cap if cap is not None else CLIENT_DEFAULT_OUTPUT, CLIENT_OUTPUT_RESERVE) + CLIENT_RESERVE
+
+
+def anthropic_window(entry, use_max=False, max_output=None, compact_override=None):
     r"""Claude Code 2.1.291 window contract, extracted from claude.exe on 2026-10-08.
 
     Binary: `var OEt=20000`; `z4`: `Math.min(e.maxOutputTokens,OEt)` then `return g-r`;
@@ -3513,14 +3543,14 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     than its catalog window. Non-Claude names retain the existing MAX_CONTEXT_TOKENS contract.
 
     Every Claude row compacts at the smaller of that window and the login's `autoCompactWindow`
-    (login_compact_window); an explicit compact_override (-K) and `full_window` are not capped. `contextWindow` is the enforced
+    (login_compact_window); only an explicit compact_override (-K), a measurement's pin, is not capped. `contextWindow` is the enforced
     window (equal to `autoCompactWindow`), which the run record and its turn-1 percentage report.
     """
     limits = entry.get("limits") or {}
     model = entry["id"]
     window = effective_window(entry, use_max)
     if not model.lower().startswith("claude-"):
-        login = None if full_window else login_compact_window()
+        login = login_compact_window()
         if window and login and login < window:
             return {"model": model, "autoCompactWindow": login, "maxContextTokens": window,
                     "contextWindow": login, "contextWindowSource": "anthropic-auto-compact"}
@@ -3529,10 +3559,10 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     operating_point = compact_override if compact_override is not None else limits.get("compactAtTokens")
     if operating_point:
         cap = max_output if max_output is not None else output_cap(limits, use_max, _tier_of(entry))
-        window = int(operating_point) + min(cap if cap is not None else 32000, 20000) + 13000
+        window = int(operating_point) + client_reserve(cap)
         if window > int(limits.get("contextTokens") or 0):
             raise RegistryError(f"{model}: compact point {operating_point} plus the client reserve exceeds contextTokens")
-    if compact_override is None and not full_window and window is not None:
+    if compact_override is None and window is not None:
         login = login_compact_window()
         if login:
             window = min(window, login)
@@ -3561,8 +3591,7 @@ def _cmd_anthropic_window(argv):
         raise RegistryError("SIDECAR_COMPACT_AT_TOKENS must be a positive integer")
     print(json.dumps(anthropic_window(resolve(argv[0]), flags == ["--max"],
                                       int(cap) if cap.isdigit() else None,
-                                      int(override) if override else None,
-                                      os.environ.get("SIDECAR_FULL_WINDOW") == "1")))
+                                      int(override) if override else None)))
     return 0
 
 
@@ -3578,8 +3607,8 @@ def _cmd_context_window(argv):
     return 0
 
 
-# Proxy consumers reserve the output cap; Anthropic's reserve is owned by anthropic_window.
-# Bound the proxy cap at a quarter of its window so it cannot compact before 75%, the measured
+# The client reserve below a window is `client_reserve`'s, on every transport; `output_cap` only chooses the cap.
+# Bound the cap at a quarter of its window so it cannot compact before 75%, the measured
 # floor below which compaction read as a defect (codex_proxy_sidecar.sh: 70% on luna).
 OUTPUT_WINDOW_DIVISOR = 4
 
@@ -3594,33 +3623,44 @@ def output_cap(limits, use_max=False, tier=None):
     return int(cap) if window is None else min(int(cap), window // OUTPUT_WINDOW_DIVISOR)
 
 
-def usable_window(entry, use_max=False):
-    """Tokens a child may hold before its client compacts: the effective window less the output cap, the
-    compaction reserve; None when the row states no window."""
+def child_output_cap(entry, data=None):
+    """The output cap the launcher of `entry`'s transport passes every child in place of `output_cap`, and also
+    subtracts from the window it declares (the transport's `childOutputCap`); None where the launcher passes
+    `output_cap`. One value read by the launcher (`child-output-cap`) and by `compaction_point`."""
+    data = load() if data is None else data
+    cap = (((data.get("transports") or {}).get(entry.get("transport")) or {}).get("childOutputCap"))
+    return int(cap) if cap else None
+
+
+def compaction_point(entry, job=None, data=None):
+    """`(tokens, source)` of the input a child on `entry` holds before its client compacts, for every row, on every
+    transport that runs the Claude Code client: the window the client acts on, less `client_reserve` of the
+    output cap the launcher passes (`output_cap`, or the transport's `child_output_cap`). That window is
+    `anthropic_window`'s `autoCompactWindow` (source `auto-compact`: the login's cap, or a Claude row's operating
+    point), else the window the launcher declares (source `declared-window`), which a transport with a
+    `child_output_cap` declares that cap below the row's window, as `sc_declared_context_window` does. `job`
+    selects the larger window (`longContext`, `-M`) only where the row has one: a row with no window past its
+    default is sized at the default, as its launcher refuses `-M` there.
+    `(None, "unknown")` when the row states no window."""
     limits = entry.get("limits") or {}
-    tier = _tier_of(entry)
-    window = _effective_window(limits, use_max, tier)
-    if window is None:
-        return None
-    return window - (output_cap(limits, use_max, tier) or 0)
-
-
-CLIENT_OUTPUT_RESERVE = 20000
-CLIENT_RESERVE = 13000
-
-
-def compaction_point(entry, job=None):
-    """`(tokens, source)` of the input a child on `entry` holds before its client compacts. With `job`, on
-    any transport, it is `anthropic_window`'s `autoCompactWindow`, less the client
-    reserves its docstring gives (source `auto-compact`). Without `job`, or for a row with no
-    auto-compact window, it is `usable_window` (source `usable-window`); `(None, ...)` when the row states no window."""
-    if job is not None:
-        auto = anthropic_window(entry, full_window=job.get("window") == "full")
-        if auto.get("autoCompactWindow"):
-            cap = output_cap(entry.get("limits") or {}, False, _tier_of(entry))
-            reserve = min(cap if cap is not None else 32000, CLIENT_OUTPUT_RESERVE) + CLIENT_RESERVE
-            return auto["autoCompactWindow"] - reserve, "auto-compact"
-    return usable_window(entry), "usable-window"
+    use_max = bool(job and job.get("longContext"))
+    auto = anthropic_window(entry, use_max)
+    if use_max and not (auto.get("autoCompactWindow") or auto.get("contextWindow")):
+        use_max = False
+        auto = anthropic_window(entry, False)
+    window, source = auto.get("autoCompactWindow"), "auto-compact"
+    if not window:
+        window, source = auto.get("contextWindow") or auto.get("maxContextTokens"), "declared-window"
+    if not window:
+        return None, "unknown"
+    cap = output_cap(limits, use_max, _tier_of(entry))
+    reserve = child_output_cap(entry, data)
+    if reserve:
+        cap = reserve
+        declared = auto.get("maxContextTokens") or window
+        if declared > 2 * reserve and declared - reserve < window:
+            window, source = declared - reserve, "declared-window"
+    return window - client_reserve(cap), source
 
 
 def _cmd_max_output(argv):
@@ -3632,6 +3672,17 @@ def _cmd_max_output(argv):
         return 2
     entry = resolve(argv[0])
     cap = output_cap(entry.get("limits") or {}, len(argv) == 2, _tier_of(entry))
+    if cap is not None:
+        print(cap)
+    return 0
+
+
+def _cmd_child_output_cap(argv):
+    """Print `child_output_cap` for <model>'s transport, or nothing when its launcher passes `output_cap`."""
+    if len(argv) != 1:
+        print("usage: model_registry.py child-output-cap <model>", file=sys.stderr)
+        return 2
+    cap = child_output_cap(resolve(argv[0]))
     if cap is not None:
         print(cap)
     return 0
@@ -3758,6 +3809,7 @@ _COMMANDS = {
     "context-window": _cmd_context_window,
     "anthropic-window": _cmd_anthropic_window,
     "max-output": _cmd_max_output,
+    "child-output-cap": _cmd_child_output_cap,
     "rail-tier": _cmd_rail_tier,
     "resolve": _cmd_resolve,
     "for-role": _cmd_for_role,

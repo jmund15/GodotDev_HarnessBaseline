@@ -50,6 +50,41 @@ def main():
     muse["gate"]["minBalanceUSD"] = 1.0
     cases.append(("unsupported amount cannot satisfy a positive floor", not accepted(positive_floor)))
 
+    # `free`: a route that spends neither plan quota nor dollars (a local GPU, a free cloud tier).
+    def free_row(doc):
+        return next(row for row in doc["models"] if row.get("alias") == "inkling-local")
+    cases.append(("local, opencode and opencode-cli are registered free", all(
+        live["transports"][name]["costModel"] == "free" for name in ("local", "opencode", "opencode-cli"))))
+    cases.append(("no row on a free route declares a host-band floor", not [
+        row["id"] for row in live["models"]
+        if live["transports"][row["transport"]]["costModel"] == "free" and "minBand" in row["gate"]]))
+    cases.append(("the local route caps itself at its one GPU slot", (mr.child_cap("local", live) or [None])[0] == 1))
+    priced = copy.deepcopy(live)
+    free_row(priced)["price"]["outputPer1M"] = 0.4
+    cases.append(("a row with a price is refused on a free route", not accepted(priced)))
+    floored = copy.deepcopy(live)
+    free_row(floored)["gate"] = {"minBand": "Surplus"}
+    cases.append(("a host-band floor is refused on a free route", not accepted(floored)))
+    metered = copy.deepcopy(live)
+    metered["transports"]["local"].pop("capacityUnsupported")
+    metered["transports"]["local"]["capacityProbe"] = dict(live["transports"]["codex"]["capacityProbe"], kind="balance")
+    cases.append(("a free route with an amount probe is refused", not accepted(metered)))
+    unfloored = copy.deepcopy(live)
+    next(row for row in unfloored["models"] if row.get("alias") == "sonnet")["gate"].pop("minBand")
+    cases.append(("a row on any other route still needs its floor", not accepted(unfloored)))
+
+    import contextlib
+    import io
+    facts = mr.launch_facts("inkling-local")
+    cases.append(("the launcher facts carry a free row's cost model and an empty floor",
+                  facts.get("SC_MIN_BAND") == "" and facts.get("SC_COST_MODEL") == "free"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        mr.main(["available"])
+    lines = out.getvalue().splitlines()
+    facts = lines[next(i for i, ln in enumerate(lines) if ln.split()[:1] == ["inkling-local"]) + 1]
+    cases.append(("`available` prints `free` and no dollar rate for a free row", "; free" in facts and "/1M in" not in facts))
+
     failed = [name for name, ok in cases if not ok]
     for name, ok in cases:
         print(("ok   " if ok else "FAIL ") + name)

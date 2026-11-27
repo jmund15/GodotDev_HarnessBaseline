@@ -93,6 +93,17 @@ host_gate() { # <status> <band> <floor> [authorized] [mode]
 
 expect_host_rc() { local label="$1" want="$2"; shift 2; local got; got="$(host_gate "$@")"; [ "${got%%|*}" = "$want" ] && ok "$label" || bad "$label" "$got"; }
 
+# A free route spends no dollars and no quota, so its rows declare no host-band floor and nothing about the
+# host's own plan can refuse it: not a spent plan, a broken reader or a resolver that fails.
+expect_rc "a free route passes with no amount" 0 unsupported "" unsupported free 0
+got="$(gate unsupported "" unsupported free 0)"
+case "$got" in *"capacity: free route"*) ok "the free admission names itself" ;; *) bad "the free admission names itself" "$got" ;; esac
+expect_host_rc "a row with no floor is never refused on a spent host plan" 0 exhausted Exhausted ""
+expect_host_rc "...nor on a broken host reader" 0 available Surplus "" 0 runner-fail
+plant_resolver 3
+HOST_SEAT="" expect_host_rc "...nor on a seat resolver that fails" 0 available Surplus ""
+HOST_SEAT="" expect_host_rc "a row with a floor still refuses on a seat resolver that fails" 5 available Surplus Surplus
+plant_resolver 0 anthropic
 expect_rc "available quota passes" 0 available "On pace" live plan-quota 0
 expect_rc "exhausted quota refuses with 10" 10 exhausted Exhausted live plan-quota 0
 expect_rc "-A cannot override exhaustion" 10 exhausted Exhausted live plan-quota 0 1

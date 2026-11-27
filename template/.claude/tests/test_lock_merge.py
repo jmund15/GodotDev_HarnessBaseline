@@ -15,6 +15,9 @@ Cases:
 - the merged file has no repeated row key, keeps the rows both sides still hold or added, and drops the row one side deleted;
 - `.gitattributes` declares the lock driver, and a jsonl union merge keeps both appends;
 - index_commit writes the lock through the driver's serializer (`dump_lock`);
+- measurement policy (`--measurement`, the durations cache): one-sided unit edits both apply, a unit both
+  sides changed takes the side with the newer `updated_at`, `updated_at` takes the max, a changed scalar
+  on both sides still conflicts, and a git rebase through the registered driver is clean;
 - end-to-end: a lane commit rebased onto a moved main with a different lock row is clean, and
   pushes to a land ref with no cherry-pick;
 - a shared checkout with an untouched dirty file fast-forwards and keeps the file; one with a
@@ -38,6 +41,9 @@ TOOLS = REPO / ".claude" / "tools"
 LOCK = ".claude/baseline.lock.json"
 DRIVER_CMD = "python3 %s %%O %%A %%B" % DRIVER.as_posix()
 LOCK_ATTR = ".claude/baseline.lock.json merge=baseline-lock"
+DURATIONS = "durations.json"
+DURATIONS_ATTR = DURATIONS + " merge=measurement-cache"
+MEASURE_CMD = "python3 %s --measurement %%O %%A %%B" % DRIVER.as_posix()
 
 failures = []
 
@@ -320,6 +326,93 @@ def case_shared_catch_up(tmp):
           "rc=%s" % refused.returncode)
 
 
+def durations_text(units, updated_at, walls=None, **top):
+    obj = {"schema_version": 3, "description": "d", "updated_at": updated_at}
+    obj.update(top)
+    obj["units"] = {k: {"seconds": v, "tests": 1} for k, v in sorted(units.items())}
+    obj["batch_wall"] = {k: {"wall": v, "consecutive_failures": 0} for k, v in sorted((walls or {}).items())}
+    return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+
+
+def direct_measure(tmp, base_text, ours_text, theirs_text):
+    tmp.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for name, text in (("O.json", base_text), ("A.json", ours_text), ("B.json", theirs_text)):
+        (tmp / name).write_text(text, encoding="utf-8", newline="\n")
+        paths.append(str(tmp / name))
+    proc = subprocess.run([sys.executable, str(DRIVER), "--measurement", *paths],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return proc.returncode, proc.stderr, (tmp / "A.json").read_text(encoding="utf-8")
+
+
+def case_measurement_policy(tmp):
+    base = durations_text({"A": 1.0, "B": 1.0, "C": 1.0}, "2026-01-01T00:00:00Z")
+    ours = durations_text({"A": 2.0, "B": 1.0, "C": 5.0}, "2026-01-02T00:00:00Z")
+    theirs = durations_text({"A": 1.0, "B": 3.0, "C": 7.0, "D": 4.0}, "2026-01-03T00:00:00Z")
+    want = {"A": 2.0, "B": 3.0, "C": 7.0, "D": 4.0}
+    rc, err, merged = direct_measure(tmp / "m1", base, ours, theirs)
+    obj = json.loads(merged) if rc == 0 else {}
+    units = {k: v["seconds"] for k, v in obj.get("units", {}).items()}
+    check("measurement: one-sided edits apply, a both-changed unit takes the newer side, updated_at is the max",
+          rc == 0 and units == want and obj.get("updated_at") == "2026-01-03T00:00:00Z",
+          "rc=%s err=%s units=%r" % (rc, err, units))
+    check("measurement: the merged bytes keep the file's own layout (sorted keys, indent 2, one trailing newline)",
+          rc == 0 and merged == json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+          and list(obj["units"]) == sorted(obj["units"]))
+    rc, _, merged = direct_measure(tmp / "m2", base, theirs, ours)
+    units = {k: v["seconds"] for k, v in json.loads(merged)["units"].items()} if rc == 0 else {}
+    check("measurement: swapping the sides gives the same units", rc == 0 and units == want,
+          "rc=%s units=%r" % (rc, units))
+    rc, err, kept = direct_measure(tmp / "m3", base,
+                                   durations_text({"A": 1.0}, "2026-01-02T00:00:00Z", schema_version=4),
+                                   durations_text({"A": 1.0}, "2026-01-03T00:00:00Z", schema_version=5))
+    check("measurement: a scalar both sides changed differently exits 1 and names it, side intact",
+          rc == 1 and "schema_version" in err and '"schema_version": 4' in kept, "rc=%s err=%s" % (rc, err))
+    rc, _, merged = direct_measure(tmp / "m4", base,
+                                   durations_text({"A": 1.0, "B": 1.0}, "2026-01-02T00:00:00Z"),
+                                   durations_text({"A": 1.0, "C": 1.0}, "2026-01-03T00:00:00Z"))
+    units = list(json.loads(merged)["units"]) if rc == 0 else []
+    check("measurement: units each side dropped are dropped", rc == 0 and units == ["A"],
+          "rc=%s units=%r" % (rc, units))
+    rc, err, merged = direct_measure(tmp / "m5", base,
+                                     durations_text({"A": 1.0, "B": 1.0}, "2026-01-02T00:00:00Z"),
+                                     durations_text({"A": 1.0, "B": 1.0, "C": 9.0}, "2026-01-03T00:00:00Z"))
+    units = {k: v["seconds"] for k, v in json.loads(merged)["units"].items()} if rc == 0 else {}
+    check("measurement: a unit one side dropped and the other re-measured keeps the measurement",
+          rc == 0 and units == {"A": 1.0, "B": 1.0, "C": 9.0}, "rc=%s err=%s units=%r" % (rc, err, units))
+    rc, err, merged = direct_measure(tmp / "m6", base,
+                                     durations_text({"A": 1.0, "B": 1.0, "C": 9.0}, "2026-01-03T00:00:00Z"),
+                                     durations_text({"A": 1.0, "B": 1.0}, "2026-01-02T00:00:00Z"))
+    units = {k: v["seconds"] for k, v in json.loads(merged)["units"].items()} if rc == 0 else {}
+    check("measurement: the same, with the sides swapped",
+          rc == 0 and units == {"A": 1.0, "B": 1.0, "C": 9.0}, "rc=%s err=%s units=%r" % (rc, err, units))
+
+
+def case_measurement_rebase(tmp):
+    repo = new_repo(tmp / "r1", lock_text(BASE_FILES))
+    git(repo, "config", "merge.measurement-cache.driver", MEASURE_CMD)
+    (repo / ".gitattributes").write_text(LOCK_ATTR + "\n" + DURATIONS_ATTR + "\n", encoding="utf-8", newline="\n")
+    (repo / DURATIONS).write_text(durations_text({"A": 1.0, "B": 1.0}, "2026-01-01T00:00:00Z"),
+                                  encoding="utf-8", newline="\n")
+    git(repo, "add", ".gitattributes", DURATIONS)
+    git(repo, "commit", "-q", "-m", "durations")
+    git(repo, "checkout", "-q", "-b", "lane")
+    (repo / DURATIONS).write_text(durations_text({"A": 2.0, "B": 1.0}, "2026-01-02T00:00:00Z"),
+                                  encoding="utf-8", newline="\n")
+    git(repo, "commit", "-q", "-am", "lane durations")
+    git(repo, "checkout", "-q", "main")
+    (repo / DURATIONS).write_text(durations_text({"A": 1.0, "B": 3.0}, "2026-01-03T00:00:00Z"),
+                                  encoding="utf-8", newline="\n")
+    git(repo, "commit", "-q", "-am", "main durations")
+    git(repo, "checkout", "-q", "lane")
+    rc = git(repo, "rebase", "main", check_rc=False).returncode
+    obj = json.loads((repo / DURATIONS).read_text(encoding="utf-8")) if rc == 0 else {}
+    units = {k: v["seconds"] for k, v in obj.get("units", {}).items()}
+    check("a lane durations commit rebased onto a moved main is clean and keeps both measurements",
+          rc == 0 and units == {"A": 2.0, "B": 3.0} and obj.get("updated_at") == "2026-01-03T00:00:00Z",
+          "rc=%s units=%r" % (rc, units))
+
+
 CASES = [
     case_two_new_rows,
     case_same_row_different_values,
@@ -331,6 +424,8 @@ CASES = [
     case_index_commit_shares_lock_format,
     case_lane_rebase_and_land,
     case_shared_catch_up,
+    case_measurement_policy,
+    case_measurement_rebase,
 ]
 
 

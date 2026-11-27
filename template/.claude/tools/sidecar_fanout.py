@@ -127,9 +127,6 @@ carries (default: the session's active record; `false` opts out). Per job:
     armDisclosure         bare|pointer|full -> `-D`; kind `arm` only (an arm's disclosure is the experiment)
     tier                  the work's tier -> `-Q`: the pin must serve it. Omitted, the `kind` row's tier
                           (`guards/tool_profiles.json`) applies; an unknown tier refuses with the known list
-    window                "full" -> the job skips the login's compaction cap (`SIDECAR_FULL_WINDOW`) and compacts
-                          at its row's own point: `compactAtTokens` when the row sets one, else the model's
-                          window; any other value refuses
     cacheTtl              5m|1h -> the child's prompt-cache lifetime (`SIDECAR_CACHE_TTL`; Anthropic seats only). Omitted,
                           the kind row's (`gate` 1h) else 5m. The wait clamp follows it: 270 s on 5m, the Bash
                           ceiling on 1h. A 1h job stays a sidecar: a Workflow agent caches 5 minutes. When to
@@ -740,7 +737,6 @@ PAID_BY = {}
 EFFORT_FACTS = {}
 _EFFORT_RECORD_FIELDS = ("requestedEffort", "effort", "effortCase", "justification", "pick")
 CACHE_TTL = {}  # label -> the job's written `cacheTtl`, which the launcher reads as SIDECAR_CACHE_TTL
-FULL_WINDOW = set()  # labels of jobs that opt out of the login's compaction cap (`window: "full"`)
 _LIVE = {}  # {"load": plan -> live launchers}: read once per process, so a 13-job pass costs one table read
 # label -> the `Slot` `plan_job` placed the job in; `main` clears it with FALLBACKS and hands the planned jobs' slots to `Waves`.
 SLOTS = {}
@@ -928,6 +924,17 @@ def _holds(row, load, signature, now):
     return holds, binding[1], binding[2]
 
 
+def _slot_state(row, load):
+    """(open, jobs on it) of a free route's row: open while `load` holds fewer jobs than its `slots` (None: no cap).
+    The lock behind the route is what holds the limit; this only keeps a job from queueing where a plan holds it."""
+    on = len((load or {}).get(row["transport"], ()))
+    return row.get("slots") is None or on < row["slots"], on
+
+
+# A job's draw on a free route: nothing, from no window.
+FREE_DRAIN = {"pct": 0.0, "basis": "measured", "window": None, "headroom": None, "resetsAt": None}
+
+
 def _fit_text(drain):
     """`5h 15% left, this job takes about 44%`: the window the job is priced on, what is left of it, and
     the job's draw, in the terms the owner reads a quota fact in."""
@@ -965,8 +972,8 @@ def place_job(candidates, data, read, now, load, signature):
     """Where a job with `signature` (a tuple, or a function of the plan for a job listing rows) may go among the
     plans `candidates`: every plan's room row, `held` (plan ->
     (holds, drain, committed)) and `unfit` (plan -> its `_unfit_text`) for the readable ones, `fit` the holding rows
-    best first (`provider_bands.pick_key`), or positive-headroom rows most headroom first when none fits,
-    `reopen` the rows a short window blocks that `provider_bands.reopen` says will have room again at its reset
+    best first (`provider_bands.pick_key`), or positive-headroom rows most headroom first when none fits (a free
+    route whose slots are taken comes after them: the job queues on it), `reopen` the rows a short window blocks that `provider_bands.reopen` says will have room again at its reset
     (most room first), `blind` when some plan's reading decides nothing, and the `load` used
     ({plan: [signature]}, `plan_load` when None, read only once a plan is readable). The one ranking `pick_plan`
     and `admission_refusal` share; charging the winner to a load is the caller's."""
@@ -974,11 +981,20 @@ def place_job(candidates, data, read, now, load, signature):
     blind = any(row.get("room") is None and _decides_nothing(row) for row in rows)
     held, unfit = {}, {}
     for row in rows:
+        name = row["transport"]
+        if row.get("free"):
+            if load is None and row.get("slots") is not None:
+                load = plan_load(data)
+            is_open, on = _slot_state(row, load)
+            held[name] = (is_open, FREE_DRAIN, 0.0)
+            if not is_open:
+                unfit[name] = (f"{name} has no open slot: {on} job{'' if on == 1 else 's'} on it, "
+                               f"{provider_bands.slots_text(row['slots'])}")
+            continue
         if row.get("room") is None:
             continue
         if load is None:
             load = plan_load(data)
-        name = row["transport"]
         held[name] = _holds(row, load, signature(name) if callable(signature) else signature, now)
         if not held[name][0]:
             unfit[name] = _unfit_text(row, held[name][1], held[name][2], len(load.get(name, ())), now)
@@ -986,7 +1002,7 @@ def place_job(candidates, data, read, now, load, signature):
                  key=provider_bands.pick_key, reverse=True)
     if not fit:
         fit = sorted((row for row in rows if row.get("headroom", 0) > 0),
-                     key=lambda row: row["headroom"], reverse=True)
+                     key=lambda row: row["headroom"], reverse=True) + [row for row in rows if row.get("free")]
     reopen = []
     for row in rows:
         name = row["transport"]
@@ -1073,11 +1089,13 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
             if info is not None:
                 return (f"{name} reopens {provider_bands.reset_text(info['at'], now)}, "
                         f"room {info['room']:.2f} on {provider_bands.window_name({'name': info.get('longWindow')})}")
-            if row.get("room") is None:
+            if row.get("room") is None and not row.get("free"):
                 return None if _decides_nothing(row) else _why_text(row)
             if name not in held:
                 return None
             ok, drain, _committed = held[name]
+            if row.get("free"):
+                return f"{name} {row['why']}" if ok else placed.unfit[name]
             if not ok:
                 return f"{name} does not hold it: {_fit_text(drain)}"
             return f"{name} {_pick_facts(row)}; {_fit_text(drain)}"
@@ -1105,7 +1123,9 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
                          f"than time, so this job waits for the reset")
         else:
             held_entry = held.get(best["transport"])
-            if held_entry is None:
+            if best.get("free"):
+                fact = best["why"] + ("" if held_entry[0] else "; no plan holds the job, so it waits for the slot")
+            elif held_entry is None:
                 fact = "its capacity cannot be read; the launcher's own meter check decides"
             else:
                 holds, drain = held_entry[:2]
@@ -1236,6 +1256,29 @@ def check_job_kind(job, label):
     except (ValueError, model_registry.RegistryError) as err:
         raise JobError(f"job {label}: {err}") from None
     return kind
+
+
+def check_job_fields(job, label):
+    """Every refusal `plan_job` makes from the job's own fields, with no registry or file read: a retired `window`,
+    a `cacheTtl` outside the allowed values, a string where `contextFiles`/`extraArgs` take a list, and an
+    `excludePlans` that is not a list of names or that holds the job's own `plan`. `dispatch_size`'s preflight calls
+    it, so a clean preflight is never printed over a job the launch refuses on these fields."""
+    if "window" in job:
+        raise JobError(f"job {label}: `window` is retired: no job field lifts the login's compaction cap. Remove it; a "
+                       f"subject past its compaction point takes model_ladder_evidence.md §Compaction's remedies")
+    if job.get("cacheTtl") is not None and job["cacheTtl"] not in tool_profiles.CACHE_TTLS:
+        raise JobError(f"job {label}: `cacheTtl` must be {'|'.join(tool_profiles.CACHE_TTLS)} or absent, got {job['cacheTtl']!r}")
+    # A bare string here iterates per CHARACTER, so a malformed job passes planning and dispatches a
+    # billed launcher with argv full of single letters.
+    for key in ("contextFiles", "extraArgs"):
+        if job.get(key) is not None and not isinstance(job[key], list):
+            raise JobError(f"job {label}: `{key}` must be a list, not "
+                           f"{type(job[key]).__name__} -- a string iterates per character.")
+    excluded = job.get("excludePlans")
+    if excluded is not None and not (isinstance(excluded, list) and all(isinstance(p, str) for p in excluded)):
+        raise JobError(f"job {label}: `excludePlans` must be a list of plan names")
+    if job.get("plan") and job["plan"] in (excluded or []):
+        raise JobError(f"job {label}: `plan` {job['plan']!r} is also in `excludePlans`. Keep one of the two.")
 
 
 IN_FLIGHT_SHARE = 0.5  # unmeasured assumption: a running job has drawn half of what it will; a recorded mid-run drain replaces it
@@ -1424,9 +1467,13 @@ class Waves:
         """Read each plan the fan-out uses and pace it: one stderr line each, naming the plan's binding window. A plan
         that reads no window and is not spent is left to its launcher's gate."""
         self.round()
+        free = []
         for plan in dict.fromkeys(slot.plan for slot in self.slots.values()):
             labels = [label for label, slot in self.slots.items() if slot.plan == plan]
             row = self._row(plan)
+            if row.get("free"):
+                free.append(plan)
+                continue
             spent = self._spent(plan, row)
             if not provider_bands.row_windows(row) and not spent:
                 continue
@@ -1443,6 +1490,9 @@ class Waves:
                 provider_bands.job_drain(plan, None, *self.slots[label].signature)["pct"] for label in labels)
             self._say(f"[fanout] wave {plan}: {len(labels)} jobs, headroom {head:.0f}, summed forecast "
                       f"{total:.1f}, first wave {self._count(plan, state)}" + (f" on {window}" if window else ""))
+        if self.states:  # a free route is never paced; its running jobs are counted so no job moves to a taken slot
+            for plan in free:
+                self.states[plan] = _PlanWave()
         self.round()
 
     def _observe(self, plan, state, row):
@@ -1475,6 +1525,10 @@ class Waves:
         load = {plan: [Running(self.slots[running].signature, flight.started)
                        for running, flight in state.flying.items()]
                 for plan, state in self.states.items()}
+        # A window's reading holds what another session's jobs spent; a slot has no reading, so they are counted.
+        for name in candidates:
+            if provider_bands.is_free(name, self.data):
+                load[name] = load.get(name, []) + list((_LIVE.get("load") or {}).get(name, ()))
         sign = (lambda name: slot.picks[name][2]) if slot.picks else slot.signature
         return place_job(candidates, self.data, self._reader, time.time(), load, sign)
 
@@ -1497,7 +1551,7 @@ class Waves:
         self.states.setdefault(name, _PlanWave())
         why = "does not hold it beside its running jobs" if holds else "has no room"
         self._say(f"[fanout] {label}: plan {slot.plan} {why}; moved to plan {name} ("
-                  + (_fit_text(placed.held[name][1]) if name in placed.held
+                  + (target["why"] if target.get("free") else _fit_text(placed.held[name][1]) if name in placed.held
                      else "its capacity cannot be read, so its launcher decides") + ")")
         return True
 
@@ -1681,20 +1735,9 @@ def plan_job(job, data, out_dir, authorize, stage=None):
 
     for row_alias, row_effort in listed_rows(job):
         transport = check_row(job, label, row_alias, row_effort, data)
-    if job.get("window") is not None:
-        if job["window"] != "full":
-            raise JobError(f"job {label}: `window` must be \"full\" or absent, got {job['window']!r}")
-        FULL_WINDOW.add(label)
+    check_job_fields(job, label)
     if job.get("cacheTtl") is not None:
-        if job["cacheTtl"] not in tool_profiles.CACHE_TTLS:
-            raise JobError(f"job {label}: `cacheTtl` must be {'|'.join(tool_profiles.CACHE_TTLS)} or absent, got {job['cacheTtl']!r}")
         CACHE_TTL[label] = job["cacheTtl"]
-    # A bare string here iterates per CHARACTER, so a malformed job passes planning and dispatches a
-    # billed launcher with argv full of single letters.
-    for key in ("contextFiles", "extraArgs"):
-        if job.get(key) is not None and not isinstance(job[key], list):
-            raise JobError(f"job {label}: `{key}` must be a list, not "
-                           f"{type(job[key]).__name__} -- a string iterates per character.")
     if job.get("contextFiles"):
         job["contextFiles"] = [os.path.abspath(str(c)) for c in job["contextFiles"]]
     for key in ("schemaFile", "workdir"):
@@ -1706,11 +1749,6 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     # launcher runs the job; the model vocabulary stays the route's. A job naming none pays with
     # the plan `pick_plan` ranks first, never the route's default login by omission. A job listing
     # `rows` ranks the plans of every listed row's route, and runs the cheapest listed row on the winner.
-    excluded = job.get("excludePlans")
-    if excluded is not None and not (isinstance(excluded, list) and all(isinstance(p, str) for p in excluded)):
-        raise JobError(f"job {label}: `excludePlans` must be a list of plan names")
-    if job.get("plan") and job["plan"] in (excluded or []):
-        raise JobError(f"job {label}: `plan` {job['plan']!r} is also in `excludePlans`. Keep one of the two.")
     transport, plans = job_routes(job, data)
     refusal = admission_refusal([job], data) if job.get("plan") else None
     if refusal:
@@ -2488,8 +2526,6 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
             return
         # Model work holds no local lane; direct proof processes admit themselves at startup.
         child_env.pop("HARNESS_SLOT_BUDGET", None)
-        if label in FULL_WINDOW:
-            child_env["SIDECAR_FULL_WINDOW"] = "1"
         if label in CACHE_TTL:
             child_env["SIDECAR_CACHE_TTL"] = CACHE_TTL[label]
         since = job_began.setdefault(label, time.time())
@@ -3189,7 +3225,7 @@ NATIVE_ARGS, NATIVE_JOBS, SIDECAR_JOBS = "native.args.json", "native.jobs.json",
 # Fields only a sidecar expresses: `dispatch.js` has no counterpart, so a job carrying one stays a sidecar.
 # `workdir` is one only when it names a checkout other than the repo root (`_elsewhere`); `schemaFile` and
 # `contextFiles` translate to a job's `schema` and `contextPaths`.
-SIDECAR_ONLY_FIELDS = ("window", "longContext", "extraArgs", "toolsCsv", "baseBuiltins", "armDisclosure")
+SIDECAR_ONLY_FIELDS = ("longContext", "extraArgs", "toolsCsv", "baseBuiltins", "armDisclosure")
 _LANE_KEYS = ("_lane", "_exclusive", "_shared_single_flight")
 # Fan-out job fields a `dispatch.js` job carries under the same name.
 _PASSED_FIELDS = ("tier", "pick", "spec", "tools")
@@ -4537,7 +4573,6 @@ def _main(argv):
         PLACED.clear()
         PAID_BY.clear()
         EFFORT_FACTS.clear()
-        FULL_WINDOW.clear()
         CACHE_TTL.clear()
         SLOTS.clear()
         _LIVE.clear()

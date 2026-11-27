@@ -35,6 +35,9 @@ decided from facts in the job and its brief:
 A named file whose own tokens exceed the job's point cannot be read whole, and a named file the job's own
 `searchSources` list holds is only searched: each counts 0 and is a `searchSources` entry. `lowerTokens` is listed + inputs (`readingTokens` and `tokens` equal it); `upperTokens` adds the spans.
 `residentTokens` is the listed bucket alone and `residentOver` the tokens of it past the point: the refusal's measure.
+Both overages add the job's harness load first (`harness_load`): what the harness loads before the brief, read from
+the spend ledger's measured first turns by route and kind, with a floor across routes where the route has too few rows
+and no number where the kind has none (the fit line then says `harness load unmeasured`).
 The line prints the heaviest job's lower share and the point it used, and the count of backticked path-shaped names
 that are no file (a vault path spelled through an alias such as `V/...`), counted 0. A job is over its point when
 `lowerTokens` is; when only `upperTokens` is, the fit line says `ceiling over`. A pin the registry does not resolve
@@ -86,12 +89,15 @@ claim (`orchestration` §4); this names the sentence that dresses one as the own
 """
 from __future__ import annotations
 
+import calendar
 import copy
 import json
 import math
 import os
 import re
+import statistics
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -100,6 +106,14 @@ try:
 except Exception:  # no registry reader: a job's window fit is simply not judged
     model_registry = None
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+try:
+    import spend_ledger
+except Exception:  # no ledger reader: a job's harness load is simply not measured
+    spend_ledger = None
+try:
+    import tool_profiles
+except Exception:  # no kind table: a kind's load is read across every disclosure tier
+    tool_profiles = None
 try:
     import _dispatch_checks
 except Exception:  # no claimant facts: the fact lines are simply not printed
@@ -389,11 +403,121 @@ def window_fit(model, total_characters: int, data=None, job=None) -> dict:
     return fit_tokens(model, math.ceil(total_characters / CHARS_PER_TOKEN), data, job)
 
 
+# The harness loads text before a job's brief (rails, the CLAUDE.md chain, tool schemas): 17-32k tokens on the first turn,
+# by route and kind. The spend ledger's rows carry each job's measured first turn (`turn1ContextTokens`, which also holds
+# its brief), so the load is read from them and never authored here. A (route, kind) group stands on its newest
+# HARNESS_LOAD_ROWS rows within HARNESS_LOAD_DAYS, once it has HARNESS_LOAD_MIN_ROWS of them. Only rows loaded at the
+# kind's current disclosure tier (`disclosureTier`, per `guards/tool_profiles.json`) count: a tier change moves the
+# load, and rows from the old tier would understate it until newer rows replaced them.
+HARNESS_LOAD_DAYS = 14
+HARNESS_LOAD_ROWS = 40
+HARNESS_LOAD_MIN_ROWS = 5
+_LOAD_NEEDLE = '"turn1ContextTokens": '
+_load_cache: dict = {}
+
+
+def _route_of(transport):
+    """The route a ledger row or a pin loads on: a plan variant (`anthropic-secondary`) loads as the transport it is a plan of."""
+    try:
+        meta = model_registry.transport_meta(transport) if model_registry and transport else None
+    except Exception:
+        meta = None
+    return (meta or {}).get("planOf") or transport
+
+
+def _load_groups(path, since):
+    """`{(route, kind, tier): [(epoch, tokens)]}` of the ledger rows stamped at or after `since` that carry a first-turn reading
+    and a kind. Cached per ledger state: the fit asks for it several times a job."""
+    state = []
+    for file in spend_ledger.paths(path, since):
+        try:
+            info = os.stat(file)
+            state.append((file, info.st_size, info.st_mtime_ns))
+        except OSError:
+            pass
+    key = (str(path), int(since // 60), tuple(state))
+    if key not in _load_cache:
+        groups: dict = {}
+        for line in spend_ledger.iter_lines(path, since, _LOAD_NEEDLE):
+            try:
+                row = json.loads(line)
+                tokens = row.get("turn1ContextTokens")
+                kind = (row.get("toolProfile") or {}).get("kind")
+                stamp = calendar.timegm(time.strptime(row["timestamp"], "%Y-%m-%dT%H:%M:%SZ"))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if type(tokens) is int and tokens > 0 and isinstance(kind, str) and kind and stamp >= since:
+                tier = row.get("disclosureTier")
+                groups.setdefault((_route_of(row.get("transport")), kind.lower(), tier if isinstance(tier, str) else None),
+                                  []).append((stamp, tokens))
+        _load_cache.clear()  # one ledger state at a time
+        _load_cache[key] = groups
+    return _load_cache[key]
+
+
+def _kind_tier(kind):
+    """The disclosure tier the kind's row sets now, or None when the row sets none (`arm` takes the caller's `-D`) or
+    the table cannot be read: its load is then read across every tier."""
+    try:
+        return (tool_profiles.load_table()["kinds"].get(kind) or {}).get("disclosure") if tool_profiles else None
+    except Exception:
+        return None
+
+
+def _kind_groups(groups, kind):
+    """`{route: [(epoch, tokens)]}` of the groups of `kind` at its current disclosure tier."""
+    tier = _kind_tier(kind)
+    merged: dict = {}
+    for (route, group_kind, group_tier), rows in groups.items():
+        if group_kind == kind and (tier is None or group_tier == tier):
+            merged.setdefault(route, []).extend(rows)
+    return merged
+
+
+def _group_median(rows):
+    newest = sorted(rows, reverse=True)[:HARNESS_LOAD_ROWS]
+    return int(round(statistics.median(tokens for _stamp, tokens in newest))), len(newest)
+
+
+def harness_load(transport, kind, sidecar=True, now=None) -> dict:
+    """`{tokens, source, n}`: the first-turn tokens the harness loads before the brief of a `kind` job on `transport`,
+    read from the spend ledger, `tokens` None when it cannot be read. `sidecar` is False for a Workflow job, which runs
+    as a native seat the ledger holds no rows for.
+    A sidecar job takes the median of its own (route, kind) group, at the kind's current disclosure tier, when that has
+    HARNESS_LOAD_MIN_ROWS rows. A route
+    or kind short of rows takes the lightest median any route has for that kind, labelled a floor: no measured route
+    loads less, so a refusal on it holds. No row of the kind anywhere, an unnamed kind, or no ledger leaves it
+    unmeasured, and the fit then counts the reading alone and says so. The first turn holds the brief, so the figure
+    runs high by the typical brief (a median 1.5k tokens for an author, 4.9k for a reviewer)."""
+    none = {"tokens": None, "source": None, "n": 0}
+    if spend_ledger is None or not isinstance(kind, str) or not kind.strip():
+        return none
+    kind = kind.strip().lower()
+    since = (time.time() if now is None else now) - HARNESS_LOAD_DAYS * 86400
+    try:
+        groups = _load_groups(spend_ledger.default_path(), since)
+    except OSError:
+        return none
+    route = _route_of(transport)
+    routes = _kind_groups(groups, kind)
+    if sidecar and len(routes.get(route, [])) >= HARNESS_LOAD_MIN_ROWS:
+        tokens, n = _group_median(routes[route])
+        return {"tokens": tokens, "source": "ledger %s/%s median of %d newest" % (route, kind, n), "n": n}
+    floors = [(_group_median(rows), name) for name, rows in routes.items() if len(rows) >= HARNESS_LOAD_MIN_ROWS]
+    if not floors:
+        return none
+    (tokens, n), lightest = min(floors, key=lambda item: item[0][0])
+    return {"tokens": tokens, "source": "ledger floor: lightest route for %s (%s) median of %d newest" % (kind, lightest, n),
+            "n": n}
+
+
 def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
-    """`{tokens, usable, source, over, error}` for a reading of `tokens` on `model`: `usable` the
-    `model_registry.compaction_point` of the pin for `job`, `source` which, `over` the tokens past it (0 when it fits
-    or cannot be judged), `error` why the pin could not be sized, else None. No `model` is not an error."""
-    fit = {"tokens": tokens, "usable": None, "source": None, "over": 0, "error": None}
+    """`{tokens, load, loadSource, usable, source, over, error}` for a reading of `tokens` on `model`: `usable` the
+    `model_registry.compaction_point` of the pin for `job`, `source` which, `load` the harness load `harness_load`
+    reads for the pin's route and the job's kind (0 with `loadSource` None when unmeasured), `over` the tokens past the
+    point once the load is added to the reading (0 when it fits or cannot be judged), `error` why the pin could not be
+    sized, else None. No `model` is not an error."""
+    fit = {"tokens": tokens, "load": 0, "loadSource": None, "usable": None, "source": None, "over": 0, "error": None}
     if not model:
         return fit
     try:
@@ -409,7 +533,9 @@ def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
     if fit["usable"] is None:
         fit["error"] = "declares no context window in the registry, so its seat cannot be sized"
     else:
-        fit["over"] = max(0, fit["tokens"] - fit["usable"])
+        known = harness_load(entry.get("transport"), (job or {}).get("kind"), _is_sidecar(job or {}))
+        fit["load"], fit["loadSource"] = known["tokens"] or 0, known["source"]
+        fit["over"] = max(0, fit["tokens"] + fit["load"] - fit["usable"])
     return fit
 
 
@@ -515,10 +641,11 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
                         "pointSource": fit["source"], "over": fit["over"], "fitError": fit["error"],
+                        "load": fit["load"], "loadSource": fit["loadSource"],
                         "residentTokens": resident["tokens"], "residentOver": resident["over"],
                         "kind": job.get("kind"), "window": job.get("window"),
                         "unresolved": len(missing), "lowerTokens": fit["tokens"], "upperTokens": upper,
-                        "ceilingOver": bool(fit["usable"]) and not fit["over"] and upper > fit["usable"],
+                        "ceilingOver": bool(fit["usable"]) and not fit["over"] and upper + fit["load"] > fit["usable"],
                         "searchSources": searched, "largest": counted[:LARGEST_SHOWN],
                         "readingTokens": fit["tokens"],
                         "denied": _denied(job, root, [*paths.values(), *named.values(), *sorted(pathlike)], deny_rules)})
@@ -557,8 +684,8 @@ def format_line(size: dict) -> str:
         line += "; names %d KB more%s" % (size["namedKb"], " (%s)" % shared_text if shared_text else "")
     sized = [job for job in size["perJob"] if job["usable"]]
     if sized:
-        heaviest = max(sized, key=lambda job: job["tokens"] / job["usable"])
-        percent = round(100 * heaviest["tokens"] / heaviest["usable"])
+        heaviest = max(sized, key=lambda job: (job["tokens"] + job["load"]) / job["usable"])
+        percent = round(100 * (heaviest["tokens"] + heaviest["load"]) / heaviest["usable"])
         line += "; heaviest reading %s of its compaction point, %d tokens%s" % (
             "%d%%" % percent if percent else "<1%", heaviest["usable"], " (%s)" % heaviest["label"] if jobs > 1 else "")
     unsized = {}
@@ -570,7 +697,8 @@ def format_line(size: dict) -> str:
     over = [job for job in size["perJob"] if job["over"]]
     if over:
         line += "; over its usable window: " + ", ".join(
-            "%s (%d tokens > %d)" % (job["label"], job["tokens"], job["usable"]) for job in over[:UNREADABLE_SHOWN]) + (
+            "%s (%d tokens > %d)" % (job["label"], job["tokens"] + job["load"], job["usable"])
+            for job in over[:UNREADABLE_SHOWN]) + (
             " +%d more" % (len(over) - UNREADABLE_SHOWN) if len(over) > UNREADABLE_SHOWN else "")
     if size.get("unresolved"):
         line += "; %d named path%s not resolved, counted 0: %s" % (
@@ -615,6 +743,11 @@ def fit_lines(size: dict) -> list:
         text = "fit: %s reading %d tokens (%d if every named file is read whole), %s of its compaction point, %d tokens (%s)" % (
             who, job["lowerTokens"], job["upperTokens"], "%d%%" % percent if percent else "<1%", job["usable"],
             job["pointSource"])
+        if job["loadSource"]:
+            text += "; plus harness load %d tokens (%s), %d%% of the point" % (
+                job["load"], job["loadSource"], round(100 * (job["lowerTokens"] + job["load"]) / job["usable"]))
+        else:
+            text += "; harness load unmeasured, so the point is judged on the reading alone"
         if job["over"]:
             text += "; over its point by %d tokens" % job["over"]
         elif job["ceilingOver"]:
@@ -637,15 +770,17 @@ RESIDENT_KINDS = ("lens", "reviewer")  # a seat that must keep one subject resid
 
 def over_window_lines(size: dict) -> list:
     """One line per job the launch refuses for certain reading past the point it compacts at: a resident seat
-    (`RESIDENT_KINDS`) not sized `window: "full"`. Certain reading is the brief's text and the listed bucket; a file the
+    (`RESIDENT_KINDS`). Certain reading is the brief's text and the listed bucket; a file the
     brief only names is a pointer, never counted here. The measure is `perJob[].residentOver`, the number
     `lens_briefs.seat_overage` refuses a review seat on, so the fan-out's launch refusal and the panel's agree. Other
     over-window jobs, and every named file, are facts on `fit_lines`.
     A job whose pin cannot be sized is not named here (`fit_lines` says so)."""
-    return ["`%s` (%s): reading %d tokens, past its usable window of %d tokens (%s); over by %d"
-            % (job["label"], job["model"], job["residentTokens"], job["usable"], job["pointSource"], job["residentOver"])
+    return ["`%s` (%s): reading %d tokens%s, past its usable window of %d tokens (%s); over by %d"
+            % (job["label"], job["model"], job["residentTokens"],
+               " plus %d harness load" % job["load"] if job["load"] else "", job["usable"], job["pointSource"],
+               job["residentOver"])
             for job in size["perJob"] if job["model"] and job["usable"] and job["residentOver"] > 0
-            and job.get("kind") in RESIDENT_KINDS and job.get("window") != "full"]
+            and job.get("kind") in RESIDENT_KINDS]
 
 
 def denied_lines(size: dict) -> list:
@@ -654,8 +789,9 @@ def denied_lines(size: dict) -> list:
 
 
 def _kind_refusals(jobs: list) -> list:
-    """Each job the fan-out would refuse by its `kind`, in the fan-out's own refusal text. The check runs the
-    same predicates `sidecar_fanout.plan_job` runs, on a copy."""
+    """Each job the fan-out would refuse by its `kind` or any other field-only refusal (`normalize_job`,
+    `check_job_fields`), in the fan-out's own refusal text. The check runs the same predicates
+    `sidecar_fanout.plan_job` runs, on a copy."""
     try:
         import sidecar_fanout
     except Exception as exc:
@@ -667,8 +803,10 @@ def _kind_refusals(jobs: list) -> list:
         label = job.get("label") or "job%d" % (index + 1)
         probe = copy.deepcopy(job)
         try:
+            probe = sidecar_fanout.normalize_job(probe)
             sidecar_fanout.check_job_kind(probe, label)
             sidecar_fanout.job_builtins(probe)
+            sidecar_fanout.check_job_fields(probe, label)
         except Exception as exc:
             text = str(exc)
             refusals.append("preflight: unmet: " + (text if text.startswith("job ") else "job %s: %s" % (label, text)))
@@ -988,7 +1126,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, ses
         try:
             transport = job.get("transport") or model_registry.resolve(model, data)["transport"]
             claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["lowerTokens"], data, ladder,
-                                                           job=job)
+                                                           job=job, load=sized.get("load") or 0)
         except Exception as err:
             reason = ("does not resolve in the registry" if isinstance(err, model_registry.UnknownModel) else str(err))
             out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, reason))

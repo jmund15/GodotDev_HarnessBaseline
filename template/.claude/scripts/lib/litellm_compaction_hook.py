@@ -3,7 +3,9 @@
 opencode_sidecar.sh copies this file beside the proxy config when OC_COMPACTION_EFFORT or OC_COMPACTION_THINK_BUDGET
 is set, and names it in `litellm_settings.callbacks`. On a request whose newest user turn carries Claude Code's
 compaction instruction, it adds `chat_template_kwargs.reasoning_effort` and `thinking_budget_tokens` to the upstream
-body (llama-server reads both per request); every other request passes unchanged. Each match prints one
+body (llama-server reads both per request) and overwrites the top-level `reasoning_effort` the client set from the
+dispatch's effort, since a server may read that field first (the Inkling engine does); every other request passes
+unchanged. Each match prints one
 `[compaction-hook]` line to the proxy log, so a run shows whether its compactions were reached.
 """
 import json
@@ -33,6 +35,7 @@ def compaction_overrides(data, effort, budget):
     extra = {}
     if effort:
         extra["chat_template_kwargs"] = {"reasoning_effort": effort}
+        extra["reasoning_effort"] = effort
     if budget:
         extra["thinking_budget_tokens"] = int(budget)
     return extra or None

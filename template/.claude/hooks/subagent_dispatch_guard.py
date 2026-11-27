@@ -18,7 +18,7 @@ kind or an unreadable table denies.
 Main-session calls carry no delegate fact and pass untouched. Fail open: an error passes.
 
 The CLI `--disallowedTools` list is the companion layer, not a duplicate: it holds in the
-`bare`/`pointer` disclosure tiers, where no project hooks fire and this guard cannot run.
+internal kinds' `bare`/`pointer` tiers, where no project hooks fire and this guard cannot run.
 
 Wired in: settings.json hooks.PreToolUse, "Workflow|Agent" matcher, through `pre_workflow_dispatch.py`, which
 ends its chain on this guard's deny.

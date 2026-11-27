@@ -127,6 +127,43 @@ class ResetShare(unittest.TestCase):
             self.assertAlmostEqual(plan.waves.price('j1'), 2.0)
 
 
+class FreeRoute(unittest.TestCase):
+    """A queued job moves from a plan that does not hold it beside its running jobs to an open free slot."""
+    BOX = {'transports': dict(DATA['transports'], box={'costModel': 'free', 'capacityUnsupported': {'reason': 'x'},
+                                                       'launcher': '.claude/scripts/box.sh',
+                                                       'maxChildren': {'count': 1, 'basis': 'one GPU'}}),
+           'models': DATA['models'] + [{'transport': 'box', 'id': 'b-1', 'alias': 'b', 'roles': ['executor']}]}
+    PICKS = {PLAN: ('m', 'high', SIG), 'box': ('b', 'high', ('b-1', 'high', 'author'))}
+
+    def waves(self, plan, start, busy=()):
+        """(verdict kinds, plans) of one job per plan named in `start`, with `busy` jobs of other sessions on the slot."""
+        slots = {'j%d' % n: sf.Slot(name, self.PICKS[name][2], (PLAN, 'box'), self.PICKS)
+                 for n, name in enumerate(start)}
+        waves = sf.Waves(slots, self.BOX, plan._read, say=plan.said.append)
+        with patch.dict(sf._LIVE, {'load': {'box': list(busy)}}):
+            waves.pace()
+            kinds = [waves.decide(label).kind for label in slots]
+        return kinds, [waves.plan_of(label) for label in slots]
+
+    def test_one_job_moves_to_the_open_slot_and_the_rest_wait(self):
+        with Plan(headroom=3.5, resets_in=2 * HOUR) as plan:
+            kinds, plans = self.waves(plan, [PLAN] * 4)
+        self.assertEqual(kinds, ['launch', 'launch', 'wait', 'wait'])
+        self.assertEqual(plans, [PLAN, 'box', PLAN, PLAN])
+
+    def test_a_slot_another_session_holds_takes_no_job(self):
+        with Plan(headroom=3.5, resets_in=2 * HOUR) as plan:
+            kinds, plans = self.waves(plan, [PLAN] * 4, busy=[('b-1', 'high', 'arm')])
+        self.assertEqual(kinds, ['launch', 'wait', 'wait', 'wait'])
+        self.assertEqual(plans, [PLAN] * 4)
+
+    def test_a_job_the_planner_put_on_the_slot_counts_as_taking_it(self):
+        with Plan(headroom=3.5, resets_in=2 * HOUR) as plan:
+            kinds, _plans = self.waves(plan, ['box', PLAN, PLAN])
+        self.assertEqual(kinds, ['launch', 'launch', 'wait'])
+        self.assertFalse(any(line.startswith('[fanout] wave box') for line in plan.said), plan.said)
+
+
 class RunningShare(unittest.TestCase):
     """A running job's elapsed share is already in the reading, so it holds back only the share still ahead."""
 

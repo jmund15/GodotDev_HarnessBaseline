@@ -322,10 +322,15 @@ def merge_recovered_prompts(user_messages: list[dict], recovered: list[dict]) ->
     merged = [dict(row) for row in user_messages]
     by_index = {row.get("index"): row for row in merged}
     seen = {(row.get("index"), row.get("content")) for row in merged}
+    typed = {(row.get("timestamp"), " ".join(str(row.get("content") or "").split())) for row in merged}
     for row in recovered:
         key = (row["index"], row.get("content"))
         if key in seen:
             continue
+        if row.get("recovered") == "command_arguments" and row.get("timestamp") and \
+                (row.get("timestamp"), " ".join(str(row.get("content") or "").split())) in typed:
+            continue  # the expansion line of a command the builder already kept as typed
+
         existing = by_index.get(row["index"])
         if existing is None:
             added = dict(row)

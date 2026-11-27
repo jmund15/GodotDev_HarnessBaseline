@@ -373,6 +373,11 @@ def _load_jsonl(path):
     return rows, corrupt
 
 
+def _escape_mandate(row):
+    import escape_log
+    return escape_log.mandate_of(row)
+
+
 def _load_escape(paths):
     import escape_log
     return _read_file_source(paths.get("escape_log") or escape_log.log_path(), _load_jsonl)
@@ -467,7 +472,7 @@ def _plain(key):
 EVIDENCE_SOURCES = {
     "escape": {"load": _load_escape, "date": lambda r: _day(r.get("ts")), "id": _plain("id"),
                "match": {"path": lambda r, v: any(fnmatch.fnmatchcase(p, v) for p in r.get("paths") or []),
-                         "mandate": lambda r, v: r.get("shouldHaveCaught") == v,
+                         "mandate": lambda r, v: _escape_mandate(r) == v,
                          "model": lambda r, v: r.get("authorModel") == v,
                          "tier": lambda r, v: r.get("tier") == v,
                          "domain": lambda r, v: _member(r.get("domain"), v),

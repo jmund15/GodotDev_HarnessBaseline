@@ -407,6 +407,18 @@ def build(tmp):
     check("an escape trailer prints oracle=none for an empty oracle",
           result_none.returncode == 0 and "oracle=none" in str(rows_of(root_none)[0].get("triage")), result_none.stderr)
 
+    # -- a row recorded under a renamed mandate key reads under the new key ---------------------------
+    spec = importlib.util.spec_from_file_location("escape_log_inproc", MOD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    legacy_log = os.path.join(tmp, "legacy_escape_log.jsonl")
+    with open(legacy_log, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"id": "e1", "shouldHaveCaught": "holistic"}) + "\n")
+    read = module.rows(legacy_log)
+    check("rows() reads a legacy shouldHaveCaught key as its renamed key",
+          [r.get("shouldHaveCaught") for r in read] == ["cross-unit"]
+          and module.mandate_of({"shouldHaveCaught": "holistic"}) == "cross-unit", str(read))
+
     spawned = subprocess.run([sys.executable, MOD, "--help"], capture_output=True, text=True,
                              encoding="utf-8", errors="replace")
     check("the tool imports and exits 0 from its registered command",

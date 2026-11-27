@@ -25,13 +25,27 @@ def check(got, want, label):
 
 
 check(hook.compaction_overrides(COMPACT, "low", "2048"),
-      {"chat_template_kwargs": {"reasoning_effort": "low"}, "thinking_budget_tokens": 2048},
+      {"chat_template_kwargs": {"reasoning_effort": "low"}, "reasoning_effort": "low", "thinking_budget_tokens": 2048},
       "a compaction request takes the effort and the budget")
-check(hook.compaction_overrides(COMPACT, "low", ""), {"chat_template_kwargs": {"reasoning_effort": "low"}},
+check(hook.compaction_overrides(COMPACT, "low", ""), {"chat_template_kwargs": {"reasoning_effort": "low"}, "reasoning_effort": "low"},
       "an unset budget adds no budget")
 check(hook.compaction_overrides(ORDINARY, "low", "2048"), None, "an ordinary request is unchanged")
 check(hook.compaction_overrides(QUOTED_EARLIER, "low", "2048"), None,
       "only the newest user turn decides, so an earlier compaction turn does not mark the next request")
 check(hook.compaction_overrides(COMPACT, "", ""), None, "no effort and no budget adds nothing")
+
+import asyncio  # noqa: E402
+import copy  # noqa: E402
+import os  # noqa: E402
+
+os.environ["OC_COMPACTION_EFFORT"] = "low"
+os.environ.pop("OC_COMPACTION_THINK_BUDGET", None)
+forwarded = dict(copy.deepcopy(COMPACT), reasoning_effort="high")
+out = asyncio.run(hook.CompactionHook().async_pre_call_hook(None, None, forwarded, "completion"))
+check((out.get("extra_body") or {}).get("reasoning_effort"), "low",
+      "a compaction overrides the dispatch's top-level reasoning_effort through extra_body, which LiteLLM merges last")
+ordinary = dict(copy.deepcopy(ORDINARY), reasoning_effort="high")
+out = asyncio.run(hook.CompactionHook().async_pre_call_hook(None, None, ordinary, "completion"))
+check("extra_body" in out, False, "an ordinary request keeps the dispatch's effort")
 print("test_litellm_compaction_hook: %d failed" % fails)
 sys.exit(1 if fails else 0)

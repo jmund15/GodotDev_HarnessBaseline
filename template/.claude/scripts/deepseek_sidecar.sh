@@ -96,7 +96,7 @@
 #       it is concatenated rather than left as a pointer the child may not follow.
 #       The rails read at the child model's registry `railTier`, the tier a native Workflow seat of
 #       that model gets; no launcher or environment variable names one.
-#   -D  refused: disclosure follows the kind (scout bare, lens pointer, reviewer/author/judge full); only
+#   -D  refused: disclosure follows the kind (guards/tool_profiles.json `kinds`); only
 #       -G arm takes -D, bare|pointer|full. `bare`: child
 #       runs from an empty scratch run-cwd — vendor prompt + CLI only; user-level
 #       config is intentionally KEPT (isolating CLAUDE_CONFIG_DIR would drop

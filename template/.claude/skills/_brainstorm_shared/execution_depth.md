@@ -137,7 +137,7 @@ table holds when each conditional one runs.
 | `/research` | Shape B | the question rests on an external fact with grounding = assumed and reach ≥ shared or design = open; the fact is version-contested, or first-party and community sources are expected to disagree; or a Shape A answer came back unclear or contested, which is a re-triage |
 | `/session_audit` | `sa-architecture-sweep` | at drive close, whenever §Candidate width admits review (`sized` or `all`); otherwise design = open, reach ≥ shared, a new authored surface, or the invoking step names it, subject to the Candidate review row |
 | `/session_audit` | `sa-harness-quality` | the change adds or changes a decision in standing or shared harness text, or rigor through §Conditions Rigor is thorough; apply the Harness-quality review seat row's kind, size, reach and light-run limits |
-| `/session_audit` | `sa-holistic` | at `/session_end`, the session landed work no single review saw together: `review_ledger.py whole-scope` returns `wholeScope: false` for the session's files |
+| `/session_audit` | `sa-cross-unit` | at `/session_end`, the session landed work no single review saw together: `review_ledger.py whole-scope` returns `wholeScope: false` for the session's files |
 | `/pr_ready` | the parity and API lenses | the change holds code or authored data; a meta-only change holds no input for them |
 | `/session_audit` and the review commands | the code-quality and test-quality checklists | an admitted review changes code or tests those checklist items check; load only the applicable sections |
 | the prototype route | the composed-encounter verification obligations | the question has an open fork (design = open), or its answer spans more than one mechanism (oracle = runtime) |

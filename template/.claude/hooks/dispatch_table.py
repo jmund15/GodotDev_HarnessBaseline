@@ -2215,24 +2215,33 @@ def _unwatched_rosters_reason(payload):
 def _unwatched_shells_reason(payload):
     """(block reason, note). The reason is set when a Bash background task of this session runs and no session-wide
     watcher is armed. The watcher counts such a task as live work and checks in on it inside the prompt cache; its end
-    is the client's own notification, which the watcher never repeats, so only the arm is missing. A payload with no
-    background task list names nothing to check, and a failed read never blocks the stop: it returns no reason and a
-    note naming the lost check."""
+    is the client's own notification, which the watcher never repeats, so only the arm is missing. A payload carrying a
+    background task list first records its ids (`watch_records.record_client_live`) for the watcher and the pane, which
+    get no payload; a payload with none records and names nothing. A failed read never blocks the stop: it returns no
+    reason and a note naming the lost check, and a failed recording adds its own note beside the block decision."""
     session_id = payload.get("session_id")
     if payload.get("stop_hook_active") or not session_id:
         return None, None
     live = {str(t.get("id")) for t in payload.get("background_tasks") or [] if isinstance(t, dict) and t.get("id")}
+    recorded = None
+    if "background_tasks" in payload:
+        try:
+            watch_records.record_client_live(session_id, live)
+        except Exception as exc:
+            recorded = ("⚠ the client's running-task list was not recorded (%s: %s); the watcher and the pane may "
+                        "miss a shell past its age bound." % (type(exc).__name__, exc))
     if not live:
-        return None, None
+        return None, recorded
     try:
         state = _hook_state.read_json_salvage(_hook_state.state_path(session_id)) or {}
         if watch_records.session_covered(state):
-            return None, None
+            return None, recorded
         running = watch_records.session_running_shells(session_id, payload.get("transcript_path"), live)
     except Exception as exc:
-        return None, ("⚠ the background shell check did not run (%s: %s); a running shell would go unwatched. "
-                      "If one runs, arm `%s` %s." % (type(exc).__name__, exc, watch_records.ARM_COMMAND, watch_records.ARM_CALL))
-    return (NO_WATCHER_SHELL_REASON % len(running) if running else None), None
+        lost = ("⚠ the background shell check did not run (%s: %s); a running shell would go unwatched. "
+                "If one runs, arm `%s` %s." % (type(exc).__name__, exc, watch_records.ARM_COMMAND, watch_records.ARM_CALL))
+        return None, "\n".join(note for note in (recorded, lost) if note)
+    return (NO_WATCHER_SHELL_REASON % len(running) if running else None), recorded
 
 
 def _unwatched_reason(payload):
@@ -2500,6 +2509,11 @@ def _running_line(entry, now, session_id=None, session_dir=None):
         shown = _sidecar_shown(job.get("model") or UNKNOWN)
         if _awaiting_launch(entry):
             age = "queued"
+        else:
+            # `launched_at` is the fan-out call's time, which a chain job started later also carries.
+            began = watch_records.attempt_start(entry)
+            if began is not None:
+                age = _elapsed(now - began)
     else:
         shown = _shown(job.get("model"))
     plan = _job_plan(entry, session_id) if kind == "sidecar" else _session_plan_name()

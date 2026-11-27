@@ -405,7 +405,37 @@ const tp = KP_RECORD
 const RECORDED = { 'worklog:relevance': tp }
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
 
-const r = await agent(prompt, { label: 'worklog:relevance', phase: 'Relevance', agentType: KP.agentType, schema: RELEVANCE_SCHEMA, model: PIN(A.model), effort: EFF(A.effort) })
+// A result whose own fields contradict each other is a failed output step (an agent whose real answer was lost
+// can leave a schema-valid placeholder), never a clean sweep. Each rule follows from the mandate's definition of
+// `checked.stoppedAt` (worklog_relevance.prompt.md, Output contract) and is decided by the object alone.
+const contradictions = (res) => {
+  const c = res && typeof res === 'object' && res.checked && typeof res.checked === 'object' ? res.checked : null
+  if (!c || !Array.isArray(res.overlaps)) return ['the result holds no `checked` record or no `overlaps` array']
+  const found = []
+  const listed = Array.isArray(c.shortlisted) ? c.shortlisted.length : 0
+  const verified = c.stoppedAt === 'verified-none' || c.stoppedAt === 'verified-overlaps'
+  if (res.overlaps.length > 0 && c.stoppedAt !== 'verified-overlaps') found.push("stoppedAt '" + c.stoppedAt + "' with " + res.overlaps.length + ' overlaps')
+  if (res.overlaps.length === 0 && c.stoppedAt === 'verified-overlaps') found.push("stoppedAt 'verified-overlaps' with no overlaps")
+  if (verified && !c.obsidianOpened) found.push("stoppedAt '" + c.stoppedAt + "' with obsidianOpened false")
+  if (verified && listed === 0) found.push("stoppedAt '" + c.stoppedAt + "' with an empty shortlisted")
+  if ((c.stoppedAt === 'empty-shortlist' || c.stoppedAt === 'triviality-gate') && (listed > 0 || c.obsidianOpened)) {
+    found.push("stoppedAt '" + c.stoppedAt + "' with " + (listed > 0 ? 'a non-empty shortlisted' : 'obsidianOpened true'))
+  }
+  return found
+}
+const askRelevance = (extra) => agent(extra ? prompt + '\n\n' + extra : prompt,
+  { label: 'worklog:relevance', phase: 'Relevance', agentType: KP.agentType, schema: RELEVANCE_SCHEMA, model: PIN(A.model), effort: EFF(A.effort) })
+let r = await askRelevance()
+let broken = contradictions(r)
+if (broken.length) {
+  log('INCOHERENT ' + broken.join('; ') + ' — rerunning once')
+  r = await askRelevance('Your previous result was rejected because it contradicted itself: ' + broken.join('; ')
+    + '. Return one result whose `checked` fields agree with each other and with `overlaps`.')
+  broken = contradictions(r)
+}
+if (broken.length) {
+  return { error: 'worklog-relevance: the relevance agent returned a self-contradicting result twice, so no overlap check is on record (this is not a clean sweep): ' + broken.join('; ') + '. Rerun the check.' }
+}
 
 // Unambiguous empty: `count` is always present, so a caller never has to distinguish "no overlaps"
 // from "the agent returned nothing".

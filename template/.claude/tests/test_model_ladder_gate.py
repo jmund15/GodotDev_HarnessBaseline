@@ -481,7 +481,8 @@ def test_an_unidentified_plan_still_embeds_the_ladder_and_names_no_room(tmp_path
     monkeypatch.delenv('CLAUDE_CODE_TRANSPORT', raising=False)
     monkeypatch.setenv('ANTHROPIC_BASE_URL', 'https://example.invalid/unmatched')
     reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)
-    assert '## Role definitions' in reason and 'route ' not in reason, reason[-300:]
+    ladder = registry.ladder_slice(registry.claimed_tiers())
+    assert '## Role definitions' in ladder and reason.endswith(ladder), reason[-300:]
     assert hooks_state.ladder_slice_tiers('embed007') == sorted(registry.claimed_tiers())
 
 

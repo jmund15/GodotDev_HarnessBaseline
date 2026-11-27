@@ -245,6 +245,58 @@ def case_the_environment_matches_the_live_launchers_for_every_spawn_git_makes():
         assert via_launcher and not differs, (label, {k: (via_launcher.get(k), direct.get(k)) for k in differs})
 
 
+def case_an_uncapped_call_ends_when_its_http_transfer_stalls():
+    """A `timeout=None` call to a remote that accepts and then sends nothing (a stalled connection) exits nonzero
+    once the stall outlasts `STALL_SECONDS`, instead of hanging; a capped call keeps its own bound and no stall env."""
+    import socket
+    import threading
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(4)
+    port = server.getsockname()[1]
+    held = []
+
+    def accept():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            held.append(conn)
+
+    threading.Thread(target=accept, daemon=True).start()
+    box = {}
+    tmp = tempfile.mkdtemp(prefix="gitrun_stall_")
+    no_proxy = {"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", "HTTP_PROXY": None, "http_proxy": None,
+                "GIT_TERMINAL_PROMPT": "0"}
+
+    def call():
+        try:
+            box["res"] = gr.run(["ls-remote", "http://127.0.0.1:%d/r.git" % port], cwd=tmp, env=no_proxy, timeout=None)
+        except Exception as exc:  # noqa: BLE001
+            box["exc"] = exc
+
+    try:
+        with mock.patch.object(gr, "STALL_SECONDS", 2, create=True):
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            worker.join(30)
+            hung = worker.is_alive()
+    finally:
+        server.close()
+        for conn in held:
+            conn.close()
+        worker.join(10)
+    assert not hung, "an uncapped git call to a silent remote was still running after 30 s"
+    assert "exc" not in box, box.get("exc")
+    assert box["res"].returncode != 0, box["res"].returncode
+
+    run, seen = _fake()
+    with _no_git_on_path(), mock.patch.object(gr.subprocess, "run", run):
+        gr.run(["status"])
+    assert seen.get("env") is None or "GIT_HTTP_LOW_SPEED_TIME" not in seen["env"], seen.get("env")
+
+
 def main():
     failed = 0
     for name, fn in sorted(globals().items()):

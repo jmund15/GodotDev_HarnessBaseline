@@ -4,7 +4,7 @@ disable-model-invocation: true
 
 # `/session_audit` — conditional seats and `--hot-set`
 
-Read at `/session_audit` when a conditional seat is admitted or `--hot-set` is given: §Hot-set mode under `--hot-set`; §Frozen inputs and §Harness-Quality Trigger whenever the roster includes `sa-harness-quality` (freeze before §1a's empty-subject exit or any ledger check); §Architecture-Sweep Trigger and §Holistic Trigger when their seat is admitted. Entrypoint: [`../session_audit.md`](../session_audit.md).
+Read at `/session_audit` when a conditional seat is admitted or `--hot-set` is given: §Hot-set mode under `--hot-set`; §Frozen inputs and §Harness-Quality Trigger whenever the roster includes `sa-harness-quality` (freeze before §1a's empty-subject exit or any ledger check); §Architecture-Sweep Trigger and §Cross-unit Trigger when their seat is admitted. Entrypoint: [`../session_audit.md`](../session_audit.md).
 
 ## Hot-set mode
 
@@ -26,6 +26,6 @@ Append `inputs.mustRead` to this seat's must-read list, including each commit's 
 
 When triggered, fill its `{{DESIGN_LIST}}` with the major designs, naming each mechanism and its key files/seams so the agent judges designs, not diffs. **Subjects** are the designs of the seat's own files (§1b). **Covered designs** are the designs of the rest of the subject list as given (the range or `--files` list before §1a narrows it), named with their paths; the seat judges them only for their interaction with the subjects. Under `--ignore-ledger` every file is a subject. Its SUPERIOR-ALTERNATIVE findings are implemented this session unless a defer reason in `worklog_reference` §Do-now gate holds.
 
-## Holistic Trigger
+## Cross-unit Trigger
 
-Fill `{{UNIT_LIST}}` from `python3 .claude/tools/review_ledger.py rows --subject session:<sid> --units`: one block per unit, its key and its file paths. When the units' files exceed what the seat reads in one light pass, list each unit's seam files only (where one unit reads, calls or states another's contract) and name the rest by unit key. The seat's CONTEXT carries doctrine pointers only, never a file's content. Judge the width from the set: when the units fall into clusters that do not reference each other, run `/session_audit --files <the cluster's files> --lens sa-holistic` once per cluster, each run seating the one `sa-holistic` seat. Set effort by how deep an interaction defect can hide across the units (`orchestration` §5). The report states the sizing and its basis.
+Fill `{{UNIT_LIST}}` from `python3 .claude/tools/review_ledger.py rows --subject session:<sid> --units`: one block per unit, its key and its file paths. When the units' files exceed what the seat reads in one light pass, list each unit's seam files only (where one unit reads, calls or states another's contract) and name the rest by unit key. The seat's CONTEXT carries doctrine pointers only, never a file's content. Judge the width from the set: when the units fall into clusters that do not reference each other, run `/session_audit --files <the cluster's files> --lens sa-cross-unit` once per cluster, each run seating the one `sa-cross-unit` seat. Set effort by how deep an interaction defect can hide across the units (`orchestration` §5). The report states the sizing and its basis.

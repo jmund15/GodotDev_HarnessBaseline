@@ -87,6 +87,22 @@ def main():
          pay.get("opencode", {}).get("state") == "unavailable" and "free tier blocked" in pay["opencode"].get("note", "")
          and pay["opencode"].get("balance") is None, pay.get("opencode"))
 
+    free_registry = dict(REGISTRY, transports=dict(
+        REGISTRY["transports"], box={"costModel": "free", "capacityUnsupported": {"reason": "no account"},
+                                     "status": {"state": "available", "since": "2026-11-25"},
+                                     "maxChildren": {"count": 1, "basis": "one GPU"}}),
+        models=REGISTRY["models"] + [{"transport": "box", "id": "b-e", "alias": "b-exec", "roles": ["executor"],
+                                      "lifecycle": "current"}])
+    free_view = qd.build(data=free_registry, read=read, session_plan="anthropic", now=NOW)
+    case("a free route is listed under Free with its limit, never under pay per token",
+         [(r["transport"], r["state"], r["note"]) for r in free_view.get("free") or []]
+         == [("box", "available", "free: no quota, no charge; 1 job at a time (one GPU)")]
+         and "box" not in {r["transport"] for r in free_view["pay"]}
+         and "| box | available | free: no quota" in qd.render(free_view), free_view.get("free"))
+    case("a free route is named among what can pay a tier",
+         "box (free: no quota" in {r["tier"]: r for r in free_view["tiers"]}["executor"]["pays"],
+         free_view["tiers"])
+
     tiers = {r["tier"]: r for r in view["tiers"]}
     case("each tier names the plans able to pay for it, never one pick, and the rows serving it",
          tiers.get("fanout", {}).get("pays") == "codex" and tiers["fanout"].get("rows") == ["c-fan"]

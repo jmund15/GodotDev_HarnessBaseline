@@ -563,6 +563,12 @@ def main():
     bad["quota"] = quota()["quota"]
     cases.append(("quota and balance together are rejected",
                   bool(pc.validate_reading(bad, "deepseek", "marginal-usd"))))
+    unsupported = {"schemaVersion": 1, "transport": "box", "costModel": "free", "sourceKind": "unsupported",
+                   "observedAt": "2027-01-15T08:00:00Z", "status": "unsupported", "error": None,
+                   "liveFailure": None, "quota": None, "balance": None}
+    cases.append(("a free route's unsupported reading is valid", pc.validate_reading(unsupported, "box", "free") == []))
+    cases.append(("a free route has no amount, so an `available` reading is refused",
+                  bool(pc.validate_reading(dict(balance(), transport="box", costModel="free"), "box", "free"))))
     bad_status = quota(status="mystery")
     cases.append(("unknown status is rejected",
                   bool(pc.validate_reading(bad_status, "anthropic", "plan-quota"))))

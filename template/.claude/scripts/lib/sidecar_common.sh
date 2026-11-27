@@ -386,7 +386,9 @@ SC_LEDGER_DEFAULT="${SIDECAR_LEDGER_PATH:-$HOME/.claude/sidecar_ledger.jsonl}"
 SC_OPTSTRING=":m:e:t:n:o:d:f:T:R:x:P:S:sNr:p:L:l:a:G:B:AUWMD:C:Z:K:Y:Q:"
 
 # The window the child declares (CLAUDE_CODE_MAX_CONTEXT_TOKENS): the registry's default window, or its
-# max under -M, minus the output reserve (the provider enforces input + max_output <= its window).
+# max under -M, minus the output reserve (the provider enforces input + max_output <= its window). A launcher
+# that passes a reserve (SC_OUTPUT_RESERVE: codex_proxy_sidecar.sh, from its transport's childOutputCap) lowers
+# its child's compaction point by it; `model_registry.compaction_point` models the same subtraction.
 # An unknown model prints nothing.
 sc_declared_context_window() {
   local w
@@ -400,7 +402,9 @@ sc_declared_context_window() {
 # The child's output cap (CLAUDE_CODE_MAX_OUTPUT_TOKENS): SIDECAR_MAX_OUTPUT_TOKENS when it is a positive number, else
 # the registry's `max-output` (the model's own maximum, bounded by a quarter of its window). $1, when given, is
 # the window the launcher declares in place of the registry's, and bounds the registry cap at a quarter of it,
-# as model_registry's OUTPUT_WINDOW_DIVISOR does: the cap is also the compaction reserve. The client's 32000
+# as model_registry's OUTPUT_WINDOW_DIVISOR does. The client then compacts at its window less min(cap, 20000)
+# less 13000 (`model_registry.client_reserve`, the one owner; `compaction_point` predicts it), so a cap past 20000
+# buys reply room, never a lower compaction point. The client's 32000
 # default discards a paid reply that outgrows it, reasoning included. An unknown model prints nothing.
 # codex_proxy_sidecar.sh is the exception and does not call this: its cap also sets its output reserve, and
 # its 16000 default comes from a measured compaction point.
@@ -689,6 +693,7 @@ sc_validate_common() {
 # SC_RESOLVED_TOOL_SPEC -> built-ins plus `mcp__<registered key>`, the form sc_mcp_config reads
 # SC_DISALLOWED         -> gains the kind's `denyTools` (--disallowedTools)
 # SC_TOOL_PROFILE       -> the record's toolProfile object (and the ledger row's)
+# SC_GIT_INSTRUCTIONS   -> the profile's `gitInstructions` (`off` or `-`), read by sc_scrub_env
 sc_resolve_tools() {
   local err out packed
   err="$(mktemp)"
@@ -698,7 +703,7 @@ sc_resolve_tools() {
   local base_arg=()
   [ -n "${SC_BASE_BUILTINS:-}" ] && base_arg=(--base-builtins="${SC_BASE_BUILTINS}")
   out="$(python3 "$SC_ROOT/tools/tool_profiles.py" resolve-kind \
-      --kind="${SC_SHAPE:-}" --tier="${SC_TIER:-}" --tools="${SC_TOOLS:-}" \
+      --kind="${SC_SHAPE:-}" --tier="${SC_TIER:-}" --tools="${SC_TOOLS:-}" --transport="${SC_TRANSPORT:-}" \
       ${base_arg[@]+"${base_arg[@]}"} \
       --config-dir="${SC_MCP_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}" \
       --workdir="${SC_WORKDIR:-}" --field=packed 2>"$err")" || {
@@ -707,7 +712,7 @@ sc_resolve_tools() {
   }
   rm -f "$err" 2>/dev/null || :
   local deny=""
-  IFS=$'\x1f' read -r SC_TOOL_PROFILE SC_RESOLVED_BUILTINS SC_RESOLVED_TOOL_SPEC deny <<< "$out"
+  IFS=$'\x1f' read -r SC_TOOL_PROFILE SC_RESOLVED_BUILTINS SC_RESOLVED_TOOL_SPEC deny SC_GIT_INSTRUCTIONS <<< "$out"
   # The kind's withheld MCP tools (a read-only kind holds ai-worker minus write_doc) join the denial.
   [ -n "$deny" ] && SC_DISALLOWED="${SC_DISALLOWED:+$SC_DISALLOWED,}$deny"
   # `--allowedTools` pre-approves and never bounds, but it must still name what this child may
@@ -1046,6 +1051,8 @@ sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on st
 # child reads the seat first into SC_SEAT_PLAN. The read is `provider_capacity.py`'s: cache first, so
 # the gates of one launch share a single usage-endpoint read per cache life.
 sc_gate_band() {
+  # A row with no floor is on a free route: nothing about the host's own plan bears on it.
+  [ -n "${SC_MIN_BAND:-}" ] || return 0
   local runner="$SC_ROOT/tools/provider_capacity.py" seat fields="" satisfies="" status rc=0 runner_rc=0 resolve_rc=0
   seat="${SC_SEAT_PLAN:-}"
   if [ -z "$seat" ]; then
@@ -1140,6 +1147,8 @@ sc_gate_capacity() {
       fi
       if [ "$SC_COST_MODEL" = "plan-quota" ]; then
         echo "[sidecar] $SC_ALIAS capacity: unmetered plan (no quota reader); launcher eligibility remains authoritative." >&2
+      elif [ "$SC_COST_MODEL" = "free" ]; then
+        echo "[sidecar] $SC_ALIAS capacity: free route, no amount to read; launcher eligibility remains authoritative." >&2
       else
         echo "[sidecar] $SC_ALIAS capacity: amount unsupported, no amount floor; launcher eligibility remains authoritative." >&2
       fi
@@ -1927,8 +1936,8 @@ PY
 
 # ------------------------------------------------------------------- disclosure tier
 # Constructive disclosure: the child runs isolated and the tier appends exactly what it
-# names. `full` = in-repo, no DISCLOSURE appends; `bare`/`pointer` = scratch run-cwd, with the
-# repo grant unchanged so the child keeps Read access either way. One append rides EVERY tier
+# names. `full` = in-repo, no DISCLOSURE appends; `bare`/`pointer` = scratch run-cwd. Which kind runs which
+# tier is the kind table's (guards/tool_profiles.json `kinds`), with the repo grant unchanged so the child keeps Read access either way. One append rides EVERY tier
 # and every model: the autonomy rail below. It is transport, not disclosure — a sidecar child
 # has no human on the other end, and a `-D full` child in a sealed arm root reads that root's
 # frozen hooks, so no guard file in this repo can reach it.
@@ -1938,6 +1947,7 @@ PY
 sc_build_disclosure() {
   SC_RUN_CWD="$SC_WORKDIR"
   SC_APPEND_ARGS=()
+  SC_APPEND_FILE=""   # the append file this build writes; the record counts its characters
   # Autonomy rail (user ruling 2026-09-04): three Luna benchmark cells ended on "which should I
   # lock, A or B?" / "please choose: fix, commit or abort" after 47–99 turns and were scored as
   # delivered-nothing. Any model that halts on a question gets the same text; it names the
@@ -2000,6 +2010,7 @@ SC_AUTONOMY
   auto_arg="$auto_tmp"
   command -v cygpath >/dev/null 2>&1 && auto_arg="$(cygpath -m "$auto_tmp")"
   SC_APPEND_ARGS=(--append-system-prompt-file "$auto_arg")
+  SC_APPEND_FILE="$auto_tmp"
 }
 
 # ------------------------------------------------------------------ claude binary
@@ -2057,7 +2068,7 @@ sc_check_dispatch_facts() {
 sc_check_gates() {
   sc_resolve_model
   sc_gate_availability
-  [ -n "${SC_MIN_BAND:-}" ] && sc_gate_band
+  sc_gate_band
   sc_gate_capacity
   SC_CHECK_MODE=1 sc_gate_price_window
   return 0
@@ -2098,6 +2109,9 @@ sc_scrub_env() {
   # `SC_DISALLOWED` names it (tools/tool_profiles.py) -- but a Bash background task still holds the
   # child after its result, which sc_run_watched ends (SC_RESULT_GRACE_SEC); the ceiling is passed
   # through only because a caller that sets it means it.
+  # The resolved profile decides (tools/tool_profiles.py `gitInstructions`): a child with no Bash never commits or
+  # opens a PR, so the client's commit-and-PR instructions (CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS) only cost it tokens.
+  [ "${SC_GIT_INSTRUCTIONS:-}" = off ] && SC_SCRUB+=(CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1)
   local ceiling="${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-}"
   [ -n "$ceiling" ] && SC_SCRUB+=(CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="$ceiling")
   # The parent-session tag: the scrub drops CLAUDE_CODE_SESSION_ID and a detached child outlives its
@@ -2178,6 +2192,13 @@ sc_write_record() {
   # data pipe cannot share the channel.
   raw_tmp="$(mktemp)"
   printf '%s' "$output" > "$raw_tmp"
+  # The prompt the child was sent, counted as characters in Python (bash counts bytes in a C locale). Unset
+  # SC_PROMPT means this launcher never read one: the record leaves briefChars absent.
+  local brief_tmp=""
+  if [ -n "${SC_PROMPT+x}" ]; then
+    brief_tmp="$(mktemp)"
+    printf '%s' "$SC_PROMPT" > "$brief_tmp"
+  fi
   ledger_default="$SC_LEDGER_DEFAULT"
   sc_rotate_ledger "$SC_LEDGER"
   sc_check_completion "$SC_RECORD" "$SC_WORKDIR" "$raw_tmp"
@@ -2193,7 +2214,7 @@ sc_write_record() {
     USAGE_LIMIT_V="${SC_USAGE_LIMITED:-0}" RESET_V="${SC_USAGE_LIMIT_RESET:-}" \
     PERM_V="${SC_PERM_MODE:-}" MAXOUT_V="${SC_MAX_OUTPUT:-}" STALL_V="${SC_STALL_SEC:-}" WORKPRI_V="${SC_WORK_PRIORITY:-}" \
     PINBASIS_V="${SC_PIN_BASIS:-}" TOOLFRAME_V="${SC_TOOL_FRAME:-}" \
-    RESUMED_V="${SC_RESUMED_FROM:-}" PROF_V="${SC_TOOL_PROFILE:-}" PROMPT_V="${SC_PROMPT_FILE:-}" \
+    RESUMED_V="${SC_RESUMED_FROM:-}" PROF_V="${SC_TOOL_PROFILE:-}" PROMPT_V="${SC_PROMPT_FILE:-}"     BRIEFTXT_V="$(sc_to_native "$brief_tmp")" APPENDTXT_V="$(sc_to_native "${SC_APPEND_FILE:-}")" \
     python3 - <<'PYEOF' || publish_rc=$?
 import json, os, sys, tempfile, time
 raw = open(os.environ["RAW_V"], encoding="utf-8", errors="replace").read()
@@ -2353,6 +2374,32 @@ def _turn1_context(sid):
         return None
     return None
 turn1 = _turn1_context(data.get('session_id'))
+def _chars(path):
+    # None = this launcher never produced the file; a file it produced and left empty is a real 0.
+    if not path or not os.path.isfile(path):
+        return None
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        return len(fh.read())
+def _load_facts(parser, raw):
+    """What the launcher put in the child's turn 1 besides the client's own system prompt and the CLAUDE-file chain.
+    briefChars: the prompt sent. appendChars: the --append-system-prompt-file the launcher passed. hookChars:
+    SessionStart hook stdout, read from the stream's hook_response events (a json envelope or a non-Claude
+    parser carries none). A fact the launcher could not see is left out of the record, never written as 0."""
+    facts = {"briefChars": _chars(os.environ.get("BRIEFTXT_V")),
+             "appendChars": _chars(os.environ.get("APPENDTXT_V"))}
+    if parser == "claude":
+        seen, total = False, 0
+        for line in raw.splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(o, dict) and o.get("subtype") == "hook_response" and o.get("hook_event") == "SessionStart":
+                seen = True
+                total += len(o.get("stdout") or "")
+        if seen:
+            facts["hookChars"] = total
+    return {k: v for k, v in facts.items() if v is not None}
 def _tool_versions(plan):
     # The search tooling the child's login ran, so a board can tell arms or judges on different plugin
     # builds apart (the revision, not the version label): the user-scope semantic-search@dreb in
@@ -2446,6 +2493,7 @@ record = {
     # Turn-1 context = system prompt + hooks + brief, read from the child's own transcript (its
     # first assistant usage). Measured per run so the -D cost is never a stale constant.
     "turn1ContextTokens": turn1,
+    **_load_facts(parser, raw),
     "contextWindow": ctxwin,
     **({"contextOverride": int(os.environ["CTXOVERRIDE_V"])} if os.environ.get("CTXOVERRIDE_V") else {}),
     **({"compactionRail": compaction_rail} if rail_applies else {}),
@@ -2574,7 +2622,7 @@ if ledger:
     except Exception:
         pass  # spend ledger is advisory; never fail the run over it
 PYEOF
-  rm -f "$raw_tmp"
+  rm -f "$raw_tmp" ${brief_tmp:+"$brief_tmp"}
   [ "$publish_rc" -eq 0 ] && SC_RECORD_PUBLISHED=1
   sc_cleanup_published_inventory "$publish_rc"
 }

@@ -18,9 +18,13 @@ Read at the run step, named from `SKILL.md` §Recipe index. `SKILL.md` §Quick S
 
 ## Sizing `-TimeoutMs`
 
-**Omit `-TimeoutMs` for the default ceiling.** The ceiling is the sum of every recorded unit and tier duration (`Get-SuiteDefaultCeilingMs`, `GodotProcess.ps1` owns the values). A run still writing progress may run to 3× it. A run silent for `SuiteStallMs` is killed (`stall-hang`). An explicit `-TimeoutMs` overrides the ceiling.
+**Omit `-TimeoutMs` for the default ceiling.** The ceiling is the sum of every recorded unit and tier duration (`Get-SuiteDefaultCeilingMs`, `GodotProcess.ps1` owns the values). A run still writing progress may run to 3× it. A run silent for `SuiteStallMs` plus the longest `[TestCase(Timeout=)]` among the cases its filter selects is killed (`stall-hang`): a case prints nothing while it runs, so it may be silent for the budget it declares. An explicit `-TimeoutMs` overrides the ceiling.
 
 A separate 90 s runtime-boot watchdog stops an attempt whose fresh Godot log never reaches `Waiting for client connecting`; it retries once and keeps `godot_test.hang<n>.log` for each hung attempt. A final hang still reports `STATUS=HANG`, never green.
+
+## On-demand batteries outside the gate
+
+A `Tests/<X>/` directory outside `/regression_gate`'s filters is an on-demand battery. `test_suite_gate_coverage_guard.py` `EXCLUDED` names each one with its reason and where its run instructions live. Size a battery's `-TimeoutMs` by the rule above, because its slowest case stays silent for the `[TestCase(Timeout=)]` it declares.
 
 ## Runtime slots and parallel dev
 
@@ -67,7 +71,7 @@ A trigger is confirmed only when the trigger line's `filter=` passes solo: re-ru
 |------|---------|--------|
 | `0` | Pass | ✓, but only once the count checks out |
 | `100` | Failures OR executor timeout | Failures are failures, and an executor timeout is an invalid run — never read either as cosmetic |
-| `101` | Warnings | Review orphan warnings |
+| `101` | Warnings | Review them; an orphan warning's count is not leak evidence (`authoring.md` §Teardown Doctrine & Orphan Prevention) |
 | `-1073740791` | Godot crash (orphan accumulation) | Run in batches — never the full suite unfiltered |
 
 ## "GodotRuntimeExecutor timed out" — the silent skip

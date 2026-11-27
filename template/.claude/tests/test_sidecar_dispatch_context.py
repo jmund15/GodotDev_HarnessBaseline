@@ -442,11 +442,11 @@ def plan_cases(tmp):
                 other = next(m["alias"] for m in model_registry.available_models(forced)
                              if m["transport"] == "anthropic" and m["alias"] != host_exec)
                 rows_job = {"label": "rows-a", "rows": {host_exec: "medium", other: "low"}, "promptFile": prompt,
-                            "kind": "lens", "wakeWith": "grp", "window": "full"}
+                            "kind": "lens", "wakeWith": "grp"}
                 alias_job = {"label": "rows-a", "alias": host_exec, "effort": "medium", "promptFile": prompt,
-                             "kind": "lens", "wakeWith": "grp", "window": "full"}
+                             "kind": "lens", "wakeWith": "grp"}
 
-                plain = {k: v for k, v in rows_job.items() if k not in ("wakeWith", "window")}
+                plain = {k: v for k, v in rows_job.items() if k not in ("wakeWith",)}
 
                 fans = iter(range(100))
 
@@ -458,10 +458,10 @@ def plan_cases(tmp):
                                                  % path.replace("\\", "/"))
                 rows_fan, alias_fan = fan_of(rows_job), fan_of(alias_job)
                 rows_contracts = sidecar.fanout_contract(rows_fan, root)
-                cases.append(("a `rows` job (with wakeWith and window) gets one contract per row, in listed order",
+                cases.append(("a `rows` job (with wakeWith) gets one contract per row, in listed order",
                               [(c["job"][0], c["job"][1], c["effort"]) for c in rows_contracts]
                               == [("rows-a", host_exec, "medium"), ("rows-a", other, "low")]))
-                cases.append(("an alias job carrying wakeWith and window keeps its one contract",
+                cases.append(("an alias job carrying wakeWith keeps its one contract",
                               [(c["job"][1], c["effort"]) for c in sidecar.fanout_contract(alias_fan, root)]
                               == [(host_exec, "medium")]))
                 rows_tiers = sidecar.launch_tiers(None, rows_fan, root)
@@ -473,7 +473,7 @@ def plan_cases(tmp):
                                   if m["transport"] == "codex" and "executor" in model_registry.entry_tiers(m))
                 mixed_rows_job = dict(rows_job, rows={host_exec: "medium", codex_exec: "low"},
                                       plan="anthropic-secondary")
-                mixed_plain = {k: v for k, v in mixed_rows_job.items() if k not in ("wakeWith", "window")}
+                mixed_plain = {k: v for k, v in mixed_rows_job.items() if k not in ("wakeWith",)}
                 mixed_contracts = sidecar.fanout_contract(fan_of(mixed_rows_job), root)
                 cases.append(("a named plan keeps only rows served by that plan",
                               len(mixed_contracts) == 1

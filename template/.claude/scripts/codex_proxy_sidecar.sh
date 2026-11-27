@@ -7,8 +7,7 @@
 # skills, memory, hooks, rules, and the `-D` disclosure dial — with a GPT model behind the
 # endpoint. Every dispatch shape routes here; how much context the child loads is the -D dial,
 # not a different launcher. Pick -D and -G together as a SIDECAR AGENT TYPE — the recipe table
-# is reference/sidecar_dispatch.md (scout=bare·survey, lens=pointer·survey, reviewer=full·review,
-# author=full·author, judge=full·any). The former `codex exec` launcher stub was retired, then
+# is reference/sidecar_dispatch.md and the kind rows in guards/tool_profiles.json. The former `codex exec` launcher stub was retired, then
 # deleted (2026-09-14); git history at the pre-retirement tag point (fix(sidecar) 26393ee81)
 # still has its header and implementation.
 #
@@ -46,9 +45,9 @@
 # scout|lens|reviewer|author|judge|gate, plus the internal arm|bench-score|bench-review) is required and
 # exports CLAUDE_CODE_SIDECAR_KIND; omitting -G refuses (exit 2). The kind's row sets built-ins, MCP
 # servers, disclosure and guard text, so `-D` refuses (only `-G arm` takes it) and an unsigned `-t`
-# refuses (a signed delta, `-t +Bash`, stays legal). With disclosure full (reviewer, author, judge), the
+# refuses (a signed delta, `-t +Bash`, stays legal). With disclosure full (every dispatch kind), the
 # child runs in the repo and hooks/session_model_rails.py inlines the kind's guard rails and its resolved
-# model's registry driver notes on SessionStart. With bare (scout) or pointer (lens), no
+# model's registry driver notes on SessionStart. With bare or pointer (internal benchmark kinds only), no
 # project hook fires, so lib/sidecar_common.sh appends the same assembly itself.
 # Both routes key the rails and driver notes to the child's model, never the parent's.
 #
@@ -185,30 +184,19 @@ sc_validate_effort
 # a hard upstream error mid-run. Parity between arms means each declares ITS OWN model's window,
 # not the same integer.
 # -M declares the registry's MAX window instead: for a job whose live context must pass the default.
-# Reserve the child's output budget (32000, the maxOutputTokens a proxied child reports) out of the
-# declared window. The provider enforces input + max_output <= its window, while the client's
-# auto-compaction watches input alone against the declared figure: declared at the provider's own
-# effective window, the child reaches the provider's ceiling BEFORE its compaction threshold and the
-# request dies "Prompt is too long" with no compact_boundary for the re-prompt rail to act on
-# (measured 2026-09-08, gpt-5.6-luna T1 curator: 243.5k input, 0 compactions, 258400 declared, 107 turns lost).
-# The child's max output tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS) IS the output reserve: the provider enforces
-# input + max_output <= its window, and the CLI auto-compacts at declared - max_output - ~3k (measured 2026-09-09:
-# gpt-5.6-luna T1 08-20 258,400/225,872; T1 09-09 226,400/190,957; 90k probes at 32k vs 8k caps). Leaving the CLI's
-# 32k default AND subtracting 32k here stacked two reserves and compacted gpt-5.6-luna at 70% of its real window. 16k is
-# ample for one response (a 46 KB design doc is ~12k tokens); a child that must emit more sets
-# SIDECAR_MAX_OUTPUT_TOKENS, and SIDECAR_OUTPUT_RESERVE still overrides the subtraction alone.
-SC_MAX_OUTPUT="${SIDECAR_MAX_OUTPUT_TOKENS:-16000}"
+# Reserve the child's output cap out of the declared window. The provider enforces input + max_output <= its
+# window, and a compaction request carries the whole context plus that cap: declared at the provider's own
+# window, a read that lands past the compaction point leaves the compaction request itself too long, and the
+# child dies "Prompt is too long" with no compact_boundary (2026-09-08, gpt-5.6-luna: 243.5k input, 32k cap).
+# The cap is the transport's `childOutputCap` (model_registry.py `child-output-cap`), which also sizes the
+# compaction point the preflight predicts. SIDECAR_MAX_OUTPUT_TOKENS overrides it for one child, and
+# SIDECAR_OUTPUT_RESERVE overrides the subtraction alone.
+SC_MAX_OUTPUT="${SIDECAR_MAX_OUTPUT_TOKENS:-$(python3 "$SC_REGISTRY_CLI" child-output-cap "$SC_MODEL" 2>/dev/null | tr -d '\r')}"
+[ -n "$SC_MAX_OUTPUT" ] || sc_die 2 "registry states no childOutputCap for $SC_MODEL's transport"
 SC_OUTPUT_RESERVE="${SIDECAR_OUTPUT_RESERVE:-$SC_MAX_OUTPUT}"
 SC_CONTEXT_TOKENS="$(sc_declared_context_window)"
 [ -n "${SC_LONG_CONTEXT:-}" ] && echo "[proxy-sidecar] -M: requests past the codex longContextTier threshold (external_models.json) bill at its multipliers; cost: reference/codex_session_runbook.md §Launch" >&2
-[ -n "$SC_CONTEXT_TOKENS" ] &&   echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry effective window minus the ${SC_OUTPUT_RESERVE}-token output reserve; max output ${SC_MAX_OUTPUT}; auto-compaction expected near $((SC_CONTEXT_TOKENS - SC_MAX_OUTPUT - 3000)))" >&2
-# Window-relative harness cost at turn 1 on gpt-5.6-luna: bare 22k, pointer 25k, full 37k tokens.
-# Under 400k a reviewer child (disclosure full) spends ~14% of its window before the brief; a lens (pointer)
-# costs 25k. Advisory only — keep reviewer when this child must APPLY doctrine.
-if [ -n "$SC_CONTEXT_TOKENS" ] && [ "$SC_CONTEXT_TOKENS" -lt 400000 ] && [ "${SC_DISCLOSURE:-}" = "full" ] \
-   && [ "${SC_SHAPE:-}" = "reviewer" ]; then
-  echo "[proxy-sidecar] kind reviewer runs at disclosure full: on a ${SC_CONTEXT_TOKENS}-token window that costs ~37k (~$((3700000 / SC_CONTEXT_TOKENS))%) before the brief; kind lens (pointer, 25k) costs less — keep reviewer only if this child must APPLY doctrine" >&2
-fi
+[ -n "$SC_CONTEXT_TOKENS" ] &&   echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry effective window minus the ${SC_OUTPUT_RESERVE}-token output reserve; max output ${SC_MAX_OUTPUT})" >&2
 
 # AFTER sc_build_disclosure so the port is never claimed for a run a validation gate rejects,
 # and so the proxy's cleanup registers behind the scratch-dir cleanup rather than replacing it.

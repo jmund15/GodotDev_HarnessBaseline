@@ -34,9 +34,10 @@ within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm)
 a run's end wakes nobody. A session watcher exits `NONE` once nothing it watches is live: it has no work left, and an idle one still ends at its Bash timeout, waking a cold cache. It also ends when nothing can receive its wake: the shell that carries its output (its parent) or the session host that owns that shell is gone (`HOST GONE: <reason>`, read from the client's session registry; `WATCH_RECORDS_HOST_SEC` sets the check interval), which also ends a duplicate still waiting to take over. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
-re-reading a file it had read before the previous compaction, with no file written since that compaction (the cycle: a seat
+re-reading a file it had read before the previous compaction, with no new file read and no file written since that compaction (the cycle: a seat
 that loses what it gathered, refills its window and compacts again), wakes the session with
-`COMPACTING [workflow <runId>] <label> compacted <n>, re-read <file>`, once per new compaction count. A seat that wrote
+`COMPACTING [workflow <runId>] <label> compacted <n>, re-read <file>`, once per cycling seat: after that wake the session
+has decided whether to let it run, so its later compactions show only as its check-in clause. A seat that wrote
 its findings before compacting lost nothing, so its compaction stays a check-in clause. A running Workflow seat whose `agent-<id>.jsonl` has not grown for `WORKFLOW_STALL_SECONDS`
 (`WATCH_RECORDS_STALL_SEC` overrides it) wakes with `STALLED workflow <runId> <label> idle=<n> min`, once per stall: the
 client's request for that seat never returned, and no engine watchdog ends it. A `--session --wake` call made while
@@ -58,8 +59,9 @@ or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispa
 Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
 `checkin_lines` every `PANE_SECONDS` (`WATCH_RECORDS_PANE_SEC` overrides it) and appends a frame, closed by a stamp line,
 when they change or every `PANE_HEARTBEAT_SECONDS`. It appends, never rewrites: the desktop client reads
-only the bytes past its saved offset of the output file. It does not exit while its session lives and no wake reads it,
-and it ends `HOST GONE` when its session's host or parent shell is gone, like the session watcher;
+only the bytes past its saved offset of the output file. It shows live work, so it ends `IDLE` once its frames show
+none for `PANE_IDLE_SECONDS` (`WATCH_RECORDS_PANE_IDLE_SEC` overrides it), and `HOST GONE` when its session's host or
+parent shell is gone, like the session watcher; no wake reads its output;
 the session's shells that ran this tool are not live work. It registers under `sidecar_pane`; a second pane beside a
 live one exits COVERED. While work is live and no pane runs, a session wake's last lines carry `PANE none: ...`.
 Any other flag is a usage error (exit 2), never a record path. A fan-out job that ends cleanly wakes the session
@@ -162,9 +164,14 @@ ARM_CALL = "as its own Bash call with run_in_background: true and timeout 720000
 PANE_COMMAND = "python3 .claude/tools/watch_records.py --pane"
 PANE_CALL = "as its own Bash call with run_in_background: true and timeout 86400000"
 PANE_KEY = "sidecar_pane"  # the live pane's process line, in session hook state
+CLIENT_LIVE_KEY = "background_live"  # the background task ids the client last listed as running, in session hook state
 PANE_TITLE = "sidecar pane"
 PANE_SECONDS = float(os.environ.get("WATCH_RECORDS_PANE_SEC", "20"))
 PANE_HEARTBEAT_SECONDS = 600  # an unchanged pane reprints so its stamp shows it is alive
+# A pane shows live work, so it ends once its frames have been idle this long. The bound reuses the heartbeat period,
+# and a pane that ends early costs one restart, which the wake's pane hint asks for when work is live again.
+PANE_IDLE_SECONDS = float(os.environ.get("WATCH_RECORDS_PANE_IDLE_SEC", str(PANE_HEARTBEAT_SECONDS)))
+PANE_IDLE = "IDLE: no live work for %d min, so the pane exits; when work is live again, start `%s` %s."
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # the launch ids reap.py stopped for this session
 SHELL_OFFSET_KEY = "sidecar_wake_shell_offset"  # the transcript byte offset the last wake scanned to for ended shells
 # A session watcher that exits with a wake deregisters before its output arrives at the session, so the
@@ -1178,8 +1185,10 @@ def agent_compaction(path):
     """One agent transcript (a Workflow `agent-<id>.jsonl` or a sidecar `<record>.stream`):
     {'count': compact_boundary rows, 'minutes': their summed duration or None when no row carries one,
     'reread': basename of a file read after the previous boundary that an earlier segment also read, taken from
-    the segment the LAST boundary closed, else None, 'saved': whether that same segment wrote a file}. A non-None
-    'reread' is the compaction cycle: the seat lost its subject and fetched it again. A cycle with 'saved' kept what
+    the segment the LAST boundary closed, when that segment read no file an earlier one had not, else None, 'saved':
+    whether that same segment wrote a file}. A non-None 'reread' is the compaction cycle: the seat lost its subject
+    and fetched it again without reaching new ground. A segment that also read a new file is advancing: a read-only
+    seat re-reads its input after each compaction and still progresses. A cycle with 'saved' kept what
     it found in a file before compacting, so the compaction lost nothing. Unparseable lines (a partly written last
     line) are skipped; a missing file is zero compactions. Cached per (size, mtime): a poll re-reads only a
     transcript that grew."""
@@ -1210,7 +1219,7 @@ def agent_compaction(path):
                     if isinstance(ms, (int, float)):
                         duration = (duration or 0) + ms
                     out["count"] += 1
-                    out["reread"] = again
+                    out["reread"] = again if segment <= earlier else None
                     out["saved"] = wrote
                     earlier |= segment
                     segment, again, wrote = set(), None, False
@@ -1828,7 +1837,7 @@ def _wake(grouped, now=None):
                 for agent in workflow_agents(entry):
                     seat = "workflow:%s:%s" % (entry.get("id"), agent["agentId"])
                     if agent["reread"] and not agent["saved"]:
-                        lines.append(("compacting", ("compacting", seat, agent["count"]),
+                        lines.append(("compacting", ("compacting", seat),
                                       "COMPACTING workflow %s %s compacted %d, re-read %s"
                                       % (entry.get("id"), agent["label"], agent["count"], agent["reread"]), True))
                     idle = now - agent["mtime"] if agent.get("mtime") is not None else None
@@ -1855,14 +1864,15 @@ def _wake(grouped, now=None):
                 for cell, stream in unit.get("cells") or []:
                     compaction = agent_compaction(stream)
                     if compaction["reread"] and not compaction["saved"]:
-                        lines.append(("compacting", ("compacting", stream, compaction["count"]),
+                        lines.append(("compacting", ("compacting", stream),
                                       "COMPACTING roster %s %s compacted %d, re-read %s"
                                       % (row["name"], cell, compaction["count"], compaction["reread"]), True))
             else:
                 # DONE is the roster's `END <name> ok`; a clean end waits while another roster of this session runs.
                 others_live = any(other.get("roster") and other["roster"]["state"] in ROSTER_LIVE_STATES
                                   for other in grouped.values())
-                lines.append(("roster", ("roster", row["name"], row["last"]),
+                # Identity is name and end state: a later run can keep writing the dead run's log.
+                lines.append(("roster", ("roster", row["name"], row["state"]),
                               "ROSTER %s %s: %s" % (row["state"], row["name"], row["last"]),
                               not (row["state"] == "DONE" and others_live)))
             continue
@@ -1929,7 +1939,7 @@ def _wake(grouped, now=None):
             stream = record_stream(record)
             compaction = agent_compaction(stream) if stream else None
             if compaction and compaction["reread"] and not compaction["saved"]:
-                lines.append(("compacting", ("compacting", record, compaction["count"]),
+                lines.append(("compacting", ("compacting", record),
                               "COMPACTING %s compacted %d, re-read %s"
                               % (label, compaction["count"], compaction["reread"]), True))
         key = _unit_key_of(unit) if unit["records"] or unit.get("fanout_dir") else "unit:%s" % ukey
@@ -1977,7 +1987,7 @@ def checkin_lines(grouped, now=None):
     out = []
     for unit in grouped.values():
         if unit.get("running_shell"):
-            out.append("RUNNING shell %s" % unit["running_shell"])
+            out.append("RUNNING shell %s%s" % (unit["running_shell"], unit.get("running_note") or ""))
             continue
         if unit.get("pending_call"):
             continue
@@ -2289,13 +2299,30 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
 def session_running_shells(session_id, transcript, live):
     """The ids among `live` (the background task ids a Stop payload lists as running now) that are this session's running
     Bash/PowerShell background tasks by the watcher's own test (`ShellEnds.running`, `wake_digest.running_shells`): a
-    main-session launch row with no end notice, launched recently, that did not run this watcher or its pane. The Stop hook
-    calls this so it blocks on exactly the shells the watcher counts as live work. It parses the whole transcript once, so
-    it runs only when `live` is not empty and no session watcher is armed."""
+    main-session launch row with no end notice, launched within the age bound or listed in `live`, that did not run this
+    watcher or its pane. The Stop hook calls this so it blocks on exactly the shells the watcher counts as live work. It
+    parses the whole transcript once, so it runs only when `live` is not empty and no session watcher is armed."""
     path = transcript or _transcript_path(session_id)
     if not path or not live:
         return set()
-    return set(_digest().running_shells(path, _digest().new_shell_scan())) & {str(task) for task in live}
+    listed = {str(task) for task in live}
+    return set(_digest().running_shells(path, _digest().new_shell_scan(), client_live=listed)) & listed
+
+
+def record_client_live(session_id, live):
+    """Store the background task ids the client lists as running now (a Stop payload's `background_tasks`), so the
+    watcher and the pane, which get no payload, keep counting a long-running shell the client still runs."""
+    if session_id:
+        ids = sorted(str(task) for task in live)
+        _hook_state.update_json_locked(_hook_state.state_path(session_id),
+                                       lambda state: state.__setitem__(CLIENT_LIVE_KEY, ids))
+
+
+def client_live(session_id):
+    """The ids the client last listed as running (`record_client_live`); empty when none was recorded."""
+    state = _hook_state.read_json_salvage(_hook_state.state_path(session_id)) if session_id else {}
+    listed = (state or {}).get(CLIENT_LIVE_KEY)
+    return set(listed) if isinstance(listed, list) else set()
 
 
 class ShellEnds:
@@ -2332,7 +2359,12 @@ class ShellEnds:
     def running(self):
         if self.path is None:
             self.path = _transcript_path(self.session_id)
-        return _digest().running_shells(self.path, self.scan) if self.path else set()
+        return (_digest().running_shells(self.path, self.scan, client_live=client_live(self.session_id))
+                if self.path else set())
+
+    def note(self, task):
+        """` for <age>: <launch description>` for a running shell's check-in line."""
+        return _digest().shell_note(self.scan, task)
 
     def pending(self):
         if self.path is None:
@@ -2402,7 +2434,8 @@ def _session_source(session_id, state_path=None):
         grouped.update(rosters())
         grouped.update({"shell:%s" % task_id: {"shell": notice, "records": [], "fanout_dir": None}
                         for task_id, notice in shells.poll().items()})
-        grouped.update({"running-shell:%s" % task_id: {"running_shell": task_id, "records": [], "fanout_dir": None}
+        grouped.update({"running-shell:%s" % task_id: {"running_shell": task_id, "running_note": shells.note(task_id),
+                                                       "records": [], "fanout_dir": None}
                         for task_id in shells.running()})
         grouped.update({"pending-call:%s" % use: {"pending_call": use, "records": [], "fanout_dir": None}
                         for use in shells.pending()})
@@ -2440,6 +2473,11 @@ def pane_due(key, last_key, last_at, now):
     return key != last_key or now - last_at >= PANE_HEARTBEAT_SECONDS
 
 
+def pane_idle_over(lines, idle_since, now):
+    """True when the pane has shown no live work since `idle_since` for PANE_IDLE_SECONDS."""
+    return not lines and idle_since is not None and now - idle_since >= PANE_IDLE_SECONDS
+
+
 def _pane_live(state):
     return _process_line_gone((state or {}).get(PANE_KEY)) is False
 
@@ -2461,8 +2499,9 @@ def session_closing(session_id):
 
 def pane_main(session_id):
     """Poll the check-in lines every PANE_SECONDS, appending a frame when `pane_due`. Exits COVERED beside a live pane,
-    and exits HOST GONE when no session can receive its frames: the pane is unread by design while its session
-    lives, but a pane nobody can read is the same orphan the session watcher ends on."""
+    IDLE once `pane_idle_over` (it shows live work, so it ends with that work), and HOST GONE when no session can
+    receive its frames: the pane is unread by design while its session lives, but a pane nobody can read is the same
+    orphan the session watcher ends on."""
     path, identity, covering = _hook_state.state_path(session_id), process_line(), []
 
     def claim(state):
@@ -2475,7 +2514,7 @@ def pane_main(session_id):
     if covering:
         print("COVERED by %s: a live pane is registered" % covering[0], flush=True)
         return 0
-    source, last_key, last_at = _session_source(session_id), None, 0.0
+    source, last_key, last_at, idle_since = _session_source(session_id), None, 0.0, None
     lifetime = Lifetime(session_id)
     try:
         while True:
@@ -2491,6 +2530,10 @@ def pane_main(session_id):
                 sys.stdout.write(pane_frame(lines, now))
                 sys.stdout.flush()
                 last_key, last_at = tuple(lines), now
+            idle_since = None if lines else (now if idle_since is None else idle_since)
+            if pane_idle_over(lines, idle_since, now):
+                print(PANE_IDLE % (PANE_IDLE_SECONDS // 60, PANE_COMMAND, PANE_CALL), flush=True)
+                return 0
             time.sleep(PANE_SECONDS)
     finally:
         _hook_state.update_json_locked(

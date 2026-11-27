@@ -4,7 +4,7 @@ Read before building a brief (`orchestration` §0 Governing skills and Pre-Dispa
 
 ## Governing skills
 
-Before building a brief, load each skill whose workflow the job uses in this session's current context; repeat after compaction unless the client reattached the whole skill and that copy still matches the skill's `SKILL.md` on disk. Keep its source paths in the brief. A skill whose files the job only reviews or reads as data governs nothing.
+Before building a brief, load each skill whose workflow the job uses in this session's current context; repeat after compaction unless the client reattached the whole skill and that copy still matches the skill's `SKILL.md` on disk. Keep its source paths in the brief. A skill whose files the job only reviews or reads as data governs nothing, except that a job designing or judging what agent-facing text should hold is governed by the skill that owns that text's rules, though it edits nothing.
 
 ## Gather, then judge
 
@@ -19,7 +19,8 @@ Gathering and judging are separate jobs. Gathering evidence (search, extraction,
 - A job whose result is a design or a judgment, not the execution of one (architecting, planning, design, debugging, judging another job's work) meets `orchestration` §4 *A brief leaves the thinking to the job*. Read the written brief against it: it carries the goal, the owners' words verbatim, the evidence paths and measurements, and what is fixed (their picks, locked parts, hard limits); each scope line, sub-question and deliverable heading traces to the owners' principle, never to a candidate, example or sub-question the briefer already held; and every seat of one question carries the whole question. A brief that fails is rewritten before launch. Its job finds the cause and the best answer, which can differ from what the owners' words name.
 - The brief sets no limit its delegate stops at: no minutes, turn count or "stop after". A duration worry is the orchestrator's check-in, read from the job's progress (`reference/sidecar_runs.md` §Detached runs); a run that hits a cap discards every turn it paid for. Nor does it order the delegate to wait until a long job ends: a delegate waits out the runs it started, which end with its seat, and hands back only a job under its own launcher and record (`guards/common.md`).
 - Text a delegate acts on orders a Read of a scratch file, never an existence check: Glob and Grep hide gitignored paths.
-- The brief's paths resolve: `python3 .claude/tools/verify_doc_citations.py --kinds path --only missing <brief>` lists the misses, and each is fixed or confirmed as a non-path (a branch name) or a path the job creates.
+- The brief's paths resolve: `python3 .claude/tools/verify_doc_citations.py --kinds path --only missing <brief>` lists the misses, and each is fixed or confirmed as a non-path (a branch name) or a path the job creates. A path to the job's own report is the one the engine writes, `<spillDir>/<label>.md`.
+- Run each check command the brief hands the job on the current tree before launch, because a check that cannot pass sends the job to debug the brief instead of its work. A check of the new behavior fails for the reason the job removes; any other check passes. Any other result (a missing path the job does not create, a crash, a red the job does not own) is fixed in the brief first.
 
 ## Return checklist
 

@@ -208,9 +208,9 @@ case("a workdir naming another checkout stays a sidecar and the reason names the
      and "elsewhere: stays a sidecar (`workdir` needs a process started in another checkout)" in text
      and "no Workflow equivalent" not in text)
 shutil.rmtree(elsewhere, ignore_errors=True)
-code, text, out, _ = run([job("root-and-window", workdir=str(sf.REPO), window="full")])
+code, text, out, _ = run([job("root-and-window", workdir=str(sf.REPO), extraArgs=["--verbose"])])
 case("a repo-root workdir job kept a sidecar by another field names only that field",
-     lambda: read(out, "native.args.json") is None and len(DRIVERS) == 2 and "`window` has no Workflow equivalent" in text
+     lambda: read(out, "native.args.json") is None and len(DRIVERS) == 2 and "`extraArgs` has no Workflow equivalent" in text
      and "workdir" not in text.split("root-and-window", 1)[1].splitlines()[0])
 code, text, out, _ = run([job("cache-1h", cacheTtl="1h")])
 case("a job on the 1-hour cache stays a sidecar, since a Workflow agent caches 5 minutes",

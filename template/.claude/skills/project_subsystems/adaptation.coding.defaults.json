@@ -13,7 +13,7 @@
     "doc-coverage": {"home": "commands/pr_ready.md#Step 1b", "interaction": false},
     "architecture-sweep": {"home": "commands/agents/session_audit_agents.md#sa-architecture-sweep", "interaction": false},
     "harness-quality": {"home": "commands/agents/session_audit_agents.md#sa-harness-quality", "interaction": false},
-    "holistic": {"home": "commands/agents/session_audit_agents.md#sa-holistic", "interaction": false},
+    "cross-unit": {"home": "commands/agents/session_audit_agents.md#sa-cross-unit", "interaction": false},
     "plc-memory-alignment": {"home": "commands/agents/plan_check_agents.md#plc-memory-alignment", "interaction": false},
     "plc-pattern-fit": {"home": "commands/agents/plan_check_agents.md#plc-pattern-fit", "interaction": false},
     "plc-test-readiness": {"home": "commands/agents/plan_check_agents.md#plc-test-readiness", "interaction": false},

@@ -252,7 +252,7 @@ def _cli_row(cli_id, entry, values, today, order, data):
     if values:
         row["effortValues"] = values
     row["authTier"] = "open"
-    row["gate"] = {"minBand": "Surplus"}
+    row["gate"] = {}
     return row
 
 

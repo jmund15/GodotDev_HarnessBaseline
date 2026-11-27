@@ -2099,6 +2099,16 @@ class CompleteLineageTests(LedgerFixture):
         self.assertFalse(any(r["headroomVerified"] for r in rows))
         self.assertTrue(all(r["bandFacts"][0]["room"] == 1 for r in rows))
 
+    def test_a_free_route_needs_no_headroom_reading(self):
+        self.jobs = [self.job("executor")]
+        pick = {"_pick": lambda tier: {"ranked": [{"transport": "anthropic", "room": None, "free": True, "slots": 1,
+                                                   "why": "free: no quota, no charge"}], "payOptions": []}}
+        with patch.object(self.tasks, "all_jobs", return_value=self.jobs), \
+                patch.object(self.tasks, "all_decisions", return_value=[]):
+            out = self.kept(self.plan([self.seat(tier="architect")], "--task", "task-e2", attrs=pick))["reviewerSelection"]
+        rows = [r for r in out["candidates"] if r["transport"] == "anthropic"]
+        self.assertTrue(rows and all(r["headroomVerified"] for r in rows))
+
     def test_exact_freshness_reuse_and_empty_roster_do_not_cancel_obligation(self):
         self.jobs = [self.job("executor", "gpt-6.1-sol")]
         self.plant_rows(self.row(reviewer="panel", model="claude-opus-5-5", modelObserved=True, tier="architect"))
@@ -2175,7 +2185,7 @@ class RosterContractTests(LedgerFixture):
                                         files=(".claude/plans/world-ui.md",)))["roster"]
         self.assertEqual([seat["uncoveredFiles"] for seat in game_plan], [[".claude/plans/world-ui.md"]])
 
-    def test_whole_scope_of_a_prose_harness_scope_owes_nothing_so_it_admits_no_holistic_seat(self):
+    def test_whole_scope_of_a_prose_harness_scope_owes_nothing_so_it_admits_no_cross_unit_seat(self):
         for path, whole in ((".claude/rules/x.md", True), (".claude/hooks/a.py", False), ("src/a.cs", False)):
             self._write(path, "x\n")
             result = self.run_tool("whole-scope", "--subject", "session:s1", "--files", path,
@@ -4913,6 +4923,53 @@ class GitCallTimeoutTests(unittest.TestCase):
         self.assertTrue(seen, "the fetch spawned no git")
         self.assertEqual(seen[0][0][-1], "abc123")
         self.assertIsNone(seen[0][1].get("timeout"))
+
+
+class LegacyMandateKeyTests(LedgerFixture):
+    """A row recorded under a renamed mandate key covers the new key (`LEGACY_MANDATE_KEYS`)."""
+
+    def setUp(self):
+        super().setUp()
+        catalog = dict(CATALOG, **{"cross-unit": {"home": "commands/agents/session_audit_agents.md#sa-cross-unit",
+                                                  "interaction": False}})
+        (self.claude / "skills/project_subsystems/adaptation.json").write_text(
+            json.dumps({"review_mandates": catalog, "review_scope": REVIEW_SCOPE}), encoding="utf-8")
+        agents = self.claude / "commands/agents/session_audit_agents.md"
+        agents.write_text(agents.read_text(encoding="utf-8") + "\n### sa-cross-unit (Cross-unit interaction) — "
+                          "CONDITIONAL\n\nmandates: cross-unit\nadmission: conditional\n\n```\nprompt\n```\n",
+                          encoding="utf-8")
+
+    def cross_unit_hash(self):
+        text = (self.claude / "commands/agents/session_audit_agents.md").read_text(encoding="utf-8")
+        return "sha256:" + hashlib.sha256(section_text(text, "sa-cross-unit").encode("utf-8")).hexdigest()
+
+    def legacy_row(self, rule_hash):
+        return ledger_row("holistic", rule_hash, head=self.head(), files={"src/a.cs": self.blob("src/a.cs")},
+                          mergeBase=self.merge_base())
+
+    def test_row_under_the_old_key_covers_the_renamed_mandate(self):
+        self.plant_rows(self.legacy_row(self.cross_unit_hash()))
+        seats = [self.seat("cross-unit-seat", ("cross-unit",))]
+        self.assertEqual(self.pairs(self.uncovered(mandates="cross-unit", roster=seats)), [])
+
+    def test_old_key_row_with_another_rule_hash_still_owes_the_pair(self):
+        self.plant_rows(self.legacy_row("sha256:" + "0" * 64))
+        seats = [self.seat("cross-unit-seat", ("cross-unit",))]
+        self.assertEqual(self.pairs(self.uncovered(mandates="cross-unit", roster=seats)),
+                         [self.pair("cross-unit")])
+
+    def test_clause1_accepts_a_pre_rename_rule_hash_for_the_renamed_key(self):
+        module = load_module(TOOL)
+
+        class Stub:
+            def rule(self, mandate):
+                return "sha256:new"
+
+        row = {"mandate": "cross-unit", "ruleHash": "sha256:old"}
+        with patch.object(module, "PRE_RENAME_RULE_HASHES", {"cross-unit": ("sha256:old",)}):
+            self.assertTrue(module._clause_rule_text(Stub(), row, "cross-unit", "src/a.cs"))
+            self.assertFalse(module._clause_rule_text(Stub(), dict(row, ruleHash="sha256:other"), "cross-unit",
+                                                      "src/a.cs"))
 
 
 if __name__ == "__main__":
