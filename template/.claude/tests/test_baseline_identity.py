@@ -504,6 +504,55 @@ def test_pinned_template_tokens_reads_the_source_it_is_given_and_opens_no_other(
         assert not source.closed, "the caller's source was closed by the reader"
 
 
+_STORED_ONLY_TYPE = "Planted" + "StoredType"  # in the baseline's stored digests, absent from the live profile
+
+
+def test_scan_changed_hits_a_stored_digest_the_live_profile_lacks() -> None:
+    profile = _fixture_profile()
+    profile["stored_digests"] = {"topology": [identity._digest_full(_STORED_ONLY_TYPE)]}
+    diff = _diff_add("a.md", 1, [f"calls {_STORED_ONLY_TYPE}.Run()"])
+    hits = identity.scan_changed(diff, profile)
+    assert any(h.token_kind == "topology" for h in hits), [h.to_dict() for h in hits]
+
+
+def test_build_profile_for_repo_carries_the_stored_digests_at_the_pin() -> None:
+    """The publish audit scans against the baseline's stored digests file; a profile built in a checkout
+    whose live profile lacks a stored token (a worktree with no submodule checkout) must still hit it."""
+    class _Source:
+        def __init__(self, path: Path, sha: str) -> None:
+            self.path, self.sha = path, sha
+
+        def read(self, relpath: str) -> bytes | None:
+            return _git(self.path, "show", f"{self.sha}:template/{relpath}")
+
+        def read_repo(self, relpath: str) -> bytes | None:
+            return _git(self.path, "show", f"{self.sha}:{relpath}")
+
+        def close(self) -> None:
+            pass
+
+    with _fixture() as path:
+        base = path / "base"
+        _init_repo(base)
+        (base / "template").mkdir()
+        (base / "template" / "tool.md").write_text("generic text\n", encoding="utf-8", newline="\n")
+        (base / "tools").mkdir()
+        stored = {"version": 1, "sources": [{"label": "fixturelabel1", "counts": {"topology": 1},
+                                             "kinds": {"topology": [identity._digest_full(_STORED_ONLY_TYPE)]}}]}
+        (base / "tools" / "identity_digests.json").write_text(json.dumps(stored), encoding="utf-8", newline="\n")
+        _git(base, "add", "-A")
+        _git(base, "commit", "-q", "-m", "template")
+        sha = _git(base, "rev-parse", "HEAD").decode("utf-8").strip()
+        consumer = path / "consumer"
+        _write_fixture_consumer(consumer, project_name=_PROJECT_NAME, abbrev=_ABBREV, subsystem_id=_SUBSYSTEM_ID,
+                                type_name=_TYPE_NAME, baseline_repo="https://example.invalid/baseline-s.git")
+        (consumer / identity._BASELINE_CACHE_RELPATH).mkdir(parents=True)
+        profile = identity.build_profile_for_repo(consumer, source=_Source(base, sha))
+        assert _STORED_ONLY_TYPE not in profile["topology"], "the planted token must come only from the stored file"
+        hits = identity.scan_changed(_diff_add("a.md", 1, [f"calls {_STORED_ONLY_TYPE}.Run()"]), profile)
+        assert any(h.token_kind == "topology" for h in hits), [h.to_dict() for h in hits]
+
+
 # ---------------------------------------------------------------------------
 # fix 5 — `--abbrev <csv>` on `digest`, only when the lock has no abbreviations
 # ---------------------------------------------------------------------------
@@ -603,6 +652,8 @@ def main() -> int:
         test_parse_subsystems_yaml_reads_id_and_paths,
         test_collect_type_names_reads_record_struct_name_and_skips_comment_lines,
         test_pinned_template_tokens_reads_the_source_it_is_given_and_opens_no_other,
+        test_scan_changed_hits_a_stored_digest_the_live_profile_lacks,
+        test_build_profile_for_repo_carries_the_stored_digests_at_the_pin,
     ]
     failures = []
     for case in cases:

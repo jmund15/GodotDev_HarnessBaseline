@@ -536,6 +536,10 @@ class BaselineSource:
     def read(self, relpath: str) -> bytes | None:
         return self.batch.read(relpath)
 
+    def read_repo(self, relpath: str) -> bytes | None:
+        """`relpath` from the baseline repository's root at the pin (outside `template/`)."""
+        return self.batch.blob(f"{self.sha}:{relpath}")
+
     def read_at(self, commit: str, relpath: str) -> bytes | None:
         """`relpath` at another commit of the same object store; None when absent or unreadable."""
         return self.batch.read(relpath, commit)

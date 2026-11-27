@@ -4272,6 +4272,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.journal.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.out",
       "layer": "pure",
       "sync": "auto"

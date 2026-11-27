@@ -1,0 +1,2 @@
+{"ts": "2026-11-06T06:01:51Z", "schema": 1, "event": "started", "launchId": "7f9fa0c1-5432-44ba-b6d2-341bb40d8860", "record": "journaled.record.json", "session": "80576cc1-7e71-485a-8448-66e81bb842d1", "label": "journaled", "call": null, "pid": 609157, "winpid": 25504}
+{"ts": "2026-11-06T06:02:06Z", "schema": 1, "event": "ended", "launchId": "7f9fa0c1-5432-44ba-b6d2-341bb40d8860", "record": "journaled.record.json", "session": "80576cc1-7e71-485a-8448-66e81bb842d1", "label": "journaled", "call": null, "code": 0}

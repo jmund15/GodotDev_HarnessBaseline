@@ -358,6 +358,9 @@ def scan_changed(diff_text: str, profile: dict) -> list:
     plaintext profile in-process, so both scan modes share one matching engine.
     """
     digest_sets = {kind: set(v) for kind, v in digest_kinds(profile).items()}
+    # The baseline's stored digests (`build_profile_for_repo`) are what the publish audit scans against.
+    for kind, values in (profile.get("stored_digests") or {}).items():
+        digest_sets.setdefault(kind, set()).update(values)
     hits: list = []
     path = None
     line_no = None
@@ -400,7 +403,12 @@ def load_digests(path: Path) -> dict:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise IdentityError(f"identity digests file unparseable: {path}: {exc}") from exc
-    sources = doc.get("sources")
+    return _digest_sets_from_doc(doc, path)
+
+
+def _digest_sets_from_doc(doc, path) -> dict:
+    """A parsed digests document's per-kind union; `path` names it in errors."""
+    sources = doc.get("sources") if isinstance(doc, dict) else None
     if sources is None:
         raise IdentityError(f"identity digests file missing 'sources': {path}")
     merged: dict[str, set] = {kind: set() for kind in TOKEN_KINDS}
@@ -547,10 +555,24 @@ def _pinned_template_tokens(
     with an already-local baseline checkout, exactly like `baseline_sync`'s
     own `--baseline-dir` flag, and needs no network.
     """
+    return _pinned_baseline_vocabulary(repo_root, lock, baseline_dir, source)[0]
+
+
+STORED_DIGESTS_RELPATH = "tools/identity_digests.json"
+
+
+def _pinned_baseline_vocabulary(
+    repo_root: Path, lock: dict, baseline_dir: str | None = None, source=None,
+) -> tuple[set[str], dict]:
+    """`(template tokens, stored digests)` from one read of the pinned baseline: the tokens are
+    `_pinned_template_tokens`'; the stored digests are the per-kind union of the baseline's
+    `tools/identity_digests.json`, the set the publish audit scans every shipped line against, so a
+    checkout whose live profile lacks a stored token (no submodule checkout, a moved type) still
+    refuses it. Both are empty when the baseline cannot be read, as for the tokens."""
     if not lock.get("baseline_repo"):
-        return set()
+        return set(), {}
     if not baseline_dir and not (repo_root / _BASELINE_CACHE_RELPATH).is_dir():
-        return set()
+        return set(), {}
     baseline_sync = _load_baseline_sync()
     owned = source is None
     if owned:
@@ -573,7 +595,17 @@ def _pinned_template_tokens(
             if blob is None:
                 continue
             tokens.update(_WORD_RE.findall(blob.decode("utf-8", errors="ignore")))
-        return tokens
+        stored: dict = {}
+        read_repo = getattr(source, "read_repo", None)
+        raw = read_repo(STORED_DIGESTS_RELPATH) if read_repo else None
+        if raw:
+            where = f"{source.sha}:{STORED_DIGESTS_RELPATH}"
+            try:
+                doc = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise IdentityError(f"identity digests file unparseable: {where}: {exc}") from exc
+            stored = _digest_sets_from_doc(doc, where)
+        return tokens, stored
     finally:
         if owned:
             source.close()
@@ -629,15 +661,19 @@ def build_profile_for_repo(
     subsystem_paths = sorted({p for s in subsystems for p in s.get("paths", [])})
     type_names = _collect_type_names(repo_root, subsystem_paths)
 
+    stored: dict = {}
     if template_tokens is None:
-        template_tokens = _pinned_template_tokens(repo_root, lock, baseline_dir, source)
+        template_tokens, stored = _pinned_baseline_vocabulary(repo_root, lock, baseline_dir, source)
 
-    return build_profile(
+    profile = build_profile(
         substitutions=substitutions, abbreviations=abbreviations,
         subsystems=subsystems, type_names=type_names,
         content_nouns=content_nouns, home_users=_home_users(),
         template_tokens=template_tokens,
     )
+    if stored:
+        profile["stored_digests"] = {kind: sorted(values) for kind, values in stored.items() if values}
+    return profile
 
 
 def _consumer_label(baseline_repo: str, root_name: str) -> str:

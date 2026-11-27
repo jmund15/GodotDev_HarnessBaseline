@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _shell_lex import lex  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SETTINGS = os.path.join(ROOT, ".claude", "settings.json")
 DEFAULT_TIMEOUT = 60  # Claude Code's own default for a command hook that sets none
 
 
@@ -85,7 +86,7 @@ TOOLS = {
 
 def _registered(tool, event="PreToolUse"):
     """(command line, timeout) for each hook settings.json registers for `event` on `tool`, in order."""
-    settings = json.load(open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8"))
+    settings = json.load(open(SETTINGS, encoding="utf-8"))
     out = []
     for group in settings.get("hooks", {}).get(event, []):
         matcher = group.get("matcher") or "*"
