@@ -374,6 +374,38 @@ def main():
     cases.append(("SIDECAR_VALUE_FLAGS equals SC_OPTSTRING's value-taking letters",
                   getattr(sidecar_argv, "SIDECAR_VALUE_FLAGS", None) == value_letters))
 
+    # A jobs file inside another checkout (a linked worktree the launch reads briefs from) keeps its run's records
+    # in the launching checkout: records beside the jobs file die when that worktree retires. A jobs file in the
+    # launching checkout, or in no checkout, keeps `<jobs parent>/fanout`; `--out-dir` and spillDir still win.
+    tree = tempfile.mkdtemp().replace("\\", "/")
+    repo = os.path.join(tree, "repo")
+    arm = os.path.join(repo, ".claude", "worktrees", "arm")
+    os.makedirs(os.path.join(repo, ".git"))
+    os.makedirs(os.path.join(arm, ".claude", "scratch", "probe"))
+    open(os.path.join(arm, ".git"), "w").write("gitdir: %s/.git/worktrees/arm\n" % repo)
+    arm_jobs = os.path.join(arm, ".claude", "scratch", "probe", "jobs.json")
+    own_jobs = os.path.join(repo, ".claude", "scratch", "p", "jobs.json")
+    loose_jobs = os.path.join(tree, "loose", "jobs.json")
+    norm = lambda p: os.path.normcase(os.path.abspath(p))
+    moved = sidecar_argv.fanout_out_dir(arm_jobs, None, None, repo)
+    cases.append(("a jobs file in another checkout writes its records in the launching checkout",
+                  norm(moved).startswith(norm(os.path.join(repo, ".claude", "scratch")))
+                  and not norm(moved).startswith(norm(arm))))
+    cases.append(("a jobs file in the launching checkout keeps <jobs parent>/fanout",
+                  norm(sidecar_argv.fanout_out_dir(own_jobs, None, None, repo))
+                  == norm(os.path.join(os.path.dirname(own_jobs), "fanout"))))
+    cases.append(("a jobs file in no checkout keeps <jobs parent>/fanout",
+                  norm(sidecar_argv.fanout_out_dir(loose_jobs, None, None, repo))
+                  == norm(os.path.join(os.path.dirname(loose_jobs), "fanout"))))
+    nested = os.path.join(tree, "hb", "template")
+    os.makedirs(os.path.join(tree, "hb", ".git"))
+    nested_jobs = os.path.join(nested, ".claude", "scratch", "x", "jobs.json")
+    cases.append(("a harness root below its git top-level keeps <jobs parent>/fanout",
+                  norm(sidecar_argv.fanout_out_dir(nested_jobs, None, None, nested))
+                  == norm(os.path.join(os.path.dirname(nested_jobs), "fanout"))))
+    cases.append(("--out-dir still wins for a jobs file in another checkout",
+                  sidecar_argv.fanout_out_dir(arm_jobs, "/chosen", None, repo) == "/chosen"))
+
     failed = [name for name, ok in cases if not ok]
     for name, ok in cases:
         print(("ok   " if ok else "FAIL ") + name)

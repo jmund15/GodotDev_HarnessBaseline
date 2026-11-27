@@ -17,8 +17,9 @@ cap per case (`_proof_environment`). adaptation.json's `proof_timeouts` caps a p
 `proof_excluded` and `proof_heavy` skip with their reason unless `--harness-all` (the runner's `--all`);
 `proof_quarantine` (file name: its cause) runs a seen-flaky proof as `xfail(strict=False)`, so it still runs and reports
 and its failure is no red; a
-`proof_serial` proof skips while xdist workers share the machine and runs under `-p no:xdist`; the pass that runs
-them alone is `-p no:xdist --harness-serial`, which selects only those proofs. A proof whose interpreter is missing
+`proof_serial` proof skips while xdist workers share the machine. The pass that runs them alone is
+`-p no:xdist --harness-serial` over the tree, which selects only those proofs; the main check and the baseline CI
+both run it. A proof whose interpreter is missing
 fails as cannot-run (v1's runner: unavailable coverage is never green). A file named with a
 `::case` selector, and every pytest run inside a proof (the runner sets `HARNESS_PROOF_TIMEOUT_S` there), collects
 as plain pytest.

@@ -1,5 +1,6 @@
 """The snapshot owner: one typed answer per path, and the three absences never collapse into each other."""
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".claude/tools"))
 import review_snapshot as rs  # noqa: E402
+from _bounded_run import ProcessTree  # noqa: E402
 
 
 def _git(root, *args):
@@ -61,17 +63,21 @@ class SnapshotSources(unittest.TestCase):
                          _git(self.root, "rev-parse", "HEAD:kept.txt").stdout.strip())
 
     def test_a_command_asks_each_repository_fact_once_and_the_next_command_asks_again(self):
-        asked, real = [], rs._call
+        asked, real, real_commit = [], rs._call, rs._commit_of
 
         def spy(args, root, input=None):
             asked.append(tuple(args[:2]))
             return real(args, root, input=input)
 
+        def commit_spy(root, rev):
+            asked.append(("commit of", rev))
+            return real_commit(root, rev)
+
         def reads():
             for snap in [rs.open(self.root, rs.Disk()) for _ in range(3)]:
                 snap.hash("kept.txt")
                 snap.head
-        with patch.object(rs, "_call", spy):
+        with patch.multiple(rs, _call=spy, _commit_of=commit_spy):
             with rs.repo_facts():
                 reads()
             within, asked[:] = list(asked), []
@@ -82,8 +88,8 @@ class SnapshotSources(unittest.TestCase):
                 head = rs.open(self.root, rs.Disk()).head
         self.assertEqual(within.count(("rev-parse", "--show-toplevel")), 0, "the root is the repo as opened")
         self.assertEqual(within.count(("rev-parse", "--git-dir")), 0, "a healthy checkout costs no git-dir probe")
-        self.assertEqual(within.count(("rev-parse", "--verify")), 1)
-        self.assertEqual(outside.count(("rev-parse", "--verify")), 3)
+        self.assertEqual(within.count(("commit of", "HEAD")), 1)
+        self.assertEqual(outside.count(("commit of", "HEAD")), 3)
         self.assertEqual(head, _git(self.root, "rev-parse", "HEAD").stdout.strip())
 
     def test_the_submodule_list_is_asked_once_per_command_for_every_path_split_against_it(self):
@@ -123,6 +129,198 @@ class SnapshotSources(unittest.TestCase):
         self.assertEqual(first[0], first[1])
         self.assertEqual(second[0], second[1])
         self.assertNotEqual(first[0], second[0], "a later command reads the edited bytes")
+
+    def _spy_spawns(self):
+        """(one-shot argv heads, object reader count) the block below spawns, through the module's two git seams."""
+        asked, readers = [], []
+        real_call, real_reader = rs._call, rs._batch_process
+
+        def call(args, root, input=None):
+            asked.append(tuple(args[:2]))
+            return real_call(args, root, input=input)
+
+        def reader(root):
+            proc = real_reader(root)
+            readers.append(proc)
+            return proc
+        return asked, readers, patch.multiple(rs, _call=call, _batch_process=reader)
+
+    def test_a_command_reads_its_objects_through_one_process_that_sees_what_moves_while_it_runs(self):
+        kept = _git(self.root, "rev-parse", "HEAD:kept.txt").stdout.strip()
+        data = (self.root / "kept.txt").read_bytes()
+        tree = _git(self.root, "rev-parse", "HEAD^{tree}").stdout.strip()
+        _git(self.root, "branch", "side", "HEAD~1")
+        asked, readers, spy = self._spy_spawns()
+        with spy:
+            with rs.repo_facts():
+                head = rs.open(self.root, rs.Disk()).head
+                self.assertTrue(rs.commit_present(self.root, head))
+                self.assertEqual(rs.object_kinds(self.root, [kept, tree, "f" * 40]),
+                                 {kept: "blob", tree: "tree", "f" * 40: "missing"})
+                self.assertEqual(rs.cat_blob(self.root, kept), data)
+                self.assertIsNone(rs.cat_blob(self.root, tree), "a tree is not a blob")
+                snap = rs.open(self.root, rs.Commit("HEAD"))
+                self.assertEqual(snap.commit_for("side"), _git(self.root, "rev-parse", "HEAD~1").stdout.strip())
+                # A concurrent writer: an object stored and a ref moved or deleted after the process started.
+                fresh = subprocess.run(["git", "-C", str(self.root), "hash-object", "-w", "--stdin"], input=b"new\n",
+                                       capture_output=True).stdout.decode().strip()
+                self.assertEqual(rs.cat_blob(self.root, fresh), b"new\n")
+                _git(self.root, "branch", "-f", "side", "HEAD")
+                self.assertEqual(snap.commit_for("side"), head)
+                _git(self.root, "branch", "-D", "side")
+                self.assertIsNone(snap.commit_for("side"))
+                self.assertIsNone(snap.commit_for("no-such-ref"))
+                within = list(asked)
+            self.assertEqual(len(readers), 1, "one object reader serves the whole command")
+            self.assertIsNotNone(readers[0].poll(), "the reader ends with its command")
+            self.assertFalse([a for a in within if a[0] in ("cat-file", "rev-parse")], within)
+            self.assertEqual(rs.cat_blob(self.root, kept), data)
+            self.assertTrue(rs.commit_present(self.root, head))
+        self.assertEqual(len(readers), 3, "outside a command each question opens and closes its own")
+        self.assertTrue(all(proc.poll() is not None for proc in readers))
+
+    def test_a_reader_that_died_is_replaced_and_a_missing_git_reads_as_unreadable(self):
+        kept = _git(self.root, "rev-parse", "HEAD:kept.txt").stdout.strip()
+        asked, readers, spy = self._spy_spawns()
+        with spy:
+            with rs.repo_facts():
+                self.assertTrue(rs.commit_present(self.root, "HEAD"))
+                ProcessTree(readers[0]).end()  # the tree: under the runner's PATH `git` is a launcher
+                self.assertEqual(rs.cat_blob(self.root, kept), (self.root / "kept.txt").read_bytes())
+        self.assertEqual(len(readers), 2)
+        hung = []
+
+        def silent(root):  # a stand-in for a git that never answers: the bound, not git, is what this decides
+            proc = subprocess.Popen([sys.executable, "-c", "import sys, time; sys.stdin.readline(); time.sleep(60)"],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            hung.append(proc)
+            return proc
+        with patch.multiple(rs, _batch_process=silent, _remaining=lambda default: 0.5):
+            with rs.repo_facts():
+                self.assertIsNone(rs.cat_blob(self.root, kept))
+        self.assertEqual(len(hung), 1, "a question that outlived its bound is not asked again")
+        self.assertIsNotNone(hung[0].poll())
+        with patch.object(rs, "_batch_process", side_effect=OSError("no git")):
+            with rs.repo_facts():
+                self.assertIsNone(rs.open(self.root, rs.Disk()).head)
+                self.assertFalse(rs.commit_present(self.root, "HEAD"))
+                self.assertEqual(rs.object_kinds(self.root, [kept]), {kept: "unreadable"})
+                self.assertIsNone(rs.cat_blob(self.root, kept))
+
+    def test_a_base_the_head_sits_on_and_a_range_from_head_ask_no_history_walk(self):
+        head = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        parent = _git(self.root, "rev-parse", "HEAD~1").stdout.strip()
+        asked, _readers, spy = self._spy_spawns()
+        with spy:
+            with rs.repo_facts():
+                self.assertEqual(rs.merge_base(self.root, "HEAD", head), head)
+                snap = rs.open(self.root, rs.Disk())
+                self.assertFalse(snap.merge_touched(head, "kept.txt"))
+                quiet = list(asked)
+                self.assertEqual(rs.merge_base(self.root, parent, head), parent)
+                self.assertIsNone(rs.merge_base(self.root, "no-such-ref", head))
+                self.assertFalse(snap.merge_touched(parent, "kept.txt"))
+        self.assertFalse([a for a in quiet if a[0] in ("merge-base", "rev-list")], quiet)
+        self.assertEqual((asked.count(("merge-base", parent)), asked.count(("merge-base", "no-such-ref"))), (1, 0),
+                         "a base that names no commit has no merge base")
+        self.assertEqual(asked.count(("rev-list", "--merges")), 1)
+
+    def test_every_reader_of_the_main_checkout_shares_one_question_per_command(self):
+        sys.path.insert(0, str(ROOT / ".claude/hooks"))
+        import post_check
+        import review_ledger
+        import task_record
+        import verify_claims
+        _write(self.root, "tpl/x.txt", "x\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "nested root")
+        _git(self.root, "worktree", "add", "-q", str(Path(self.tmp) / "lane"), "-b", "lane")
+        main = self.root.resolve()
+        lane_root = Path(self.tmp).resolve() / "lane" / "tpl"
+        asked, real = [], subprocess.run
+
+        def run(argv, *args, **kwargs):
+            asked.extend(word for word in argv if word == "rev-parse")
+            return real(argv, *args, **kwargs)
+        task_record._store_root.cache_clear()
+        verify_claims._main_root.cache_clear()
+        names = ("HARNESS_REVIEW_LEDGER", "HARNESS_TASK_RECORD_DIR")
+        with patch.dict("os.environ", {}), patch.object(subprocess, "run", run):
+            for name in names:
+                os.environ.pop(name, None)
+            with rs.repo_facts():
+                answers = (review_ledger.ledger_path(lane_root), task_record.record_dir(str(lane_root)),
+                           post_check._common_dir(lane_root), verify_claims._main_root(str(lane_root)))
+        self.assertEqual(asked, ["rev-parse"], asked)
+        self.assertEqual(answers[0], main / "tpl" / ".claude" / "logs" / "review_ledger.jsonl")
+        self.assertEqual(Path(answers[1]), main / ".claude" / "logs" / "tasks")
+        self.assertEqual(answers[2], (main / ".git").resolve())
+        self.assertEqual(answers[3], main)
+        task_record._store_root.cache_clear()
+        verify_claims._main_root.cache_clear()
+
+    def test_a_command_reads_present_blobs_at_a_revision_without_a_listing_and_keeps_each_absence_distinct(self):
+        _write(self.root, "sub/f.txt", "f\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "sub")
+        kept = _git(self.root, "rev-parse", "HEAD:kept.txt").stdout.strip()
+        nested = _git(self.root, "rev-parse", "HEAD:sub/f.txt").stdout.strip()
+        asked, _readers, spy = self._spy_spawns()
+        with spy:
+            with rs.repo_facts():
+                present = rs.open(self.root, rs.Commit("HEAD")).blobs(["kept.txt", "sub/f.txt"])
+                listed = list(asked)
+                absent = rs.open(self.root, rs.Commit("HEAD")).blobs(["never.txt", "gone.txt", "sub", "sub//f.txt"])
+        self.assertEqual(present, {"kept.txt": rs.Blob(kept), "sub/f.txt": rs.Blob(nested)})
+        self.assertNotIn("ls-tree", [a[0] for a in listed], "a present blob needs no listing")
+        self.assertEqual(absent["never.txt"], rs.MISSING)
+        self.assertIsInstance(absent["gone.txt"], rs.Deleted)
+        self.assertEqual(absent["sub"], rs.MISSING, "a directory is not a file")
+        self.assertEqual(absent["sub//f.txt"], rs.MISSING, "a path is read as written, never normalized to another")
+        gone_object = self.root / ".git/objects" / kept[:2] / kept[2:]
+        gone_object.chmod(0o700)
+        gone_object.unlink()
+        with rs.repo_facts():
+            self.assertIsInstance(rs.open(self.root, rs.Commit("HEAD")).hash("kept.txt"), rs.Unreadable,
+                                  "an entry whose object is gone is unreadable, never absent")
+
+    def test_a_commit_that_deleted_the_file_is_its_tombstone_without_a_walk_and_every_other_deletion_walks(self):
+        head = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        main_branch = _git(self.root, "symbolic-ref", "--short", "HEAD").stdout.strip()
+        _git(self.root, "checkout", "-q", "-b", "side")
+        _git(self.root, "rm", "-q", "kept.txt")
+        _git(self.root, "commit", "-qm", "side deletes")
+        side = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        _git(self.root, "checkout", "-q", main_branch)
+        _write(self.root, "other.txt", "o\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "main moves")
+        _git(self.root, "merge", "-q", "--no-ff", "-m", "merge", "side")
+        merge = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        asked, _readers, spy = self._spy_spawns()
+        with spy:
+            with rs.repo_facts():
+                here = rs.open(self.root, rs.Commit(head)).deleted("gone.txt")
+                walked_here = asked.count(("log", "-1"))
+                through_merge = rs.open(self.root, rs.Commit(merge)).deleted("kept.txt")
+            _write(self.root, "staged.txt", "s\n")
+            _git(self.root, "add", "staged.txt")
+            _git(self.root, "commit", "-qm", "staged")
+            _git(self.root, "rm", "-q", "--cached", "staged.txt")
+            with rs.repo_facts():
+                staged = rs.open(self.root, rs.Index()).deleted("staged.txt")
+        self.assertEqual((here, walked_here), (rs.Deleted("deleted:" + head), 0))
+        self.assertEqual(through_merge, rs.Deleted("deleted:" + side), "a merge's deletion is the side's, by the walk")
+        self.assertEqual(staged, rs.MISSING, "an index read's absence says nothing of HEAD's history")
+
+    def test_a_revision_or_index_read_of_more_paths_than_one_command_line_holds_answers_each(self):
+        # Windows caps a command line at 32,767 characters; a range's files can name more than that. Each absent path
+        # asks its own deletion history, so the case names few paths, each long.
+        absent = ["absent/%s/%02d.txt" % ("d" * 3800, n) for n in range(9)]
+        for source in (rs.Commit("HEAD"), rs.Index()):
+            got = rs.open(self.root, source).blobs(["kept.txt"] + absent)
+            self.assertIsInstance(got["kept.txt"], rs.Blob, source)
+            self.assertEqual({type(got[path]) for path in absent}, {rs.Missing}, source)
 
     def test_a_disk_read_outside_git_hashes_its_bytes_and_a_refusing_git_leaves_the_file_unreadable(self):
         bare = Path(self.tmp) / "plain"

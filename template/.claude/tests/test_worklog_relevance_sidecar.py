@@ -46,7 +46,7 @@ def run_wrapper(*args):
     tmp = Path(tempfile.mkdtemp(prefix="wl_wrapper_"))
     shutil.copy(SCRIPTS / "worklog_relevance_sidecar.sh", tmp / "worklog_relevance_sidecar.sh")
     (tmp / "deepseek_sidecar.sh").write_text(STUB, encoding="utf-8", newline="\n")
-    done = subprocess.run([sidecar_dispatch_context._git_bash() or "bash", str(tmp / "worklog_relevance_sidecar.sh"), *args],
+    done = subprocess.run([sidecar_dispatch_context._msys.bash() or "bash", str(tmp / "worklog_relevance_sidecar.sh"), *args],
                           capture_output=True, text=True, timeout=30)
     seen = tmp / "seen.txt"
     return done.returncode, seen.read_text(encoding="utf-8").strip() if seen.is_file() else None, done.stderr
@@ -70,7 +70,7 @@ def test_effort_none_refuses_before_forwarding():
 
 def test_absent_notes_vault_refuses_before_dispatch():
     home = tempfile.mkdtemp(prefix="wl_home_")
-    done = subprocess.run([sidecar_dispatch_context._git_bash() or "bash", str(SCRIPTS / "worklog_relevance_sidecar.sh"), "--", "scope"],
+    done = subprocess.run([sidecar_dispatch_context._msys.bash() or "bash", str(SCRIPTS / "worklog_relevance_sidecar.sh"), "--", "scope"],
                           capture_output=True, text=True, timeout=30, env=dict(os.environ, HOME=home))
     assert done.returncode == 2 and "vault dir missing" in done.stderr, (done.returncode, done.stderr)
 

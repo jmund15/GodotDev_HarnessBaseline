@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -105,7 +106,7 @@ def edit(path, env, session=SID, tool="Edit", agent=""):
 
 
 def read(path, env, session, tool_input=None):
-    """The real PostToolUse Read dispatcher, fed the Read payload shape of test_post_read_dispatch.py."""
+    """The real PostToolUse Read dispatcher, fed the Read payload shape of test_post_read_dispatch.py; its stdout."""
     payload = {"tool_name": "Read", "session_id": session,
                "tool_input": dict(tool_input or {}, file_path=path),
                "tool_response": {"content": "# Instruction Quality"}}
@@ -113,9 +114,10 @@ def read(path, env, session, tool_input=None):
                        capture_output=True, text=True, timeout=60, env=env)
     assert r.returncode == 0, r.stderr
     assert "Traceback" not in r.stderr, r.stderr
+    return r.stdout or ""
 
 
-def mark_skill_loaded(state_dir, session, agent=""):
+def mark_skill_loaded(state_dir, session, agent="", env=None):
     """The real skill_load_marker, fed the PostToolUse payload of a Skill(instruction_quality) call."""
     payload = {"tool_name": "Skill", "session_id": session, "tool_input": {"skill": "instruction_quality"}}
     if agent:
@@ -123,7 +125,7 @@ def mark_skill_loaded(state_dir, session, agent=""):
     r = subprocess.run([sys.executable, MARKER],
                        input=json.dumps(payload),
                        capture_output=True, text=True, timeout=60,
-                       env=dict(os.environ, HARNESS_HOOK_STATE_DIR=state_dir, PYTHONIOENCODING="utf-8"))
+                       env=dict(env or os.environ, HARNESS_HOOK_STATE_DIR=state_dir, PYTHONIOENCODING="utf-8"))
     assert r.returncode == 0, r.stderr
 
 
@@ -238,6 +240,50 @@ def main():
     cases.append(("the deny names the Read route as well as Skill, and the re-check",
                   got == DENY and 'Skill(skill="instruction_quality")' in reason
                   and "Read" in reason))
+
+    # Two checkouts with differing skill text: the session's project P, and a base checkout B it also edits. A load
+    # is credited for the copy it delivered, so an edit or a Read of a governed file is judged against the copy of
+    # the checkout holding that file, and a deny names the Read that loads that copy.
+    two = tempfile.mkdtemp(prefix="hesrtwo_", dir=tmp)
+    checkouts = {}
+    for name in ("P", "B"):
+        root = os.path.join(two, name)
+        os.makedirs(os.path.join(root, ".claude", "skills", "instruction_quality"))
+        with open(os.path.join(root, ".claude", "skills", "instruction_quality", "SKILL.md"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write("---\ndescription: x\n---\n\n# Instruction Quality %s\n" % name)
+        checkouts[name] = Path(root).resolve()
+    p_env = dict(env, CLAUDE_PROJECT_DIR=str(checkouts["P"]))
+    rule = {name: (root / ".claude" / "rules" / "x.md").as_posix() for name, root in checkouts.items()}
+    b_skill = (checkouts["B"] / ".claude" / "skills" / "instruction_quality" / "SKILL.md").as_posix()
+    read(b_skill, p_env, "hesr0020")
+    got, _ = edit(rule["B"], p_env, session="hesr0020")
+    cases.append(("a full Read of B's SKILL.md passes an edit of B's governed file", got == NUDGE))
+    got, _ = edit(rule["P"], p_env, session="hesr0020")
+    cases.append(("and leaves an edit of P's governed file denied: B's copy is not P's", got == DENY))
+    mark_skill_loaded(tmp, "hesr0021", env=p_env)
+    got, _ = edit(rule["P"], p_env, session="hesr0021")
+    cases.append(("a Skill call (P's copy) passes an edit of P's governed file", got == NUDGE))
+    got, reason = edit(rule["B"], p_env, session="hesr0021")
+    cases.append(("an edit of B's file after only P's load is denied, naming the Read of B's copy and no Skill call",
+                  got == DENY and b_skill in reason and "Skill(" not in reason))
+    notice = read(b_skill, p_env, "hesr0022") + read(rule["B"], p_env, "hesr0022")
+    cases.append(("a full Read of B's SKILL.md, and a Read of B's governed file after it, draw no load notice",
+                  "denies any edit" not in notice))
+    notice = read(rule["B"], p_env, "hesr0023")
+    cases.append(("before any load that Read's notice names the Read of B's copy",
+                  "denies any edit" in notice and b_skill in notice))
+    # A `.claude/` holding no skill copy (a user-global `~/.claude`) governs nothing: its file falls to the project's.
+    bare = Path(two) / "H"
+    (bare / ".claude" / "rules").mkdir(parents=True)
+    bare_rule = (bare.resolve() / ".claude" / "rules" / "x.md").as_posix()
+    got, reason = edit(bare_rule, p_env, session="hesr0024")
+    cases.append(("an edit of a file under a .claude/ with no skill copy names the Skill call, not a missing copy",
+                  got == DENY and 'Skill(skill="instruction_quality")' in reason
+                  and bare.resolve().as_posix() + "/.claude/skills" not in reason))
+    mark_skill_loaded(tmp, "hesr0024", env=p_env)
+    got, _ = edit(bare_rule, p_env, session="hesr0024")
+    cases.append(("and the project's Skill load credits that edit", got == NUDGE))
 
     # Negatives.
     got, _ = edit(NOT_HARNESS, env)

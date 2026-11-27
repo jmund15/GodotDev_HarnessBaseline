@@ -2,9 +2,11 @@
 `.claude/githooks/commit-msg`; its first check is `dangerous_shell_guard.commit_msg_check`, then every commit judge.
 
 Rows of the game project's `test_git_commit_msg_hook.py` (the commit-msg proof; not on T1's list, but it is the floor's
-second entry). Decision rows call `commit_msg_check` in process with the environment git gives the hook; the rows
-whose subject is the githook script itself (a refusal git must honour, a missing guard, a crash, no python3, no
-repository root) run real git through the installed hook.
+second entry). Decision rows call `commit_msg_check` or `commit_time` in process (the judges run in the dispatcher's
+process) with the environment git gives the hook, on a real repository's index; the rows whose subject is the githook
+script itself (a refusal git must honour, a missing guard, a crash, no python3, no repository root, an ordinary commit
+passing) run real git through the installed hook, once each: a spawned hook costs a process start and the dispatcher's
+imports, which a decision row never needs.
 """
 import os
 import shutil
@@ -14,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
+import _msys
 import dangerous_shell_guard as dsg
+import pre_bash_dispatch
 from case import bash
 from conftest import CLAUDE
 
@@ -35,12 +39,7 @@ def write(repo, name, text):
 
 
 def sh():
-    found = shutil.which("sh")
-    if found:
-        return found
-    git = shutil.which("git") or ""
-    candidate = Path(git).resolve().parents[1] / "usr" / "bin" / "sh.exe" if git else None
-    return str(candidate) if candidate and candidate.exists() else "sh"
+    return _msys.tool("sh")
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +88,13 @@ def observe(repo, message, tmp, env=None):
     path = tmp / "direct-msg"
     path.write_text(message, encoding="utf-8", newline="\n")
     return dsg.commit_msg_check(str(path), dict(env or {}), str(repo))
+
+
+def judged(repo, message, tmp, env=None):
+    """The refusal `commit_time` gives the index in `repo`, or None: the hook's own call, in process."""
+    path = tmp / "judge-msg"
+    path.write_text(message, encoding="utf-8", newline="\n")
+    return pre_bash_dispatch.commit_time(str(path), dict(env or {}), str(repo))
 
 
 def head_file(repo, name):
@@ -177,12 +183,12 @@ def lane_lacks(judge):
 
 
 @pytest.mark.parametrize("judge", [pytest.param(j, marks=lane_lacks(j)) for j in JUDGED])
-def test_the_hook_refuses_what_each_commit_judge_refuses(repo, judge):
+def test_the_commit_time_checks_refuse_what_each_commit_judge_refuses(repo, tmp_path, judge):
+    """Each judge's refusal of the staged content, as `commit_time` gives it to the hook. That git honours a refusal is
+    the two spawned rows around it (the stale index; the add-then-commit D-IW incident through `prototype_containment`)."""
     stage_judged(repo, judge)
-    head = g(repo, "rev-parse", "HEAD").stdout
-    r = g(repo, "commit", "-q", "-m", "judged\n\n" + MINE, check=False)
-    assert r.returncode == 1 and "Traceback" not in r.stderr, (judge, r.returncode, r.stderr[-600:])
-    assert g(repo, "rev-parse", "HEAD").stdout == head
+    why = judged(repo, "judged\n\n" + MINE, tmp_path)
+    assert why and "Traceback" not in why, (judge, why)
 
 
 @lane_lacks("prototype_containment_guard")
@@ -207,14 +213,16 @@ def test_an_ordinary_commit_passes_every_commit_judge_through_the_hook(repo):
     assert r.returncode == 0 and head_file(repo, "g.txt") == "ordinary\n", r.stderr
 
 
-def test_a_commit_judge_bypass_set_for_the_commit_holds_at_commit_time(repo):
+@lane_lacks("tres_script_strip_guard")
+def test_a_commit_judge_bypass_set_for_the_commit_holds_at_commit_time(repo, tmp_path, monkeypatch):
     stage_judged(repo, "tres_script_strip_guard")
-    r = g(repo, "commit", "-q", "-m", "intentional\n\n" + MINE, env={"HARNESS_ALLOW_TRES_SCRIPT_REMOVAL": "1"},
-          check=False)
-    assert r.returncode == 0, r.stderr[-600:]
+    assert judged(repo, "intentional\n\n" + MINE, tmp_path)
+    monkeypatch.setenv("HARNESS_ALLOW_TRES_SCRIPT_REMOVAL", "1")
+    assert judged(repo, "intentional\n\n" + MINE, tmp_path) is None
 
 
-def test_the_commit_that_closes_a_merge_passes_the_commit_judges(repo):
+@lane_lacks("prototype_containment_guard")
+def test_the_commit_that_closes_a_merge_passes_the_commit_judges(repo, tmp_path):
     """`commit_time` passes a merge as `commit_msg_check` does; the chain judges a merge's own content on its ref."""
     g(repo, "checkout", "-q", "-b", "side")
     Path(repo, "prototypes", "foo").mkdir(parents=True)
@@ -225,8 +233,7 @@ def test_the_commit_that_closes_a_merge_passes_the_commit_judges(repo):
     write(repo, "f.txt", "main\n")
     g(repo, "commit", "-q", "--no-verify", "-m", "main change", "--", "f.txt")
     g(repo, "merge", "-q", "--no-commit", "side")
-    r = g(repo, "commit", "-q", "-m", "merge side", check=False)
-    assert r.returncode == 0, r.stderr[-600:]
+    assert judged(repo, "merge side", tmp_path) is None
 
 
 def test_a_missing_guard_refuses_the_commit_and_names_the_file(repo):

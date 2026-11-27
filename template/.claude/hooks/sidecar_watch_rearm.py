@@ -49,12 +49,13 @@ _STATE_NAMES = {("DONE", "exit"): "finished",
                 ("DIED", "pid"): "died",
                 ("DIED", "inventory"): "never started",
                 ("WATCH", "pid"): "running",
-                ("WATCH", "inventory"): "queued"}
+                ("WATCH", "inventory"): "queued",
+                ("GONE", "directory"): "deleted"}
 
 
-def classify(record, inventory=None):
+def classify(record, inventory=None, launched=None):
     """The rearm category for `record`, read from the one "has it ended" ladder."""
-    state, code, found_by = watch_records.record_state(record, inventory)
+    state, code, found_by = watch_records.record_state(record, inventory, launched)
     return _STATE_NAMES.get((state, found_by), "unknown"), code
 
 
@@ -82,14 +83,14 @@ def advice(payload):
     # compaction drops the earlier delivery. An uncovered one stays listed while it needs an arm.
     delivered = set() if fire_once_since_compaction(sid, "sidecar_watch_rearm") else {
         str(key) for key in state.get(DELIVERED_KEY) or []}
-    groups = {key: [] for key in ("finished", "never started", "died", "unknown")}
+    groups = {key: [] for key in ("finished", "never started", "died", "deleted", "unknown")}
     uncovered = []
     for entry in pending:
         record = entry.get("record")
         if not record:
             groups["unknown"].append(str(entry.get("id")))
             continue
-        state_name, code = classify(record, entry.get("inventory"))
+        state_name, code = classify(record, entry.get("inventory"), entry.get("issued_at") or entry.get("launched_at"))
         if state_name in ("running", "queued"):
             if not _covered(record, watchers):
                 uncovered.append(record)
@@ -105,6 +106,7 @@ def advice(payload):
         if paths:
             action = {"finished": " (read each .out when present)",
                       "never started": " (relaunch with a fresh -R path)",
+                      "deleted": " (its directory is gone, so its result is lost)",
                       "unknown": " (inspect before any relaunch)"}.get(group, "")
             lines.append("%s%s: %s" % (group, action, ", ".join(paths)))
     if uncovered:

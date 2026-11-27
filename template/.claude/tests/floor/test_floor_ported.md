@@ -17,7 +17,7 @@ are rows.
 | `test_dangerous_shell_guard_cache_cleanup.py` | 80 | 80 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_owned_temp_cleanup.py` | 22 | 22 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_session_dir.py` | 13 | 13 | `test_floor_delete.py` |
-| `test_regenerable_clone.py` (3 parts), the J8 conformance proof's two nested-submodule retirement cases | whole | whole | `test_floor_retire.py` |
+| `test_regenerable_clone.py` (3 parts), the J8 conformance proof's two nested-submodule retirement cases | whole | whole | `test_floor_retire_verdict.py` (every verdict on planted facts) and `test_floor_retire.py` (each git read on a real repository) |
 | `test_git_guardrails_advice.py` (sections 0-3) | 95 | 95 + 11 stash-held | `test_floor_git_discard.py` (with the one-row-per-case table check) |
 | `test_git_guardrails_amend.py` | 6 | 6 | `test_floor_peer_loss.py` |
 | `test_git_guardrails_revert_lane.py` | 8 | 8 | `test_floor_peer_loss.py` |
@@ -46,24 +46,25 @@ denied; a temp tree allows whether or not it holds repositories (D-TT).
 
 | id | v1 case | ruling | rows |
 |---|---|---|---|
-| D-IW | the index-write deny: a commit that `git add`/`rm`/`reset`/`stash`/`apply --cached` precedes in the same command (`SAME_COMMAND_WRITE`) | Narrowed to what git's commit-msg hook re-checks with every check the chain ran: the hook runs `pre_bash_dispatch.commit_time`, which re-runs the stage-record and peer-revert checks and every `COMMIT_JUDGES` member on the index git writes. The deny stays for a publication other than `git commit` (git runs commit-msg for commit and merge only, and the hook passes a merge), a call that skips hooks (`-n`, `--no-verify`, a bundled `n`), a command that overrides git config (`core.hooksPath`, `GIT_CONFIG_*`), a repository whose `core.hooksPath` is not `.claude/githooks` or whose hook, dispatcher or commit judges differ from this checkout's, an amend (the amend check read HEAD before the command moved it), and the commit that closes a merge. | `test_floor_commit_index.py` `test_an_index_write_before_a_hooked_commit_allows`, `..._that_skips_the_hook_denies`, `..._whose_hook_is_not_this_harnesss_denies`, `..._a_continue_git_runs_no_commit_msg_hook_for_denies`, `test_a_head_move_before_an_amend_denies_even_when_hooked`, `test_an_index_write_before_the_commit_that_closes_a_merge_denies_even_when_hooked`, `test_a_hooks_path_without_the_commit_msg_hook_denies`; `test_floor_commit_msg.py` `test_the_hook_refuses_what_each_commit_judge_refuses`, `test_an_add_then_commit_the_floor_allows_is_refused_when_git_writes_the_commit` |
+| D-IW | the index-write deny: a commit that `git add`/`rm`/`reset`/`stash`/`apply --cached` precedes in the same command (`SAME_COMMAND_WRITE`) | Narrowed to what git's commit-msg hook re-checks with every check the chain ran: the hook runs `pre_bash_dispatch.commit_time`, which re-runs the stage-record and peer-revert checks and every `COMMIT_JUDGES` member on the index git writes. The deny stays for a publication other than `git commit` (git runs commit-msg for commit and merge only, and the hook passes a merge), a call that skips hooks (`-n`, `--no-verify`, a bundled `n`), a command that overrides git config (`core.hooksPath`, `GIT_CONFIG_*`), a repository whose `core.hooksPath` is not `.claude/githooks` or whose hook, dispatcher or commit judges differ from this checkout's, an amend (the amend check read HEAD before the command moved it), and the commit that closes a merge. | `test_floor_commit_index.py` `test_an_index_write_before_a_hooked_commit_allows`, `..._that_skips_the_hook_denies`, `..._whose_hook_is_not_this_harnesss_denies`, `..._a_continue_git_runs_no_commit_msg_hook_for_denies`, `test_a_head_move_before_an_amend_denies_even_when_hooked`, `test_an_index_write_before_the_commit_that_closes_a_merge_denies_even_when_hooked`, `test_a_hooks_path_without_the_commit_msg_hook_denies`; `test_floor_commit_msg.py` `test_the_commit_time_checks_refuse_what_each_commit_judge_refuses`, `test_an_add_then_commit_the_floor_allows_is_refused_when_git_writes_the_commit` |
 | D-TT | a recursive delete of a temp tree holding git repositories (S4's `v2s4_s4b`) | Allowed: the core doctrine exempts temp dirs. The protected checkout, a worktree registered to it, and any path strictly inside either (wherever the temp dir sits) keep their rules. | `test_floor_delete.py` `test_s4_a_temp_tree_holding_git_repositories_allows`, its project-root deny, `test_s4_a_folder_inside_a_registered_worktree_under_temp_stays_denied` and `test_s4_a_temp_folder_beside_a_registered_worktree_still_goes` |
 | D-LB | G's allow of an own-worktree discard inside a shell launcher (`bash -c`, `sh -c`, `eval`, `env … bash -c`) | Kept MM's deny: a launcher-body call borrows no worktree ownership (`git_verdict`); stored-bytes evidence still allows inside a launcher. | `test_floor_own_worktree.py` launcher rows |
-| D-LS | G's allow of a loose file directly in a worktree's or scratch clone's `.claude/scratch/` | Kept MM's deny: a loose scratch file is evidence, not a job's output folder. | `test_floor_own_worktree.py` and `test_floor_retire.py` loose-file rows |
+| D-LS | G's allow of a loose file directly in a worktree's or scratch clone's `.claude/scratch/` | Kept MM's deny: a loose scratch file is evidence, not a job's output folder. | `test_floor_own_worktree.py` and `test_floor_retire_verdict.py` loose-file rows |
 | K-XA | `kill_guard.py`'s docstring refused "an `xargs kill` fed by anything but pgrep", but the bare `<producer> \| xargs kill` passed | Denied, with every kill of pids the call does not name (`$VAR`, `$(...)` or backtick operands of `kill`, `taskkill /PID`, `Stop-Process -Id`); `$!`, a variable every assignment of which is `$!` (`PID=$!; kill $PID`, v1's allow), `kill -0` and a `pgrep`/`pidof` substitution stay named; a quoted mention is data. `reap.py` stays the one stop route. | `test_floor_r1_branches.py` `test_a_kill_of_pids_the_call_does_not_name_denies` and its allow rows |
 
 ## Outcome changes beyond the rulings
 
 - Kept from v1 (v2's T1 had made each an ask): a worktree this session created goes with its ignored files and its
   stored edits (`test_a_worktree_this_session_created_takes_its_ignored_files_and_stored_edits`; an edit no blob
-  holds still denies), and a submodule whose admin directory is gone is judged by its files there; an untracked
-  Godot `.import` file and an ignored Godot import temp file are regenerated output (the `imports` and `import_tmp`
-  rows); and a saved copy under `.claude/scratch` the rule verifies stands in for a push (`_saved_copy_holds`: a
+  holds still denies), and the ignored files of its submodule whose admin directory is gone go too (any worktree's
+  such submodule is judged by its files: `..._admin_directory_is_gone_is_judged_by_its_files` rows); an untracked
+  Godot `.import` file and an ignored Godot import temp file are regenerated output (the `godot_import_sidecar` and
+  `godot_import_temp` rows); and a saved copy under `.claude/scratch` the rule verifies stands in for a push (`_saved_copy_holds`: a
   bundle holding every unpushed commit, a tar or patch holding every file the status would lose), for a retired
   worktree's HEAD, a scratch clone and a nested copy in a worktree's scratch (`test_floor_retire.py`
-  `..._a_bundle_holds_...`, `..._a_tar_holds_...` rows).
+  `test_a_bundle_standing_in_for_a_push_...`; `test_floor_retire_verdict.py` `..._a_tar_holds_...` rows).
 - A submodule whose path holds a space (D18): v1 split `submodule status` on whitespace and skipped it unchecked; the
-  rule now judges it, so a dirty one denies and a clean one retires (`..._submodule_path_holds_a_space_...` rows).
+  rule now judges it, so a dirty one denies and a clean one retires (the `a_space_in_the_path` and `..._whose_path_holds_a_space` rows, with the live read in `test_a_submodule_path_holding_a_space_is_read_whole`).
 - Two new allows of the command's own `NAME=$(mktemp -d)` directories (temp trees, D-TT's reason): a multi-line
   script and two mktemp variables in one `rm` (`test_floor_delete.py` `OWNED_PASS`).
 - New allows (b8 S6, the recorded call F7811): a non-forced `git switch` or `git checkout --detach <commit>`

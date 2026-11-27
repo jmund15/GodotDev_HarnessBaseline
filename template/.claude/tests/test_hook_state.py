@@ -836,6 +836,55 @@ check("by_mtime orders the entries still present, oldest first, and skips one go
 check("by_mtime newest_first reverses the order", _newest == [_new, _old], repr(_newest))
 check("stat_present keeps each present entry with its stat", _present == [_new], repr(_present))
 
+# --- doctrine loads keyed by the digest of the text delivered: bounded, and cleared by a compaction ------------
+os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="hookstate_loads_")
+_cap = getattr(_hook_state, "DOCTRINE_DIGEST_CAP", 0)
+for _n in range(_cap + 3):
+    _hook_state.mark_ladder_slice("loads001", ["executor"], digest="ladder-%02d" % _n)
+    _hook_state.mark_skill_in_context("loads001", "orchestration", digest="skill-%02d" % _n)
+_state = read_json_salvage(_hook_state.state_path("loads001"))
+_loads = _hook_state.ladder_loads(_state) if hasattr(_hook_state, "ladder_loads") else {}
+_held = (_state.get("fired_since_compaction") or {}).get("skill_loads:orchestration")
+check("the ladder loads keep the newest DOCTRINE_DIGEST_CAP digests",
+      _cap > 0 and sorted(_loads) == ["ladder-%02d" % n for n in range(3, _cap + 3)], repr(sorted(_loads)))
+check("a skill record keeps the newest DOCTRINE_DIGEST_CAP digests",
+      _cap > 0 and isinstance(_held, list) and sorted(_held) == ["skill-%02d" % n for n in range(3, _cap + 3)],
+      repr(_held))
+_hook_state.clear_compaction_keys("loads001")
+_state = read_json_salvage(_hook_state.state_path("loads001"))
+check("a compaction clears every ladder load and skill record",
+      not _hook_state.ladder_loads(_state) if hasattr(_hook_state, "ladder_loads") else False, repr(_state))
+
+# --- a record an older hook wrote keeps the shape that hook reads -----------------------------------------------
+# A session can run two hook versions on one state file (a project not yet pulled, and a base checkout it dispatches
+# from). The newer writer adds its own keys and leaves the older ones as written, so the older reader keeps its credit.
+os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="hookstate_compat_")
+_root = tempfile.mkdtemp(prefix="hookstate_compat_root_")
+os.makedirs(os.path.join(_root, ".claude", "skills", "orchestration"))
+io.open(os.path.join(_root, ".claude", "skills", "orchestration", "SKILL.md"), "w", encoding="utf-8").write(
+    "---\nname: orchestration\n---\nbody\n")
+import _compaction_record  # noqa: E402
+_now = _compaction_record.skill_file_digest("orchestration", _root)
+write_json_atomic(_hook_state.state_path("compat01"), {
+    "model_ladder_ready": True, "ladder_slice_tiers": ["executor"], "ladder_digest": "old-ladder",
+    "fired_since_compaction": {"skill_in_context:orchestration": "old-skill"}})
+_hook_state.mark_ladder_slice("compat01", ["architect"], digest="new-ladder")
+_hook_state.mark_skill_in_context("compat01", "orchestration", digest=_now)
+_state = read_json_salvage(_hook_state.state_path("compat01"))
+check("a newer ladder load leaves the single-slot keys an older hook reads as that hook wrote them",
+      (_state.get("model_ladder_ready"), _state.get("ladder_slice_tiers"), _state.get("ladder_digest"))
+      == (True, ["executor"], "old-ladder"), repr(_state))
+check("the newer reader holds the older load and its own",
+      sorted(_hook_state.ladder_loads(_state)) == ["new-ladder", "old-ladder"], repr(_hook_state.ladder_loads(_state)))
+check("a newer skill load leaves the older hook's skill record as that hook wrote it",
+      (_state.get("fired_since_compaction") or {}).get("skill_in_context:orchestration") == "old-skill", repr(_state))
+check("the newer reader credits the skill load it recorded",
+      _hook_state.skill_in_context("compat01", "orchestration", root=_root) is True, repr(_state))
+write_json_atomic(_hook_state.state_path("compat02"), {
+    "fired_since_compaction": {"skill_in_context:orchestration": _now}})
+check("the newer reader credits a skill load only an older hook recorded",
+      _hook_state.skill_in_context("compat02", "orchestration", root=_root) is True)
+
 print("\n%d/%d checks pass" % (ran - len(failures), ran))
 for f in failures:
     print("  FAIL " + f)

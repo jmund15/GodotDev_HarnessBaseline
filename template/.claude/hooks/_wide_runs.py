@@ -49,6 +49,7 @@ if HERE not in sys.path:
 import adaptation  # noqa: E402
 import gate_cadence  # noqa: E402
 from sidecar_argv import executable_index, shell_segments_with_comments  # noqa: E402
+from _checkout_root import nearest_checkout  # noqa: E402
 from _git_commit import resolve_cd  # noqa: E402
 from _prompt_provenance import in_delegate  # noqa: E402
 
@@ -181,17 +182,6 @@ def _filter_value_reason(value, names, admit):
     return None
 
 
-def _checkout(cwd):
-    """The git checkout holding `cwd` (a `.git` file or folder marks it), or None."""
-    path = os.path.abspath(cwd) if cwd else None
-    while path:
-        if os.path.exists(os.path.join(path, ".git")):
-            return path
-        parent = os.path.dirname(path)
-        path = None if parent == path else parent
-    return None
-
-
 def _declared_wide_reason(declared, args, root, cwd=None):
     """Why this declared-narrow invocation is wide, or None when every filter value narrows it. Units
     are read from the root and from the checkout the command runs in: a RED-first test class exists
@@ -200,7 +190,7 @@ def _declared_wide_reason(declared, args, root, cwd=None):
     if not values:
         return "it carries no `%s` filter" % declared["arg"]
     names = set(_declared_names(root, declared["glob"], declared["decl"]))
-    checkout = _checkout(cwd)
+    checkout = nearest_checkout(cwd) if cwd else None
     if checkout and os.path.normcase(checkout) != os.path.normcase(os.path.abspath(root)):
         names |= _declared_names(checkout, declared["glob"], declared["decl"])
     for value in values:

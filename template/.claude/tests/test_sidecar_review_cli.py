@@ -648,16 +648,14 @@ class SidecarFoldCliTests(unittest.TestCase):
         # The dispatch-doctrine gate a --detach call now runs (sidecar_fanout.doctrine_refusal) is not under
         # test here: its own proof is test_sidecar_fanout_detach.py. Mark the doctrine loaded in a throwaway
         # session state, as that proof does.
-        sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
-        import _hook_state
         sid, state_dir = "refold_detach", tempfile.mkdtemp(prefix="refold_state_")
         saved = {k: os.environ.get(k) for k in ("HARNESS_HOOK_STATE_DIR", "CLAUDE_CODE_SESSION_ID",
                                                 "SIDECAR_DISPATCH_OWNER")}
         os.environ["HARNESS_HOOK_STATE_DIR"], os.environ["CLAUDE_CODE_SESSION_ID"] = state_dir, sid
         os.environ.pop("SIDECAR_DISPATCH_OWNER", None)
-        _hook_state.mark_skill_in_context(sid, "orchestration")
-        _hook_state.update_json_locked(_hook_state.state_path(sid),
-                                       lambda state: (state.__setitem__("model_ladder_ready", True), True)[1])
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import _hook_call
+        _hook_call.arm_doctrine(sid, state_dir)
         try:
             with patch.object(fanout, "detach_driver", side_effect=driver):
                 code, _digest, err = self.run_fold(seats, 1, extra=("--refold", "--detach"))

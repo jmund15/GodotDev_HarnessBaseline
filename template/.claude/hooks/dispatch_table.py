@@ -181,6 +181,7 @@ NOT_A_PIN = (UNKNOWN, DEFAULT, "inherit")
 UNLABELED = "(unlabeled)"
 QUIET_AGENT_SECONDS = 300  # a background agent gone from background_tasks and silent this long has ended
 DIED = {"died": True}      # a sidecar whose launcher is gone without an exit file
+GONE = {"gone": True}      # a sidecar whose record directory was deleted: nothing can write its record again
 _ISSUED = {}               # (session id, tool_use id) -> issue epoch or None, per process
 _STOP_STARTED = time.monotonic()
 # test_dispatch_table_verification.py --measure: 12 fixed-cost Stops, max 0.127 s.
@@ -1512,6 +1513,11 @@ def _contradictions(entry, session, payload, foreground=False, failed=None):
         data = _sidecar_record(entry, payload)
         if data is None:
             return None
+        if data is GONE:
+            ended = ["⚠ " + watch_records.gone_text(job.get("label") or UNLABELED)]
+            if failed is not None:
+                failed.extend(ended)
+            return ended
         if data is DIED or data.get("outcome") == ENDED:
             ended = ["⚠ sidecar %s ended without an exit file: its launcher was killed, so no record will "
                      "be written" % (job.get("label") or UNLABELED)] if data is DIED else [
@@ -1997,14 +2003,18 @@ def _refusal_since(path, since):
 
 def _sidecar_record(entry, payload):
     """The finished run's record (or its ledger row), {} when only the end is recorded, None while
-    running, DIED when its launcher is gone without having written either. A finished writer seat
-    waits for a live fan-out only while it runs a stage after its seats (a review's post-check or
-    fold), or its legacy inventory does not say."""
+    running, DIED when its launcher is gone without having written either, GONE when its record's directory
+    was deleted and no ledger row answers for it. A finished writer seat waits for a live fan-out only while it runs a stage after its seats
+    (a review's post-check or fold), or its legacy inventory does not say."""
     resolve_sidecar_record(entry, payload.get("session_id"), payload.get("_pending_sidecars"))
     if writer_launcher_running(entry):
         return None
     found = _sidecar_evidence(entry, payload)
-    if found is None and _launcher_gone(entry.get("record")):
+    record = entry.get("record")
+    launched = entry.get("issued_at") or entry.get("launched_at")
+    if found is None and record and watch_records.record_state(record, entry.get("inventory"), launched)[0] == "GONE":
+        return GONE
+    if found is None and _launcher_gone(record):
         # Re-read once: a launcher that wrote its exit file and then exited is finished, not killed.
         found = _sidecar_evidence(entry, payload)
         return DIED if found is None else found

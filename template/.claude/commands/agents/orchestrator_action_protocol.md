@@ -101,7 +101,7 @@ Record each source finding as fixed, rejected with evidence, or blocked by a nam
 
 ## Claims to Refuse
 
-Do not predict passing tests, claim an unread artifact is correct, or use “should work” as verification. Cite actual results or state what remains to run. A completed decision is re-checked at its premise before a clean verdict; `tools/task_record.py check --rerun` names the stale and unrepeated ones. Keep observed, inferred and unknown separate.
+Do not predict passing tests, claim an unread artifact is correct, or use “should work” as verification. Cite actual results or state what remains to run. Recheck completed decisions under [Task decisions](../../reference/evidence_contract.md#task-decisions) before a clean verdict. Keep observed, inferred and unknown separate.
 
 ## Verdict Logic
 

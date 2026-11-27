@@ -62,7 +62,6 @@ def detach_cases(cwd):
     old = os.getcwd()
     # The dispatch-doctrine gate in a --detach call is not under test here (its own proof is
     # test_sidecar_fanout_detach.py): mark the doctrine loaded in a throwaway session state.
-    import _hook_state
     sid, state_dir = "outdir_detach", tempfile.mkdtemp(prefix="outdir_state_")
     saved = {k: os.environ.get(k) for k in ("HARNESS_HOOK_STATE_DIR", "CLAUDE_CODE_SESSION_ID",
                                             "SIDECAR_DISPATCH_OWNER", "PROVIDER_CAPACITY_CACHE")}
@@ -71,9 +70,10 @@ def detach_cases(cwd):
     import _transport_fixture
     os.environ["PROVIDER_CAPACITY_CACHE"] = _transport_fixture._available_capacity_cache()
     os.environ.pop("SIDECAR_DISPATCH_OWNER", None)
-    _hook_state.mark_skill_in_context(sid, "orchestration")
-    _hook_state.update_json_locked(_hook_state.state_path(sid),
-                                   lambda state: (state.__setitem__("model_ladder_ready", True), True)[1])
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _hook_call
+    # The gate judges CLAUDE_PROJECT_DIR's ladder, else the cwd's.
+    _hook_call.arm_doctrine(sid, state_dir, root=os.environ.get("CLAUDE_PROJECT_DIR") or str(cwd))
     os.chdir(str(cwd))
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):

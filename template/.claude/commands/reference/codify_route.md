@@ -4,7 +4,7 @@ disable-model-invocation: true
 
 # /codify Step 4: the routing rows
 
-Read at [`codify.md`](../codify.md) Step 4, after the layer is chosen. Moved verbatim from `codify.md`.
+Read at [`codify.md`](../codify.md) Step 4, after the layer is chosen.
 
 | Fires when… | Surface | Owning home | Passive cost | Firing proof |
 |---|---|---|---|---|

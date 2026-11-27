@@ -25,6 +25,17 @@ ROW = ["--date", "2026-10-04", "--session", "s1", "--target", "rules/x.md#Top", 
 
 
 def run(file, *args):
+    """One tool call in this process, through its own entry point: exit code, stdout, stderr."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rc = TOOL_MODULE.main([*args, "--file", file])
+        except SystemExit as exc:
+            rc = exc.code if isinstance(exc.code, int) else 1
+    return rc, out.getvalue(), err.getvalue()
+
+
+def spawn(file, *args):
     p = subprocess.run([sys.executable, TOOL, *args, "--file", file], capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
 
@@ -41,6 +52,9 @@ def load_tool():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+TOOL_MODULE = load_tool()
 
 
 def record_in_process(module, file, date, target, signal, outcome):
@@ -199,6 +213,10 @@ def main():
     tmp = tempfile.mkdtemp(prefix="autolearn_outcomes_")
     extra = tempfile.mkdtemp(prefix="autolearn_metric_")
     try:
+        cli = os.path.join(extra, "cli.jsonl")
+        rc, out, err = spawn(cli, "record", *ROW)
+        cases.append(("the CLI runs from its command line, records the row and exits 0",
+                      rc == 0 and not err and len(rows(cli)) == 1 and TOOL_MODULE.row_id(rows(cli)[0]) in out))
         f = os.path.join(tmp, "o.jsonl")
         rc, _, _ = run(f, "record", *ROW)
         cases.append(("record appends one validated row", rc == 0 and len(rows(f)) == 1
@@ -353,6 +371,25 @@ def main():
         cases.append(("a later recorded row is unswept again", "1 correction row(s)" in out and "oldest 2026-11-09" in out))
         cases.append(("swept --through bounds the marker to what the sweep read",
                       ex("swept", "--through", "2026-11-07")[0] == 0 and ex("unswept")[1].startswith("autolearn: 1")))
+
+        h = os.path.join(extra, "handed.jsonl")
+        hx = lambda *a: run(h, *a)
+        rec = lambda d, sess, tgt, o, *more: hx("record", "--date", d, "--session", sess, "--target", tgt, "--signal",
+                                               "g", "--recommended", "r", "--outcome", o, "--reason", "x", *more)
+        targets = lambda out: [json.loads(l)["target"] for l in out.splitlines() if l.strip()]
+        rec("2026-11-10", "A", "handed.md", "recorded")
+        rec("2026-11-10", "B", "other.md", "recorded")
+        cases.append(("unswept --rows --session lists only that session's unread rows",
+                      targets(hx("unswept", "--rows", "--session", "A")[1]) == ["handed.md"]))
+        rec("2026-11-10", "A", "codify.md", "applied")
+        cases.append(("a same-session /codify row, which carries no packet row label, leaves a handed row unswept",
+                      "handed.md" in targets(hx("unswept", "--rows")[1])))
+        rec("2026-11-10", "A", "packet.md", "declined", "--row", "R1")
+        rec("2026-11-11", "A", "later.md", "recorded")
+        cases.append(("a packet row marks its session's earlier recorded rows read, never another session's or a later one",
+                      targets(hx("unswept", "--rows")[1]) == ["other.md", "later.md"]))
+        cases.append(("the session-start count leaves out a row its session's packet answered",
+                      hx("unswept")[1].startswith("autolearn: 2 ")))
 
         g = os.path.join(tmp, "cap.jsonl")
         for i in range(7):

@@ -1752,6 +1752,30 @@ def case_append_diagnostic_prints_row_when_write_fails(failures):
         failures.append("append_diagnostic dropped row: stderr=%r" % err.getvalue())
 
 
+def case_the_shared_dir_is_asked_of_git_once_per_process(failures):
+    """Every runner state file (pass store, case store, durations, runs) lives under the repository's common git
+    dir, which a command's own checkout cannot change, so it is asked once. An answer git could not give is not kept,
+    so a later call asks again."""
+    claude_dir = os.path.join(make_repo(), ".claude")
+    real, asked = harness_tests._git_run.soft_text, []
+
+    def spy(args, **kwargs):
+        asked.append(args)
+        return None if len(asked) == 1 else real(args, **kwargs)
+    harness_tests._git_run.soft_text = spy
+    try:
+        paths = [harness_tests._shared_path(claude_dir, name) for name in ("a", "b", "c")]
+    finally:
+        harness_tests._git_run.soft_text = real
+    common = os.path.join(os.path.dirname(claude_dir), ".git")
+    ok = len(asked) == 2 and [os.path.normcase(os.path.dirname(x)) for x in paths[1:]] == \
+        [os.path.normcase(os.path.join(common, "harness"))] * 2
+    print("%-4s the shared dir is asked of git once per process, and an unanswered ask is not kept"
+          % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("shared dir asks: %d, paths %r" % (len(asked), paths))
+
+
 def main(part=1):
     """Part `part` of PARTS: the cases build their own temp repos, so they split round-robin over processes that run
     beside each other. The heavy cases set `harness_tests.HEAVY` themselves and run first in part 1; every other case
@@ -1778,7 +1802,8 @@ def main(part=1):
                            case_parallel_confirmations_count_every_queue_second,
                            case_progress_lines_from_threads_do_not_interleave,
                            case_concurrent_flaky_rows_are_not_lost,
-                           case_append_diagnostic_prints_row_when_write_fails]
+                           case_append_diagnostic_prints_row_when_write_fails,
+                           case_the_shared_dir_is_asked_of_git_once_per_process]
     cases = list(HEAVY_CASES) * (part == 1) + plain[part - 1::PARTS]
     if part != 1:
         harness_tests.HEAVY = {}

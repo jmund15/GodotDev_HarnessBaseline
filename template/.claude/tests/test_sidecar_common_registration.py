@@ -19,6 +19,7 @@ from unittest import mock
 CLAUDE = Path(__file__).resolve().parents[1]
 ROOT = CLAUDE.parent
 sys.path[:0] = [str(CLAUDE / 'hooks'), str(CLAUDE / 'tools'), str(CLAUDE / 'tests')]
+import _git_fixture
 import _mcp_plant
 import _transport_fixture
 import sidecar_launch
@@ -155,11 +156,6 @@ for loaded in [name for name in PATCHES if name in sys.modules]: PATCHES[loaded]
         self.assertNotIn('Traceback', proc.stderr, proc.stderr)
         return proc
 
-    def env_without_preflight(self):
-        """For a case whose subject is the journal or the claim: the launch's own `--check` pass is what the
-        registration cases count, so these skip it rather than pay for a second launcher start."""
-        return dict(self.env, HARNESS_SIDECAR_PREFLIGHT='0')
-
     def argv(self, label='wrapped', model='fixture-sol', shape='scout'):
         return ['-m', model, '-G', shape, *(['-D', 'bare'] if shape == 'arm' else []), '-l', label, '-R',
                 str(self.work / (label + '.record.json')).replace('\\', '/'),
@@ -234,7 +230,7 @@ class Registration(LaunchFixture):
         jobs = self.work / 'jobs.json'
         cell = self.work / 'cell'  # the jobs' workdir: a planted repo, so fanout's fingerprint reads no live checkout
         cell.mkdir()
-        subprocess.run(['git', 'init', '-q', str(cell)], check=True, capture_output=True, cwd=self.work)
+        _git_fixture.init_repo(cell)
         briefs = []
         for label in ('one', 'two'):
             brief = self.work / (label + '.md')
@@ -283,27 +279,10 @@ class Registration(LaunchFixture):
         self.assertIn('not tracked', proc.stderr)
         self.assertEqual(self.counts(), {'tier': 1, 'preflight': 1})
 
-    def test_launch_journal_records_start_and_end(self):
-        # X1 S2 U2: a real foreground launch writes a started row at claim and an ended row with its rc.
-        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('journaled')], env=self.env_without_preflight())
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        record = self.work / 'journaled.record.json'
-        journal = Path(str(record) + '.journal.jsonl')
-        rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()] if journal.exists() else []
-        events = [row.get('event') for row in rows]
-        self.assertIn('started', events, rows)
-        self.assertEqual(events[-1], 'ended', rows)
-        started = next(row for row in rows if row['event'] == 'started')
-        for key in ('ts', 'launchId', 'pid', 'session', 'label', 'record', 'call'):
-            self.assertIn(key, started, started)
-        self.assertEqual(started['label'], 'journaled')
-        ended = rows[-1]
-        self.assertEqual(ended['code'], 0, ended)
-        self.assertEqual(Path(record.parent / (record.name + '.exit')).read_text().strip(), '0')
-
     def test_direct_hook_launch_registers_once_checks_once_and_records_the_call_its_intent_names(self):
-        # X1 S2 U6 / D3: the hook writes the intent at the record path, and the launch claims it, so the
-        # journal's rows carry the call a direct launch lost before the intent existed.
+        # X1 S2 U6 / D3: the hook writes the intent at the record path, and the launch claims it (an atomic rename to
+        # `.claimed`), so the journal's rows carry the call a direct launch lost before the intent existed. The same
+        # real launch is X1 S2 U2's journal: a started row at claim and an ended row with its exit code.
         argv = self.argv('direct')
         payload = self.payload('bash ' + shlex.join([str(LAUNCHER).replace('\\', '/'), *argv]))
         before = self.run_cmd([sys.executable, str(HOOK)], payload)
@@ -319,32 +298,27 @@ class Registration(LaunchFixture):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         journal = Path(str(record) + '.journal.jsonl')
         rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()]
-        self.assertEqual(next(row for row in rows if row['event'] == 'started')['call'], 'call-proof', rows)
+        started = next(row for row in rows if row['event'] == 'started')
+        for key in ('ts', 'launchId', 'pid', 'session', 'label', 'record', 'call'):
+            self.assertIn(key, started, started)
+        self.assertEqual((started['call'], started['label']), ('call-proof', 'direct'), rows)
+        self.assertEqual((rows[-1]['event'], rows[-1]['code'], rows[-1]['call']), ('ended', 0, 'call-proof'), rows)
+        self.assertEqual(Path(str(record) + '.exit').read_text().strip(), '0')
         self.assertFalse(intent.exists(), 'the intent was not claimed')
+        self.assertTrue(Path(str(intent) + '.claimed').exists())
         self.run_cmd([sys.executable, str(TABLE), '--launch'], payload)
         self.assertEqual(len(self.pending()), 1)
         self.assertEqual(self.counts(), {'tier': 1, 'preflight': 1})
-
-    def test_direct_launch_claims_the_call_its_intent_names(self):
-        # X1 S1 U4 / D3: the hook's intent at the record path names the call; the launch's rows carry it.
-        record = self.work / 'claimed.record.json'
-        intent = Path(str(record) + '.launch-intent-toolu_direct.json')
-        intent.write_text(json.dumps({'call': 'toolu_direct', 'session': self.sid}), encoding='utf-8')
-        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('claimed')], env=self.env_without_preflight())
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertFalse(intent.exists(), 'the intent was not claimed')
-        self.assertTrue(Path(str(intent) + '.claimed').exists())
-        journal = Path(str(record) + '.journal.jsonl')
-        rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()]
-        self.assertEqual(next(row for row in rows if row['event'] == 'started')['call'], 'toolu_direct', rows)
-        self.assertEqual(rows[-1]['call'], 'toolu_direct', rows)
 
 
 PARTS = 2
 
 
 def main(part=1):
-    """Run this part's share of the cases, round-robin; `test_sidecar_common_registration_part2.py` runs the other."""
+    """Run this part's share of the cases, round-robin; `test_sidecar_common_registration_part2.py` runs the other.
+    One file would run its launches one after another whenever the machine has no free lane (each launch spends
+    seconds on Python starts), so the shard stays: it is what gives
+    the second half its own lane."""
     from _case_pool import run_cases, unittest_cases
     for n in range(2, PARTS + 1):
         name = 'test_sidecar_common_registration_part%d.py' % n

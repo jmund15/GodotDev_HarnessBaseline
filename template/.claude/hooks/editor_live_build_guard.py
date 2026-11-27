@@ -23,6 +23,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _checkout_root import nearest_checkout  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.normpath(os.path.join(HERE, "..", "scripts"))
@@ -31,16 +32,8 @@ DOTNET_BUILDS = {"build", "test", "run", "publish", "msbuild"}
 
 
 def _root(path):
-    path = os.path.abspath(path)
-    if os.path.isfile(path):
-        path = os.path.dirname(path)
-    while True:
-        if os.path.exists(os.path.join(path, ".git")):
-            return os.path.normcase(os.path.normpath(path))
-        parent = os.path.dirname(path)
-        if parent == path:
-            return None
-        path = parent
+    found = nearest_checkout(path)
+    return os.path.normcase(found) if found else None
 
 
 def _live_roots_override():

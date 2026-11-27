@@ -19,18 +19,22 @@ Subcommands:
   continuation <proxy_exe> print 1 iff that build is safe for WebSocket continuation, else 0
   server-compaction <proxy_exe>
                            print 1 iff that build supports tested native compaction, else 0
-  user-scope-bin           print the owner's user-scope CCP_BIN (Windows); exit 1 when unset
   prune <days>             delete the capture folders of sessions idle for <days> (prune_traffic)
   serves <proxy_exe> <model_id>
                            exit 0 iff `<proxy_exe> models` lists that id; 1 when it does not,
                            3 when the list is unreadable; the reason goes to stdout
+  launch-facts [--bin <proxy_exe>] --model <id>
+                           the launcher's one proxy read (--check and dispatch): bin (resolved
+                           when --bin is absent; empty when none is installed), serves rc and
+                           reason, a free port, continuation and server-compaction,
+                           unit-separated on one line
 """
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".claude" / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
-from cli_usage import usage
+from cli_usage import ShapeParser, usage
 from _hook_state import replace_path  # noqa: E402
 import glob
 import json
@@ -115,6 +119,36 @@ def user_scope_ccp_bin():
             return winreg.QueryValueEx(key, "CCP_BIN")[0] or None
     except OSError:
         return None
+
+
+def resolve_bin(scope_process=False):
+    """The proxy executable, in the launcher's lookup order: the owner's user-scope CCP_BIN (unless
+    the caller pinned this process's), then CCP_BIN, the installed path, PATH. None when absent."""
+    if not scope_process:
+        scoped = user_scope_ccp_bin()
+        if scoped:
+            return scoped
+    if os.environ.get("CCP_BIN"):
+        return os.environ["CCP_BIN"]
+    installed = os.path.expanduser("~/AppData/Local/claude-code-proxy/claude-code-proxy.exe")
+    if os.access(installed, os.X_OK):
+        return installed
+    return shutil.which("claude-code-proxy")
+
+
+def launch_facts(exe, model):
+    """The facts one dispatch's proxy needs before it starts, unit-separated for the launcher.
+
+    `[bin, serves-rc, serves-reason, port, continuation, server-compaction]`: the model list is
+    read once and the version once, where three separate processes used to run the binary three
+    times. A build that cannot be run reads as version-less, so both capabilities are 0, exactly
+    as the separate probes answered.
+    """
+    serves_rc, serves_reason = serves_check(exe, model)
+    version = proxy_version_text(exe)
+    return [exe, serves_rc, serves_reason, freeport(),
+            1 if continuation_supported(version) else 0,
+            1 if server_compaction_supported(version) else 0]
 
 
 def serves_check(exe, model_id):
@@ -358,12 +392,6 @@ def main(argv):
             return 2
         print(1 if server_compaction_supported(proxy_version_text(argv[2])) else 0)
         return 0
-    if cmd == "user-scope-bin":
-        scoped = user_scope_ccp_bin()
-        if not scoped:
-            return 1
-        print(scoped)
-        return 0
     if cmd == "prune":
         try:
             days = float(argv[2])
@@ -380,6 +408,19 @@ def main(argv):
         if reason:
             print(reason)
         return rc
+    if cmd == "launch-facts":
+        ap = ShapeParser(prog="ccp_probe.py launch-facts", add_help=False)
+        ap.accepts = "--model <id> [--bin <proxy_exe>]"
+        ap.example = "ccp_probe.py launch-facts --model gpt-6-luna"
+        ap.add_argument("--model", required=True)
+        ap.add_argument("--bin")
+        args = ap.parse_args(argv[2:])
+        exe, model = args.bin, args.model
+        if exe is None:
+            exe = resolve_bin(scope_process=os.environ.get("CCP_BIN_SCOPE") == "process")
+        row = launch_facts(exe, model) if exe else ["", "", "", "", "", ""]
+        print("\x1f".join(str(item) for item in row))
+        return 0
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     return 2
 

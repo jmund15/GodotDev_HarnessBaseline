@@ -20,7 +20,9 @@ record archives as the run's role tier. An unknown tier refuses with the known l
 
 CLI:
   tool_profiles.py resolve-kind --kind K [--tools CSV] [--base-builtins CSV] [--config-dir D]
-                           [--workdir W] [--tier T] [--field profile|builtins|mcpServers|spec|mcpConfig]
+                           [--workdir W] [--tier T] [--field profile|builtins|mcpServers|spec|mcpConfig|packed]
+                           # `packed`: --tools, spec and --disallowedTools, unit-separated, one read
+  tool_profiles.py kind-row --kind K [--fields F,F]   # disclosure (default)|cacheTtl, unit-separated
   tool_profiles.py mcp-config <CSV or name list> [config-dir]   # --mcp-config's own builder
   tool_profiles.py table
   tool_profiles.py agents [--write] [--check] [--table P] [--agents-dir D]
@@ -1281,7 +1283,9 @@ def sync_agents(write=False, check=False, table_path=None, agents_dir=None, cand
 
 # ------------------------------------------------------------------- CLI
 
-FIELDS = ("profile", "builtins", "mcpServers", "spec", "mcpConfig")
+FIELDS = ("profile", "builtins", "mcpServers", "spec", "mcpConfig", "packed")
+FIELD_SEP = "\x1f"
+KIND_ROW_FIELDS = ("disclosure", "cacheTtl")  # what a launcher reads from its kind row
 
 
 def _report(value, field, candidates):
@@ -1296,6 +1300,11 @@ def _report(value, field, candidates):
         print(spec)
     elif field == "mcpConfig":
         print(json.dumps(strict_mcp_config(keys, candidates), separators=(",", ":")))
+    elif field == "packed":
+        # The record's profile and the three strings the child's tool flags take, from the profile
+        # the resolver just validated: --tools, --allowedTools/--mcp-config's spec, --disallowedTools.
+        print(FIELD_SEP.join((json.dumps(profile, separators=(",", ":")), ",".join(profile["builtins"]),
+                              spec, ",".join(profile["denyTools"]))))
     else:
         raise ValueError("unknown field %r (legal: %s)" % (field, ", ".join(FIELDS)))
 
@@ -1358,9 +1367,10 @@ def main(argv=None):
     rk.add_argument("--config-dir", default="")
     rk.add_argument("--workdir", default="")
     rk.add_argument("--field", default="profile", choices=FIELDS)
-    kr = sub.add_parser("kind-row", help="a launcher kind's disclosure (empty for arm), guard or cacheTtl (default 5m), after the route check")
+    kr = sub.add_parser("kind-row", help="a launcher kind's disclosure (empty for arm) or cacheTtl (default 5m), after the route check")
     kr.add_argument("--kind", required=True)
-    kr.add_argument("--field", default="disclosure", choices=("disclosure", "guard", "cacheTtl"))
+    kr.add_argument("--fields", default="disclosure",
+                    help="comma list of %s, unit-separated: the launcher's one read" % ",".join(KIND_ROW_FIELDS))
     mcp = sub.add_parser("mcp-config")
     mcp.add_argument("spec")
     mcp.add_argument("config_dir", nargs="?", default="")
@@ -1390,8 +1400,12 @@ def main(argv=None):
             table = load_table()
             if args.kind not in (table.get("kinds") or {}) or "launcher" not in table["kinds"][args.kind]["routes"]:
                 resolve_kind(args.kind, route="launcher", table=table, walk_mcp=False)   # raises with the public kinds
-            print(table["kinds"][args.kind].get(args.field)
-                  or {"guard": args.kind, "cacheTtl": CACHE_TTLS[0]}.get(args.field, ""))
+            names = args.fields.split(",")
+            unknown = [name for name in names if name not in KIND_ROW_FIELDS]
+            if unknown:
+                raise ValueError("unknown kind-row field %r (legal: %s)" % (unknown[0], ", ".join(KIND_ROW_FIELDS)))
+            row = table["kinds"][args.kind]
+            print(FIELD_SEP.join(row.get(name) or {"cacheTtl": CACHE_TTLS[0]}.get(name, "") for name in names))
             return 0
         if args.cmd == "resolve-kind":
             base = split_csv(args.base_builtins) if args.base_builtins is not None else None

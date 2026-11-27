@@ -37,10 +37,10 @@ def resolve(alias):
     and refusing to probe would turn it into a permanent grid halt.
     """
     try:
-        out = subprocess.run([sys.executable, str(REGISTRY), "sidecar-fields", alias],
+        out = subprocess.run([sys.executable, str(REGISTRY), "resolve", alias, "--field", "id"],
                              capture_output=True, text=True, timeout=60)
         if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip().split("|")[0]
+            return out.stdout.strip()
     except Exception:
         pass
     return alias

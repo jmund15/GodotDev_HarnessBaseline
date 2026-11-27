@@ -923,23 +923,22 @@ def ledger_path(repo: Path) -> Path:
     override = os.environ.get("HARNESS_REVIEW_LEDGER")
     if override:
         return Path(override) if Path(override).is_absolute() else repo / override
-    return review_snapshot.fact("ledger path", repo, lambda: _shared_ledger_path(repo))
+    return _shared_ledger_path(repo)
 
 
 def _shared_ledger_path(repo: Path) -> Path:
-    # One call: the common dir, `repo`'s prefix below its toplevel, then the superproject's work tree when `repo` is
-    # a submodule checkout (git prints nothing for it otherwise).
-    done = _git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-prefix",
-                       "--show-superproject-working-tree"])
-    if done.returncode != 0:
+    try:
+        found = review_snapshot.layout(repo)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ToolError(f"git {' '.join(review_snapshot._checkout_root.LAYOUT_ARGS)} failed: {exc}") from exc
+    if found is None:
         return repo / ".claude" / "logs" / "review_ledger.jsonl"
-    git_dir, prefix, *superproject = done.stdout.decode().splitlines() + [""]
-    if any(line.strip() for line in superproject):
+    if found.superproject:
         raise ToolError(f"{repo} is a submodule checkout: the review ledger keys superproject paths, so run this "
-                        f"from the superproject {superproject[0].strip()}")
-    # `repo` is the harness root and may sit below its git toplevel (`--show-prefix`): the shared store is the main
+                        f"from the superproject {found.superproject}")
+    # `repo` is the harness root and may sit below its git toplevel (`prefix`): the shared store is the main
     # checkout's copy of that same root, so one ledger serves every worktree.
-    return Path(git_dir.strip()).parent / prefix.strip() / ".claude" / "logs" / "review_ledger.jsonl"
+    return Path(found.common_dir).parent / found.prefix / ".claude" / "logs" / "review_ledger.jsonl"
 
 
 def escape_log_path(repo: Path) -> Path:

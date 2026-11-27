@@ -55,8 +55,8 @@ def harness_read_notice(input_data):
         return ""
     session_id = input_data.get("session_id") or ""
     agent_id = input_data.get("agent_id")
-    if skill_in_context(session_id, "instruction_quality", agent_id,
-                        transcript_path=input_data.get("transcript_path")):
+    if skill_in_context(session_id, "instruction_quality", agent_id, transcript_path=input_data.get("transcript_path"),
+                        root=harness_edit_skill_reminder.governing_root(path)):
         return ""
     if not fire_once_since_compaction(session_id, "harness_read_notice" + _agent_suffix(agent_id)):
         return ""

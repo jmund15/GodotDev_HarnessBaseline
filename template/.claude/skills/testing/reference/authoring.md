@@ -121,7 +121,7 @@ await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 
 **Programmatic nodes need explicit setup:**
 - `AddChild()` does NOT set `Owner` — set `hurtbox.Owner = target` explicitly.
-- An `Initialize()` call using `SetDeferred` (Monitorable, etc.), and a bare `SetDeferred` write, need the node in the scene tree and the channel timing `godot_architecture` §Init-Timing & Data-Source Readiness names.
+- An `Initialize()` call using `SetDeferred` (Monitorable, etc.), and a bare `SetDeferred` write, need the node in the scene tree and the channel timing `godot_architecture/reference/component_initialization.md` §Init-Timing & Data-Source Readiness names.
 
 **Float accumulation in duration tests** — testing time-based BT actions or timers, avoid accumulating small deltas (`60 × 1f/60f ≠ 1.0f`, IEEE 754). Use a single large delta:
 ```csharp

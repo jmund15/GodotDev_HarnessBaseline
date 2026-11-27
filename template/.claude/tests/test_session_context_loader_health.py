@@ -87,12 +87,12 @@ class HealthTests(unittest.TestCase):
                    "[sidecar] REFUSING luna-max (gpt-x): codex's OWN quota band is Hot, above the Ahead ceiling.\n"
                    "  This is the PROVIDER's allowance, not this session's.\n"
                    "  Override: re-run with -A.\n")
-        with patch.object(scl, "resolve_bash", return_value="bash"), \
+        with patch.object(scl._msys, "bash", return_value="bash"), \
                 patch.object(scl, "run_bounded", return_value=SimpleNamespace(returncode=8, stdout="", stderr=refusal)):
             result = scl.verify_sidecar(self.root, "codex_proxy_sidecar.sh")
         self.assertIn("OWN quota band is Hot", result)
         self.assertIn("re-run with -A", result)
-        with patch.object(scl, "resolve_bash", return_value="bash"), \
+        with patch.object(scl._msys, "bash", return_value="bash"), \
                 patch.object(scl, "run_bounded", return_value=SimpleNamespace(returncode=0, stdout="preflight\nOK\n", stderr="")):
             self.assertEqual("OK", scl.verify_sidecar(self.root, "codex_proxy_sidecar.sh"))
 
@@ -112,7 +112,7 @@ class HealthTests(unittest.TestCase):
         script = self.root / ".claude" / "scripts" / "shared_sidecar.sh"
         script.parent.mkdir(parents=True)
         script.write_text("", encoding="utf-8")
-        with patch.object(scl, "resolve_bash", return_value="bash"), patch.object(
+        with patch.object(scl._msys, "bash", return_value="bash"), patch.object(
             scl, "run_bounded", return_value=SimpleNamespace(returncode=0, stdout="OK", stderr="")
         ) as check:
             messages = [scl.verify_sidecar(self.root, name, alias) for _transport, name, alias in launchers]

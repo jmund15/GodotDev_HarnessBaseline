@@ -8,7 +8,7 @@ Usage:
                                  [--row LABEL] [--metric KEY] [--cap N] [--file PATH]
     autolearn_outcomes.py lookup --target T [--file PATH]
     autolearn_outcomes.py history --target T [--target T ...] [--file PATH]
-    autolearn_outcomes.py unswept [--rows] [--file PATH]
+    autolearn_outcomes.py unswept [--rows [--session S]] [--file PATH]
     autolearn_outcomes.py show ID [--file PATH]
     autolearn_outcomes.py swept [--through YYYY-MM-DD] [--file PATH]
 
@@ -25,6 +25,9 @@ appended and dropped by the cap, so its content is its identity: the id survives
 field, and two rows that differ in any field have different ids. Every listing prints it (`record`, the repeat
 check, `lookup`, `history`, `unswept --rows`), and `show ID` prints the row back. Cite a row by its id, never
 by its line number, which a rotation shifts.
+`unswept` counts the `recorded` rows dated after the swept marker and not yet answered by their session's
+/autolearn: a later packet row (one recorded with `--row`) of the same session marks that session's earlier recorded
+rows read, since that run's Steps 0-5 already ruled on them. `--rows` lists them, `--session S` only that session's.
 `history` prints every row, any outcome, whose target names one of the given paths (alone, among
 several joined by `;`, with a `#anchor`, or followed by a section name), so /codify Step 0 reads which fixes a rule's homes already had.
 """
@@ -227,9 +230,16 @@ def cmd_history(args):
     return 0
 
 
-def _unread(rows, path):
+def _unread(rows, path, session=None):
     marker = read_swept(path)
-    return [r for r in rows if r.get("outcome") == "recorded" and str(r.get("date") or "") > marker]
+    answered, out = set(), []
+    for r in reversed(rows):
+        if r.get("row"):
+            answered.add(r.get("session"))
+        elif (r.get("outcome") == "recorded" and str(r.get("date") or "") > marker
+              and r.get("session") not in answered and session in (None, r.get("session"))):
+            out.append(r)
+    return out[::-1]
 
 
 def cmd_show(args):
@@ -268,7 +278,7 @@ def unswept_summary(path=DEFAULT_FILE):
 
 def cmd_unswept(args):
     if args.rows:
-        for r in _unread(read_rows(args.file)[0], args.file):
+        for r in _unread(read_rows(args.file)[0], args.file, args.session):
             print(listed(r))
         return 0
     line = unswept_summary(args.file)
@@ -344,6 +354,7 @@ def build_parser():
     show.set_defaults(fn=cmd_show)
     unsw = sub.add_parser("unswept")
     unsw.add_argument("--rows", action="store_true", help="print each unread recorded row, with its id")
+    unsw.add_argument("--session", default=None, help="with --rows, only this session's rows")
     unsw.add_argument("--file", default=DEFAULT_FILE)
     unsw.set_defaults(fn=cmd_unswept)
     sw = sub.add_parser("swept")

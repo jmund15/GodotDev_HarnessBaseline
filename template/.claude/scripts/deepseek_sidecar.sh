@@ -193,26 +193,10 @@ if [ "${1:-}" = "--check" ]; then
     ""|"<redacted>"|"your-key-here"|"sk-xxx"*)
       echo "UNAVAILABLE (DEEPSEEK_API_KEY not populated in $ENV_FILE)"; exit 3 ;;
   esac
-  # The registry is a hard dependency of every dispatch (model resolution, prices,
-  # gates), so an unusable one means UNAVAILABLE — not a surprise at dispatch time.
-  _check_reg="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" 2>&1)" || {
-    echo "UNAVAILABLE (model registry unusable: ${_check_reg%%$'\n'*})"; exit 2; }
-  # SessionStart publishes this line as `sidecar:` in <session-context>, so an OK here becomes a
-  # standing fact that the sidecar is a live option. Read from the same registry field the dispatch
-  # gate reads, so the two cannot disagree.
-  _check_state="$(python3 "$SC_REGISTRY_CLI" transport-status "$SC_TRANSPORT" 2>/dev/null \
-    | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("state", "available"))
-except Exception:
-    print("available")' 2>/dev/null)"
-  if [ "$_check_state" = "unavailable" ]; then
-    echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
-    exit 7
-  fi
+  sc_check_registry
   SC_CREDENTIAL="$_check_key"   # provider_capacity forwards it only to the live balance adapter
   sc_check_gates
-  echo "OK (model=${_check_reg%%|*} endpoint=$BASE_URL key=***${_check_key: -4})${SC_PRICE_SUMMARY:+ $SC_PRICE_SUMMARY}"
+  echo "OK (model=$SC_MODEL endpoint=$BASE_URL key=***${_check_key: -4})${SC_PRICE_SUMMARY:+ $SC_PRICE_SUMMARY}"
   exit 0
 fi
 
@@ -249,7 +233,7 @@ sc_validate_effort
 # The window is the registry's to state, not this script's. It previously hardcoded 1000000 —
 # the same number the registry already carried for this model, so the two could drift with
 # nothing to catch it. MAX_CONTEXT_TOKENS still overrides for a one-off.
-SC_CONTEXT_TOKENS="$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" 2>/dev/null)"
+SC_CONTEXT_TOKENS="${SC_WINDOW_DEFAULT:-}"
 SC_MAX_OUTPUT="$(sc_max_output "${MAX_CONTEXT_TOKENS:-}")"
 
 EFFORT_ARGS=()

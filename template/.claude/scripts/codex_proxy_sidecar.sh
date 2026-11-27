@@ -12,8 +12,9 @@
 # deleted (2026-09-14); git history at the pre-retirement tag point (fix(sidecar) 26393ee81)
 # still has its header and implementation.
 #
-# Proxy: selected by `CCP_BIN` when set, otherwise the installed default. `ccp_probe.py continuation`
-# enables WebSocket continuation only for v0.1.36+; older builds stay on full-history turns.
+# Proxy: `ccp_probe.py launch-facts` resolves it (`resolve_bin` owns the lookup order) for --check and
+# dispatch alike, and enables WebSocket continuation only for v0.1.36+; older builds stay on
+# full-history turns.
 #
 # EVERY DISPATCH STARTS ITS OWN PROXY on a fresh port and kills it on exit. That is not
 # defensive hygiene, it is forced by where the knobs live: `CCP_CODEX_MODEL`,
@@ -70,55 +71,38 @@ CCP_PROBE="$SC_ROOT/scripts/lib/ccp_probe.py"
 CCP_LOG="${CCP_LOG:-$HOME/.local/state/claude-code-proxy/sidecar-serve.log}"
 CCP_PORT=""
 
-# The proxy ships as a plain exe extracted from a GitHub release — there is no brew on this
-# machine and no npm shim, so the install path is the primary lookup and PATH the fallback.
-# The owner's user-scope CCP_BIN wins over this process's copy: a session launched before the owner moved it
-# (and every hook it spawns) still holds the old value. CCP_BIN_SCOPE=process uses the process value as given.
-ccp_bin() {
-  local scoped
-  if [ "${CCP_BIN_SCOPE:-}" != process ] && scoped="$(python3 "$CCP_PROBE" user-scope-bin 2>/dev/null)" && [ -n "$scoped" ]; then
-    printf '%s' "$scoped"; return 0
-  fi
-  if [ -n "${CCP_BIN:-}" ]; then printf '%s' "$CCP_BIN"; return 0; fi
-  local installed="$HOME/AppData/Local/claude-code-proxy/claude-code-proxy.exe"
-  [ -x "$installed" ] && { printf '%s' "$installed"; return 0; }
-  command -v claude-code-proxy >/dev/null 2>&1 && { printf '%s' "$(command -v claude-code-proxy)"; return 0; }
-  return 1
+# The launcher's one proxy read, for --check and dispatch alike, so --check certifies the binary dispatch starts.
+# One probe process answers the binary, its model list, its version and a free port. Sets CCP_EXE, CCP_PORT,
+# CCP_CONTINUATION and CCP_SERVER_COMPACTION, or sets CCP_FACTS_ERROR and returns 4. Every refusal here is exit 4: its
+# fix is the proxy build (CCP_BIN) or its model list, and exit 8 would send the reader to a capacity check that
+# read nothing.
+ccp_read_facts() {
+  local facts serves_rc serves_reason
+  facts="$(python3 "$CCP_PROBE" launch-facts --model "$SC_MODEL" 2>/dev/null)" || {
+    CCP_FACTS_ERROR="proxy probe failed: ccp_probe.py launch-facts"; return 4; }
+  IFS=$'\x1f' read -r CCP_EXE serves_rc serves_reason CCP_PORT CCP_CONTINUATION CCP_SERVER_COMPACTION <<< "$facts"
+  [ -n "$CCP_EXE" ] || { CCP_FACTS_ERROR="claude-code-proxy not installed; set CCP_BIN"; return 4; }
+  [ "$serves_rc" = 0 ] || { CCP_FACTS_ERROR="$serves_reason"; return 4; }
 }
 
 # Start this dispatch's own proxy, carrying its pins. Bounded wait, never an indefinite hang:
 # a proxy that cannot bind fails the same way forever, and waiting longer only delays the
 # report.
 ccp_start() {
-  local ccp
-  ccp="$(ccp_bin)" || { echo "claude-code-proxy not found (set CCP_BIN)" >&2; return 4; }
-  local served
-  served="$(python3 "$CCP_PROBE" serves "$ccp" "$SC_MODEL")" || { echo "[proxy-sidecar] $served" >&2; return 4; }
-  CCP_PORT="$(python3 "$CCP_PROBE" freeport)"
+  ccp_read_facts || { echo "[proxy-sidecar] $CCP_FACTS_ERROR" >&2; return 4; }
   mkdir -p "$(dirname "$CCP_LOG")"
   # WebSocket continuation and native compaction are enabled only on tested builds.
-  local continuation server_compaction probe_rc
-  continuation="$(python3 "$CCP_PROBE" continuation "$ccp")" || {
-    probe_rc=$?
-    echo "[proxy-sidecar] continuation capability probe failed for $ccp (exit $probe_rc)." >&2
-    return 4
-  }
-  [ "$continuation" = 1 ] || { continuation=0; echo "[proxy-sidecar] $ccp predates 0.1.36: continuation OFF, one WebSocket per turn (set CCP_BIN to a 0.1.36+ build)" >&2; }
-  server_compaction="$(python3 "$CCP_PROBE" server-compaction "$ccp")" || {
-    probe_rc=$?
-    echo "[proxy-sidecar] server-compaction capability probe failed for $ccp (exit $probe_rc)." >&2
-    return 4
-  }
-  [ "$server_compaction" = 1 ] || server_compaction=0
-  echo "[proxy-sidecar] starting claude-code-proxy on :$CCP_PORT (model=$SC_MODEL effort=${SC_EFFORT:-unset} continuation=$continuation server_compaction=$server_compaction, log: $CCP_LOG)" >&2
+  [ "$CCP_CONTINUATION" = 1 ] || { CCP_CONTINUATION=0; echo "[proxy-sidecar] $CCP_EXE predates 0.1.36: continuation OFF, one WebSocket per turn (set CCP_BIN to a 0.1.36+ build)" >&2; }
+  [ "$CCP_SERVER_COMPACTION" = 1 ] || CCP_SERVER_COMPACTION=0
+  echo "[proxy-sidecar] starting claude-code-proxy on :$CCP_PORT (model=$SC_MODEL effort=${SC_EFFORT:-unset} continuation=$CCP_CONTINUATION server_compaction=$CCP_SERVER_COMPACTION, log: $CCP_LOG)" >&2
   # The pins go in the SERVER's env; see the header. CCP_TRAFFIC_LOG is unconditional because
   # the capture proves the model and effort encoded in the upstream request, not acceptance.
   env CCP_CODEX_MODEL="$SC_MODEL" \
       ${SC_EFFORT:+CCP_CODEX_EFFORT="$SC_EFFORT"} \
-      CCP_CODEX_PREVIOUS_RESPONSE_ID="$continuation" \
-      CCP_CODEX_SERVER_COMPACTION="$server_compaction" \
+      CCP_CODEX_PREVIOUS_RESPONSE_ID="$CCP_CONTINUATION" \
+      CCP_CODEX_SERVER_COMPACTION="$CCP_SERVER_COMPACTION" \
       CCP_TRAFFIC_LOG=1 \
-      nohup "$ccp" serve --no-monitor --port "$CCP_PORT" >>"$CCP_LOG" 2>&1 &
+      nohup "$CCP_EXE" serve --no-monitor --port "$CCP_PORT" >>"$CCP_LOG" 2>&1 &
   CCP_PID=$!
   sc_on_exit 'kill "$CCP_PID" 2>/dev/null || :'
   python3 "$CCP_PROBE" prune 2 >/dev/null 2>&1 &
@@ -150,30 +134,16 @@ shim_start() {
 
 if [ "${1:-}" = "--check" ]; then
   sc_check_model_override "$@"
-  ccp_bin >/dev/null || { echo "UNAVAILABLE (claude-code-proxy not installed; set CCP_BIN)"; exit 4; }
   sc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
   # The proxy authenticates SEPARATELY from the `codex` CLI: its own browser login writes
   # here, and ~/.codex/auth.json does not satisfy it (v0.1.35 has no --reuse-codex).
   [ -f "$CCP_AUTH" ] || {
     echo "UNAVAILABLE (no $CCP_AUTH; run: claude-code-proxy codex auth login)"; exit 3; }
-  _check_reg="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" 2>&1)" || {
-    echo "UNAVAILABLE (model registry unusable: ${_check_reg%%$'\n'*})"; exit 2; }
-  _check_state="$(python3 "$SC_REGISTRY_CLI" transport-status "$SC_TRANSPORT" 2>/dev/null \
-    | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("state", "available"))
-except Exception:
-    print("available")' 2>/dev/null)"
-  if [ "$_check_state" = "unavailable" ]; then
-    echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
-    exit 7
-  fi
+  sc_check_registry
   # The model list is compiled into each proxy build: a registry remap needs a build that serves the new id.
-  _check_serves="$(python3 "$CCP_PROBE" serves "$(ccp_bin)" "${_check_reg%%|*}")" || {
-    [ $? -eq 1 ] && { echo "UNAVAILABLE ($_check_serves)"; exit 4; }
-    echo "UNAVAILABLE ($_check_serves)"; exit 8; }
+  ccp_read_facts || { echo "UNAVAILABLE ($CCP_FACTS_ERROR)"; exit 4; }
   sc_check_gates
-  echo "OK (model=${_check_reg%%|*} plan-quota band=${SC_PROVIDER_BAND:-unknown} proxy=per-dispatch)"
+  echo "OK (model=$SC_MODEL plan-quota band=${SC_PROVIDER_BAND:-unknown} proxy=per-dispatch)"
   exit 0
 fi
 
@@ -252,16 +222,9 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
-# Register the re-prompt hook from the LAUNCHER (a worktree older than the hook has no
-# registration of its own); --settings merges with the cwd's settings, and the hook no-ops
-# without the env var. The path must be absolute and native (`C:/...`, never `/c/...` or
-# relative): the hook opens it from the CHILD's cwd. Rationale: reference/sidecar_dispatch.md §After launch.
-SC_PROMPT_FILE_ABS=""
-if [ -n "$SC_PROMPT_FILE" ]; then
-  SC_PROMPT_FILE_ABS="$(cd "$(dirname "$SC_PROMPT_FILE")" && pwd)/$(basename "$SC_PROMPT_FILE")"
-  command -v cygpath >/dev/null 2>&1 && SC_PROMPT_FILE_ABS="$(cygpath -m "$SC_PROMPT_FILE_ABS")"
-  SC_SETTINGS_JSON="$(python3 -c 'import json,sys; print(json.dumps({"hooks":{"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"python3 \"%s\"" % sys.argv[1],"timeout":15}]}]}}))' "$SC_ROOT/hooks/sidecar_recompact_reprompt.py")"
-fi
+# The re-prompt hook is registered by the merge itself whenever a -f brief is given (a worktree
+# older than the hook has no registration of its own): launch_settings owns the path's native form
+# and the SessionStart/PreCompact pair.
 SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "${SC_SETTINGS_JSON:-}")" || exit $?
 [ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
@@ -283,7 +246,7 @@ sc_scrub_env
 # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 stops the child's background calls (conversation
 # titles, telemetry) from crossing the proxy as extra upstream requests, which would both
 # spend plan allowance and pollute the attestation capture with non-task traffic.
-_attest_since="$(python3 -c 'import time; print(time.time())')"
+_attest_since="${EPOCHREALTIME/,/.}"   # float epoch, read in-process; attest compares it to capture mtimes
 run_claude() {
   cd "$SC_RUN_CWD" && env \
     ${SC_SCRUB[@]+"${SC_SCRUB[@]}"} \

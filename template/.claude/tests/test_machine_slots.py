@@ -273,6 +273,24 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(first)
 
+    def test_a_lane_lease_leaves_a_take_and_an_end_row_and_a_missed_deadline_one_end_row(self):
+        held = slots.take(holder=json.dumps({'pid': 7, 'label': 'job-x', 'command': 'c', 'checkout': 'C:/w'}))
+        try:
+            self.assertIsNone(slots.take(True, deadline=time.time() + 0.3))
+        finally:
+            slots.release_all(held)
+        slots.release_all(held)
+        rows = [json.loads(line) for line in Path(self.folder, 'leases.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([(r['event'], r.get('ended')) for r in rows], [('take', None), ('end', 'deadline'), ('end', 'released')],
+                         'a second release of the same lease writes nothing')
+        take, missed, end = rows
+        self.assertEqual(take['id'], end['id'])
+        self.assertNotEqual(take['id'], missed['id'])
+        self.assertEqual((take['pool'], take['pid'], take['label'], take['ask']['lanes'], take['got']['lanes']),
+                         ('lane', 7, 'job-x', 1, [0]))
+        self.assertEqual(missed['ask']['lanes'], 'all')
+        self.assertGreaterEqual(missed['wait']['lane'], 0.25)
+
     def test_nested_budget_serializes_runner_but_can_borrow_free_cases(self):
         import harness_tests as runner
         held = slots.take(False)

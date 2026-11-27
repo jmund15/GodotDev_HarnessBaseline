@@ -317,6 +317,36 @@ def test_the_doctrine_prints_once_per_context_and_the_gate_still_credits_every_t
     assert _doctrine_lines(_print(mr, monkeypatch, tmp_path, sid, "fanout"))
 
 
+def test_a_run_in_another_checkout_credits_that_checkouts_ladder_and_a_piped_one_earns_nothing(mr, tmp_path, monkeypatch):
+    """The session's project P and the checkout B the run reads hold differing ladders: a delivered run credits B's
+    text, never P's, and `_doctrine_in_context` reads the credit of the ladder the run cuts from."""
+    monkeypatch.syspath_prepend(str(HOOKS))
+    import model_ladder_gate
+    roots = {}
+    for name in ("P", "B"):
+        root = tmp_path / name
+        (root / ".claude" / "reference").mkdir(parents=True)
+        (root / mr.LADDER_RELPATH).write_text(
+            mr.ladder_path().read_text(encoding="utf-8") + "\n<!-- %s -->\n" % name, encoding="utf-8")
+        (root / mr.REGISTRY_RELPATH).write_text(mr.find_registry().read_text(encoding="utf-8"), encoding="utf-8")
+        roots[name] = root
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(roots["P"]))
+    monkeypatch.setenv(mr.ENV_OVERRIDE, str(roots["B"] / mr.REGISTRY_RELPATH))
+    cmd = "python3 .claude/tools/model_registry.py for-role executor --from anthropic"
+    piped = _print(mr, monkeypatch, tmp_path, "otherpip", "executor")
+    assert model_ladder_gate.mark_loaded({
+        "tool_name": "Bash", "session_id": "otherpip", "tool_input": {"command": cmd + " | head -3"},
+        "tool_response": {"stdout": "".join(piped.splitlines(True)[:3]), "exitCode": 0}}) is False
+    assert model_ladder_gate.ladder_credit("otherpip", root=roots["B"]).status == model_ladder_gate.NONE
+    text = _print(mr, monkeypatch, tmp_path, "otherrun", "executor")
+    assert model_ladder_gate.mark_loaded({
+        "tool_name": "Bash", "session_id": "otherrun", "tool_input": {"command": cmd},
+        "tool_response": {"stdout": text.rstrip("\n"), "exitCode": 0}}) is True
+    assert model_ladder_gate.ladder_credit("otherrun", root=roots["B"]).covers("executor")
+    assert model_ladder_gate.ladder_credit("otherrun", root=roots["P"]).status == model_ladder_gate.STALE
+    assert not _doctrine_lines(_print(mr, monkeypatch, tmp_path, "otherrun", "fanout"))
+
+
 def test_an_undelivered_print_leaves_the_next_one_whole(mr, tmp_path, monkeypatch):
     """The cut keys on credited delivery: a print that was piped earned no credit, so the doctrine is not in context."""
     monkeypatch.syspath_prepend(str(HOOKS))

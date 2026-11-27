@@ -141,7 +141,7 @@ def case_the_real_runner_key_covers_the_launch_world():
 def case_an_edit_the_launch_world_depends_on_changes_the_key():
     base = fingerprint()
     launcher = {name: insert_into(ATTEMPT_SOURCE, name, "_edited = 0") for name in
-                ("run_proof", "_run_child", "_runner_cmds", "_runner_cmd", "_pytest_cases", "_land_path",
+                ("run_proof", "_run_child", "_runner_cmds", "_runner_cmd", "_pytest_cases", "_proof_path",
                  "_core_root", "_nested_log", "_case_receipts", "_read_events", "_admitted_run")}
     launcher["a pattern the launcher reads"] = set_value(ATTEMPT_SOURCE, "_PLATFORM_SKIP_RE", "re.compile('x')")
     launcher["the environment it declares"] = set_value(
@@ -149,13 +149,20 @@ def case_an_edit_the_launch_world_depends_on_changes_the_key():
     for label, source in launcher.items():
         with patched(_ATTEMPT_SOURCE=write(source)):
             check("an edit to the child launcher's %s changes the key" % label, base is not None and fingerprint() != base)
-    helper = os.path.join(TMP, "helpers")
-    os.makedirs(helper, exist_ok=True)
-    with open(os.path.join(helper, "_bounded_run.py"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(open(os.path.join(_SCRIPTS_DIR, "..", "hooks", "_bounded_run.py"), encoding="utf-8").read()
-                 + "\n_EDITED = 1\n")
-    with patched(_LAUNCH_HELPER_ROOTS=(helper,)):
-        check("an edit to the helper the launcher imports changes the key", base is not None and fingerprint() != base)
+    helpers = ("_bounded_run.py", "_msys.py")
+    for edited in (None,) + helpers:
+        helper = os.path.join(TMP, "helpers_%s" % edited)
+        os.makedirs(helper, exist_ok=True)
+        for name in helpers:
+            with open(os.path.join(helper, name), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(open(os.path.join(_SCRIPTS_DIR, "..", "hooks", name), encoding="utf-8").read()
+                         + ("\n_EDITED = 1\n" if name == edited else ""))
+        with patched(_LAUNCH_HELPER_ROOTS=(helper,)):
+            if edited is None:
+                check("the launcher's helpers, copied unedited, keep the key", base is not None and fingerprint() == base)
+            else:
+                check("an edit to the helper the launcher imports (%s) changes the key" % edited,
+                      base is not None and fingerprint() != base)
     recorder = os.path.join(TMP, "recorder")
     shutil.copytree(harness_tests._RECORDER_DIR, recorder, ignore=shutil.ignore_patterns("__pycache__"),
                     dirs_exist_ok=True)

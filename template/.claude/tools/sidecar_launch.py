@@ -13,35 +13,22 @@ Every Python caller that dispatches a sidecar routes through here, so the shell 
 once instead of being rediscovered per caller.
 """
 import os
-import shutil
 import subprocess
+import sys
 
 from _supervised_launch import launch as supervised_launch
 
-# Git Bash, in install-order preference. `bin/bash.exe` is the wrapper Git intends callers to
-# use; `usr/bin/bash.exe` is the raw MSYS binary and is the fallback, not the default.
-_GIT_BASH_CANDIDATES = (
-    r"C:\Program Files\Git\bin\bash.exe",
-    r"C:\Program Files\Git\usr\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\bin\bash.exe",
-)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+import _msys  # noqa: E402
 
 
 def git_bash():
-    """Absolute path to a POSIX bash that shares the user's Windows HOME.
-
-    Never returns the System32 WSL shim. On a non-Windows host, `shutil.which` is authoritative
-    because the WSL collision cannot occur there.
-    """
+    """A POSIX bash that shares the user's Windows HOME: `SIDECAR_BASH` when set, else `_msys.bash()`, which
+    never returns the System32 WSL shim. Raises when neither names one, since a launch must not fall back to it."""
     if os.environ.get("SIDECAR_BASH"):
         return os.environ["SIDECAR_BASH"]
-    if os.name != "nt":
-        return shutil.which("bash") or "bash"
-    for candidate in _GIT_BASH_CANDIDATES:
-        if os.path.isfile(candidate):
-            return candidate
-    found = shutil.which("bash")
-    if found and "system32" not in found.lower():
+    found = _msys.bash()
+    if found:
         return found
     raise RuntimeError(
         "no Git Bash found and the only `bash` on PATH is the WSL shim, which does not share "

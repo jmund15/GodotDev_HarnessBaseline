@@ -301,8 +301,9 @@ def main():
         cases.append(("a Read of the path the denial names arms the gate",
                       gate.mark_loaded(abs_payload) and gate.ladder_credit(abs_sid).full))
         stale_payload = dict(wt_payload, session_id="ladderst", tool_input={"file_path": str(wt_ladder)})
-        cases.append(("a Read of the worktree's stale copy cannot arm",
-                      not gate.mark_loaded(stale_payload)))
+        cases.append(("a Read of another checkout's differing copy credits that copy and not the project's ladder",
+                      gate.mark_loaded(stale_payload) and gate.ladder_credit("ladderst", root=worktree).full
+                      and gate.ladder_credit("ladderst", root=project).status == gate.STALE))
 
         _bash_credit_cases(cases, gate, hook_state, project)
 
@@ -336,9 +337,18 @@ def test_unread_ladder_is_unmet_on_every_dispatch_until_a_compaction_clears_it(t
     assert 'SKILL.md' in reason and 'no offset or limit' in reason, reason
 
 
+def _plant_ladder(root):
+    """The real ladder under `root`: a load is credited for the text it delivered, so a judged root needs one."""
+    path = Path(root) / '.claude' / 'reference' / 'model_ladder_evidence.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text((HERE.parent / 'reference' / 'model_ladder_evidence.md').read_text(encoding='utf-8'),
+                    encoding='utf-8')
+
+
 def test_bounded_full_read_meets_the_ladder_precondition(tmp_path, monkeypatch):
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    _plant_ladder(tmp_path)
     gate = load('model_ladder_gate')
     hooks_state = load('_hook_state')
     # Coverage fields captured from ffd4976e's successful full ladder Read.
@@ -354,6 +364,7 @@ def test_bounded_full_read_meets_the_ladder_precondition(tmp_path, monkeypatch):
 def test_partial_or_failed_bounded_read_leaves_the_ladder_unmet(tmp_path, monkeypatch):
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    _plant_ladder(tmp_path)
     gate = load('model_ladder_gate')
     payload = {'session_id': 'partial1', 'tool_name': 'Read', 'tool_input': {
         'file_path': gate.expected_path({}), 'limit': 20}, 'tool_response': {
@@ -380,6 +391,7 @@ SLICE_CMD = 'python3 .claude/tools/model_registry.py for-role'
 def _sliced_session(tmp_path, monkeypatch, sid, covered, skill=True):
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    _plant_ladder(tmp_path)
     gate = load('model_ladder_gate')
     hooks_state = load('_hook_state')
     if skill:
@@ -717,7 +729,7 @@ def test_a_ladder_credit_read_with_a_root_checks_that_root_not_the_cwd(tmp_path,
     assert gate.ladder_credit(sid, root=tmp_path).covers('architect')
 
 
-def test_a_slice_of_the_new_ladder_replaces_the_tiers_held_from_the_old_one(tmp_path, monkeypatch):
+def test_a_slice_of_the_new_ladder_credits_only_its_own_tiers(tmp_path, monkeypatch):
     _, ladder = _project_with(tmp_path, monkeypatch, '# orchestration\n', '# ladder\nold rows\n')
     gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
     sid = 'warmsl02'
@@ -725,7 +737,119 @@ def test_a_slice_of_the_new_ladder_replaces_the_tiers_held_from_the_old_one(tmp_
     assert hooks_state.mark_ladder_slice(sid, ['architect'], digest=gate.ladder_digest(here))
     ladder.write_text('# ladder\nnew rows\n', encoding='utf-8')
     assert hooks_state.mark_ladder_slice(sid, ['fanout'], digest=gate.ladder_digest(here))
-    assert hooks_state.ladder_slice_tiers(sid) == ['fanout']
+    credit = gate.ladder_credit(sid)
+    assert credit.status == gate.CURRENT and credit.tiers == frozenset({'fanout'}), credit
+
+
+def _two_checkouts(tmp_path, monkeypatch):
+    """The session's project P and another checkout B of the same base, each holding the orchestration skill and
+    the ladder at text that differs from the other's. Returns (P, B) with CLAUDE_PROJECT_DIR at P."""
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.delenv('CLAUDE_CODE_SIDECAR', raising=False)
+    roots = []
+    for name in ('P', 'B'):
+        root = tmp_path / name
+        for path, text in ((_skill_path(root), '# orchestration\n%s text\n' % name),
+                           (_ladder_path(root), '# ladder\n%s rows\n' % name)):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        roots.append(root)
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(roots[0]))
+    return roots
+
+
+def _full_read(sid, path, lines=2):
+    return {'tool_name': 'Read', 'session_id': sid, 'tool_input': {'file_path': str(path)},
+            'tool_response': {'file': {'startLine': 1, 'numLines': lines, 'totalLines': lines}}}
+
+
+def _skill_path(root):
+    return root / '.claude' / 'skills' / 'orchestration' / 'SKILL.md'
+
+
+def _ladder_path(root):
+    return root / '.claude' / 'reference' / 'model_ladder_evidence.md'
+
+
+def test_a_read_of_another_checkouts_skill_credits_that_checkout_and_not_the_projects_copy(tmp_path, monkeypatch):
+    p, b = _two_checkouts(tmp_path, monkeypatch)
+    hooks_state, marker = load('_hook_state'), load('skill_load_marker')
+    marker.process(_full_read('xskill01', _skill_path(b)))
+    assert hooks_state.skill_in_context('xskill01', 'orchestration', root=str(b)) is True
+    assert hooks_state.skill_in_context('xskill01', 'orchestration', root=str(p)) is False
+
+
+def test_a_read_of_another_checkouts_ladder_credits_that_checkouts_text(tmp_path, monkeypatch):
+    p, b = _two_checkouts(tmp_path, monkeypatch)
+    gate = load('model_ladder_gate')
+    assert gate.mark_loaded(_full_read('xladd01', _ladder_path(b))) is True
+    assert gate.ladder_credit('xladd01', root=b).full is True
+    assert gate.ladder_credit('xladd01', root=p).status == gate.STALE
+
+
+def test_loads_in_both_checkouts_leave_the_session_current_for_each(tmp_path, monkeypatch):
+    p, b = _two_checkouts(tmp_path, monkeypatch)
+    gate, hooks_state, marker = load('model_ladder_gate'), load('_hook_state'), load('skill_load_marker')
+    sid = 'xboth001'
+    marker.process({'tool_name': 'Skill', 'session_id': sid, 'tool_input': {'skill': 'orchestration'}})
+    marker.process(_full_read(sid, _skill_path(b)))
+    assert hooks_state.mark_ladder_slice(sid, ['executor'], digest=gate.ladder_digest({'cwd': str(p)}))
+    assert gate.mark_loaded(_full_read(sid, _ladder_path(b))) is True
+    for root in (p, b):
+        assert hooks_state.skill_in_context(sid, 'orchestration', root=str(root)) is True, root
+        monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(root))
+        assert gate.doctrine_check({'session_id': sid}, tiers=lambda: ['executor']) == (None, None), root
+    assert gate.ladder_credit(sid, root=p).full is False and gate.ladder_credit(sid, root=b).full is True
+
+
+def test_a_load_only_in_the_project_stays_stale_against_the_other_checkouts_differing_text(tmp_path, monkeypatch):
+    p, b = _two_checkouts(tmp_path, monkeypatch)
+    gate, hooks_state, marker = load('model_ladder_gate'), load('_hook_state'), load('skill_load_marker')
+    sid = 'xonly001'
+    marker.process({'tool_name': 'Skill', 'session_id': sid, 'tool_input': {'skill': 'orchestration'}})
+    assert gate.mark_loaded(_full_read(sid, _ladder_path(p))) is True
+    assert gate.doctrine_check({'session_id': sid}, tiers=lambda: ['executor']) == (None, None)
+    assert gate.ladder_credit(sid, root=b).status == gate.STALE
+    assert hooks_state.skill_in_context(sid, 'orchestration', root=str(b)) is False
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(b))
+    reason, _ = gate.doctrine_check({'session_id': sid}, tiers=lambda: ['executor'], embed_slice=False)
+    assert reason and gate.STALE_CAUSE in reason and os.path.realpath(_skill_path(b)) in reason, reason
+
+
+def test_a_single_slot_record_still_reads_beside_a_new_keyed_load(tmp_path, monkeypatch):
+    p, b = _two_checkouts(tmp_path, monkeypatch)
+    gate, hooks_state, marker = load('model_ladder_gate'), load('_hook_state'), load('skill_load_marker')
+    sid = 'xlegacy1'
+    old_skill = load('_compaction_record').skill_file_digest('orchestration', str(p))
+    hooks_state.update_json_locked(hooks_state.state_path(sid), lambda state: state.update({
+        'model_ladder_ready': True, 'ladder_slice_tiers': ['executor'],
+        'ladder_digest': gate.ladder_digest({'cwd': str(p)}),
+        'fired_since_compaction': {'skill_in_context:orchestration': old_skill}}))
+    assert gate.ladder_credit(sid, root=p).full is True and gate.ladder_credit(sid, root=b).status == gate.STALE
+    assert hooks_state.skill_in_context(sid, 'orchestration', root=str(p)) is True
+    assert gate.mark_loaded(_full_read(sid, _ladder_path(b))) is True
+    marker.process(_full_read(sid, _skill_path(b)))
+    for root in (p, b):
+        assert gate.ladder_credit(sid, root=root).full is True, root
+        assert hooks_state.skill_in_context(sid, 'orchestration', root=str(root)) is True, root
+
+
+def test_a_deny_credits_the_ladder_it_embedded(tmp_path, monkeypatch):
+    p, b = _two_checkouts(tmp_path, monkeypatch)
+    registry = _planted_capacity(tmp_path, monkeypatch)
+    real_ladder, real_registry = registry.ladder_path(), registry.find_registry()
+    for root in (p, b):
+        _ladder_path(root).write_text(real_ladder.read_text(encoding='utf-8') + '\n<!-- %s -->\n' % root.name,
+                                      encoding='utf-8')
+    planted = b / '.claude' / 'reference' / 'external_models.json'
+    planted.write_text(real_registry.read_text(encoding='utf-8'), encoding='utf-8')
+    monkeypatch.setenv('HARNESS_MODEL_REGISTRY', str(planted))
+    gate, hooks_state = load('model_ladder_gate'), load('_hook_state')
+    hooks_state.mark_skill_in_context('xembed01', 'orchestration')
+    reason, _ = gate.doctrine_check({'session_id': 'xembed01'}, tiers=lambda: ['executor'], embed_slice=True)
+    assert reason and '## Role definitions' in reason, reason[-300:]
+    assert gate.ladder_credit('xembed01', root=b).covers('executor') is True
+    assert gate.ladder_credit('xembed01', root=p).status == gate.STALE
 
 
 def _notice_session(tmp_path, monkeypatch, sid, skill, ladder, digest=None):

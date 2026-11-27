@@ -1,0 +1,8 @@
+# source: .claude/scratch/main_check/<run>/close_parallel.log and close_serial.log of the self-hosted main check's
+# run 45888270385-1 (`pytest -q`), captured live; the failure lines and each pass's last line only, verbatim. A quiet
+# run ends on a bare summary with no `=` decoration.
+FAILED .claude/tests/test_watch_records.py::proof - test_watch_records.py: fail
+TIMEOUT after 120s
+FAILED .claude/tests/test_twin_checkout.py::proof - test_twin_checkout.py: fail
+TIMEOUT after 120s
+29 failed, 2673 passed, 59 skipped in 1338.64s (0:22:18)

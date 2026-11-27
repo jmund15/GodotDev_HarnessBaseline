@@ -76,16 +76,62 @@ def _git_text(repo: Path, args: list[str]) -> str:
     return _lf(_git(repo, args).stdout).decode("utf-8", errors="replace").strip()
 
 
-def _git_show(repo: Path, commit: str, relpath: str) -> bytes | None:
-    result = _git(repo, ["show", f"{commit}:{relpath}"], check=False)
+def _git_shows(repo: Path, commit: str, relpaths) -> dict[str, bytes | None]:
+    """The LF bytes of each relpath at `commit`, None where it holds none, from one `git cat-file --batch`
+    run, never a `git show` per row: a publication reads every row in several steps."""
+    relpaths = list(dict.fromkeys(relpaths))
+    try:
+        blobs = sync._cat_file_many(repo, [f"{commit}:{relpath}" for relpath in relpaths])
+    except sync.BaselineError as exc:
+        raise PublishError(str(exc)) from exc
+    return {relpath: _lf(blob) if blob is not None else None
+            for relpath, blob in zip(relpaths, blobs or [None] * len(relpaths))}
+
+
+_FOUND_OBJECT = re.compile(r"[0-9a-f]{40,64} [a-z]+ \d+")  # `--batch-check`'s line for an object it holds
+
+
+def _git_present(repo: Path, specs: list[str]) -> set[str]:
+    """The object specs `repo` holds, from one `git cat-file --batch-check` run (what `cat-file -e` asks of one)."""
+    specs = list(dict.fromkeys(specs))
+    if not specs:
+        return set()
+    result = _git_input(repo, ["cat-file", "--batch-check"], "".join(spec + "\n" for spec in specs))
     if result.returncode != 0:
-        return None
-    return _lf(result.stdout)
+        return set()  # no repository to read: as `cat-file -e` failing on each spec
+    lines = _lf(result.stdout).decode("utf-8", errors="replace").splitlines()
+    return {spec for spec, line in zip(specs, lines) if _FOUND_OBJECT.fullmatch(line)}
 
 
-def _git_mode(repo: Path, commit: str, relpath: str) -> str | None:
-    result = _git(repo, ["ls-tree", "-z", commit, "--", relpath], check=False)
-    return baseline_identity.file_modes(result.stdout).get(relpath) if result.returncode == 0 else None
+def _git_input(repo: Path, args: list[str], text: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(["git", "-C", str(repo), "-c", "core.longpaths=true", *args], input=text.encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        raise PublishError(f"git {' '.join(args)} failed: {exc}") from exc
+
+
+def _git_modes(repo: Path, commit: str, relpaths: list[str]) -> dict[str, str]:
+    """Each relpath's tree mode at `commit`, from one `git ls-tree` per command-line-sized chunk."""
+    modes: dict[str, str] = {}
+    for chunk in _argv_chunks(list(dict.fromkeys(relpaths))):
+        result = _git(repo, ["ls-tree", "-z", commit, "--", *chunk], check=False)
+        if result.returncode == 0:
+            modes.update(baseline_identity.file_modes(result.stdout))
+    return modes
+
+
+def _argv_chunks(paths: list[str], budget: int = 24000):
+    """`paths` in runs whose joined length stays under `budget`: a Windows command line stops at 32,767 characters."""
+    chunk, size = [], 0
+    for path in paths:
+        if chunk and size + len(path) + 1 > budget:
+            yield chunk
+            chunk, size = [], 0
+        chunk.append(path)
+        size += len(path) + 1
+    if chunk:
+        yield chunk
 
 
 def _write_lf(path: Path, data: bytes | str) -> None:
@@ -193,6 +239,7 @@ def _validate_rows(root: Path, source: dict, rows: list[str], lock: dict) -> lis
     if len(set(rows)) != len(rows):
         raise PublishError("rows must be unique")
     collected = []
+    shown = _git_shows(Path(source["repo"]), source["commit"], rows)
     for relpath in rows:
         entry = lock.get("files", {}).get(relpath)
         if entry is None:
@@ -200,7 +247,7 @@ def _validate_rows(root: Path, source: dict, rows: list[str], lock: dict) -> lis
         judged = entry.get("judged") or {}
         if judged.get("verdict") != "push":
             raise PublishError(f"row is not judged push: {relpath}")
-        content = _git_show(Path(source["repo"]), source["commit"], relpath)
+        content = shown[relpath]
         if content is None:
             deleted = _git_text(Path(source["repo"]), ["log", "-1", "--diff-filter=D", "--format=%H",
                                                        source["commit"], "--", relpath])
@@ -311,18 +358,20 @@ def _proofs_left_behind(root: Path, lock: dict, source: dict, records: list[dict
         return []
     subs = lock.get("substitutions", {})
     files = lock.get("files", {})
-    left: list[str] = []
+    upstream: dict[str, str] = {}
     for path in sync._harness_tests().select_for(str(root), sorted(shipped)):
         rel = Path(os.path.relpath(path, root)).as_posix()
         if rel in shipped or (files.get(rel) or {}).get("status", "tracked") != "tracked":
             continue
-        upstream = sync.upstream_text(reader, rel, subs)
-        if upstream is None:
-            continue
-        shown = _git(Path(source["repo"]), ["show", f"{source['commit']}:{rel}"], check=False)
-        if shown.returncode == 0 and sync.row_text(rel, shown.stdout) != upstream:
-            left.append(rel)
-    return left
+        text = sync.upstream_text(reader, rel, subs)
+        if text is not None:
+            upstream[rel] = text
+    try:
+        blobs = sync._cat_file_many(Path(source["repo"]), [f"{source['commit']}:{rel}" for rel in upstream])
+    except sync.BaselineError as exc:
+        raise PublishError(str(exc)) from exc
+    return [rel for rel, blob in zip(upstream, blobs or [None] * len(upstream))
+            if blob is not None and sync.row_text(rel, blob) != upstream[rel]]
 
 
 def _read_check_states(root: Path, lock: dict, source: dict, records: list[dict], baseline_cache: Path,
@@ -421,10 +470,9 @@ def _source_layers(source: dict) -> dict[str, str]:
     gen_manifest. A commit source has none."""
     if source.get("kind") != "worktree":
         return {}
-    repo, commit = Path(source["repo"]), source["commit"]
-    manifest = _git_show(repo, commit, "baseline.manifest.json")
+    shown = _git_shows(Path(source["repo"]), source["commit"], ["baseline.manifest.json", "/".join(LAYER_ENTRIES)])
+    manifest, entries = shown["baseline.manifest.json"], shown["/".join(LAYER_ENTRIES)]
     layers = {entry["path"]: entry.get("layer") for entry in json.loads(manifest).get("files", [])} if manifest else {}
-    entries = _git_show(repo, commit, "/".join(LAYER_ENTRIES))
     layers.update(json.loads(entries).get("entries") or {} if entries else {})
     return layers
 
@@ -438,13 +486,12 @@ def _new_row_layers(records: list[dict], lock: dict, cache: Path, baseline_sha: 
     unclassified file."""
     layers, missing = {}, []
     pinned = _pinned_manifest_layers(cache, baseline_sha)
-    for record in records:
-        if record.get("kind") != "lock" or record["op"] == "D":
-            continue
+    rows = [record for record in records if record.get("kind") == "lock" and record["op"] != "D"]
+    present = _git_present(cache, [f"{baseline_sha}:{record['dest_path']}" for record in rows])
+    for record in rows:
         layer = (source_layers or {}).get(record["relpath"]) \
             or (lock.get("files", {}).get(record["relpath"]) or {}).get("layer")
-        exists = _git(cache, ["cat-file", "-e", f"{baseline_sha}:{record['dest_path']}"], check=False)
-        if exists.returncode == 0:
+        if f"{baseline_sha}:{record['dest_path']}" in present:
             template_rel = record["dest_path"][len("template/"):]
             if layer in MANIFEST_LAYERS and pinned.get(template_rel) not in (None, layer):
                 layers[template_rel] = layer
@@ -493,25 +540,33 @@ def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
         sync.add_worktree(cache, [str(worktree), branch])
     else:
         sync.add_worktree(cache, ["-b", branch, str(worktree), baseline_sha])
+    repo, commit = Path(source["repo"]), source["commit"]
+    shipped = [record["source_path"] for record in records if record["op"] != "D"]
+    contents = _git_shows(repo, commit, shipped)
+    modes = _git_modes(repo, commit, shipped)
+    removed, staged = [], {"100755": [], "100644": []}
     for record in records:
-        content = None
-        if record["op"] != "D":
-            content = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
+        content = contents[record["source_path"]] if record["op"] != "D" else None
         destination = worktree / record["dest_path"]
         if content is None:
             if destination.exists():
-                _git(worktree, ["rm", "-q", "--", record["dest_path"]])
+                removed.append(record["dest_path"])
             continue
         _write_lf(destination, content)
-        mode = _git_mode(Path(source["repo"]), source["commit"], record["source_path"])
-        if mode in ("100755", "100644"):
-            executable = mode == "100755"
+        mode = modes.get(record["source_path"])
+        if mode in staged:
             if os.name == "posix":
-                os.chmod(destination, 0o755 if executable else 0o644)
-            _git(worktree, ["add", "-f", "--", record["dest_path"]])
-            _git(worktree, ["update-index", "--chmod=+x" if executable else "--chmod=-x", "--", record["dest_path"]])
+                os.chmod(destination, 0o755 if mode == "100755" else 0o644)
+            staged[mode].append(record["dest_path"])
+    for chunk in _argv_chunks(removed):
+        _git(worktree, ["rm", "-q", "--", *chunk])
+    for mode, paths in staged.items():
+        for chunk in _argv_chunks(paths):
+            _git(worktree, ["add", "-f", "--", *chunk])
+            _git(worktree, ["update-index", "--chmod=+x" if mode == "100755" else "--chmod=-x", "--", *chunk])
     _record_layers_and_regenerate_manifest(worktree, layers)
-    return _git_text(worktree, ["rev-parse", "HEAD"])
+    # A new branch starts at the pin and nothing above commits: its HEAD is the pin.
+    return baseline_sha if not branch_exists else _git_text(worktree, ["rev-parse", "HEAD"])
 
 
 # ---------------------------------------------------------------------------
@@ -751,23 +806,29 @@ def _gh_reads_only(args: list[str]) -> bool:
     return tuple(args[:2]) in _GH_READ_ONLY
 
 
+def _gh_run(cmd: list[str], cwd: Path, use_shell: bool) -> subprocess.CompletedProcess[bytes]:
+    """One `gh` invocation as the process runs it. The one seam a proof replaces to answer a poll from
+    planted state without an interpreter start; every retry, timeout and argv decision stays in `_gh`."""
+    if use_shell:
+        return subprocess.run(
+            subprocess.list2cmdline(cmd), cwd=str(cwd), shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            timeout=sync.NETWORK_CALL_TIMEOUT_S,
+        )
+    return subprocess.run(
+        cmd, cwd=str(cwd),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        timeout=sync.NETWORK_CALL_TIMEOUT_S,
+    )
+
+
 def _gh(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[bytes]:
     exe = _resolve_gh()
     cmd = [exe, *args]
     use_shell = os.name == "nt" and exe.lower().endswith((".cmd", ".bat"))
 
     def _once() -> subprocess.CompletedProcess[bytes]:
-        if use_shell:
-            return subprocess.run(
-                subprocess.list2cmdline(cmd), cwd=str(cwd), shell=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                timeout=sync.NETWORK_CALL_TIMEOUT_S,
-            )
-        return subprocess.run(
-            cmd, cwd=str(cwd),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            timeout=sync.NETWORK_CALL_TIMEOUT_S,
-        )
+        return _gh_run(cmd, cwd, use_shell)
 
     try:
         result = sync.run_with_network_retry(
@@ -896,7 +957,8 @@ def _write_pr_body(path: Path, journal_id: str, source: dict, rows: list[str],
 
 
 def _pinned_has_ci_workflow(baseline_cache: Path, pinned_sha: str) -> bool:
-    return _git_show(baseline_cache, pinned_sha, ".github/workflows/baseline.yml") is not None
+    workflow = ".github/workflows/baseline.yml"
+    return _git_shows(baseline_cache, pinned_sha, [workflow])[workflow] is not None
 
 
 # GitHub registers a pull request's workflow run a few seconds after `pr create`; until then
@@ -1115,6 +1177,9 @@ def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_
     substitutions = lock.get("substitutions", {})
     updated = 0
     taken: set[str] = set()
+    merged = _git_shows(baseline_repo, baseline_sha_after, [
+        "template/" + record["relpath"] for record in records
+        if record["kind"] == "lock" and record["op"] != "D" and record["relpath"] in lock.get("files", {})])
     for record in records:
         if record["kind"] != "lock":
             continue  # root files carry no lock row
@@ -1140,7 +1205,7 @@ def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_
         entry = lock.get("files", {}).get(relpath)
         if entry is None:
             continue  # new upstream file — the consumer's own `pull` creates its row (§5)
-        content = _git_show(baseline_repo, baseline_sha_after, "template/" + relpath)
+        content = merged["template/" + relpath]
         if content is None:
             raise PublishError(f"merged baseline is missing: {relpath}")
         merged_text = sync.rendered_upstream(relpath, content, substitutions)
@@ -1168,9 +1233,14 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
     # commit is new local work for `triage`, not a failed publication.
     from_worktree = source["kind"] == "worktree"
     needs_pull: list[str] = []
+
+    def merged_path(record: dict) -> str:
+        return record["source_path"] if record["kind"] == "root" else "template/" + record["relpath"]
+    merged = _git_shows(baseline_repo, baseline_sha_after, [merged_path(record) for record in records])
+    sources = _git_shows(Path(source["repo"]), source["commit"], [
+        record["source_path"] for record in records if record["kind"] != "root" and record["op"] != "D"])
     for record in records:
-        merged_path = record["source_path"] if record["kind"] == "root" else "template/" + record["relpath"]
-        content = _git_show(baseline_repo, baseline_sha_after, merged_path)
+        content = merged[merged_path(record)]
         if record["op"] == "D":
             if content is not None:
                 raise PublishError(f"check failed (still present after deletion): {record['relpath']}")
@@ -1180,7 +1250,7 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
         if record["kind"] == "root":
             continue  # no local counterpart to compare against in a consumer checkout
         if from_worktree:
-            source_content = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
+            source_content = sources[record["source_path"]]
             if source_content is None:
                 raise PublishError(f"check missing source row: {record['relpath']}")
             expected_merged = sync.rendered_for_upstream(
@@ -1195,7 +1265,7 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
         if record["relpath"] not in lock.get("files", {}):
             continue  # new upstream row — no local counterpart until the consumer's own `pull` (§5)
         expected = sync.rendered_upstream(record["relpath"], content, lock.get("substitutions", {}))
-        published = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
+        published = sources[record["source_path"]]
         published_text = sync.row_text(record["relpath"], published) if published is not None else None
         if published_text is None or (
                 sync.content_sha(record["relpath"], published_text.encode("utf-8"))
@@ -1357,7 +1427,11 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
                        open_only: bool = False) -> None:
     # One profile for both the published diff and the commit message: the same identity facts
     # govern what a consumer pulls and what its history records.
-    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_cache))
+    reader = sync.BaselineSource(baseline_cache, baseline_before, sync._BatchReader(baseline_cache, baseline_before))
+    try:
+        profile = baseline_identity.build_profile_for_repo(root, source=reader)
+    finally:
+        reader.close()
     if start <= 2:
         materialized_head = _step(journal, journal_path, 2, lambda: _materialize(
             root, source, records, lock, baseline_cache, baseline_before, worktree, branch

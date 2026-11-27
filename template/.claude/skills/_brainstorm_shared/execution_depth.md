@@ -75,9 +75,9 @@ The last `Triage:` line counts. Declare local, shared or external reach; standin
 A command that sizes work reads the recorded fields and collects only the facts the record lacks.
 
 A session triage reaches a commit's `Triage:` trailer only when the commit message writes it: `hooks/triage_commit_check.py` would append it but is unwired, and no commit check prints anything. The candidate review re-derives the path-derivable fields of the commits it covers (`triage.py rederive`) and flags any
-recorded value below the derived one, and runs
-`task_record.py check <task_id>`, which re-resolves each recorded condition and flags one that is unresolved or that
-a delegate recorded.
+recorded value below the derived one. Read the condition rows from `task_record.py check <task_id>` and flag any
+condition that fails to resolve or that a delegate recorded. Interpret decision rows under
+[Task decisions](../../reference/evidence_contract.md#task-decisions).
 
 ## Admission
 

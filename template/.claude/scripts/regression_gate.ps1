@@ -1152,6 +1152,162 @@ function Get-TestWorkInProgress {
     return @{ readable = ($LASTEXITCODE -eq 0); paths = $paths }
 }
 
+# The baseline ratchet's one decision: are a green run's WARN/PARTIAL count drops explained by committed test
+# deletions, and what does the baseline become? It reads the world only through the two scriptblocks the gate
+# injects - $ReadGit (one captured `git -C <repo>` call) and $ReadTestWip (the write-time test-WIP read) - so a
+# proof plants every fact and starts no git, gate or suite. It never writes, prints or completes the gate:
+# WriteText is the exact text to write, Emit the lines to print, and Action/Verdict/Code the values the gate
+# threads into its record and Complete-Gate (Verdict $null lets the gate finish PASS; Action $null leaves
+# $script:BaselineAction as it was).
+function Invoke-BaselineRatchet {
+    param(
+        [Parameter(Mandatory)] $SuiteResults,                 # key -> @{ r = suite result; t = tier }
+        [Parameter(Mandatory)] $Baseline,                     # the parsed Tests/regression_baseline.json
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $BaselineRaw,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $RawStamp,   # Baseline.updated_on_commit
+        [Parameter(Mandatory)] $TestWip,                      # Get-TestWorkInProgress at drop evaluation
+        [Parameter(Mandatory)] [scriptblock] $ReadTestWip,    # -> @{ readable; paths }, read at the write gate
+        [Parameter(Mandatory)] [scriptblock] $ReadGit,        # one git argument list -> @{ Ok; Text; Lines }
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $IntComplete,
+        $EngineProfile,
+        [bool] $Reestablish,
+        [switch] $NoBaselineUpdate,
+        [bool] $Recompiled
+    )
+    $detail = [System.Collections.Generic.List[string]]::new()
+    $emits  = [System.Collections.Generic.List[string]]::new()
+    $lowerings = [ordered]@{}
+    $action = $null
+    function New-RatchetResult {
+        param($Action, $Verdict, $Code, $WriteText)
+        [pscustomobject]@{ Action = $Action; Verdict = $Verdict; Code = $Code
+                           Detail = @($detail); Emit = @($emits); WriteText = $WriteText }
+    }
+
+    $tiers = @($SuiteResults.Keys | ForEach-Object { $SuiteResults[$_].t.tier })
+    # PARTIAL is the same clean drop, only smaller than the WARN band: committed deletions explain it the same way.
+    if ($tiers -contains 'WARN' -or $tiers -contains 'PARTIAL') {
+        if ($TestWip.paths.Count -gt 0) {
+            $action = 'skipped:uncommitted-test-changes'
+            $emits.Add('BASELINE action=skipped reason=uncommitted-test-changes')
+        } elseif ($TestWip.readable) {
+            $baseRead = if ($RawStamp) { & $ReadGit @('rev-parse', '--verify', '--quiet', "$RawStamp^{commit}") }
+                        else { @{ Ok = $false; Text = $null; Lines = @() } }
+            $deletionBase = [string]$baseRead.Text
+            $deletionBaseReadable = ($RawStamp -and $baseRead.Ok -and "$deletionBase" -match '^[0-9a-f]{40}(?:[0-9a-f]{24})?$')
+            foreach ($k in $SuiteResults.Keys) {
+                $sr = $SuiteResults[$k]
+                if ($sr.t.tier -notin @('WARN', 'PARTIAL') -or $sr.r.failed -ne 0) { continue }
+                if ($k -eq 'Integration' -and $IntComplete -ne 'OK') { continue }
+                $drop = [int]$Baseline.suites.$k.passed - $sr.r.passed
+                if (-not $deletionBaseReadable) {
+                    $detail.Add("Count drop remains unexplained for ${k}: unreadable-baseline-commit ($RawStamp).")
+                    continue
+                }
+                $diffRead = & $ReadGit @('diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=2147483647', "${deletionBase}..HEAD", '--', ":(glob)Tests/$k/**/*.cs")
+                if (-not $diffRead.Ok) {
+                    $detail.Add("Count drop remains unexplained for ${k}: unreadable-test-diff.")
+                    continue
+                }
+                $delta = Get-TestAttributeDelta -Patch @($diffRead.Lines)
+                $detail.Add("Count-drop evidence for ${k}: drop=$drop deleted=$($delta.removed) added=$($delta.added)$(if (-not $delta.readable) { " reason=$($delta.reason)" }).")
+                if ($delta.readable -and $drop -le ($delta.removed - $delta.added)) {
+                    $lowerings[$k] = @{ drop = $drop; removed = $delta.removed; added = $delta.added }
+                    $sr.t = @{ tier = 'PASS'; note = 'moderate drop explained by committed test deletions' }
+                }
+            }
+            $tiers = @($SuiteResults.Keys | ForEach-Object { $SuiteResults[$_].t.tier })
+        }
+    }
+    if ($tiers -contains 'WARN' -or $tiers -contains 'PARTIAL') {
+        $detail.Add('The count drop remains unexplained or its deletion evidence is unavailable. The baseline was NOT written; commands/regression_gate.md (WARN row) says when the session asks the user.')
+        return (New-RatchetResult $action 'WARN' 3 $null)
+    }
+    # Unreachable while the tiers hold (a Sanity without execution evidence tiers INVALID, UNPARSED, INCOMPLETE, LOCKED or
+    # HANG), and fatal if they ever stop holding: a gate whose pool never ran must not reach the ratchet.
+    if (-not $Recompiled) { return (New-RatchetResult $null 'INVALID' 2 $null) }
+
+    $deltas = @()
+    foreach ($k in @('Logic', 'Integration', 'Sanity')) {
+        if (-not $SuiteResults.Contains($k)) { continue }   # deferred in smoke tier
+        $d = $SuiteResults[$k].r.passed - [int]$Baseline.suites.$k.passed
+        if ($d -gt 0) { $deltas += "$k+$d" }
+    }
+    # Reaching here means every tier cleared and no suite reported a failure, so an
+    # UNTRUSTED stamp is re-established rather than skipped: the counts about to be
+    # written were just observed green, which is the only thing the stamp asserts.
+    # Skipping instead deadlocks — this block is the sole writer of
+    # updated_on_commit, so gating it on the stamp already being valid means no run
+    # can ever repair one.
+    # Polluted-tree guard: the ratchet writes whatever the shared tree measured, so a peer's
+    # UNCOMMITTED test changes would be baked into a floor the committing session does not own.
+    # The gate's own writes are excluded (baseline + durations manifest are this run's own).
+    # Skipping leaves the floor where it is (safe — the green verdict stands); the next
+    # clean-tree green run ratchets. The UNTRUSTED-stamp reestablish is equally gated — the
+    # observed counts cannot be attributed on a polluted tree, and a clean-tree run repairs it.
+    $ratchetWip = & $ReadTestWip
+    if ($lowerings.Count -gt 0 -and (-not $ratchetWip.readable -or $ratchetWip.paths.Count -gt 0)) {
+        $reason = if ($ratchetWip.readable) { 'uncommitted-test-changes' } else { 'unreadable-test-status' }
+        $emits.Add("BASELINE action=skipped reason=$reason")
+        $detail.Add('Deletion evidence no longer belongs to a clean test tree. The baseline was NOT written; commands/regression_gate.md (WARN row) applies.')
+        return (New-RatchetResult "skipped:$reason" 'WARN' 3 $null)
+    }
+    $engineRaw = $BaselineRaw
+    if ($EngineProfile -and $EngineProfile.Total -gt 0) {   # no ERROR line at all means no logs were read, not a clean engine
+        try { $engineRaw = Set-EngineErrorsText -Raw $BaselineRaw -Profile $EngineProfile -Previous (Get-Prop $Baseline 'engine_errors' $null) }
+        catch { $detail.Add("engine_errors baseline not updated: $($_.Exception.Message)") }
+    }
+    $engineChanged = ($engineRaw -ne $BaselineRaw)
+    if ($NoBaselineUpdate) {
+        $emits.Add('BASELINE action=skipped reason=flag')
+        return (New-RatchetResult 'skipped:flag' $null $null $null)
+    } elseif (-not $ratchetWip.readable) {
+        $emits.Add('BASELINE action=skipped reason=unreadable-test-status')
+        return (New-RatchetResult 'skipped:unreadable-test-status' $null $null $null)
+    } elseif ($ratchetWip.paths.Count -gt 0) {
+        $detail.Add("The tree carries uncommitted test changes ($($ratchetWip.paths.Count) file(s)) which may be a peer's — the baseline stays at its floor. The next clean-tree green run ratchets/re-establishes.")
+        $emits.Add('BASELINE action=skipped reason=uncommitted-test-changes')
+        return (New-RatchetResult 'skipped:uncommitted-test-changes' $null $null $null)
+    } elseif ($deltas.Count -eq 0 -and $lowerings.Count -eq 0 -and -not $Reestablish -and -not $engineChanged) {
+        $emits.Add('BASELINE action=unchanged')
+        return (New-RatchetResult 'unchanged' $null $null $null)
+    }
+    # Targeted surgery, not a JSON round-trip: the tracked file carries
+    # pre-existing mojibake in its description/notes strings, and
+    # ConvertTo-Json would re-encode those into a spurious diff.
+    $new  = $engineRaw
+    # Full sha, never --short: the abbreviation length is not stable across the
+    # repo's lifetime, and this value is compared against a commit id later.
+    $head = (& $ReadGit @('rev-parse', 'HEAD')).Text
+    $br   = (& $ReadGit @('branch', '--show-current')).Text
+    foreach ($k in @('Logic', 'Integration', 'Sanity')) {
+        $p = $SuiteResults[$k].r.passed
+        $new = [regex]::Replace($new,
+            "(?s)(`"$k`"\s*:\s*\{[^}]*?`"passed`"\s*:\s*)\d+",
+            "`${1}$p")
+    }
+    $new = [regex]::Replace($new, '("updated_at"\s*:\s*")[^"]*"',        "`${1}$(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')`"")
+    $new = [regex]::Replace($new, '("updated_on_commit"\s*:\s*")[^"]*"', "`${1}$head`"")
+    $new = [regex]::Replace($new, '("updated_on_branch"\s*:\s*")[^"]*"', "`${1}$br`"")
+    # Fail loud rather than write a file we can no longer parse.
+    try { $null = $new | ConvertFrom-Json } catch {
+        $emits.Add('BASELINE action=ABORTED reason=post-edit-json-invalid')
+        $detail.Add("Refused to write Tests/regression_baseline.json — the edited text no longer parses as JSON. The gate result itself stands; update the baseline by hand. Error: $_")
+        return (New-RatchetResult $null 'PASS' 0 $null)
+    }
+    $act = if ($lowerings.Count -gt 0) { 'lowered' } elseif ($Reestablish) { 're-established' } else { 'updated' }
+    if ($engineChanged) { $deltas += 'engine_errors' }
+    if ($lowerings.Count -gt 0) {
+        foreach ($k in $lowerings.Keys) {
+            $d = $lowerings[$k]
+            $emits.Add("BASELINE action=lowered suite=$k drop=$($d.drop) deleted=$($d.removed) added=$($d.added)")
+        }
+    } else {
+        $emits.Add("BASELINE action=$act $($deltas -join ' ') stamp=$($head.Substring(0,10))")
+    }
+    return (New-RatchetResult "$act $($deltas -join ' ')" $null $null $new)
+}
+
 # ---------------------------------------------------------------- baseline
 if (-not (Test-Path $baselineP)) {
     Emit 'PREFLIGHT=BLOCKED reason=baseline-missing'
@@ -1619,6 +1775,9 @@ if (-not $script:Recompiled -and -not $sanityRed) {
 # wall-clock budget applies: each is bounded by the wrapper's -TimeoutMs and the pool's backstop.
 $intTxt = ''
 $intCode = 0
+# Defaults: a skipped pool never assigns them, and the ratchet's call site reads $intComplete on every path that
+# reaches adjudication.
+$intPassed = -1; $intFailed = -1; $intComplete = 'UNKNOWN'; $intStatus = 'UNKNOWN'
 Enter-Stage 'pool'
 if ($script:Recompiled -and -not $sanityRed) {
     $intStatePath = Join-Path $logDir 'integration_batches.json'
@@ -1695,7 +1854,6 @@ if ($script:Recompiled -and -not $sanityRed) {
     foreach ($line in $shown) { Emit $line }
     $intTxt = (@($failLines) + $shown) -join "`n"
     $intCode = $verdict.Exit
-    $intPassed = -1; $intFailed = -1; $intComplete = 'UNKNOWN'; $intStatus = 'UNKNOWN'
     if ($intTxt -match 'TOTAL passed=(\d+) failed=(\d+)') { $intPassed = [int]$Matches[1]; $intFailed = [int]$Matches[2] }
     if ($intTxt -match 'COMPLETENESS=(\w+)')             { $intComplete = $Matches[1] }
     $sm = [regex]::Matches($intTxt, '(?m)^STATUS=(\w+)')
@@ -1796,132 +1954,26 @@ if ($tiers -contains 'INCOMPLETE') {
     Add-Detail 'A suite did not FINISH — a unit returned no readable result (no wrapper output, no or malformed TRX) after the retry pass, with no machine-busy signature. Each unit''s wrapper.out under TRX_DIR shows what it printed. Nothing failed; the counts are partial by construction and prove nothing either way. Re-run the gate; -RetryOnly keeps prior green batches. Do NOT interpret the counts and do NOT treat this as a pass.'
     Complete-Gate 'INCOMPLETE' 6
 }
-$testWip = Get-TestWorkInProgress -Repo $repo
-$lowerings = [ordered]@{}
-# PARTIAL is the same clean drop, only smaller than the WARN band: committed deletions explain it the same way.
-if ($tiers -contains 'WARN' -or $tiers -contains 'PARTIAL') {
-    if ($testWip.paths.Count -gt 0) {
-        $script:BaselineAction = 'skipped:uncommitted-test-changes'
-        Emit 'BASELINE action=skipped reason=uncommitted-test-changes'
-    } elseif ($testWip.readable) {
-        $deletionBase = if ($rawStamp) { & git -C $repo rev-parse --verify --quiet "$rawStamp^{commit}" 2>$null } else { '' }
-        $deletionBaseReadable = ($rawStamp -and $LASTEXITCODE -eq 0 -and "$deletionBase" -match '^[0-9a-f]{40}(?:[0-9a-f]{24})?$')
-        foreach ($k in $suiteResults.Keys) {
-            $sr = $suiteResults[$k]
-            if ($sr.t.tier -notin @('WARN', 'PARTIAL') -or $sr.r.failed -ne 0) { continue }
-            if ($k -eq 'Integration' -and $intComplete -ne 'OK') { continue }
-            $drop = [int]$baseline.suites.$k.passed - $sr.r.passed
-            if (-not $deletionBaseReadable) {
-                Add-Detail "Count drop remains unexplained for ${k}: unreadable-baseline-commit ($rawStamp)."
-                continue
-            }
-            $patch = @(& git -C $repo diff --no-ext-diff --no-textconv --no-renames --unified=2147483647 "${deletionBase}..HEAD" -- ":(glob)Tests/$k/**/*.cs" 2>$null)
-            if ($LASTEXITCODE -ne 0) {
-                Add-Detail "Count drop remains unexplained for ${k}: unreadable-test-diff."
-                continue
-            }
-            $delta = Get-TestAttributeDelta -Patch $patch
-            Add-Detail "Count-drop evidence for ${k}: drop=$drop deleted=$($delta.removed) added=$($delta.added)$(if (-not $delta.readable) { " reason=$($delta.reason)" })."
-            if ($delta.readable -and $drop -le ($delta.removed - $delta.added)) {
-                $lowerings[$k] = @{ drop = $drop; removed = $delta.removed; added = $delta.added }
-                $sr.t = @{ tier = 'PASS'; note = 'moderate drop explained by committed test deletions' }
-            }
-        }
-        $tiers = @($suiteResults.Keys | ForEach-Object { $suiteResults[$_].t.tier })
-    }
-}
-if ($tiers -contains 'WARN' -or $tiers -contains 'PARTIAL') {
-    Add-Detail 'The count drop remains unexplained or its deletion evidence is unavailable. The baseline was NOT written; commands/regression_gate.md (WARN row) says when the session asks the user.'
-    Complete-Gate 'WARN' 3
-}
-# Unreachable while the tiers hold (a Sanity without execution evidence tiers INVALID, UNPARSED, INCOMPLETE, LOCKED or
-# HANG), and fatal if they ever stop holding: a gate whose pool never ran must not reach the ratchet.
-if (-not $script:Recompiled) { Complete-Gate 'INVALID' 2 }
-
 # ---------------------------------------------------------------- ratchet
-$deltas = @()
-foreach ($k in @('Logic', 'Integration', 'Sanity')) {
-    if (-not $suiteResults.Contains($k)) { continue }   # deferred in smoke tier
-    $d = $suiteResults[$k].r.passed - [int]$baseline.suites.$k.passed
-    if ($d -gt 0) { $deltas += "$k+$d" }
-}
-# Reaching here means every tier cleared and no suite reported a failure, so an
-# UNTRUSTED stamp is re-established rather than skipped: the counts about to be
-# written were just observed green, which is the only thing the stamp asserts.
-# Skipping instead deadlocks — this block is the sole writer of
-# updated_on_commit, so gating it on the stamp already being valid means no run
-# can ever repair one.
-# Polluted-tree guard: the ratchet writes whatever the shared tree measured, so a peer's
-# UNCOMMITTED test changes would be baked into a floor the committing session does not own.
-# The gate's own writes are excluded (baseline + durations manifest are this run's own).
-# Skipping leaves the floor where it is (safe — the green verdict stands); the next
-# clean-tree green run ratchets. The UNTRUSTED-stamp reestablish is equally gated — the
-# observed counts cannot be attributed on a polluted tree, and a clean-tree run repairs it.
 $testWip = Get-TestWorkInProgress -Repo $repo
-if ($lowerings.Count -gt 0 -and (-not $testWip.readable -or $testWip.paths.Count -gt 0)) {
-    $reason = if ($testWip.readable) { 'uncommitted-test-changes' } else { 'unreadable-test-status' }
-    $script:BaselineAction = "skipped:$reason"
-    Emit "BASELINE action=skipped reason=$reason"
-    Add-Detail 'Deletion evidence no longer belongs to a clean test tree. The baseline was NOT written; commands/regression_gate.md (WARN row) applies.'
-    Complete-Gate 'WARN' 3
+$ratchet = Invoke-BaselineRatchet -SuiteResults $suiteResults -Baseline $baseline -BaselineRaw $baselineRaw `
+    -RawStamp $rawStamp -TestWip $testWip `
+    -ReadTestWip { Get-TestWorkInProgress -Repo $repo } `
+    -ReadGit {
+        param([string[]] $GitArgs)
+        $lines = @(& git -C $repo @GitArgs 2>$null)
+        $ok = ($LASTEXITCODE -eq 0)
+        @{ Ok = $ok; Text = $(if ($ok -and $lines.Count -gt 0) { $lines -join "`n" } else { $null }); Lines = [string[]]$lines }
+    } `
+    -IntComplete $intComplete -EngineProfile $engineProfile -Reestablish ($stampTrust -eq 'UNTRUSTED') `
+    -NoBaselineUpdate:$NoBaselineUpdate -Recompiled:$script:Recompiled
+foreach ($d in $ratchet.Detail) { Add-Detail $d }
+if ($null -ne $ratchet.WriteText) {
+    [System.IO.File]::WriteAllText($baselineP, $ratchet.WriteText, (New-Object System.Text.UTF8Encoding($false)))
 }
-$reestablish = ($stampTrust -eq 'UNTRUSTED')
-$engineRaw = $baselineRaw
-if ($engineProfile -and $engineProfile.Total -gt 0) {   # no ERROR line at all means no logs were read, not a clean engine
-    try { $engineRaw = Set-EngineErrorsText -Raw $baselineRaw -Profile $engineProfile -Previous (Get-Prop $baseline 'engine_errors' $null) }
-    catch { Add-Detail "engine_errors baseline not updated: $($_.Exception.Message)" }
-}
-$engineChanged = ($engineRaw -ne $baselineRaw)
-if ($NoBaselineUpdate) {
-    $script:BaselineAction = 'skipped:flag'
-    Emit 'BASELINE action=skipped reason=flag'
-} elseif (-not $testWip.readable) {
-    $script:BaselineAction = 'skipped:unreadable-test-status'
-    Emit 'BASELINE action=skipped reason=unreadable-test-status'
-} elseif ($testWip.paths.Count -gt 0) {
-    $script:BaselineAction = 'skipped:uncommitted-test-changes'
-    Add-Detail "The tree carries uncommitted test changes ($($testWip.paths.Count) file(s)) which may be a peer's — the baseline stays at its floor. The next clean-tree green run ratchets/re-establishes."
-    Emit 'BASELINE action=skipped reason=uncommitted-test-changes'
-} elseif ($deltas.Count -eq 0 -and $lowerings.Count -eq 0 -and -not $reestablish -and -not $engineChanged) {
-    $script:BaselineAction = 'unchanged'
-    Emit 'BASELINE action=unchanged'
-} else {
-    # Targeted surgery, not a JSON round-trip: the tracked file carries
-    # pre-existing mojibake in its description/notes strings, and
-    # ConvertTo-Json would re-encode those into a spurious diff.
-    $new  = $engineRaw
-    # Full sha, never --short: the abbreviation length is not stable across the
-    # repo's lifetime, and this value is compared against a commit id later.
-    $head = (& git -C $repo rev-parse HEAD 2>$null)
-    $br   = (& git -C $repo branch --show-current 2>$null)
-    foreach ($k in @('Logic', 'Integration', 'Sanity')) {
-        $p = $suiteResults[$k].r.passed
-        $new = [regex]::Replace($new,
-            "(?s)(`"$k`"\s*:\s*\{[^}]*?`"passed`"\s*:\s*)\d+",
-            "`${1}$p")
-    }
-    $new = [regex]::Replace($new, '("updated_at"\s*:\s*")[^"]*"',        "`${1}$(Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')`"")
-    $new = [regex]::Replace($new, '("updated_on_commit"\s*:\s*")[^"]*"', "`${1}$head`"")
-    $new = [regex]::Replace($new, '("updated_on_branch"\s*:\s*")[^"]*"', "`${1}$br`"")
-    # Fail loud rather than write a file we can no longer parse.
-    try { $null = $new | ConvertFrom-Json } catch {
-        Emit 'BASELINE action=ABORTED reason=post-edit-json-invalid'
-        Add-Detail "Refused to write Tests/regression_baseline.json — the edited text no longer parses as JSON. The gate result itself stands; update the baseline by hand. Error: $_"
-        Complete-Gate 'PASS' 0
-    }
-    [System.IO.File]::WriteAllText($baselineP, $new, (New-Object System.Text.UTF8Encoding($false)))
-    $act = if ($lowerings.Count -gt 0) { 'lowered' } elseif ($reestablish) { 're-established' } else { 'updated' }
-    if ($engineChanged) { $deltas += 'engine_errors' }
-    $script:BaselineAction = "$act $($deltas -join ' ')"
-    if ($lowerings.Count -gt 0) {
-        foreach ($k in $lowerings.Keys) {
-            $d = $lowerings[$k]
-            Emit "BASELINE action=lowered suite=$k drop=$($d.drop) deleted=$($d.removed) added=$($d.added)"
-        }
-    } else {
-        Emit "BASELINE action=$act $($deltas -join ' ') stamp=$($head.Substring(0,10))"
-    }
-}
+if ($null -ne $ratchet.Action) { $script:BaselineAction = $ratchet.Action }
+foreach ($line in $ratchet.Emit) { Emit $line }
+if ($ratchet.Verdict) { Complete-Gate $ratchet.Verdict $ratchet.Code }
 
 Add-Detail 'All tiers clear. Stage Tests/regression_baseline.json (and integration_batch_durations.json / tool_resource_classes.txt if they changed) alongside whatever caused the growth.'
 Complete-Gate 'PASS' 0

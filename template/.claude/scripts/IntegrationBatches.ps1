@@ -71,7 +71,8 @@ function Format-RenderExclusions {
 }
 
 # ---- vstest filter evaluation, enough of the grammar to decide which classes a filter selects:
-# `FullyQualifiedName` with ~ !~ = !=, joined by & and | (& binds tighter), parenthesised, an empty operand true.
+# `FullyQualifiedName` with ~ !~ = !=, joined by & and | (& binds tighter), parenthesised, an empty operand true. A bare
+# term (no operator) is vstest's shorthand for `FullyQualifiedName~<term>`.
 function Read-FilterTerm {
     param([hashtable] $S)
     if ($S.i -ge $S.t.Count -or $S.t[$S.i] -in @(')', '&', '|')) { return $true }
@@ -83,6 +84,7 @@ function Read-FilterTerm {
         return $v
     }
     $S.i++
+    if ($tok -notmatch '[=~!]') { return $S.target.IndexOf($tok, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
     if ($tok -notmatch '^FullyQualifiedName\s*(!~|~|!=|=)\s*(.*)$') { $S.unsupported = $true; return $false }
     $op = $Matches[1]; $val = $Matches[2]
     switch ($op) {
@@ -123,9 +125,50 @@ function Get-FilterSelectedClasses {
     , $selected.ToArray()
 }
 
-# headless unless -Windowed or every class the filter selects is renderer-tagged. A mixed filter runs headless and returns the
-# tagged classes it will not render in .skipped; an unreadable filter or one selecting no class fails closed to headless.
-# -Declared is a mode the caller already decided (the pool's planner); it skips the derivation. .engineArgs are the engine flags
+# ---- declared case budgets: the one reader of `[TestCase(Timeout = <ms>)]`. A case may sit silent for up to the budget it
+# declares (GdUnit4 fails it past that), so the stall bound owes a run that much more silence. Every method carrying one is
+# returned as { fqn = <namespace>.<class>.<method>; ms }, the longest of its attributes, in the shape Get-FilterSelectedClasses
+# reads. Comments and string literals are blanked first. A Timeout on a declaration the regex cannot name is read as no budget.
+$script:TimeoutAttr = [regex]::new('\bTimeout\s*=\s*(\d+)', 'Compiled')
+$script:CsMethodAfter = [regex]::new('\b(?:public|internal|private|protected)\b[^;{}()=]*?\b(\w+)\s*\(', 'Compiled')
+function Get-TimedTestCatalog {
+    param([Parameter(Mandatory)] [string] $Repo)
+    $dir = Join-Path $Repo 'Tests'
+    $byFqn = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    foreach ($path in [System.IO.Directory]::EnumerateFiles($dir, '*.cs', [System.IO.SearchOption]::AllDirectories)) {
+        $text = [System.IO.File]::ReadAllText($path)
+        if (-not $text.Contains('Timeout')) { continue }
+        $clean = Remove-CSharpLiterals -Text $text
+        $attrs = $script:TimeoutAttr.Matches($clean)
+        if ($attrs.Count -eq 0) { continue }
+        $ns = $script:CsNamespace.Match($clean)
+        $classes = @($script:CsClass.Matches($clean))
+        foreach ($a in $attrs) {
+            $class = $classes | Where-Object { $_.Index -lt $a.Index } | Select-Object -Last 1
+            $method = $script:CsMethodAfter.Match($clean, $a.Index + $a.Length)
+            if (-not $class -or -not $method.Success) { continue }
+            $fqn = $(if ($ns.Success) { $ns.Groups[1].Value + '.' } else { '' }) + $class.Groups[2].Value + '.' + $method.Groups[1].Value
+            $ms = [int64] $a.Groups[1].Value
+            if (-not $byFqn.Contains($fqn) -or $byFqn[$fqn] -lt $ms) { $byFqn[$fqn] = $ms }
+        }
+    }
+    @($byFqn.Keys | ForEach-Object { [pscustomobject]@{ fqn = $_; ms = $byFqn[$_] } })
+}
+
+# The longest declared case budget among the methods the filter selects, ms; 0 when none, or when the filter uses anything
+# beyond the grammar Get-FilterSelectedClasses reads (the stall bound then stays at its base, never widened on a guess).
+function Get-FilterSilenceBudgetMs {
+    param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Filter)
+    $selected = Get-FilterSelectedClasses -Filter $Filter -Catalog (Get-TimedTestCatalog -Repo $Repo)
+    if ($null -eq $selected -or $selected.Count -eq 0) { return [int64] 0 }
+    [int64] (($selected | Measure-Object -Property ms -Maximum).Maximum)
+}
+
+# headless unless -Windowed or every class the filter selects is renderer-tagged. A mixed filter resolves headless and returns the
+# tagged classes it cannot render in .skipped, and run_test_suite.ps1 refuses a run whose .skipped is non-empty. An unreadable filter or one
+# selecting no class fails closed to headless.
+# -Declared is a mode the caller already decided (the pool's planner); it skips the derivation and returns an empty .skipped. .engineArgs are the engine flags
 # for the mode. Headless runs with the Dummy audio driver implied and a fixed 60 fps step: physics-paced tests run faster
 # than real time, so a headless test costs its game time, not the wall clock. A windowed run names the Dummy audio driver,
 # so no test run plays through the machine's speakers.

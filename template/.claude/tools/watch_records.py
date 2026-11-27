@@ -467,10 +467,14 @@ def _journal_process_line(row):
     return "%s pid=%s" % (row.get("ts", ""), pid)
 
 
-def record_state(record, inventory=None):
+def record_state(record, inventory=None, launched=None):
     """This run's rung on the one "has it ended" ladder: (state, code, found_by).
 
-    `state` is DONE, DIED, WATCH or NO-IDENTITY. `found_by` names the signal that decided it —
+    `state` is DONE, DIED, WATCH, GONE or NO-IDENTITY. GONE is a record whose directory does not exist more
+    than `UNRESOLVED_GRACE_SECONDS` after its launch (`launched`, epoch seconds): its worktree or scratch folder
+    was deleted, so nothing can write it again and its result is lost; it is an end. Inside the grace, or with no
+    launch time, a missing directory is a launch still allocating its record: NO-IDENTITY.
+    `found_by` names the signal that decided it —
     `journal` (the launcher's `<record>.journal.jsonl`: an `ended` row, or the last `started` row's
     process), `exit`, `pid` or `inventory`, else "" — so a caller reading a different vocabulary for the
     same question maps this tuple instead of walking the files again, and a DIED or WATCH from the
@@ -499,6 +503,9 @@ def record_state(record, inventory=None):
     if fanout:
         return (("DIED", None, "inventory") if _process_line_gone(fanout) is True
                 else ("WATCH", None, "inventory"))
+    if (isinstance(launched, (int, float)) and time.time() - launched > UNRESOLVED_GRACE_SECONDS
+            and not os.path.isdir(os.path.dirname(os.path.abspath(record)))):
+        return "GONE", None, "directory"
     return "NO-IDENTITY", None, ""
 
 
@@ -1774,6 +1781,11 @@ def _mark_poll(mark):
             pass
 
 
+def gone_text(label):
+    return ("GONE %s: its record's directory was deleted, so its result and dispatch row are lost; "
+            "note the loss where its result was due" % label)
+
+
 def _stream(pending):
     """Each record's ending, once, then ALL REPORTED."""
     warned = set()
@@ -1786,9 +1798,9 @@ def _stream(pending):
                 if record not in warned:
                     print("NO-IDENTITY %s" % label, flush=True)
                     warned.add(record)
-            elif state in ("DONE", "DIED"):
+            elif state in ("DONE", "DIED", "GONE"):
                 print("DONE %s exit=%s" % (label, code) if state == "DONE" else
-                      "DIED %s" % label, flush=True)
+                      "DIED %s" % label if state == "DIED" else gone_text(label), flush=True)
                 pending.remove(record)
         _mark_poll(mark)
         if pending:
@@ -1856,7 +1868,11 @@ def _wake(grouped, now=None):
             continue
         ended = 0
         for label, record in unit["records"]:
-            state, code, _ = record_state(record)
+            state, code, _ = record_state(record, launched=unit.get("launched"))
+            if state == "GONE":
+                ended += 1
+                lines.append(("end", ("end", record), gone_text(label), True))
+                continue
             if state in ("DONE", "DIED"):
                 ended += 1
                 finish = (unit.get("finish") or {}).get(_norm_record(record))
@@ -1989,8 +2005,8 @@ def checkin_lines(grouped, now=None):
                         out.append("  %s %s" % (cell, compaction_clause(compaction)))
             continue
         for label, record in unit["records"]:
-            state, _, found_by = record_state(record)
-            if state in ("DONE", "DIED", "NO-IDENTITY"):
+            state, _, found_by = record_state(record, launched=unit.get("launched"))
+            if state in ("DONE", "DIED", "GONE", "NO-IDENTITY"):
                 continue
             waiting = memory_wait(record)
             if waiting:

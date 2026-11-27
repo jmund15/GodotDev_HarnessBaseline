@@ -1,6 +1,6 @@
 # The Deletion Test — signs, heuristic and use
 
-Read from SKILL.md §The Deletion Test when judging whether a new class, Component, State, Resource subclass or `*Helper` earns its place. Moved verbatim from `SKILL.md`; the rule itself stays there.
+Read from SKILL.md §The Deletion Test when judging whether a new class, Component, State, Resource subclass or `*Helper` earns its place. The rule itself stays in `SKILL.md`.
 
 - **Deep module** — deleting it forces every caller to re-implement substantial logic, *and* each re-implementation needs its own design decisions (which the module centralises). Keep it.
 - **Shallow module** — deleting it changes nothing meaningful; each caller absorbs a one-liner. A redirection layer. Inline it.

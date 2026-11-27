@@ -43,13 +43,14 @@ def test_fidelity_fact_is_machine_wide_and_survives_compaction(tmp_path, monkeyp
     assert fidelity.evaluate(dict(payload, session_id='second')) is None
 
 
-def test_delegate_background_advice_once_per_compaction(tmp_path, monkeypatch):
+def test_delegate_foreground_run_advice_once_per_compaction(tmp_path, monkeypatch):
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
+    monkeypatch.delenv('CLAUDE_CODE_PROMPT_CACHE_TTL', raising=False)
     payload = {'tool_name': 'Bash', 'agent_id': 'child', 'session_id': 'router',
                'tool_input': {'command': 'dotnet build'}}
     assert router.route(payload)[1]
     updated, notes = router.route(payload)
-    assert updated['run_in_background'] is True and notes == []
+    assert not updated.get('run_in_background') and updated['timeout'] == 270000 and notes == []
     state.clear_compaction_keys('router')
     assert router.route(payload)[1]
 

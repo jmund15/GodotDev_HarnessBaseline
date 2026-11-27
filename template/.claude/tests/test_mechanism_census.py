@@ -5,14 +5,17 @@ the JSON it writes. No case reads the machine's real logs.
 
     python3 .claude/tests/test_mechanism_census.py
 """
+import contextlib
 import datetime
 import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -64,11 +67,34 @@ def _run(ts, mode, head, proofs):
         {"proof": name, "status": status, "run_s": 10.0, "wait_s": 0.0, "reused": False} for name, status in proofs]}
 
 
+_MODULE = None
+
+
+def _module():
+    global _MODULE
+    if _MODULE is None:
+        spec = importlib.util.spec_from_file_location("mechanism_census", TOOL)
+        _MODULE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_MODULE)
+    return _MODULE
+
+
+def _main(*argv):
+    """The tool's `main` in process, shaped like a finished child: `returncode`, `stdout`, `stderr`. A decision case
+    runs here; only `case_the_cli_runs_from_its_command_line` spawns the tool."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rc = _module().main(list(argv))
+        except SystemExit as exc:
+            rc = exc.code or 0
+    return types.SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
+
+
 def _tool(repo, *args):
     empty = os.path.join(repo, "no-transcripts")
     os.makedirs(empty, exist_ok=True)
-    cmd = [sys.executable, TOOL, "--repo", repo, "--ref", "HEAD", "--days", "30", "--transcripts", empty] + list(args)
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    return _main("--repo", repo, "--ref", "HEAD", "--days", "30", "--transcripts", empty, *args)
 
 
 def _census(repo, *args):
@@ -78,6 +104,10 @@ def _census(repo, *args):
         raise AssertionError("tool exit %d: %s" % (res.returncode, (res.stderr or res.stdout).strip()[-400:]))
     with open(out, encoding="utf-8") as fh:
         return json.load(fh), res
+
+
+def _census_inproc(repo, *args):
+    return _census(repo, *args)[0]
 
 
 def _proof(census, name):
@@ -241,8 +271,7 @@ def case_census_older_than_32_days_gives_the_stale_form():
         path = os.path.join(tmp, "census_%s.json" % generated[:10])
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"generatedAt": generated, "changedSinceRuling": [{"item": "x"}]}, fh)
-        res = subprocess.run([sys.executable, TOOL, "--line", path, "--main-check", state, "--now", _iso(NOW),
-                              "--repo", tmp], capture_output=True, text=True, encoding="utf-8")
+        res = _main("--line", path, "--main-check", state, "--now", _iso(NOW), "--repo", tmp)
         assert res.returncode == 0, res.stderr
         return res.stdout.strip()
     old_day = (NOW - datetime.timedelta(days=33)).date().isoformat()
@@ -264,16 +293,14 @@ def case_census_line_names_the_last_finished_main_check_wall():
                                           "wall": {"close": 600, "gate": 210, "finalize": 0}}}
     with open(state, "w", encoding="utf-8") as fh:
         json.dump(finished, fh)
-    res = subprocess.run([sys.executable, TOOL, "--line", census, "--main-check", state, "--now", _iso(NOW),
-                          "--repo", tmp], capture_output=True, text=True, encoding="utf-8")
+    res = _main("--line", census, "--main-check", state, "--now", _iso(NOW), "--repo", tmp)
     assert res.returncode == 0, res.stderr
     line = res.stdout.strip()
     assert "1 item" in line and "main check wall 13.5 min" in line, "wall line: %r" % line
     with open(state, "w", encoding="utf-8") as fh:
         json.dump({"checkedTo": "a", "run": {"id": "r", "end": None, "wall": {"close": 600, "gate": None,
                                                                               "finalize": None}}}, fh)
-    res = subprocess.run([sys.executable, TOOL, "--line", census, "--main-check", state, "--now", _iso(NOW),
-                          "--repo", tmp], capture_output=True, text=True, encoding="utf-8")
+    res = _main("--line", census, "--main-check", state, "--now", _iso(NOW), "--repo", tmp)
     assert "main check: no record" in res.stdout and "13.5" not in res.stdout, "unfinished wall: %r" % res.stdout
     repo = _repo()
     sha = _commit(repo, {"mechanism_census.json": json.dumps({"generatedAt": _iso(NOW - datetime.timedelta(days=1)),
@@ -413,26 +440,6 @@ def case_fix_commit_sampling_rule():
     assert not any(s.startswith(("c_", "t_")) for s in shas), "under 6 fixes or a test file is sampled"
 
 
-def _module():
-    spec = importlib.util.spec_from_file_location("mechanism_census", TOOL)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _census_inproc(repo, *args):
-    """The census built in process by the module's `main`; decision cases call functions, not the CLI."""
-    out = os.path.join(repo, "census.json")
-    empty = os.path.join(repo, "no-transcripts")
-    os.makedirs(empty, exist_ok=True)
-    rc = _module().main(["--repo", repo, "--ref", "HEAD", "--days", "30", "--transcripts", empty, "--out", out]
-                        + list(args))
-    if rc != 0:
-        raise AssertionError("census main exit %d" % rc)
-    with open(out, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 AREA_ROWS = [["Alpha", ".claude/tools/alpha"], ["Beta", ".claude/tests/test_beta"]]
 ADAPTATION = ".claude/skills/project_subsystems/adaptation.json"
 
@@ -512,17 +519,19 @@ def case_record_appends_once():
     assert "already recorded" in buf.getvalue(), buf.getvalue()
 
 
-def case_record_cli_names_already_recorded_on_a_second_run():
+def case_the_cli_runs_from_its_command_line():
+    """The one spawned case: the script imports, takes its flags and exits 0 from a child. Its second run's
+    `already recorded` text is `case_record_appends_once`'s."""
     repo = _repo()
     _commit(repo, {ADAPTATION: json.dumps({"areas": AREA_ROWS}), ".claude/tools/alpha_a.py": "1\n"}, "base")
-    _census_inproc(repo)
+    _census(repo)
     census_path = os.path.join(repo, "census.json")
     readings = os.path.join(repo, "census_readings.jsonl")
-    cmd = [sys.executable, TOOL, "--record", census_path, "--repo", repo, "--readings", readings]
-    first = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    second = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    assert first.returncode == 0 and second.returncode == 0, (first.stderr, second.stderr)
-    assert "already recorded" in second.stdout, second.stdout
+    done = subprocess.run([sys.executable, TOOL, "--record", census_path, "--repo", repo, "--readings", readings],
+                          capture_output=True, text=True, encoding="utf-8")
+    assert done.returncode == 0, done.stderr
+    with open(readings, encoding="utf-8") as fh:
+        assert len([line for line in fh if line.strip()]) == 1, "the child wrote no reading"
 
 
 def _fixed_history(repo, targets):
