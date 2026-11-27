@@ -236,6 +236,7 @@ class DefaultRoot(unittest.TestCase):
 # default-root read in a listed file still fails. Every other cwd read is a default root, which is
 # `CLAUDE_PROJECT_DIR` or `_checkout_root.harness_root()` (a shell's cwd drifts into subdirectories).
 CWD_READS = {
+    "scripts/lib/launch_settings.py": (1, "a child named no workdir runs in the launch cwd, so that project's own settings say whether it already registers the floor hook"),
     "tools/baseline_sync.py": (1, "project_root is the baseline family's own walk: a pull proof's checkout carries tools/ without hooks/"),
     "tools/index_commit.py": (1, "git index plumbing: its paths are relative to the git toplevel"),
     "tools/dispatch_result.py": (1, "git resolves a worktree's main checkout from any subdirectory"),

@@ -203,12 +203,14 @@ def machine_lane(tmp):
     pool = os.path.join(tmp, "pool")
     env = {"HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_SLOTS": "1", "HARNESS_SLOT_BUDGET": ""}
     body = ("$l = Enter-RunLocks -Repo '%s' -Runtime -SlotCount 2 -SlotNames @('mp-%s-a','mp-%s-b') "
-            "-CheckoutLockName 'mp-%s-ck' -RecordDir '%s' -TimeoutMs 300; ('R=' + $l.Acquired + ':' + $l.Blocker); Exit-RunLocks $l"
+            "-CheckoutLockName 'mp-%s-ck' -RecordDir '%s' -TimeoutMs 1500; ('R=' + $l.Acquired + ':' + $l.Blocker); Exit-RunLocks $l"
             % (REPO, os.getpid(), os.getpid(), os.getpid(), os.path.join(tmp, "records")))
     old = {name: os.environ.get(name) for name in env}
     os.environ.update({"HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_SLOTS": "1"})
     os.environ.pop("HARNESS_SLOT_BUDGET", None)
     held = machine_slots.take(True)
+    # The lane gets what the checkout stage leaves of -TimeoutMs: a slow host spends most of a short budget there,
+    # which leaves the lane too little to pass the notice bound.
     notice = "$script:LockWaitNoticeMs = 100; "
     try:
         rc, out, err = drive(notice + body, tmp, env)

@@ -20,6 +20,8 @@ Checks (each emits findings with a severity):
                         >=4 godot markers
   surface-domain-noun   a skill/command description or a CLAUDE.*.md in the pure or
                         coding layer naming one game, engine or content-domain noun
+  unproven              a shipped tool with no shipped proof bound to it by name or
+                        importer at or below its layer, read by baseline_sync.py
 
 Severities: ERROR (publish blocker, exit 1), WARN (review before publish, exit 0),
 INFO (advisory). Run from the baseline repo root:  python3 tools/audit_baseline.py
@@ -355,6 +357,27 @@ def check_layer_closure(f: Findings, manifest: dict, template: Path = TEMPLATE) 
               "re-layer a file, or load the module through hooks/_optional_hooks.py")
 
 
+def check_unproven_tools(f: Findings, manifest: dict, template: Path = TEMPLATE) -> None:
+    """Every shipped tool has a shipped proof bound by name or importer at or below its layer: the rule a
+    consumer's `check --strict` refuses, read from the template tree by that same reader (`unproven_tools`).
+    The template ships every manifest row, so each row is tracked at the layer the manifest records."""
+    if not manifest:
+        return
+    tools = str(template / ".claude" / "tools")
+    saved = list(sys.path)
+    try:
+        sys.path.insert(0, tools)
+        import baseline_sync
+        files = {entry["path"]: {"layer": entry["layer"]} for entry in manifest["files"]}
+        unproven = baseline_sync.unproven_tools(template, files, list(files))
+    finally:
+        sys.path[:] = saved
+    for rel in unproven:
+        f.add("ERROR", "unproven", rel,
+              "shipped tool with no shipped proof bound to it -- add or rename a .claude/tests proof named "
+              f"test_{Path(rel).stem}*, or one named for a hook or tool that imports it")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Audit the harness baseline for clean separation.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
@@ -373,6 +396,7 @@ def main() -> int:
     check_core_domain_nouns(f, manifest)
     check_surface_domain_nouns(f, manifest)
     check_layer_closure(f, manifest)
+    check_unproven_tools(f, manifest)
 
     errors, warns, infos = (f.by_severity(s) for s in ("ERROR", "WARN", "INFO"))
 

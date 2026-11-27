@@ -160,7 +160,8 @@ Typical lifecycles:
   every new file must be added to exactly one layer pattern list.
 - `python3 tools/audit_baseline.py` (also `/sync_baseline audit`) — the separation
   gate. Verifies no source-project identifiers / secrets / concrete machine paths
-  leak into `template/`, the manifest matches disk and the generator, and flags (INFO)
+  leak into `template/`, the manifest matches disk and the generator, every shipped
+  tool has a shipped proof bound by name or importer at or below its layer, and flags (INFO)
   a `pure` file naming >=4 godot/coding markers, or a `coding` file naming >=4 godot
   markers (layer-gate check). It also warns on pure-tagged files naming code/engine or
   consumer-domain nouns (core-domain-noun check). ERROR exit blocks publish; run it
