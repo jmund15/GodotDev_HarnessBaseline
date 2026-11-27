@@ -210,15 +210,15 @@ Use the shared finding schema from the Orchestrator Action Protocol (/.claude/co
 
 ---
 
-### sa-holistic (Cross-unit interaction) — CONDITIONAL
+### sa-cross-unit (Cross-unit interaction) — CONDITIONAL
 
-mandates: holistic
+mandates: cross-unit
 admission: conditional
 
 Spawned only when `execution_depth.md` §Mandate admission admits it (`/session_end` Phase 1 runs it). Charter: judge how the session's separately reviewed units interact; never re-judge a unit's internals, which its own review covered.
 
 ```
-You are sa-holistic, a light pass over everything this session landed, judging only how its units interact.
+You are sa-cross-unit, a light pass over everything this session landed, judging only how its units interact.
 **RULES: READ-ONLY. Return findings ONLY.**
 Each unit below is the set of files one review saw together, listed by key and path; no file is pasted. Open what you need. Name every listed file in `checked.toolsUsed` by the read or search you made of it (a Read of it, or a Grep whose path is that file; a search over a directory engages no file beneath it); put a file you did not touch in `gaps` with one of the closed reasons your engine contract names.
 ## Charter
