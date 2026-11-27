@@ -91,6 +91,16 @@ _unwatched_text = shell_census.run({"session_id": "nowatch0-0000-0000-0000000000
 case("the same unresolved shell without a registered watcher stays silent too",
      _unwatched_text == "", repr(_unwatched_text))
 
+# A live registered pane is the session's own progress view, like its watcher: silent, never a shell to decide about.
+PANE_SESSION = "probe-pane0-session"
+pane_procs = [{"pid": 36, "ppid": 1, "age": 50, "name": "bash.exe",
+               "cmd": WRAP % "python3 .claude/tools/watch_records.py --pane"},
+              {"pid": WATCHER_PID, "ppid": 36, "name": "python.exe"}]
+with open(os.path.join(_state_dir, PANE_SESSION[:8] + ".json"), "w") as fh:
+    json.dump({"sidecar_pane": watcher_identity}, fh)
+case("this session's live pane is listed among its watchers", WATCHER_PID in shell_census.watcher_pids(PANE_SESSION),
+     repr(shell_census.watcher_pids(PANE_SESSION)))
+
 # 5. empty input renders nothing (the hook is silent, not "clean")
 case("empty process list renders empty string", shell_census.render(shell_census.select([])) == "")
 

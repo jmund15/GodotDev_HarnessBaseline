@@ -110,6 +110,14 @@ def _delegate_output(model, planted=None):
     return _session_output(model, delegate=True, planted=planted)
 
 
+def _grant_block(transport, kind):
+    """The delegate tool grant a child on `transport` running `kind` is shown, on a machine that registers ai-worker."""
+    out = _delegate_output("claude-opus-5-5", dict(_profile_env("full", "present"),
+                                                    CLAUDE_CODE_TRANSPORT=transport, CLAUDE_CODE_SIDECAR_KIND=kind))
+    head = out.index("[delegate tool grant")
+    return out[head:out.index("Verify a tool exists", head)]
+
+
 # What the live registry actually says codex lacks -- the assertion below compares against this
 # rather than against a literal, so adding a codex row does not red the proof for the wrong reason.
 TIERS = model_registry.role_tiers()
@@ -374,6 +382,25 @@ CASES = [
     ("...and no profile keeps it too",
      lambda: "mcp__ai-worker__read_files" in _delegate_output(
          "claude-opus-5-5", _profile_env(None, "present"))),
+    # The grant block follows the child's MCP delivery (guards/tool_profiles.json transportMcp): a child whose
+    # schemas are deferred is told to load one before calling it, and a child whose ai-worker is not granted is
+    # told to route nowhere to it.
+    ("an anthropic delegate is told to load a deferred schema with ToolSearch",
+     lambda: "ToolSearch" in _grant_block("anthropic", "scout")),
+    ("a codex delegate is told the same way: load with ToolSearch when it is among its tools",
+     lambda: "ToolSearch" in _grant_block("codex", "scout")),
+    ("the granted bullets read the same on every route, so a lookup that fails cannot change them",
+     lambda: _grant_block("anthropic", "scout") == _grant_block("codex", "scout")
+             == _grant_block("go", "author") == _grant_block("nosuch-transport", "scout")),
+    ("a delegate whose route policy cannot be read still gets the ToolSearch clause for both servers",
+     lambda: (lambda g: all("ToolSearch" in line for line in g.splitlines()
+                            if line.startswith(("- semantic-search", "- ai-worker"))) and "- ai-worker IS" in g
+                        and "- semantic-search IS" in g)(_grant_block("nosuch-transport", "scout"))),
+    ("a codex delegate still routes to ai-worker", lambda: "mcp__ai-worker__read_files" in _grant_block("codex", "scout")),
+    ("a local delegate is granted no ai-worker, whatever the machine registers",
+     lambda: (lambda g: "mcp__ai-worker__" not in g and "bounded Read" in g)(_grant_block("local", "author"))),
+    ("a deferred anthropic delegate keeps the ai-worker route, loaded first",
+     lambda: (lambda g: "mcp__ai-worker__read_files" in g and "ToolSearch" in g)(_grant_block("anthropic", "author"))),
     # Driver notes: registry data, keyed to the model that DRIVES the session.
     ("a fable driver gets the F12 note from the registry, with its evidence",
      lambda: "Recognizing a name" in smr.driver_notes_block("claude-fable-5-1")

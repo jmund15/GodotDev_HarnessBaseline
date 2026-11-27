@@ -421,6 +421,18 @@ class CommandArgumentRecoveryTests(unittest.TestCase):
         merged = digest.merge_recovered_prompts(base, recovered)
         self.assertEqual(len(merged), 2)
 
+    def test_merge_skips_the_expansion_copy_of_a_typed_command(self):
+        """A typed `/cmd args` prompt and its expansion line carry the same text and timestamp on adjacent lines:
+        the recovered copy is the same owner message, not a second one."""
+        when = '2026-11-26T17:24:21.522Z'
+        base = [{'index': 5, 'timestamp': when, 'content': '/overnight_review Q2 yes'}]
+        recovered = [{'index': 6, 'timestamp': when, 'content': '/overnight_review Q2 yes',
+                      'recovered': 'command_arguments', 'issuer': 'owner'},
+                     {'index': 9, 'timestamp': '2026-11-26T17:30:00Z', 'content': '/overnight_review later',
+                      'recovered': 'command_arguments', 'issuer': 'owner'}]
+        merged = digest.merge_recovered_prompts(base, recovered)
+        self.assertEqual([m['index'] for m in merged], [5, 9], merged)
+
     def test_end_to_end_builder_plus_recovery_yields_exactly_the_two_real_prompts(self):
         path = self._write_fixture()
         sys.path.insert(0, str(ROOT / '.claude' / 'hooks'))

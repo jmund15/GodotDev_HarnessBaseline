@@ -38,7 +38,7 @@ Batch the complete audit when full context exceeds the bound, per `review_agents
 
 ### 1b. Assemble the seats' file list
 
-Each seat's brief carries its must-read list: the files the ledger left uncovered for it, written by `prepare` (§Ledger plan), by path, with each `.tres` beside its Resource class (`review_agents.md` *Context fit*). A kept seat reviews every file in its list, including pairs another of its mandates already covers. `sa-holistic` takes its files from `{{UNIT_LIST}}` instead (§Holistic Trigger).
+Each seat's brief carries its must-read list: the files the ledger left uncovered for it, written by `prepare` (§Ledger plan), by path, with each `.tres` beside its Resource class (`review_agents.md` *Context fit*). A kept seat reviews every file in its list, including pairs another of its mandates already covers. `sa-cross-unit` takes its files from `{{UNIT_LIST}}` instead (§Cross-unit Trigger).
 
 ---
 
@@ -84,15 +84,15 @@ The parent assembles prompts and shared CONTEXT.
 
 ### Architecture-Sweep Trigger (conditional 4th agent)
 
-Add `sa-architecture-sweep` to the fan-out when `execution_depth.md` §Mandate admission's `sa-architecture-sweep` row admits it. Read [`session_audit_seats.md`](reference/session_audit_seats.md) §Architecture-Sweep Trigger to fill its `{{DESIGN_LIST}}`.
+Add `sa-architecture-sweep` to the fan-out when `execution_depth.md` §Mandate admission's `sa-architecture-sweep` row admits it. Read [`session_audit_seats.md`](reference/session_audit_seats.md) §Architecture-Sweep Trigger to fill its `{{DESIGN_LIST}}`. It is the landed-work counterpart of `/plan_check`'s `plc-whole-plan`: it reads its subject, with the plan that subject claims and the neighbours it lands among, as one argument; `sa-cross-unit` judges only the joins between units reviewed apart.
 
 ### Harness-Quality Trigger (conditional 5th agent)
 
 Add `sa-harness-quality` when `execution_depth.md` §Mandate admission admits it. Use §1a's frozen packet, and read [`session_audit_seats.md`](reference/session_audit_seats.md) §Harness-Quality Trigger to fill `{{DOCTRINE_COMMITS}}` and `{{HARNESS_HUNKS}}` and to append `inputs.mustRead` to the seat's must-read list.
 
-### Holistic Trigger (conditional 6th agent)
+### Cross-unit Trigger (conditional 6th agent)
 
-Add `sa-holistic` when `execution_depth.md` §Mandate admission admits it; `/session_end` Phase 1 runs it with `--lens sa-holistic`. Read [`session_audit_seats.md`](reference/session_audit_seats.md) §Holistic Trigger to fill `{{UNIT_LIST}}` and size the seat.
+Add `sa-cross-unit` when `execution_depth.md` §Mandate admission admits it; `/session_end` Phase 1 runs it with `--lens sa-cross-unit`. Read [`session_audit_seats.md`](reference/session_audit_seats.md) §Cross-unit Trigger to fill `{{UNIT_LIST}}` and size the seat.
 
 ### Shared Context Block
 
@@ -105,7 +105,7 @@ Apply `execution_depth.md` §Mandate admission's checklist row before reading sh
 - `/.claude/commands/checklists/code_quality.md`: C, D and S → `CHECKLIST_CDS` (`sa-design-semantics`), R and P → `CHECKLIST_RP` (`sa-robustness-performance`), I → `CHECKLIST_I` (`sa-intuitiveness-testability`).
 - `/.claude/commands/checklists/test_quality.md`: applicable sections below frontmatter → `TEST_QUALITY_CHECKLIST` (`sa-intuitiveness-testability`).
 
-An unused checklist placeholder's file holds `none`; architecture-, harness- and holistic-only rosters need neither checklist.
+An unused checklist placeholder's file holds `none`; architecture-, harness- and cross-unit-only rosters need neither checklist.
 `SHORT_PLAN`'s file holds the explicit or task-resolved plan path; include that plan in the architecture seat's must-read list. Without a plan in a standalone audit, it holds `none`. The triggers above name the files for `DESIGN_LIST`, `DOCTRINE_COMMITS`, `HARNESS_HUNKS` and `UNIT_LIST`.
 
 **Ledger plan.** `prepare` composes the ledger plan, the harness freeze, each seat's must-read list, the fold snapshot and the engine args. Write `<run dir>/spec.json`:
@@ -132,7 +132,7 @@ python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <r
 
 `prepare` launches the panel (`reference/sidecar_dispatch.md` owns the recipe). Issue the `NATIVE` Workflow call it prints for the seats on this session's plan; the `--review-close` call it prints consolidates every seat once they have all ended. `"target": "native"` keeps the `review_fanout.js` call, every seat on the session's plan.
 
-`prepare` briefs only the mandates the ledger returns (add `"ignoreLedger": true` inside `ledger` for an owner-named scope). Each seat's must-read list is the diff of its §1b files (`git diff <base>..HEAD` plus the uncommitted `git diff`) and each new file whole; `sa-holistic`'s is its units' diffs. Write one list file per seat and name it in the spec's `seatFiles` (`agents/review_agents.md` *Seat coverage contract*); a placeholder the checklists do not fill (`TRANSCRIPT_CORRECTIONS`) rides in `subs` as `<NAME>=<file>`. Each seat takes its lenses' `seat_tier`; a written tier cannot override it. For §1a's admitted harness seat, `sessionAudit` runs `session_audit_inputs.py freeze` and fills that seat's must-read list from its mandate views; `inputs.mustRead` is forwarded even for an empty file subject, since earlier coverage narrows what it reads, not whether it runs. The frozen `premiseCommits`, `head` and `blobs` paths ride unchanged into `args.ledger`; missing forwarding stops premise recording and is reported, never inferred from current HEAD or replaced with an inline substitute audit row. Never hand-build `<run dir>/roster.json` or `<run dir>/args.json`; `prepare` writes both. Consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md), each subject's fold per [Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject). `prepare` leaves the code set (§1a) out of a native `args.fold` and prints those paths; their findings are the parent's: it applies them itself or through one executor job that keeps RED→GREEN (`orchestrator_action_protocol.md` Step 4).
+`prepare` briefs only the mandates the ledger returns (add `"ignoreLedger": true` inside `ledger` for an owner-named scope). Each seat's must-read list is the diff of its §1b files (`git diff <base>..HEAD` plus the uncommitted `git diff`) and each new file whole; `sa-cross-unit`'s is its units' diffs. Write one list file per seat and name it in the spec's `seatFiles` (`agents/review_agents.md` *Seat coverage contract*); a placeholder the checklists do not fill (`TRANSCRIPT_CORRECTIONS`) rides in `subs` as `<NAME>=<file>`. Each seat takes its lenses' `seat_tier`; a written tier cannot override it. For §1a's admitted harness seat, `sessionAudit` runs `session_audit_inputs.py freeze` and fills that seat's must-read list from its mandate views; `inputs.mustRead` is forwarded even for an empty file subject, since earlier coverage narrows what it reads, not whether it runs. The frozen `premiseCommits`, `head` and `blobs` paths ride unchanged into `args.ledger`; missing forwarding stops premise recording and is reported, never inferred from current HEAD or replaced with an inline substitute audit row. Never hand-build `<run dir>/roster.json` or `<run dir>/args.json`; `prepare` writes both. Consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md), each subject's fold per [Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject). `prepare` leaves the code set (§1a) out of a native `args.fold` and prints those paths; their findings are the parent's: it applies them itself or through one executor job that keeps RED→GREEN (`orchestrator_action_protocol.md` Step 4).
 
 ---
 

@@ -239,6 +239,8 @@ def validate_reading(value, transport, cost_model):
             credits = quota.get("credits")
             if credits is not None and not isinstance(credits, dict):
                 errors.append("credits must be object or null")
+    elif cost_model == "free":
+        errors.append("a free transport has no amount to read")
     elif cost_model == "marginal-usd":
         if not isinstance(balance, dict) or quota is not None:
             errors.append("marginal USD needs balance envelope")

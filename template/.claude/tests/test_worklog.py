@@ -830,6 +830,91 @@ check("session read: lists exactly the two items session A added, in document or
 check("session read: session B's read lists only its own item",
       tool.session_additions(wl, SID_B) == [("Rename the beta probe", "other context")])
 
+# ================================ an item header the parse does not read ================================
+# A header may carry text after `added DATE`; a line the parse refuses is reported, never skipped.
+HDR = "- [ ] **%s** — `debug` · scope `1` · added 2026-10-29\n" % TARGET
+
+
+def with_header(header):
+    assert HDR in W1
+    return W1.replace(HDR, header, 1)
+
+
+def one_block(label, worklog, expect_found):
+    p = stage(tempfile.mkdtemp(prefix="wl_hdr_"), worklog=worklog)
+    before = snapshot(p)
+    done = run(p, TARGET, "--dry-run")
+    check("%s: complete %s" % (label, "finds the item" if expect_found else "refuses"),
+          (done.returncode == 0 and "completed:" in done.stdout) == expect_found, done.stdout + done.stderr)
+    dup = run_add(p, TARGET, "--class", "debug", "--scope", "1", "--domain", "Alpha",
+                  "--context", "ctx", "--date", TODAY)
+    check("%s: add of the same title %s" % (label, "reports the duplicate" if expect_found else "refuses"),
+          dup.returncode == 2 and ("duplicate:" in dup.stdout) == expect_found, dup.stdout + dup.stderr)
+    check("%s: nothing written" % label, snapshot(p) == before)
+    return done
+
+
+for label, tail in (("dated note", " · context refreshed 2026-11-01"), ("plain note", " · gate met"),
+                    ("bold note", " · **mechanism found**"), ("mirror suffix", " [after: tools hosted on GitHub]")):
+    done = one_block("header tail, " + label, with_header(HDR.replace("\n", tail + "\n")), True)
+    check("header tail, %s: complete prints the note it will not carry to the archive" % label,
+          tail.strip(" ·[]*") in done.stdout, done.stdout)
+
+done = one_block("title note before the dash (the promote step's shape)",
+                 with_header("- [ ] **%s** (promoted from Future Scope 2026-11-02) — `debug` · scope `1` · added 2026-10-29\n"
+                             % TARGET), True)
+
+GARBAGE = "- [ ] garbage line with no header\n"
+bad = W1.replace("### Alpha\n", "### Alpha\n" + GARBAGE, 1)
+bad_line = bad.split("\n").index(GARBAGE.rstrip("\n")) + 1
+for label, runner in (("complete", lambda p: run(p, TARGET)),
+                      ("complete --dry-run", lambda p: run(p, TARGET, "--dry-run")),
+                      ("add", lambda p: run_add(p, "Probe a fresh title", "--class", "debug", "--scope", "1",
+                                                "--domain", "Alpha", "--context", "ctx", "--date", TODAY))):
+    p = stage(tempfile.mkdtemp(prefix="wl_unparsed_"), worklog=bad)
+    before = snapshot(p)
+    r = runner(p)
+    check("unparsed line: %s exits 2" % label, r.returncode == 2, (r.returncode, r.stdout, r.stderr))
+    check("unparsed line: %s names the line number" % label, "line %d" % bad_line in r.stderr, r.stderr)
+    check("unparsed line: %s writes nothing" % label, snapshot(p) == before)
+
+FUTURE_BAD = W4.replace("> ### Delta\n", "> ### Delta\n> - garbage future line\n", 1)
+p = stage(tempfile.mkdtemp(prefix="wl_unparsed_fs_"), worklog=FUTURE_BAD, mirror=M4)
+r = run_add(p, "Probe a fresh title", "--class", "debug", "--scope", "1", "--domain", "Alpha",
+            "--context", "ctx", "--date", TODAY)
+check("unparsed future line: add exits 2 and names it",
+      r.returncode == 2 and "garbage future line" in r.stderr, (r.returncode, r.stderr))
+
+# a read-only caller keeps its answer and says what it could not read
+warned = subprocess.run(
+    [sys.executable, "-c",
+     "import importlib.util,sys\n"
+     "s=importlib.util.spec_from_file_location('w',sys.argv[1]);m=importlib.util.module_from_spec(s);"
+     "s.loader.exec_module(m)\n"
+     "print(m.session_additions(open(sys.argv[2],encoding='utf-8').read(),'x'))", str(TOOL), str(
+         stage(tempfile.mkdtemp(prefix="wl_unparsed_ro_"), worklog=bad) / "Worklog.md")],
+    capture_output=True, text=True, encoding="utf-8")
+check("unparsed line: session_additions still answers and warns on stderr",
+      warned.returncode == 0 and warned.stdout.strip() == "[]" and "line %d" % bad_line in warned.stderr,
+      (warned.returncode, warned.stdout, warned.stderr))
+
+# lines that are not top-level open items in Active/Ledger are not reported
+quiet = W1.replace("  - Source: session probe1 F14\n",
+                   "  - Source: session probe1 F14\n  - [ ] a sub-bullet checkbox\n", 1)
+quiet = quiet.replace("## Ledger\n", "```\n- [ ] an example inside a fence\n```\n\n## Ledger\n", 1)
+quiet += "\n## Linked Docs\n\n- [ ] a checkbox outside Active and Ledger\n"
+check("unparsed scan: sub-bullet, fenced and other-section checkboxes are not reported",
+      tool.unparsed_items(quiet.split("\n")) == [], tool.unparsed_items(quiet.split("\n")))
+p = stage(tempfile.mkdtemp(prefix="wl_unparsed_quiet_"), worklog=quiet)
+r = run(p, TARGET, "--dry-run")
+check("unparsed scan: those lines do not block complete", r.returncode == 0, r.stdout + r.stderr)
+
+# a future-scope line tagged with a session still reads when it carries a tail
+tagged = W4.replace("(added 2026-05-31; a distant idea)\n", "(added 2026-05-31; a distant idea) · session probe-session-z  \n", 1)
+check("future session tag: trailing whitespace is read",
+      tool.session_additions(tagged, "probe-session-z") == [("Existing future queue idea", "a distant idea")],
+      tool.session_additions(tagged, "probe-session-z"))
+
 p = pathlib.Path(tempfile.mkdtemp(prefix="wl_canon_"))
 (p / "SKILL.md").write_text(SKILL_PLANT, encoding="utf-8")
 planted_classes, planted_domains = tool.read_canonical(p / "SKILL.md")
@@ -855,6 +940,34 @@ check("canonical domains: the tool list matches the skill",
       [long for long, _ in real_domains] == skill_domains, (real_domains, skill_domains))
 check("canonical domains: every short form matches its row",
       [short for _, short in real_domains] == skill_shorts, (real_domains, skill_shorts))
+
+# --- an indented line that is not the item's body must not leave with it ---
+OWN = TARGET_BLOCK
+assert OWN in W1
+ORPHAN = "\t- orphaned run of another task, no header of its own\n\t- second orphaned line\n"
+orphaned = W1.replace(OWN, OWN + ORPHAN, 1)
+orphan_line = orphaned.split("\n").index(ORPHAN.split("\n")[0]) + 1
+for label, runner in (("complete", lambda p: run(p, TARGET)),
+                      ("complete --dry-run", lambda p: run(p, TARGET, "--dry-run"))):
+    p = stage(tempfile.mkdtemp(prefix="wl_orphan_"), worklog=orphaned)
+    before = snapshot(p)
+    r = runner(p)
+    check("orphaned tab run: %s exits 2" % label, r.returncode == 2, (r.returncode, r.stdout, r.stderr))
+    check("orphaned tab run: %s names the first orphan line" % label, "line %d" % orphan_line in r.stderr, r.stderr)
+    check("orphaned tab run: %s writes nothing" % label, snapshot(p) == before)
+
+fenced = W1.replace(OWN, OWN + "```\n\t- example only\n```\n", 1)
+p = stage(tempfile.mkdtemp(prefix="wl_orphan_fence_"), worklog=fenced)
+r = run(p, TARGET, "--dry-run")
+check("fenced tab line: complete is not refused", r.returncode == 0 and "completed:" in r.stdout, r.stdout + r.stderr)
+
+wrapped = W1.replace(OWN, OWN + "  - Note: a long sub-bullet that wraps onto\n    a continuation line\n", 1)
+p = stage(tempfile.mkdtemp(prefix="wl_wrapped_"), worklog=wrapped)
+r = run(p, TARGET)
+wl = read(p, "Worklog.md")
+check("wrapped block: completes", r.returncode == 0, r.stdout + r.stderr)
+check("wrapped block: sub-bullets and continuation leave", "a continuation line" not in wl and "a long sub-bullet" not in wl)
+check("wrapped block: the next block survives", "Probe the runner retries" in wl)
 
 print("\n%d checks, %d failed" % (ran, len(failures)))
 for f in failures:

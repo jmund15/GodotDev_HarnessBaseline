@@ -598,8 +598,8 @@ _PUBLIC = ["scout", "lens", "reviewer", "author", "judge", "gate"]
 check("PUBLIC_KINDS derive from the table's non-internal rows", _PUBLIC,
       sorted(tp.public_kinds(_TB), key=_PUBLIC.index))
 for _k, _b, _d, _a, _t in (
-        ("scout", ["Read", "Glob", "Grep", "Bash"], "bare", "lane-survey", "fanout"),
-        ("lens", ["Read", "Glob", "Grep", "Bash"], "pointer", "lane-survey", "fanout"),
+        ("scout", ["Read", "Glob", "Grep", "Bash"], "full", "lane-survey", "fanout"),
+        ("lens", ["Read", "Glob", "Grep", "Bash"], "full", "lane-survey", "fanout"),
         ("reviewer", ["Read", "Glob", "Grep", "Bash"], "full", "lane-review", "executor"),
         ("author", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], "full", "lane-author", "executor"),
         ("judge", ["Read", "Glob", "Grep", "Bash"], "full", "lane-review", "executor"),
@@ -645,6 +645,9 @@ check("bench-review expresses its inputs directly: reviewer guard text, bare dis
       (_TB["kinds"]["bench-review"]["guard"], _TB["kinds"]["bench-review"]["disclosure"],
        "launcher" in _TB["kinds"]["bench-review"]["routes"]))
 
+check("every kind with internal false has disclosure full (A5: every dispatch kind carries the CLAUDE chain)", [],
+      sorted(k for k, r in _TB["kinds"].items() if not r.get("internal") and r.get("disclosure") != "full"))
+
 # ---- resolve-kind: the launcher's resolver ----------------------------------------------------
 def _rk(*argv):
     out, err = io.StringIO(), io.StringIO()
@@ -655,7 +658,7 @@ def _rk(*argv):
 
 _rc, _out, _err = _rk("--kind=lens")
 _prof = json.loads(_out) if _rc == 0 else {}
-check("resolve-kind lens prints builtins, disclosure and guard", (0, ["Read", "Glob", "Grep", "Bash"], "pointer", "survey"),
+check("resolve-kind lens prints builtins, disclosure and guard", (0, ["Read", "Glob", "Grep", "Bash"], "full", "survey"),
       (_rc, _prof.get("builtins"), _prof.get("disclosure"), _prof.get("guard")))
 _rc, _out, _err = _rk("--kind=author", "--tools=-mcp:ai-worker")
 _prof = json.loads(_out) if _rc == 0 else {}

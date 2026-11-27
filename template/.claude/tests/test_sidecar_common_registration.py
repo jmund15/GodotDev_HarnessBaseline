@@ -244,7 +244,10 @@ class Registration(LaunchFixture):
         payload = self.payload(command)
         self.run_cmd([sys.executable, str(HOOK)], payload)
         proc = self.run_cmd([sys.executable, str(CLAUDE / 'tools/sidecar_fanout.py'), str(jobs), '--out-dir', str(out)])
-        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        # A failed job's stderr file is in the temp root the cleanup removes, so the failure message carries it.
+        errs = ''.join('\n--- %s\n%s' % (f.name, f.read_text(encoding='utf-8', errors='replace')[-4000:])
+                       for f in sorted(out.glob('*.err')) if proc.returncode)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout + errs)
         self.run_cmd([sys.executable, str(TABLE), '--launch'], payload)
         self.assertEqual(sorted(row['jobs'][0]['label'] for row in self.pending()), ['one', 'two'])
         self.assertEqual(self.counts(), {'tier': 2, 'preflight': 2}, self.state.read_text())

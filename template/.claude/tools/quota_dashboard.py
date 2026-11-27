@@ -70,11 +70,16 @@ def build(data=None, read=None, session_plan=None, now=None):
                       "note": ("unreadable: %s" % errors[row["transport"]]) if row["transport"] in errors
                       else row.get("why") or ""})
 
-    pay = []
+    pay, free = [], []
     for name, cfg in (data.get("transports") or {}).items():
-        if (cfg or {}).get("costModel") != "marginal-usd":
+        cost = (cfg or {}).get("costModel")
+        if cost not in ("marginal-usd", "free"):
             continue
         state, reason = _state(cfg)
+        if cost == "free":
+            free.append({"transport": name, "state": state,
+                         "note": reason if state == "unavailable" else provider_bands.free_text(name, data)[1]})
+            continue
         balance = None
         if state != "unavailable":
             got = cached_read(name)
@@ -105,7 +110,7 @@ def build(data=None, read=None, session_plan=None, now=None):
             models.append({"alias": m["alias"], "transport": m["transport"], "roles": roles,
                            "state": _state(transports.get(m["transport"]),
                                            cached_read(m["transport"]))[0]})
-    return {"plans": plans, "pay": pay, "tiers": tiers, "models": models}
+    return {"plans": plans, "pay": pay, "free": free, "tiers": tiers, "models": models}
 
 
 def _num(value, fmt):
@@ -136,6 +141,9 @@ def render(view):
             "| transport | state | balance | note |", "|---|---|---|---|"]
     for r in view["pay"]:
         out.append("| %s | %s | %s | %s |" % (r["transport"], r["state"], r["balance"] or "—", r["note"]))
+    out += ["", "## Free", "", "| transport | state | limit |", "|---|---|---|"]
+    for r in view["free"]:
+        out.append("| %s | %s | %s |" % (r["transport"], r["state"], r["note"]))
     out += ["", "## Tiers", "", "| tier | plans that can pay | rows serving it |", "|---|---|---|"]
     for r in view["tiers"]:
         out.append("| %s | %s | %s |" % (r["tier"], r["pays"] or "none", ", ".join(r["rows"]) or "—"))

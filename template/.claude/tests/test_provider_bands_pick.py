@@ -336,9 +336,37 @@ def main():
                    "unusedAtReset": {"pct": 20, "basis": "recent", "daysLeft": 2}}
         even = {"transport": "even", "room": 9.0,
                 "unusedAtReset": {"pct": 0.4, "basis": "average", "daysLeft": 1}}
-        case("a plan whose quota will expire outranks a roomier one, the earliest reset first",
-             max([slow, earlier, even], key=pb.pick_key)["transport"] == "earlier",
+        case("among plans whose quota will expire, the most weekly room ranks first, not the earliest reset",
+             max([slow, earlier, even], key=pb.pick_key)["transport"] == "slow",
              repr([pb.pick_key(r) for r in (slow, earlier, even)]))
+        primary = {"transport": "anthropic", "room": 1.21,
+                   "unusedAtReset": {"pct": 18, "basis": "recent", "daysLeft": 3.2}}
+        secondary = {"transport": "anthropic-secondary", "room": 1.35,
+                     "unusedAtReset": {"pct": 91, "basis": "average", "daysLeft": 4.9}}
+        case("a plan with most of its week unspent outranks a thinner margin that resets sooner",
+             max([primary, secondary], key=pb.pick_key)["transport"] == "anthropic-secondary",
+             repr([pb.pick_key(r) for r in (primary, secondary)]))
+        near = {"transport": "near", "room": 8.4,
+                "unusedAtReset": {"pct": 10, "basis": "recent", "daysLeft": 0.08}}
+        case("a near reset with quota left still ranks first, since its room is high",
+             max([near, secondary], key=pb.pick_key)["transport"] == "near",
+             repr([pb.pick_key(r) for r in (near, secondary)]))
+        no_forecast = {"transport": "ahead", "room": 1.8}
+        forecast = {"transport": "behind", "room": 1.1,
+                    "unusedAtReset": {"pct": 5, "basis": "recent", "daysLeft": 3}}
+        case("a plan forecast to leave quota unused still outranks one with none, whatever its room",
+             max([no_forecast, forecast], key=pb.pick_key)["transport"] == "behind",
+             repr([pb.pick_key(r) for r in (no_forecast, forecast)]))
+        real_facts = pb.facts
+        pb.facts = lambda *a, **k: {"tiers": ["executor"], "plans": [dict(no_forecast), dict(forecast)],
+                                    "payOptions": [], "capacities": {}}
+        try:
+            both = pb.pick("executor", "ahead", now=NOW)
+        finally:
+            pb.facts = real_facts
+        case("pick names the same payer as pick_key: the forecast tier outranks room, even for the session plan",
+             both["transport"] == "behind" and [r["transport"] for r in both["ranked"]] == ["behind", "ahead"],
+             repr(both["ranked"]))
         plain = [{"transport": "a", "room": 1.2}, {"transport": "b", "room": 1.8}]
         case("with no projection, rank_room decides as before",
              max(plain, key=pb.pick_key)["transport"] == "b", repr(plain))
@@ -432,6 +460,7 @@ def main():
     credit_cases(case)
     facts_cases(case)
     reopen_cases(case)
+    free_cases(case)
     unmetered_cases(case)
     names = [pb.window_name(w) for w in ({"windowDurationMins": 43200}, {"windowDurationMins": 300},
                                          {"windowDurationMins": 90, "name": "ninety"}, {"name": "seven_day"},
@@ -1171,6 +1200,33 @@ def unsupported_reading(transport):
     return {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota", "sourceKind": "unsupported",
             "observedAt": "2027-01-15T08:00:00Z", "status": "unsupported", "error": None, "liveFailure": None,
             "quota": None, "balance": None}
+
+
+def free_cases(case):
+    """A free route (`costModel: free`) spends no quota and no dollars. Its limit is its slot count, never a window."""
+    data = registry(["go"], pay=("paid",))
+    data["transports"]["box"] = {"costModel": "free", "capacityUnsupported": {"reason": "no account"},
+                                 "maxChildren": {"count": 1, "basis": "one GPU"}}
+    data["models"].append({"transport": "box", "id": "box-model-1", "alias": "box-m", "roles": ["executor"]})
+
+    def no_read(transport, _data=None):
+        if transport == "box":
+            raise AssertionError("a free route has no meter to read")
+        return reader({"go": reading("go", 30, 0.9)})(transport)
+    row = pb.plan_room("box", data, no_read, NOW)
+    case("a free route reads free with its slot count, no room and no meter read",
+         row.get("free") is True and row.get("room") is None and row.get("slots") == 1 and not row.get("stale")
+         and row.get("why") == "free: no quota, no charge; 1 job at a time (one GPU)", str(row))
+    case("a free route outranks every plan that holds the job, quota going unused included",
+         pb.pick_key(row) > pb.pick_key({"room": 9.0, "unusedAtReset": {"pct": 90.0, "daysLeft": 0.1}})
+         and pb.pick_key(row) > pb.pick_key({"room": 99.0}), str(row))
+    got = pb.pick("executor", data=data, now=NOW, read=no_read)
+    case("pick keeps a plan with room for a fixed row and names the free route",
+         got["transport"] == "go" and "box free: no quota, no charge" in got["reason"], str(got)[:400])
+    got = pb.pick("executor", data=data, now=NOW, read=reader({"go": reading("go", 100, 0.5, status="exhausted")}))
+    case("with no plan left pick names the free route ahead of a pay-per-token row",
+         got["transport"] == "box" and got["reason"].startswith("box free"), str(got)[:400])
+    case("a free route is no plan-quota transport", "box" not in pb.plan_quota_transports(data))
 
 
 def unmetered_cases(case):

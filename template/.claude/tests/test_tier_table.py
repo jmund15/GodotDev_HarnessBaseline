@@ -154,6 +154,63 @@ class PlanFilterTests(unittest.TestCase):
         self.assertIn("plan agy: unmetered", text)
         self.assertNotIn("agy", got["warming"])
 
+    FREE_WHY = "one GPU: the lock holds one job, shared with bench runs"
+
+    def free_table(self, readings, cap=True, **kw):
+        data = registry()
+        data["transports"]["box"] = {"costModel": "free", "launcher": "b.sh",
+                                     "capacityUnsupported": {"reason": "A box has no account."}}
+        if cap:
+            data["transports"]["box"]["maxChildren"] = {"count": 1, "basis": self.FREE_WHY}
+        data["models"].append({"transport": "box", "id": "box-exec", "alias": "box-exec", "roles": ["executor"],
+                               "limits": PLAN_LIMITS})
+        read = reader(readings)
+        got = pb.tier_table(["executor"], "anthropic", data=data, now=NOW, draw=draw, read=read, **kw)
+        return got, pb.render_tier_table(got), read
+
+    ROOMY = {"anthropic": reading("anthropic"), "anthropic-console": reading("anthropic-console"), "go": reading("go")}
+    SPENT = {name: reading(name, status="exhausted") for name in ("anthropic", "anthropic-console", "go")}
+
+    def test_a_free_route_is_listed_beside_plans_without_asking_for_pay_rows(self):
+        got, text, read = self.free_table(self.ROOMY)
+        self.assertIn("route box", text)
+        self.assertIn("  box-exec", text)
+        self.assertNotIn("pay per token", text)
+        self.assertNotIn("box", got["warming"])
+        self.assertNotIn("box", read.calls, "a free route has no meter to read")
+
+    def test_a_free_routes_plan_line_states_its_slot_limit(self):
+        _got, text, _ = self.free_table(self.ROOMY)
+        line = next(ln for ln in text.splitlines() if ln.startswith("  plan box"))
+        self.assertIn("free: no quota, no charge; 1 job at a time", line)
+        self.assertIn(self.FREE_WHY, line)
+
+    def test_a_free_route_with_no_slot_cap_states_its_own_reason(self):
+        _got, text, _ = self.free_table(self.ROOMY, cap=False)
+        line = next(ln for ln in text.splitlines() if ln.startswith("  plan box"))
+        self.assertIn("A box has no account.", line)
+
+    def test_a_free_route_alone_still_reads_plans_low_and_prints_the_pay_rows(self):
+        got, text, _ = self.free_table(self.SPENT)
+        self.assertTrue(got["plansLow"])
+        self.assertIn("box-exec", text)
+        self.assertIn("pay per token: pay-exec", text)
+
+    def test_a_cooled_free_pool_member_is_dropped_like_an_exhausted_plan(self):
+        import free_pool
+        from unittest.mock import patch
+        data = registry()
+        data["transports"]["cli"] = {"costModel": "free", "launcher": "c.sh",
+                                     "capacityUnsupported": {"reason": "no amount endpoint"}}
+        data["models"] += [{"transport": "cli", "id": "cli/%s" % n, "alias": n, "roles": ["executor"], "pool": "free",
+                            "limits": PLAN_LIMITS} for n in ("warm", "cold")]
+        with patch.object(free_pool, "member_state",
+                          lambda alias, registry_path=None: ("cooled", "300") if alias == "cold" else ("ready", "")):
+            got = pb.tier_table(["executor"], "anthropic", data=data, now=NOW, draw=draw, read=reader(self.ROOMY))
+        text = pb.render_tier_table(got)
+        self.assertIn("  warm", text)
+        self.assertNotIn("  cold", text)
+
     def test_groups_print_in_registry_order(self):
         got, text, _ = self.table({"anthropic": reading("anthropic"),
                                    "anthropic-console": reading("anthropic-console"),

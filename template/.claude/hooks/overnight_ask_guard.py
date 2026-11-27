@@ -456,7 +456,8 @@ def owner_return(payload):
                  f"(commands/overnight.md §Step 4): {rows}. From here ask every fork live and write no new Q row "
                  "or Default; a Close doc written now records only what was delivered.")
         return
-    _context("/overnight is still armed: park every fork as a Q row with its Default and keep working. "
+    _context("/overnight is still armed: route each fork through commands/overnight.md §Step 2 (decide what you can "
+             "defend; a Q row only for a fork that fails a Park test) and keep working. "
              "The owner ends the run with /overnight off or /overnight_review.")
 
 

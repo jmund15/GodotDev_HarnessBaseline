@@ -141,17 +141,28 @@ class Plant:
 
     def sidecar(self, label="side", tokens=1000000, cost=99.0, model="model-a"):
         """A direct sidecar launch in the main transcript plus its -R record."""
-        record = os.path.join(self.root, "records", label + ".record.json")
-        write_json(record, {"timestamp": iso(60), "parentSessionId": SID, "label": label, "transport": "opencode",
-                            "costModel": "marginal-usd", "servedModel": model, "effort": "low",
-                            "inputTokens": tokens, "outputTokens": 0, "cacheReadTokens": 0,
-                            "cacheWriteTokens": 0, "numTurns": 1, "durationMs": 90000, "costUSD": cost,
-                            "exitCode": 0})
-        launch = call(46, "m4", usage(),
-                      [{"type": "tool_use", "id": "u2", "name": "Bash",
-                        "input": {"command": "bash .claude/scripts/opencode_sidecar.sh -m x -l %s -R %s"
-                                  % (label, record.replace(os.sep, "/"))}}]) | {"cwd": self.root}
-        write_jsonl(self.session + ".jsonl", main_transcript([launch]))
+        self.sidecars([dict(label=label, tokens=tokens, cost=cost, model=model)])
+
+    def sidecars(self, specs):
+        """Direct sidecar launches, one per spec dict (label, tokens, cost, model, duration_ms, api_ms), each
+        with its -R record; an `api_ms` of None leaves `apiDurationMs` out of the record."""
+        launches = []
+        for n, spec in enumerate(specs):
+            label = spec["label"]
+            record = os.path.join(self.root, "records", label + ".record.json")
+            body = {"timestamp": iso(60), "parentSessionId": SID, "label": label, "transport": "opencode",
+                    "costModel": "marginal-usd", "servedModel": spec.get("model", "model-a"), "effort": "low",
+                    "inputTokens": spec.get("tokens", 1000000), "outputTokens": 0, "cacheReadTokens": 0,
+                    "cacheWriteTokens": 0, "numTurns": 1, "durationMs": spec.get("duration_ms", 90000),
+                    "costUSD": spec.get("cost", 99.0), "exitCode": 0}
+            if spec.get("api_ms") is not None:
+                body["apiDurationMs"] = spec["api_ms"]
+            write_json(record, body)
+            launches.append(call(46 + n, "m4-%d" % n, usage(),
+                                 [{"type": "tool_use", "id": "u2-%d" % n, "name": "Bash",
+                                   "input": {"command": "bash .claude/scripts/opencode_sidecar.sh -m x -l %s -R %s"
+                                             % (label, record.replace(os.sep, "/"))}}]) | {"cwd": self.root})
+        write_jsonl(self.session + ".jsonl", main_transcript(launches))
 
     def env(self):
         env = dict(os.environ, HOME=self.root, USERPROFILE=self.root, CLAUDE_PROJECT_DIR=self.root,
@@ -260,13 +271,29 @@ class RollupTracerTests(unittest.TestCase):
         code, out, doc = self.plant.rollup()
         self.assertEqual(code, 0, out)
         o = rows_by_id(doc)["O"]
-        self.assertEqual((o["calls"], o["fresh"], o["cache_read"], o["cache_write_5m"], o["cache_write_1h"],
-                          o["output"]), (3, 1020, 6000, 2000, 0, 700))
+        self.assertEqual(o["calls"], 3)
+        self.assertEqual(o["tokens"], {"fresh": 1020, "cache_read": 6000, "cache_write": 2000,
+                                       "cache_write_5m": 2000, "cache_write_1h": 0, "output": 700})
+        for flat in ("fresh", "cache_read", "cache_write_5m", "cache_write_1h", "output"):
+            self.assertNotIn(flat, o)
         self.assertAlmostEqual(o["list"], 0.02928, places=6)
         self.assertEqual(o["unpriced_calls"], 0)
         self.assertEqual(doc["session"], SID)
         self.assertIn("list", doc["unit"])
         self.assertIn("never spend", doc["unit"])
+
+    def test_every_priced_row_carries_one_tokens_shape(self):
+        self.plant.run(agents=[("a1", 100, 160, usage(inp=7, cr=11, cw=13, out=17))],
+                       journal=[{"type": "launched"}, started("a1", "lane", 1)])
+        code, out, doc = self.plant.rollup()
+        self.assertEqual(code, 0, out)
+        priced = [r for r in doc["rows"] if r["id"] in ("O", "T") or r["id"].startswith("D")]
+        self.assertEqual([r["id"] for r in priced], ["O", "D1", "T"])
+        for row in priced:
+            self.assertTrue({"fresh", "cache_read", "cache_write", "output"} <= set(row["tokens"]), row["id"])
+        o, total = rows_by_id(doc)["O"], rows_by_id(doc)["T"]
+        self.assertEqual(total["tokens"]["fresh"], o["tokens"]["fresh"] + 7)
+        self.assertEqual(total["tokens"]["cache_write"], o["tokens"]["cache_write"] + 13)
 
     def test_rollup_writes_neither_archive_nor_pending_verdicts(self):
         self.plant.run(agents=[("a1", 100, 160, usage(inp=1))], journal=[{"type": "launched"},
@@ -379,6 +406,33 @@ class RollupClassTests(unittest.TestCase):
         self.assertEqual(rows[0]["kind"], "sidecar")
         self.assertAlmostEqual(rows_by_id(doc)["T"]["list"]["sidecar"], 4.0, places=6)
 
+    def test_sidecar_model_time_sits_beside_wall_time_and_absent_is_never_zero(self):
+        self.plant.sidecars([dict(label="timed", duration_ms=90000, api_ms=30000),
+                             dict(label="untimed", duration_ms=60000, api_ms=None)])
+        self.plant.run(agents=[("a1", 100, 160, usage(inp=1))],
+                       journal=[{"type": "launched"}, started("a1", "lane", 1)])
+        code, out, doc = self.plant.rollup()
+        self.assertEqual(code, 0, out)
+        timed, untimed = by_label(doc, "timed")[0], by_label(doc, "untimed")[0]
+        workflow = by_label(doc, "lane")[0]
+        self.assertEqual((timed["secs"], timed["model_secs"]), (90.0, 30.0))
+        self.assertEqual(untimed["secs"], 60.0)
+        self.assertIsNone(untimed["model_secs"])
+        self.assertIsNone(workflow["model_secs"])
+        total = rows_by_id(doc)["T"]
+        self.assertEqual(total["secs"], 90.0 + 60.0 + workflow["secs"])
+        self.assertEqual((total["model_secs"], total["model_rows"], total["model_rows_secs"]), (30.0, 1, 90.0))
+        t_line = next(l for l in out.splitlines() if l.startswith("T "))
+        self.assertIn("30s", t_line)
+
+    def test_total_model_time_is_absent_when_no_row_carries_it(self):
+        self.plant.sidecars([dict(label="untimed", api_ms=None)])
+        code, out, doc = self.plant.rollup()
+        self.assertEqual(code, 0, out)
+        total = rows_by_id(doc)["T"]
+        self.assertIsNone(total["model_secs"])
+        self.assertEqual(total["model_rows"], 0)
+
     def test_instrument_runs_count_in_totals_and_never_in_waste(self):
         self.plant.run(workflow="harness-bloat-probe", agents=[("a1", 100, 130, usage(inp=250000)),
                                                       ("a2", 140, 170, usage(inp=250000))], progress=["a2"],
@@ -463,7 +517,7 @@ class RollupColumnTests(unittest.TestCase):
         code, out, doc = self.plant.rollup()
         self.assertEqual(code, 0, out)
         o = rows_by_id(doc)["O"]
-        self.assertEqual(o["calls_over_400k"], 1)
+        self.assertNotIn("calls_over_400k", o)
         self.assertEqual(o["wall"]["compactions"], 1)
         self.assertEqual(o["idle_rewrites"]["n"], 1)
         self.assertEqual(o["idle_rewrites"]["tokens"], 60000)
@@ -472,6 +526,26 @@ class RollupColumnTests(unittest.TestCase):
         self.assertAlmostEqual(o["bookkeeping"]["list"], 0.01024, places=6)
         self.assertEqual(o["big_results"], {"n": 1, "chars": 20001})
         self.assertEqual(o["wall"]["buckets"]["away"], 1900.0)
+
+    def test_orchestrator_context_spread_over_its_calls(self):
+        # Context per call is input + cache read + cache write: 2010, 450000, 60000, 40000, 0.
+        write_jsonl(self.plant.session + ".jsonl", column_transcript())
+        code, out, doc = self.plant.rollup()
+        self.assertEqual(code, 0, out)
+        ctx = rows_by_id(doc)["O"]["context"]
+        self.assertEqual((ctx["min"], ctx["median"], ctx["max"], ctx["compactions"]), (0, 40000, 450000, 1))
+        self.assertEqual((ctx["p10"], ctx["p90"]), (804, 294000))
+        o_line = next(l for l in out.splitlines() if l.startswith("O "))
+        for token in ("40k", "450k", "294k"):
+            self.assertIn(token, o_line)
+
+    def test_orchestrator_context_is_absent_without_calls(self):
+        write_jsonl(self.plant.session + ".jsonl", [owner(0), owner(5)])
+        code, out, doc = self.plant.rollup()
+        self.assertEqual(code, 0, out)
+        ctx = rows_by_id(doc)["O"]["context"]
+        self.assertEqual({k: ctx[k] for k in ("min", "p10", "median", "p90", "max")},
+                         dict.fromkeys(("min", "p10", "median", "p90", "max")))
 
     def test_proofs_row_counts_only_this_sessions_runs(self):
         write_jsonl(self.plant.session + ".jsonl", column_transcript())

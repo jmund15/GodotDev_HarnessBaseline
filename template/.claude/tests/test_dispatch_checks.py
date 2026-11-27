@@ -208,6 +208,11 @@ def main():
              past[0]["pastLongContext"] is True and past[0]["fits"] is True, repr(past))
         over = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 900000, data, ladder)
         case("a reading over the usable window does not fit", over[0]["fits"] is False, repr(over))
+        edge = facts[0]["usable"] - 1000
+        bare = dc.cheaper_claimants("dear-1", "fanout", "anthropic", edge, data, ladder)
+        loaded = dc.cheaper_claimants("dear-1", "fanout", "anthropic", edge, data, ladder, load=5000)
+        case("a reading that fits alone is over once the harness load is added",
+             bare[0]["fits"] is True and loaded[0]["fits"] is False, repr((bare, loaded)))
         claude = pricier_data(id="claude-cheap-1")
         login = os.path.join(td, "login")
         os.mkdir(login)
@@ -410,14 +415,14 @@ M15_TEMPLATE = ("An e2e row runs only if you change a screen's behavior beyond s
 MENTIONS_TEMPLATE = ("- E2 and E3 pass alone on staging on each project: `npm run staging:deploy`, then "
                      "`npm run staging:e2e -- e2e/mentions.spec.ts:<line> --project=<desktop|phone>`.\n")
 # Trimmed from `.claude/scratch/ui-lock/r22/gatefix2-common.md:3`.
-GATEFIX_REPORT = ("`npm run verify:merge` ran in `{{PROJECT_ROOT}}/.claude/worktrees/"
+GATEFIX_REPORT = ("`npm run verify:merge` ran in `D:/proj/.claude/worktrees/"
                   "ui-r22-int` at `72818ca4`: 833 passed, 19 failed, 1 flaky.\n")
 # Trimmed from the same file's line 11, beside its line 3.
 GATEFIX_COMMON = (GATEFIX_REPORT + "1. Reproduce it alone on its project: `npm run staging:deploy` once in "
                   "your worktree, then `npm run staging:e2e -- <spec>:<line> --project=<desktop|phone>`.\n")
 # Trimmed from `.claude/scratch/ui-lock/r22/gatefix-brief.md:5,24`.
 GATEFIX_ORDER = ("Make `npm run verify:merge` green in the worktree "
-                 "`{{PROJECT_ROOT}}/.claude/worktrees/ui-r22-int`.\n"
+                 "`D:/proj/.claude/worktrees/ui-r22-int`.\n"
                  "and `cd .claude/worktrees/ui-r22-int && npm run verify:merge` (it starts from the last "
                  "green head) end with 0 failed and 0 flaky.\n")
 # Trimmed from `.claude/scratch/ui-lock/r22/gate-brief.md:21`.

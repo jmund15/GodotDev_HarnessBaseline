@@ -483,13 +483,14 @@ def draw_against(row_id, base_id, data):
     return None if rate is None or base is None else rate / base
 
 
-def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=None, job=None):
-    """[{alias, id, cost, pinCost, sign, usable, fits, thresholdAt, pastLongContext, tierMultiplier, price, pinPrice,
+def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=None, job=None, load=0):
+    """[{alias, id, cost, pinCost, sign, usable, load, fits, thresholdAt, pastLongContext, tierMultiplier, price, pinPrice,
     priced, plan, draw}] (`plan`: the transport spends a plan quota; `draw`: output-rate ratio to the pin, or None), ordered by ladder cost, cheapest first: each row on `transport` claiming `tier` in registry `roles`,
     available, not on an owner probation mark for `tier`, and cheaper than `model` for `reading_tokens`. Cheaper is
     `price < pinPrice` when both are priced (`priced` True); otherwise `priced` is False and cheaper is a higher ladder
     `cost`. `fits` and `pastLongContext` are None for a reading not measured, and `fits` is None for a row stating no
-    window. Facts only.
+    window. `fits` judges the reading plus `load`, the harness load the job carries before its brief
+    (`dispatch_size.harness_load`); every row here is on the pin's route, so the load is the same for each. Facts only.
 
     Contract: `[]` means only that nothing is cheaper. What cannot be compared raises, so a caller prints the reason
     instead of an absence: `model_registry.UnknownModel` (the pin resolves to no row, its context suffix included),
@@ -526,8 +527,8 @@ def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=
         point = model_registry.long_context_tier(row, data)
         at = point["thresholdInputTokens"] if point else None
         out.append({"alias": _name(row), "id": row["id"], "cost": cost, "pinCost": mine,
-                    "sign": signs.get(row["id"], "no ± cell"), "usable": usable,
-                    "fits": (reading_tokens <= usable) if measured and usable is not None else None,
+                    "sign": signs.get(row["id"], "no ± cell"), "usable": usable, "load": load or 0,
+                    "fits": (reading_tokens + (load or 0) <= usable) if measured and usable is not None else None,
                     "thresholdAt": at,
                     "pastLongContext": (at is not None and reading_tokens > at) if measured else None,
                     "tierMultiplier": point["multipliers"]["input"] if point else None,
@@ -642,8 +643,10 @@ def claimant_text(c, reading_tokens, upper_tokens=None):
     if c["usable"] is None:
         parts.append("states no window")
     elif measured:
-        ceiling = c["fits"] and isinstance(upper_tokens, int) and upper_tokens > c["usable"]
-        parts.append(f"reading {reading_tokens:,} tokens {'fits' if c['fits'] else 'is over'} its "
+        load = c.get("load") or 0
+        ceiling = c["fits"] and isinstance(upper_tokens, int) and upper_tokens + load > c["usable"]
+        parts.append(f"reading {reading_tokens:,} tokens" + (f" plus {load:,} harness load" if load else "")
+                     + f" {'fits' if c['fits'] else 'is over'} its "
                      f"{c['usable']:,}-token compaction point" + (f", ceiling over ({upper_tokens:,} if every named "
                                                                    f"file is read whole)" if ceiling else ""))
     else:

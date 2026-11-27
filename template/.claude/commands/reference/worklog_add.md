@@ -19,16 +19,16 @@ Run an ADD's write steps with `python3 .claude/tools/worklog.py add`, which perf
 1. **De-dup check.** Apply the cross-cutting rule above to `worklog-titles.md`. Proceed if the user confirms it's distinct.
 
 2. **Required fields.**
-   - Title: short, imperative, bold.
+   - Title: short, imperative, bold. One concern per item: a bundle splits into items here.
    - Class: `fix` / `debug` / `feature` / `refactor` / `test` / `docs` / `chore` / `design` (heuristics: `worklog_reference`).
    - Scope: 1–4 (scope table: `worklog_reference`).
    - Domain: from the canonical list; ask if ambiguous.
-   - Context: one line on why this matters / what the deferred concern is.
+   - Context: one line on why this matters and what was observed, kept apart from what is inferred: an unmeasured cause is labeled a hypothesis, and a count or site list names the search that produced it, so the next reader can rerun it.
    - Date: today.
 
 3. **Optional fields.**
-   - Where: file path or scene reference where the work lands.
-   - Source: session name, PR ref, or commit hash that triggered the deferral.
+   - Where: file path or scene reference where the work lands; anchor code by type and member, since line numbers drift.
+   - Source: session name, PR ref, or commit hash that triggered the deferral. Evidence lives in a tracked home (a commit, plan or vault note): a scratch path does not survive.
    - **When:** phrasing implying a prerequisite or phase gate ("once X is done", "after Y ships", "not until Z") → propose `When: after <condition>` or `When: future` and confirm. No timing signal → omit (ready by default).
    - **Plan doc: REQUIRED if scope == 4.** Wikilink `[[Doc Title]]`; the doc must exist in `TODO/` and be listed in `## Linked Docs`. No doc yet → prompt the user to create one, or downgrade to scope 3 if it fits inline.
 

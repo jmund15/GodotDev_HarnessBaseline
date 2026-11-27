@@ -56,8 +56,11 @@ ARCHIVE_NAME = "Worklog-Archive.md"
 MIRROR = Path(".claude/worklog-titles.md")
 HISTORY = Path(".claude/worklog-tackle-history.jsonl")
 
-# worklog_formats.md: BLOCK header, XLINE, archive head.
-ITEM = re.compile(r"^- \[ \] \*\*(.*?)\*\* — `([^`]+)` · scope `([^`]+)` · added (\d{4}-\d{2}-\d{2})\s*$")
+# worklog_formats.md: BLOCK header, XLINE, archive head. A parenthetical between the title and the dash and
+# any text after `added DATE` are notes: the tool needs title, class, scope and the date, so it reads them
+# and `complete` reports the text after the date (group 5); it drops the parenthetical without a report.
+ITEM = re.compile(r"^- \[ \] \*\*(.*?)\*\*(?: \([^)]*\))? — `([^`]+)` · scope `([^`]+)` · added (\d{4}-\d{2}-\d{2})(?:\s+(.*?))?\s*$")
+OPEN_LINE = re.compile(r"^- \[ \]")
 XLINE = "- [x] `{cls}` · scope `{scope}` · {title} (completed {date}{ref})"
 ARCHIVE_HEAD = """---
 title: Worklog Archive
@@ -90,13 +93,14 @@ DOMAIN_TABLE_HEADER = "Long form (Active section header)"
 FS_HEAD = re.compile(r"^> ### (.+?)\s*$")
 FS_ITEM = re.compile(r"^> - `([^`]+)` · scope `([^`]+)` · (.*?) \(added (\d{4}-\d{2}-\d{2});")
 FS_COUNT = re.compile(r"^(> \[!example\]- Future Scope \()\d+ items?(\))")
-FS_SESSION = re.compile(r"^> - `[^`]+` · scope `[^`]+` · (.*?) \(added \d{4}-\d{2}-\d{2}; (.*)\) · session (\S+)$")
+FS_SESSION = re.compile(r"^> - `[^`]+` · scope `[^`]+` · (.*?) \(added \d{4}-\d{2}-\d{2}; (.*)\) · session (\S+)(?:\s.*)?$")
 SUB_FIELD = re.compile(r"^  - ([A-Za-z][A-Za-z ]*?): (.*)$")
 NEAR_DUP = 0.7
 
 
 class Item:
-    def __init__(self, index, heading, title, cls, scope, tier, domain):
+    def __init__(self, index, heading, title, cls, scope, tier, domain, note=""):
+        self.note = note or ""
         self.index = index
         self.heading = heading
         self.title = title
@@ -208,8 +212,50 @@ def find_items(lines):
             continue
         m = ITEM.match(line)
         if m and tier:
-            items.append(Item(i, heading, m.group(1), m.group(2), m.group(3), tier, domain))
+            items.append(Item(i, heading, m.group(1), m.group(2), m.group(3), tier, domain, m.group(5)))
     return items
+
+
+def unparsed_items(lines):
+    """(1-based line, first 80 characters) of each line in the board no item owns: a top-level `- [ ]`
+    line in Active or Ledger that ITEM refuses, a top-level `> - ` line in Future Scope that FS_ITEM
+    refuses, and a tab-indented line in Active or Ledger. worklog_formats.md BLOCK indents a body with
+    spaces, so a tab-indented run is another task's orphan: block_end would take it as the body of the
+    item above it and `complete` would delete it. A fenced line is an example, not an item."""
+    found, tier, in_fs, fenced = [], None, False, False
+    for i, raw in enumerate(lines):
+        line = bare(raw)
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if line.startswith("## "):
+            m = SUPERSECTION.match(line)
+            tier, in_fs = (m.group(1) if m else None), line.strip() == "## Future Scope"
+            continue
+        if tier and OPEN_LINE.match(line) and not ITEM.match(line):
+            found.append((i + 1, line[:80]))
+        elif in_fs and line.startswith("> - ") and not FS_ITEM.match(line):
+            found.append((i + 1, line[:80]))
+        elif tier and line.startswith("	") and line.strip():
+            found.append((i + 1, line[:80]))
+    return found
+
+
+def refuse_unparsed(worklog_path):
+    """True after printing each unreadable item line or orphaned tab-indented line: an answer from the rest of the board (no match, no
+    duplicate) cannot be trusted while an item in it is unread."""
+    rows = unparsed_items(read_text(worklog_path).split("\n"))
+    for number, text in rows:
+        print("unparsed item line %d: %s" % (number, text), file=sys.stderr)
+    if rows:
+        print("refused: %s holds %d line(s) the tool cannot read. Rewrite an item line as "
+              "'- [ ] **title** — `class` · scope `N` · added YYYY-MM-DD' (Future Scope: "
+              "'> - `class` · scope `N` · title (added YYYY-MM-DD; context)'). Give a tab-indented "
+              "line its own item header or re-indent it with spaces under its item, then rerun."
+              % (worklog_path, len(rows)), file=sys.stderr)
+    return bool(rows)
 
 
 def pick(items, query):
@@ -444,6 +490,8 @@ def session_additions(text, sid):
     """(title, Context) of each open item `sid` added, in document order: a BLOCK whose Session or Source
     is `sid`, and an FSLINE tagged `· session sid`."""
     lines = [bare(raw) for raw in text.splitlines()]
+    for number, unread in unparsed_items(lines):
+        print("worklog.py warning: unparsed item line %d: %s" % (number, unread), file=sys.stderr)
     found = []
     for item in find_items(lines):
         fields = {}
@@ -758,6 +806,9 @@ def complete_one(args, query, ref, paths):
     mirror_text = read_text(mirror_path) if Path(mirror_path).exists() else None
     new_mirror, mirror_line = mirror_plan(mirror_text, item)
 
+    if item.note:
+        print("header note not carried to the archive: %s" % item.note)
+
     if args.dry_run:
         print_plan(lines, start, end, xline, section, mirror_line)
         return "completed", item.title
@@ -831,6 +882,8 @@ def add_paths(args):
         paths = resolve_paths(args)
     except ValueError as exc:
         print("invalid: %s" % exc, file=sys.stderr)
+        return 2
+    if refuse_unparsed(paths[0]):
         return 2
     if args.from_file:
         statuses = []
@@ -914,6 +967,8 @@ def main(argv=None):
         paths = resolve_paths(args)
     except ValueError as exc:
         print("invalid: %s" % exc, file=sys.stderr)
+        return 2
+    if refuse_unparsed(paths[0]):
         return 2
     if args.from_file:
         statuses = []

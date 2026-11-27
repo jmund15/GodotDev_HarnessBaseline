@@ -1611,7 +1611,9 @@ def _age(e, seconds):
     path = os.path.join(e.state, SID[:8] + ".json")
     state = json.load(open(path, encoding="utf-8"))
     for entry in state["dispatch_table_pending"]:
-        entry["launched_at"] = time.time() - seconds
+        for key in ("launched_at", "issued_at"):  # both stamp the one call, and the row's age reads the later start
+            if key == "launched_at" or entry.get(key) is not None:
+                entry[key] = time.time() - seconds
     json.dump(state, open(path, "w", encoding="utf-8"))
 
 
@@ -2079,13 +2081,84 @@ def test_a_shell_that_ran_the_watcher_is_not_work_the_stop_waits_on():
     assert "decision" not in e.body, e.body
 
 
-def test_a_shell_the_transcript_shows_ended_or_never_launched_here_or_stale_does_not_block():
+def test_a_shell_the_transcript_shows_ended_or_never_launched_here_does_not_block():
     e = Env()
     _plant_shell(e, "bsh6", ended=True)
-    _plant_shell(e, "bsh7", launched_ago=5 * 3600)
-    e.run(stop_payload(background=[{"id": "bsh6", "type": "shell"}, {"id": "bsh7", "type": "shell"},
+    e.run(stop_payload(background=[{"id": "bsh6", "type": "shell"},
                                    {"id": "from-a-subagent", "type": "shell"}]), "--complete")
     assert "decision" not in e.body, e.body
+
+
+def test_a_shell_the_client_still_runs_past_the_age_bound_is_live_work_for_the_stop_and_the_watcher():
+    """Age alone never ends a shell: one the Stop payload lists as running past `SHELL_LIVE_SECONDS` blocks like any
+    running shell, and the list the Stop hook records lets the watcher, which gets no payload, count it too. A launch
+    past the bound that the client no longer lists (a lost notification) counts nowhere."""
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
+    import watch_records
+    e = Env()
+    _plant_shell(e, "bsh7", command="grep -o x | cut -c1-9", launched_ago=22 * 3600)
+    _plant_shell(e, "bsh7b", launched_ago=22 * 3600)
+    _shell_stop(e, "bsh7")
+    assert e.body.get("decision") == "block" and "1 background shell(s)" in e.body["reason"], e.body
+    saved = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = e.state
+    try:
+        shells = watch_records.ShellEnds(SID, None)
+        shells.path = e.transcript
+        assert shells.running() == {"bsh7"}, shells.running()
+        assert "22h" in shells.note("bsh7"), shells.note("bsh7")
+    finally:
+        if saved is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = saved
+
+
+def test_a_stop_payload_without_a_task_list_keeps_the_recorded_client_list():
+    """A payload with no `background_tasks` key says nothing about what runs, so it never erases the list the last
+    stop recorded; an empty list is a real answer and does."""
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
+    import watch_records
+    e = Env()
+    _shell_stop(e, "bkeep1")
+    e.run({"hook_event_name": "Stop", "stop_hook_active": False}, "--complete")
+    saved = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = e.state
+    try:
+        assert watch_records.client_live(SID) == {"bkeep1"}, watch_records.client_live(SID)
+        e.run(stop_payload(), "--complete")
+        assert watch_records.client_live(SID) == set(), watch_records.client_live(SID)
+    finally:
+        if saved is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = saved
+
+
+def test_a_failed_client_list_recording_still_blocks_on_a_running_shell():
+    """The recording feeds the watcher and the pane, never the block, so its failure is a note beside the block."""
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    _plant_shell(e, "bsh12")
+    saved, real = os.environ.get("HARNESS_HOOK_STATE_DIR"), dispatch_table.watch_records.record_client_live
+    os.environ["HARNESS_HOOK_STATE_DIR"] = e.state
+
+    def broken(*_args):
+        raise OSError("state locked")
+    dispatch_table.watch_records.record_client_live = broken
+    try:
+        payload = dict(stop_payload(background=[{"id": "bsh12", "type": "shell"}]), session_id=SID,
+                       transcript_path=e.transcript)
+        reason, note = dispatch_table._unwatched_shells_reason(payload)
+    finally:
+        dispatch_table.watch_records.record_client_live = real
+        if saved is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = saved
+    assert reason and "1 background shell(s)" in reason, (reason, note)
+    assert note and "OSError" in note, (reason, note)
 
 
 def test_no_background_task_in_the_payload_never_blocks_on_a_shell():
@@ -3083,6 +3156,27 @@ def test_a_running_sidecar_line_names_the_plan_it_pays_on():
     assert dt._running_line(workflow, now).split(" · ")[-2:] == ["plan-x", "3m"], dt._running_line(workflow, now)
     dt._session_plan_name = lambda: None  # unreadable: the line says whose plan, never a blank
     assert dt._running_line(workflow, now).split(" · ")[-2:] == ["this session's plan", "3m"], dt._running_line(workflow, now)
+
+
+def test_a_chain_jobs_age_counts_from_its_own_launch_not_the_fan_out_call():
+    # A fan-out expansion stamps every planned job with the call's time; a chain job the lane driver starts hours
+    # later must show its own run's age (its `.pid` launch line, as a lane driver writes it), and a job whose
+    # launcher has not started stays queued.
+    dt = _dt()
+    e = Env()
+    record = os.path.join(e.root, "wlx-dC-9.record.json")
+    stamp = "2026-11-25T23:56:16Z"
+    with open(record + ".pid", "w", encoding="utf-8") as fh:
+        fh.write(stamp + " launch=3900bb65-4884-4d6f-9522-37696adde9bf winpid=83436 pid=3226778\n")
+    now = dt._epoch(stamp) + 23 * 60
+    job = {"label": "wlx-dC-9", "model": dt.DEFAULT, "effort": "medium", "launcher": "sidecar_fanout"}
+    chain = {"kind": "sidecar", "fanout_dir": e.root, "record": record, "launched_at": now - 3 * 3600, "jobs": [job]}
+    line = dt._running_line(chain, now)
+    assert line.split(" · ")[-1] == "23m", line
+    direct = {"kind": "sidecar", "fanout_dir": e.root, "record": record, "launched_at": now - 23 * 60, "jobs": [job]}
+    assert dt._running_line(direct, now).split(" · ")[-1] == "23m", dt._running_line(direct, now)
+    waiting = dict(chain, record=os.path.join(e.root, "wlx-dC-10.record.json"))
+    assert dt._running_line(waiting, now).split(" · ")[-1] == "queued", dt._running_line(waiting, now)
 
 
 def _dt():

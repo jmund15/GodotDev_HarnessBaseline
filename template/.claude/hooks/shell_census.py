@@ -168,15 +168,16 @@ def subtree_pids(children, pid):
 
 
 def watcher_pids(session_id):
-    """This session's live watcher process ids, read from `sidecar_watchers`.
+    """This session's live watcher process ids, read from `sidecar_watchers`, plus its live pane
+    (`watch_records.PANE_KEY`): both are the session's own view of its work, not shells to decide about.
 
     The liveness rule is the watcher's own (`watch_records._process_line_gone`): a PID that was
     recycled after the stamp is not a live watcher."""
     import watch_records
     state = read_json_salvage(state_path(session_id)) if session_id else {}
     pids = []
-    for watcher in state.get("sidecar_watchers") or []:
-        identity = watcher.get("process")
+    identities = [watcher.get("process") for watcher in state.get("sidecar_watchers") or []]
+    for identity in identities + [state.get(watch_records.PANE_KEY)]:
         if watch_records._process_line_gone(identity) is not False:
             continue
         found = re.search(r"pid=(\d+)", str(identity))

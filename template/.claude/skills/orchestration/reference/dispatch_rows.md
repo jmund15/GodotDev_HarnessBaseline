@@ -10,4 +10,4 @@ A job on an Anthropic row that will wait more than about an hour in total on lon
 
 ## A larger window
 
-Pin a larger window (`-M`) only when the work needs everything resident at once, and state its price: a larger window can bill at a long-context rate. Set `window: "full"` only where `reference/model_ladder_evidence.md` *Compaction* allows it.
+Pin a larger window (`-M`) only when the work needs everything resident at once, and state its price: a larger window can bill at a long-context rate. `-M` raises the window only up to the login's compaction cap; `reference/model_ladder_evidence.md` *Compaction* owns the cap and the remedies for a subject past its point.

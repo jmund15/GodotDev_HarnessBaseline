@@ -308,7 +308,10 @@ cat > "$WORK/stub_registry.py" <<'PY'
 import os, sys
 with open(os.environ["STUB_REG_ARGV"], "w") as fh:
     fh.write(" ".join(sys.argv[1:]))
-print("SC_MAX_OUTPUT_REGISTRY=%s" % os.environ.get("STUB_CAP", ""))
+if sys.argv[1:2] == ["child-output-cap"]:
+    sys.stdout.write(os.environ.get("STUB_CAP", ""))
+else:
+    print("SC_MAX_OUTPUT_REGISTRY=%s" % os.environ.get("STUB_CAP", ""))
 PY
 max_output() {  # $1 SIDECAR_MAX_OUTPUT_TOKENS, $2 registry stub output, $3 SC_LONG_CONTEXT, $4 declared window
   ( . "$LIB" >/dev/null 2>&1
@@ -327,8 +330,8 @@ check "a declared window bounds the registry cap at a quarter of it" "2000" "$(m
 check "a declared window above four caps leaves the cap alone"      "5000" "$(max_output '' 5000 '' 400000)"
 
 # Each launcher's top-level resolution, run as written: an inherited SC_MAX_OUTPUT is not an override,
-# deepseek's MAX_CONTEXT_TOKENS bounds its cap, and codex_proxy keeps its own 16000 default (its cap is
-# also its output reserve; reference/sidecar_runs.md).
+# deepseek's MAX_CONTEXT_TOKENS bounds its cap, and codex_proxy reads its transport's childOutputCap (its cap
+# is also its output reserve; reference/sidecar_runs.md).
 launcher_cap() {  # $1 launcher, $2 MAX_CONTEXT_TOKENS
   local line
   line="$(grep -m1 '^SC_MAX_OUTPUT=' "$SCRIPTS/$1")"
@@ -343,7 +346,8 @@ check "anthropic_sidecar.sh resolves its cap from the registry, not an inherited
 check "opencode_sidecar.sh resolves its cap from the registry, not an inherited SC_MAX_OUTPUT"  "5000" "$(launcher_cap opencode_sidecar.sh '')"
 check "deepseek_sidecar.sh resolves its cap from the registry, not an inherited SC_MAX_OUTPUT"  "5000" "$(launcher_cap deepseek_sidecar.sh '')"
 check "deepseek_sidecar.sh bounds its cap at a quarter of MAX_CONTEXT_TOKENS"                  "2000" "$(launcher_cap deepseek_sidecar.sh 8000)"
-check "codex_proxy_sidecar.sh keeps its 16000 default"                                          "16000" "$(launcher_cap codex_proxy_sidecar.sh '')"
+check "codex_proxy_sidecar.sh resolves its cap from the registry, not an inherited SC_MAX_OUTPUT" "5000" "$(launcher_cap codex_proxy_sidecar.sh '')"
+check "codex_proxy_sidecar.sh asks the registry for its transport's child output cap" "child-output-cap m" "$(tr -d '\r' < "$WORK/reg.argv")"
 
 # 2026-09-24: a 31.5 KB score-driver brief passed as `-p "<prompt>"` failed with "Argument list too long"
 # (Windows caps a command line near 32 KB). Every launcher feeds the prompt on stdin, as codex/opencode did.

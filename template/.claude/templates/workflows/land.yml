@@ -27,7 +27,9 @@ jobs:
           token: ${{ secrets.LAND_TOKEN }}
           fetch-depth: 0
           submodules: recursive
-      - name: Set the lock merge driver
-        run: git config merge.baseline-lock.driver "python3 .claude/tools/lock_merge.py %O %A %B"
+      - name: Set the merge drivers
+        run: |
+          git config merge.baseline-lock.driver "python3 .claude/tools/lock_merge.py %O %A %B"
+          git config merge.measurement-cache.driver "python3 .claude/tools/lock_merge.py --measurement %O %A %B"
       - name: Land
         run: pwsh -NoProfile -File .claude/scripts/land_run.ps1 -Sha $env:LAND_SHA -Branch $env:LAND_BRANCH

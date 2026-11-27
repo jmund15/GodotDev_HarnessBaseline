@@ -12,16 +12,28 @@ because that is what `--mcp-config` and a launcher's strict config must name. An
 server is an error, not a warning: a strict config that quietly drops a server runs the job on an
 inventory nobody chose.
 
+A sidecar's MCP schemas reach its model by the route's own delivery, so `resolve-kind --transport` applies the
+table's `transportMcp` policy for the transport's route: `defer` adds ToolSearch to the built-ins (the client
+loads a schema when the child asks for it), `allowlist` denies every tool of a server in `mcpServerTools` that
+the kind's `mcpTools` does not name (a proxied route keeps its schemas loaded until a probe shows a deferred tool
+callable there; a server the job names with `+mcp:` keeps all its tools), and `dropServers` leaves a server out of the
+default grant. With no transport, or a route the table names no policy for, the profile is the row's own.
+
 A kind row's optional `plugin` names the plugin (`tools/adaptation.py` `plugins`) whose hook rows the kind's launch
 needs: `sidecar_common.sh` refuses that launch while the plugin is unreadable.
+
+A non-internal kind whose resolved built-ins lack Bash carries `gitInstructions: "off"`: it never commits or opens a
+PR, so the launcher switches the client's commit-and-PR instructions off for it. An internal kind never carries it, for
+the reason route policy skips it: an arm measures a tool frame.
 
 `--tier` is the job's written tier: it replaces the shape or kind row's `tier` in the profile, which a sidecar
 record archives as the run's role tier. An unknown tier refuses with the known list.
 
 CLI:
   tool_profiles.py resolve-kind --kind K [--tools CSV] [--base-builtins CSV] [--config-dir D]
-                           [--workdir W] [--tier T] [--field profile|builtins|mcpServers|spec|mcpConfig|packed]
-                           # `packed`: --tools, spec and --disallowedTools, unit-separated, one read
+                           [--workdir W] [--tier T] [--transport T]
+                           [--field profile|builtins|mcpServers|spec|mcpConfig|packed]
+                           # `packed`: the profile, --tools, spec, --disallowedTools and gitInstructions, unit-separated, one read
   tool_profiles.py kind-row --kind K [--fields F,F]   # disclosure (default)|cacheTtl, unit-separated
   tool_profiles.py mcp-config <CSV or name list> [config-dir]   # --mcp-config's own builder
   tool_profiles.py table
@@ -80,10 +92,13 @@ def load_table(path=None):
         raise ValueError("repoScopedServers must be a list of server names")
     _validate_kinds(table.get("kinds"))
     _validate_variants(table.get("variants") or [], table["kinds"])
+    _validate_transport_mcp(table)
     return table
 
 
 KIND_ROUTES = ("launcher", "fanout", "engine", "agent")
+TRANSPORT_MCP_MODES = ("defer", "allowlist")
+DEFER_TOOL = "ToolSearch"
 KIND_DISCLOSURES = ("bare", "pointer", "full")
 CACHE_TTLS = ("5m", "1h")  # a sidecar child's prompt-cache lifetime (`CLAUDE_CODE_PROMPT_CACHE_TTL`); a row's `cacheTtl` default is 5m
 
@@ -128,6 +143,35 @@ def _validate_kinds(kinds):
                     != (builtins, row["mcpServers"], row.get("denyTools") or [])):
                 raise ValueError("kinds %r and %r share agentType %r but carry different built-ins, "
                                  "mcpServers or denyTools: one agent file cannot serve both" % (first, name, agent_type))
+
+
+def _validate_transport_mcp(table):
+    """`mcpServerTools` (a server's full tool list), each kind's `mcpTools` allowlist over it, and `transportMcp`."""
+    catalog = table.get("mcpServerTools", {})
+    if not (isinstance(catalog, dict) and all(isinstance(v, list) and v and all(isinstance(t, str) for t in v)
+                                              for v in catalog.values())):
+        raise ValueError("mcpServerTools must map a server name to its non-empty tool list")
+    for name, row in table["kinds"].items():
+        allow = row.get("mcpTools", {})
+        if not isinstance(allow, dict):
+            raise ValueError("kind %r: mcpTools must map a server name to its allowed tools" % name)
+        for server, tools in allow.items():
+            if server not in row["mcpServers"] or server not in catalog:
+                raise ValueError("kind %r: mcpTools names %r, which the kind does not hold or mcpServerTools does "
+                                 "not list" % (name, server))
+            unknown = sorted(set(tools) - set(catalog[server]))
+            if not (isinstance(tools, list) and tools) or unknown:
+                raise ValueError("kind %r: mcpTools.%s must be a non-empty list of tools of that server%s"
+                                 % (name, server, " (unknown: %s)" % ", ".join(unknown) if unknown else ""))
+    policy = table.get("transportMcp", {})
+    if not isinstance(policy, dict):
+        raise ValueError("transportMcp must map a route to its policy")
+    for route, row in policy.items():
+        drop = row.get("dropServers", []) if isinstance(row, dict) else None
+        if not (isinstance(row, dict) and row.get("mcp") in TRANSPORT_MCP_MODES
+                and isinstance(drop, list) and all(isinstance(s, str) for s in drop)):
+            raise ValueError("transportMcp.%s needs mcp: %s and an optional dropServers list"
+                             % (route, "|".join(TRANSPORT_MCP_MODES)))
 
 
 def _validate_variants(variants, kinds):
@@ -458,9 +502,37 @@ def resolve(kind, tools_csv="", add=(), remove=(), base_builtins=None,
                         registered, walk_mcp, tier)
 
 
+def transport_policy(transport, table=None):
+    """The table's MCP policy for a sidecar transport's route: `{}` when no transport is named or the route has
+    none, `{"mcp": "defer"|"allowlist", "dropServers": [...]}` otherwise. A transport the registry does not know
+    raises, so a launcher on an unregistered one refuses rather than loading every schema."""
+    if not transport:
+        return {}
+    import model_registry
+    data = model_registry.load()
+    if transport not in (data.get("transports") or {}):
+        raise ValueError("unknown transport %r: the registry names %s"
+                         % (transport, ", ".join(sorted(data.get("transports") or {}))))
+    table = table or load_table()
+    return (table.get("transportMcp") or {}).get(model_registry.route_of(transport, data)) or {}
+
+
+def _withheld_tools(servers, row, table):
+    """`mcp__<server>__<tool>` for every tool of a server the kind holds but its `mcpTools` allowlist omits."""
+    catalog = table.get("mcpServerTools") or {}
+    allow = row.get("mcpTools") or {}
+    return ["%s%s__%s" % (LEGACY_MCP_PREFIX, server, tool) for server in servers if server in allow
+            for tool in catalog.get(server, []) if tool not in allow[server]]
+
+
 def _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, table, registered, walk_mcp,
-                 tier=None):
-    """`resolve` over one `kinds` row named `kind`."""
+                 tier=None, transport=None):
+    """`resolve` over one `kinds` row named `kind`. `transport` applies that route's MCP policy (`transport_policy`),
+    except to an internal kind: a benchmark arm and its review seat measure a tool frame, and a route policy would
+    change what they measure."""
+    policy = transport_policy(transport, table)
+    if row.get("internal"):
+        policy = {}
     default_builtins = row["builtins"]
     default_servers = list(row["mcpServers"])
 
@@ -535,6 +607,16 @@ def _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, t
     for s in add_servers:
         if s not in servers:
             servers.append(s)
+    dropped = [s for s in policy.get("dropServers", []) if s in servers]
+    asked = [s for s in dropped if s in add_servers]
+    if asked:
+        raise ValueError("%s is not granted on the %s route: guards/tool_profiles.json transportMcp withholds it "
+                         "there. Drop %s from -t."
+                         % (", ".join("mcp:" + s for s in asked), transport, ", ".join("+mcp:" + s for s in asked)))
+    servers = [s for s in servers if s not in dropped]
+    deferred = policy.get("mcp") == "defer" and bool(servers)
+    if deferred:
+        builtins = _canonical(builtins + [DEFER_TOOL], table["canonicalOrder"])
 
     if not builtins:
         raise ValueError("resolved built-ins are empty: the child could not read its brief")
@@ -571,6 +653,14 @@ def _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, t
         "mcpRegistrations": mapping,
         "denyTools": list(row.get("denyTools") or []),
     }
+    if policy.get("mcp") == "allowlist":
+        # A server the job named with `+mcp:` is the dispatcher's own grant: its allowlist lifts for this job.
+        narrowed = [s for s in servers if s not in add_servers]
+        profile["denyTools"] += [t for t in _withheld_tools(narrowed, row, table) if t not in profile["denyTools"]]
+    if deferred:
+        profile["mcpDelivery"] = "deferred"
+    if not row.get("internal") and "Bash" not in builtins:
+        profile["gitInstructions"] = "off"
     if row.get("agentType"):
         profile["agentType"] = row["agentType"]
     if tier:
@@ -582,12 +672,13 @@ def _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, t
 
 
 def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=None, candidates=None,
-                 registered=None, walk_mcp=True, tools_csv="", tier=None):
+                 registered=None, walk_mcp=True, tools_csv="", tier=None, transport=None):
     """The resolved profile of one job by its `kind` row: built-ins, MCP servers, disclosure, guard,
     agentType and tier. `tier` is the job's written tier: it replaces the row's, canonicalized
     (`validation` folds onto `fanout`); an unknown one raises `model_registry.RegistryError`. `route` is the caller's route (launcher|fanout|engine|agent); an internal kind
     is open only to the routes its row lists. An unsigned `tools_csv` (the retired absolute `-t` list)
-    and `base_builtins` are legal only on the internal `arm` kind, whose row carries its task's built-ins."""
+    and `base_builtins` are legal only on the internal `arm` kind, whose row carries its task's built-ins.
+    `transport` is the sidecar's paying transport: its route's MCP policy applies (`transport_policy`)."""
     table = table or load_table()
     kinds = table.get("kinds") or {}
     public = public_kinds(table)
@@ -605,7 +696,7 @@ def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=No
         if base_builtins is not None and route == "launcher":
             raise ValueError("-B is the task row of -G arm, not a flag of -G %s" % kind)
     profile, _spec, keys = _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, table,
-                                        registered, walk_mcp)
+                                        registered, walk_mcp, transport=transport)
     writes = [a for a in profile["add"] if a in ("Edit", "Write")]
     if writes and not row.get("writes"):
         raise ValueError("%s on kind %r: a job that writes is an author: use kind author"
@@ -1301,10 +1392,11 @@ def _report(value, field, candidates):
     elif field == "mcpConfig":
         print(json.dumps(strict_mcp_config(keys, candidates), separators=(",", ":")))
     elif field == "packed":
-        # The record's profile and the three strings the child's tool flags take, from the profile
-        # the resolver just validated: --tools, --allowedTools/--mcp-config's spec, --disallowedTools.
+        # The record's profile, the three strings the child's tool flags take (--tools,
+        # --allowedTools/--mcp-config's spec, --disallowedTools) and the profile's gitInstructions
+        # (`off` or `-`, read by sc_scrub_env), from the profile the resolver just validated.
         print(FIELD_SEP.join((json.dumps(profile, separators=(",", ":")), ",".join(profile["builtins"]),
-                              spec, ",".join(profile["denyTools"]))))
+                              spec, ",".join(profile["denyTools"]), profile.get("gitInstructions") or "-")))
     else:
         raise ValueError("unknown field %r (legal: %s)" % (field, ", ".join(FIELDS)))
 
@@ -1363,6 +1455,8 @@ def main(argv=None):
     rk.add_argument("--tools", default="")
     rk.add_argument("--tier", default="",
                     help="the job's written tier; it replaces the kind row's tier in the profile")
+    rk.add_argument("--transport", default="",
+                    help="the sidecar's paying transport; its route's MCP policy applies to the profile")
     rk.add_argument("--base-builtins", default=None)
     rk.add_argument("--config-dir", default="")
     rk.add_argument("--workdir", default="")
@@ -1411,7 +1505,8 @@ def main(argv=None):
             base = split_csv(args.base_builtins) if args.base_builtins is not None else None
             candidates = load_registrations(args.config_dir, args.workdir)
             _report(resolve_kind(args.kind, route="launcher", tools_csv=args.tools, base_builtins=base,
-                                 candidates=candidates, tier=args.tier or None), args.field, candidates)
+                                 candidates=candidates, tier=args.tier or None,
+                                 transport=args.transport or None), args.field, candidates)
             return 0
         if args.cmd == "mcp-config":
             print(json.dumps(mcp_config_for(args.spec, args.config_dir,

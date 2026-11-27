@@ -30,6 +30,7 @@ def main(tmp):
     silence_budget_cases(tmp, batch)
     plan_cases(tmp, batch)
     trx_cases(tmp, batch)
+    silence_budget_cases(tmp, batch)
     batch.run(tmp, TOOL)
 
 
@@ -125,6 +126,10 @@ def reader_and_mode(tmp, batch):
               "(" + "|".join(f"FullyQualifiedName~{t}." for t in TAGGED) + ")&", "mode=windowed skipped=")
     mode_case("a segment filter that excludes every tagged class runs headless",
               "FullyQualifiedName~Tests.Integration.Visual.&" + "&".join(f"FullyQualifiedName!~{t}." for t in TAGGED), "mode=headless skipped=")
+    mode_case("a bare term is vstest's FullyQualifiedName~ shorthand: a bare tagged class runs windowed", "TaggedFileScopedTests", "mode=windowed skipped=")
+    mode_case("a bare untagged class runs headless", "PlainTests", "mode=headless skipped=")
+    mode_case("a bare mixed filter names the tagged class it will not render", "TaggedFileScopedTests|PlainTests",
+              f"mode=headless skipped={v}TaggedFileScopedTests")
     for windowed, want in ((False, "|--headless --fixed-fps 60|"), (True, "|--audio-driver Dummy|")):
         def engine_args(rc, out, _, windowed=windowed, want=want):
             check(f"a {'windowed' if windowed else 'headless'} run passes the engine {want.strip('|')}: no test run plays sound, headless runs at a fixed 60 fps",

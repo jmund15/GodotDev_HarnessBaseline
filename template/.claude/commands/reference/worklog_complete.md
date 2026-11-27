@@ -12,7 +12,7 @@ Read at a `complete` invocation, and from the triage `complete` disposition. Ent
 
 Cross-doc move: the `BLOCK` leaves `Worklog.md` and an `XLINE` lands in `Worklog-Archive.md` under its domain.
 
-1. **Identify the entry.** Match by title or fuzzy search against `[ ]` items in `## Active` **and** `## Ledger`. Multiple matches → list and ask.
+1. **Identify the entry.** Match by title or fuzzy search against `[ ]` items in `## Active` **and** `## Ledger`. Multiple matches → list and ask. A partly done item is not completed: rewrite it in place to the work that remains, and put the shipped part's commit in its `Source:`.
 
 2. **Compose an `XLINE`.**
    - `<class>` and `<n>` come from the original `BLOCK` — don't re-classify on completion unless asked.

@@ -3,12 +3,24 @@
   "requiredReadTools": ["Read", "Glob", "Grep"],
   "canonicalOrder": ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "TodoWrite"],
   "repoScopedServers": ["git"],
+  "mcpServerTools": {
+    "ai-worker": ["check_local_queue", "extract_session_chat", "get_stats", "list_models", "read_files", "read_web", "write_doc"]
+  },
+  "transportMcp": {
+    "anthropic": {"mcp": "defer"},
+    "codex": {"mcp": "allowlist"},
+    "deepseek": {"mcp": "allowlist"},
+    "opencode": {"mcp": "allowlist"},
+    "go": {"mcp": "allowlist"},
+    "local": {"mcp": "allowlist", "dropServers": ["ai-worker"]}
+  },
   "kinds": {
     "scout": {
       "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
+      "mcpTools": {"ai-worker": ["check_local_queue", "read_files", "read_web"]},
       "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "bare",
+      "disclosure": "full",
       "guard": "survey",
       "agentType": "lane-survey",
       "tier": "fanout",
@@ -18,8 +30,9 @@
     "lens": {
       "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
+      "mcpTools": {"ai-worker": ["check_local_queue", "read_files", "read_web"]},
       "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "pointer",
+      "disclosure": "full",
       "guard": "survey",
       "agentType": "lane-survey",
       "tier": "fanout",
@@ -29,6 +42,7 @@
     "reviewer": {
       "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
+      "mcpTools": {"ai-worker": ["check_local_queue", "read_files", "read_web"]},
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "full",
       "guard": "review",
@@ -40,6 +54,7 @@
     "author": {
       "builtins": ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker"],
+      "mcpTools": {"ai-worker": ["check_local_queue", "read_files", "write_doc"]},
       "disclosure": "full",
       "guard": "author",
       "agentType": "lane-author",
@@ -51,6 +66,7 @@
     "judge": {
       "builtins": ["Read", "Glob", "Grep", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker", "git"],
+      "mcpTools": {"ai-worker": ["check_local_queue", "read_files", "read_web"]},
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "full",
       "guard": "common",

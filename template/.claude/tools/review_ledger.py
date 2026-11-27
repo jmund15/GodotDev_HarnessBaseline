@@ -114,7 +114,7 @@ record. `--run` keeps the completed-run path.
 covers every requested current file/mandate at the supplied roster depth. It never unions task units or
 separate recordings, and absent files remain uncovered. No roster means panel depth is unchecked, so the
 answer is false. A prose-only harness scope owes no candidate mandate: it answers true with `owed: false` and
-no `call`, so no holistic seat follows. Rows without a recording identity establish no whole-scope fact. `rows --units` is a
+no `call`, so no cross-unit seat follows. Rows without a recording identity establish no whole-scope fact. `rows --units` is a
 diagnostic grouping, not evidence of a whole-scope review.
 
 `rows --units` lists one line per review unit, `<unit>\\t<file>,<file>...`, over the picked rows with
@@ -706,6 +706,11 @@ def write_record(repo: Path, pr: int, scope_path: str, out_path: str, date: str,
 
 # ---- the mandate catalog and rule hashes ----------------------------------------------------------------
 
+# A catalog key renamed: a stored row under the old key reads as the new one (`read_rows`).
+LEGACY_MANDATE_KEYS = {"holistic": "cross-unit"}
+# The rule hashes a renamed mandate's text carried before the rename: a row judged under one still covers.
+PRE_RENAME_RULE_HASHES = {"cross-unit": ("sha256:3fe7074df1a1e6ba88c545438174fe010674d9ff7f8c94354cb5c4d990803aef",)}
+
 
 def _heading_matches(text: str, want: str) -> bool:
     text = text.strip()
@@ -979,7 +984,11 @@ def _read_jsonl(path: Path, label: str = "review ledger"):
 
 
 def read_rows(path: Path):
-    return _read_jsonl(path)
+    rows, corrupt, problem = _read_jsonl(path)
+    for row in rows:
+        if row.get("mandate") in LEGACY_MANDATE_KEYS:
+            row["mandate"] = LEGACY_MANDATE_KEYS[row["mandate"]]
+    return rows, corrupt, problem
 
 
 def _append_rows(path: Path, rows: list) -> bool:
@@ -1332,8 +1341,10 @@ class Cover:
 
 
 def _clause_rule_text(cover, row, mandate, path, blob=None, mode=Mode()):
-    current = mode.rule_at if mode.rule_at is not None else cover.rule(mandate)
-    return current is not None and row.get("ruleHash") == current
+    if mode.rule_at is not None:
+        return row.get("ruleHash") == mode.rule_at
+    current = cover.rule(mandate)
+    return current is not None and row.get("ruleHash") in (current, *PRE_RENAME_RULE_HASHES.get(mandate, ()))
 
 
 def _clause_outcome(cover, row, mandate, path, blob=None, mode=Mode()):
@@ -2042,7 +2053,7 @@ def plan(repo: Path, *, stage, subject, roster, base_ref="origin/main", task=Non
     for row in registry.rows_for_tier("architect", data):
         plans = registry.plans_of(row["transport"], data)
         facts = [ranked[p] for p in plans if p in ranked]
-        verified = any(isinstance(f.get("room"), (float, int)) and f["room"] > 0
+        verified = any(f.get("free") for f in facts) or any(isinstance(f.get("room"), (float, int)) and f["room"] > 0
                        and f.get("window") and isinstance(f.get("left"), (float, int)) and f["left"] > 0
                        and isinstance(f.get("bandReading"), dict) and f["bandReading"].get("band")
                        and not f.get("why") for f in facts)

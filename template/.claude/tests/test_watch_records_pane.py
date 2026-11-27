@@ -2,7 +2,7 @@
 
 The pane appends a frame when its check-in lines change, plus a heartbeat, so the desktop client's offset reader sees
 each one. The wake watcher's pane hint prints only while work is live and no
-pane runs. A second pane beside a live one exits COVERED.
+pane runs. A second pane beside a live one exits COVERED, and a pane whose frames stay idle past its bound exits IDLE.
 """
 import io
 import os
@@ -79,6 +79,17 @@ try:
 finally:
     pane.kill()
     pane.wait(timeout=10)
+
+# The pane ends with the work it shows: once its frames have shown no live work for PANE_IDLE_SECONDS it exits IDLE
+# (the wake's pane hint asks for a new one when work is live again); live work resets the clock.
+check(not w.pane_idle_over([], idle_since=100, now=100 + w.PANE_IDLE_SECONDS - 1), "a short idle gap keeps the pane")
+check(w.pane_idle_over([], idle_since=100, now=100 + w.PANE_IDLE_SECONDS), "idle past the bound ends the pane")
+check(not w.pane_idle_over(["RUNNING lens-a for 3 min"], idle_since=100, now=10 ** 9), "live work never ends the pane")
+idle_env = dict(env, WATCH_RECORDS_PANE_IDLE_SEC="0.6")
+ended = subprocess.run([sys.executable, str(WATCH), "--pane"], capture_output=True, text=True, timeout=30, env=idle_env)
+check(ended.returncode == 0 and "IDLE" in ended.stdout and w.PANE_COMMAND in ended.stdout,
+      "an idle pane exits IDLE and names the command that restarts it", ended.stdout + ended.stderr)
+check(w.PANE_KEY not in (w._hook_state.read_json_salvage(str(state_file)) or {}), "an exiting pane drops its registration")
 
 # The wake watcher hands its live count to `closing`, which is where the hint joins a wake's last lines.
 import contextlib  # noqa: E402

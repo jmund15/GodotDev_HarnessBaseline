@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Read every plan-quota transport's OWN band and room: the facts a dispatch weighs to choose who pays.
 
+A `free` transport spends no quota and no dollars, so it has no band, room or meter: its facts are
+its slot count and its reason (`free_text`), and a placement takes its open slot ahead of any plan
+(`pick_key`).
+
 A plan's ROOM is the share of its routing window's allowance left over the share of that window's
 time left: `(100 - usedPercent) / (100 x fraction of the window left)`. 1.0 is even pace, the rate
 the plan can spend at until its reset. `pick` ranks a plan by its routing window's room: that
@@ -12,12 +16,14 @@ punish an early burst:
 20% used in the first 5% of a week leaves room 0.84. Bands (`quota_bands.py`) stay the pacing
 signal; room is weighed with fit and cost in the model ladder's selection line, never read as a pick.
 
-`pick(tier, session_plan)` ranks by room every live plan that can pay for a row claiming the tier:
+`pick(tier, session_plan)` ranks by `pick_key` every live plan that can pay for a row claiming the tier:
 the row's transport and each plan whose `planOf` names it (`model_registry.plans_of`). An exhausted
 or dispatch-floor plan drops out, named with why; a plan whose meter cannot be read is unknown and
 decides nothing, so the launcher's own gate decides. The session's own
 plan is a candidate like any other and wins a tie, since it saves a hop and a cold start. With no
-plan left, the fit `marginal-usd` rows come back as `payOptions`. Its top row is a computed choice,
+plan left it names a fit free route, and the fit `marginal-usd` rows come back as `payOptions`. A
+free route never outranks a plan here: the rows of a tier are no equals, and only a job that lists
+both rows says they are (`sidecar_fanout.place_job`). Its top row is a computed choice,
 so only a tool choosing which plan pays for one fixed row reads it (the bench's launcher choice);
 a dispatch-facing caller reads `facts` (every plan in registry order, no choice): `room_facts`,
 `hooks/workflow_provider_guard._cross_plan_route` and the `room` CLI.
@@ -427,15 +433,39 @@ def reopen(row, now=None):
             "longWindow": row.get("longWindow")}
 
 
+def is_free(transport, data):
+    """True for a transport that spends neither plan quota nor dollars (registry `costModel: free`)."""
+    return ((((data or {}).get("transports") or {}).get(transport)) or {}).get("costModel") == "free"
+
+
+def slots_text(slots):
+    return "%d job%s at a time" % (slots, "" if slots == 1 else "s")
+
+
+def free_text(transport, data):
+    """(slots, text) of a free transport: `maxChildren`'s count (None: no cap) and the line its limit reads as. With
+    no cap the limit is the service's own, so the text carries its `capacityUnsupported` reason."""
+    cap = model_registry.child_cap(transport, data)
+    if cap:
+        return cap[0], "free: no quota, no charge; %s (%s)" % (slots_text(cap[0]), cap[1].rstrip("."))
+    cfg = ((data or {}).get("transports") or {}).get(transport) or {}
+    reason = (cfg.get("capacityUnsupported") or {}).get("reason") or "no amount to read"
+    return None, "free: no quota, no charge; " + reason
+
+
 def plan_room(transport, data, read, now):
     """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, windows, longRoom, longWindow, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
     {transport, room: None, why, windows, longRoom, longWindow} for a readable plan a window drops (exhausted or
     at its dispatch floor); {transport, room: None, unmetered: True, why} for a plan-quota transport that declares
-    `capacityUnsupported`; `stale: True` when the reader had no fresh reading at all. `headroom` is the window with
+    `capacityUnsupported`; {transport, room: None, free: True, slots, why} for a free one, which is never read;
+    `stale: True` when the reader had no fresh reading at all. `headroom` is the window with
     the fewest points left; `windows` lists every window's own {name, headroom, resetsAt, minutes}, because points
     of two windows are different units and a job's draw is priced per window; `longRoom` is the room of the longest
     window, which survives a short window's reset."""
     cfg = ((data or {}).get("transports") or {}).get(transport) or {}
+    if is_free(transport, data):
+        slots, why = free_text(transport, data)
+        return {"transport": transport, "room": None, "free": True, "slots": slots, "why": why}
     if cfg.get("costModel") == "plan-quota" and isinstance(cfg.get("capacityUnsupported"), dict):
         # An unmetered plan: the registry says no reader can measure its allowance, so no reading is taken.
         # It never ranks as roomy, and its launcher's own gate decides.
@@ -551,13 +581,16 @@ def fits(row, committed_pct, drain_pct):
 
 
 def pick_key(row):
-    """Sort key (best last) among the plans that hold the job (`fits`). A plan whose quota projects
+    """Sort key (best last) among the plans that hold the job (`fits`). A free route ranks first: it spends nothing,
+    where unused quota is only a forecast another job may still spend. Then a plan whose quota projects
     `USED_RESOLUTION` or more unused at its reset ranks above one that does not -- that quota is lost at the reset
-    either way -- and those rank by the earliest reset; the rest keep `rank_room`. Percentages are never compared
-    across plans, whose allowances differ."""
+    either way. Within each group the most weekly room (`rank_room`) ranks first: room weighs the quota left against
+    the time left, so a near reset with quota left still ranks high, and a thin margin is not drained while another
+    plan has most of its week unspent. Percentages are never compared across plans, whose allowances differ."""
+    if row.get("free"):
+        return (2, 0, 0.0)
     if spare_pct(row) is not None:
-        days = row["unusedAtReset"].get("daysLeft")
-        return (1, 1, -days if isinstance(days, (int, float)) else float("-inf"))
+        return (1, 1, rank_room(row))
     return (1, 0, rank_room(row))
 
 
@@ -814,15 +847,19 @@ def _lead(row, capacity, now=None):
     return plan_entry(row["transport"], capacity, now, row.get("planType"))
 
 
+# The cost models a job is placed on without spending dollars; `marginal-usd` rows are the pay options.
+PLACED_COST_MODELS = ("plan-quota", "free")
+
+
 def facts(tier, session_plan=None, data=None, read=None, now=None):
     """{tiers, plans, payOptions, capacities}: every plan that can pay for a `tier` job, in registry order, with its
     room facts and no choice among them. `tier` is a tier name or a list of them (their union: a job whose shape
     implies no tier is fit wherever its row's claimed tiers are served).
 
     Candidates are the live plans able to pay for an available row whose `roles` claim it, availability judged from
-    `session_plan`'s route. `plans` holds each readable plan's `plan_room` row and each dropped one with `why`
-    (`room` None). `payOptions` lists the fit marginal-usd rows as {alias, id, transport}, and only when no plan
-    has room. `read(transport, data)` returns a normalized reading; the default is `read_capacity`.
+    `session_plan`'s route. `plans` holds each readable plan's `plan_room` row, each free route's, and each dropped
+    plan with `why` (`room` None). `payOptions` lists the fit marginal-usd rows as {alias, id, transport}, and only
+    when no plan has room. `read(transport, data)` returns a normalized reading; the default is `read_capacity`.
     """
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
@@ -838,10 +875,10 @@ def facts(tier, session_plan=None, data=None, read=None, now=None):
         cost = (transports.get(row.get("transport")) or {}).get("costModel")
         if cost == "marginal-usd" and row not in pay:
             pay.append(row)
-        if cost != "plan-quota":
+        if cost not in PLACED_COST_MODELS:
             continue
         for plan in model_registry.plans_of(row["transport"], data):
-            if (transports.get(plan) or {}).get("costModel") == "plan-quota" and plan not in plans:
+            if (transports.get(plan) or {}).get("costModel") == cost and plan not in plans:
                 plans.append(plan)
     capacities = {}
 
@@ -858,22 +895,25 @@ def facts(tier, session_plan=None, data=None, read=None, now=None):
 def pick(tier, session_plan=None, data=None, read=None, now=None):
     """{transport, room, ranked, payOptions, reason}: which plan pays for a `tier` job, the computed choice over `facts`.
 
-    `ranked` holds every fit plan, readable ones by their routing window's room descending, then the
-    dropped ones with `why`. The returned `transport` is the PAYING PLAN, which can differ from the
-    row's transport; it is None when no fit plan has room.
+    `ranked` holds every fit plan, readable ones in the fan-out's order (`pick_key`), then the
+    free routes and the dropped ones with `why`. The returned `transport` is the PAYING PLAN, which can
+    differ from the row's transport: a free route when no fit plan has room, None when there is none either.
     """
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
     got = facts(tier, session_plan, data=data, read=read, now=now)
     capacities = got["capacities"]
     ready = sorted((r for r in got["plans"] if r["room"] is not None),
-                   key=lambda r: (-round(rank_room(r), 2), r["transport"] != session_plan, r["transport"]))
-    dropped = [r for r in got["plans"] if r["room"] is None]
-    top = ready[0] if ready else None
+                   key=lambda r: (-pick_key(r)[1], -round(rank_room(r), 2), r["transport"] != session_plan,
+                                  r["transport"]))
+    dropped = sorted((r for r in got["plans"] if r["room"] is None), key=lambda r: not r.get("free"))
+    top = ready[0] if ready else next((r for r in dropped if r.get("free")), None)
     dropped_text = "".join(" | " + (plan_entry(r["transport"], capacities.get(r["transport"]), now)
                                   if r["why"].startswith("exhausted") else
-                                  "%s %s" % (r["transport"], r["why"])) for r in dropped)
-    if top:
+                                  "%s %s" % (r["transport"], r["why"])) for r in dropped if r is not top)
+    if top and top.get("free"):
+        reason = "%s %s" % (top["transport"], top["why"])
+    elif top:
         reason = " | ".join([_lead(top, capacities.get(top["transport"]), now)] +
                             [_lead(r, capacities.get(r["transport"]), now) for r in ready[1:]])
     else:
@@ -930,9 +970,10 @@ def _plan_facts(row, launchers=None, entry=None):
     """One plan's pick facts: its `plan_entry` line (every window, quota left, time to reset and the
     forecast) plus the launchers running jobs. The JSON keeps the raw fields beside it."""
     days = row.get("daysLeft")
-    if row.get("unmetered"):
-        return {"plan": row["transport"], "unmetered": row.get("why"), "left": None, "timeLeft": None,
-                "unusedAtReset": None, "launchers": launchers, "entry": entry}
+    for kind in ("unmetered", "free"):
+        if row.get(kind):
+            return {"plan": row["transport"], kind: row.get("why"), "left": None, "timeLeft": None,
+                    "unusedAtReset": None, "launchers": launchers, "entry": entry}
     return {"plan": row["transport"], "left": round(float(row.get("left") or 0.0), 1),
             "timeLeft": round(float(days), 2) if days is not None else None,
             "unusedAtReset": row.get("unusedAtReset"), "launchers": launchers, "entry": entry}
@@ -948,6 +989,18 @@ def _read_plans(names, data, read, now, live):
         with ThreadPoolExecutor(max_workers=len(names)) as pool:
             return dict(zip(names, pool.map(lambda name: plan_room(name, data, read, now), names)))
     return {name: plan_room(name, data, read, now) for name in names}
+
+
+def _cooled(row):
+    """True for a free-pool member cooling after a failed call (`free_pool.member_state`): its service refused it, as
+    an exhausted window refuses a plan. An unreadable marker cools nothing."""
+    if row.get("pool") != "free":
+        return False
+    try:
+        import free_pool
+        return free_pool.member_state(row.get("alias"))[0] == "cooled"
+    except Exception:
+        return False
 
 
 def _standing_of(row, tiers):
@@ -980,7 +1033,8 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
 
     A plan `plan_room` drops (`room: None`) is absent from every group and takes
     its route with it; a plan whose reader returned nothing fresh is named in `warming`, never dropped; a
-    reading served from the cache after a failed live read keeps its `age`. Rows are grouped by route in
+    reading served from the cache after a failed live read keeps its `age`. A free route is a group of its own,
+    never read, less its cooled pool members; `plansLow` says no plan-quota plan survived, whatever is free. Rows are grouped by route in
     registry order, never sorted, each row once with its standing per requested tier, ladder cells, owner
     probation mark and its draw per surviving plan. `read` is the capacity reader (default: the live,
     cache-first `read_capacity`); `pay` lists the marginal-usd rows even when a plan survived. An unknown
@@ -1015,7 +1069,7 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
                     marginal.append(row)
                     marginal_ids.add(row["id"])
                 continue
-            if cost_model_of(row) != "plan-quota":
+            if cost_model_of(row) not in PLACED_COST_MODELS or _cooled(row):
                 continue
             if row["id"] not in rows:
                 rows[row["id"]] = {"row": row, "standing": _standing_of(row, tiers)}
@@ -1024,7 +1078,7 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
         route = info["row"]["transport"]
         if route not in route_plans:
             route_plans[route] = [name for name in model_registry.plans_of(route, data)
-                                  if (transports.get(name) or {}).get("costModel") == "plan-quota"]
+                                  if (transports.get(name) or {}).get("costModel") in PLACED_COST_MODELS]
     names = []
     for info in rows.values():
         for name in route_plans[info["row"]["transport"]]:
@@ -1050,7 +1104,7 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
     groups = []
     for route in sorted(route_plans, key=lambda name: order.get(name, len(order))):
         surviving = [rooms[name] for name in route_plans[route]
-                     if rooms[name].get("room") is not None or rooms[name].get("unmetered")]
+                     if rooms[name].get("room") is not None or rooms[name].get("unmetered") or rooms[name].get("free")]
         for name in route_plans[route]:
             if rooms[name].get("stale") and name not in out["warming"]:
                 out["warming"].append(name)
@@ -1080,7 +1134,7 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
                 "draw": _draw_cells(draw, row.get("alias"), effort, [room["transport"] for room in surviving])})
         groups.append({"route": route, "seat": route == seat, "plans": plans, "rows": group_rows})
     out["groups"] = groups
-    out["plansLow"] = not groups
+    out["plansLow"] = all(plan.get("free") for group in groups for plan in group["plans"])
     if out["plansLow"] or pay:
         out["payOptions"] = [{"alias": row.get("alias"), "id": row["id"], "transport": row.get("transport"),
                               "standing": _standing_of(row, tiers)} for row in marginal]
@@ -1129,6 +1183,9 @@ def render_tier_table(got):
                      "%d launcher%s" % (plan["launchers"], "" if plan["launchers"] == 1 else "s"))
             if plan.get("unmetered"):
                 lines.append("  plan %s: unmetered, no quota reading; %s" % (plan["plan"], count))
+                continue
+            if plan.get("free"):
+                lines.append("  plan %s %s; %s" % (plan["plan"], plan["free"], count))
                 continue
             lines.append("  plan %s, %s%s" % (
                 plan.get("entry") or plan["plan"], count,

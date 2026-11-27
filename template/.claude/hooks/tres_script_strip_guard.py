@@ -9,11 +9,19 @@ TWICE: fixed in 67873ef1, then re-stripped by 55ef215c across 22 files (only 4 t
 cast-and-caught it; the damage was far wider). See
 gotcha_godot_editor_resave_hazards.
 
-Detection: in the staged (or ranged) .tres diff, a file that REMOVES more
-`script = ExtResource(...)` bindings than it adds has lost a script binding. Counting
-net removals (not exact-line pairing) survives the resave also renaming ext_resource
-ids. Diff-scoped -- already-committed state isn't re-flagged; this catches the *next*
+Detection: a strip is a SECTION that keeps its `[sub_resource ...]` / `[resource]` header and loses its
+`script = ExtResource(...)` line (the editor writes `resource_local_to_scene = ""` in its place, often
+dropping the `ext_resource` too). A binding that leaves a file because its whole section left is not a strip:
+a sub-resource extracted to its own file, moved to another file, or deleted. The guard pairs each removed
+script line with its section by header, so a resave that renames every `ext_resource` id, or that adds an
+unrelated binding beside the strip, is still caught. A scripted section whose id vanished is a rename (a strip)
+when the file gained a scriptless section of the same type, and a move or deletion otherwise. A removed line the
+guard cannot attribute to a section falls back to the file's net count of removed over added bindings, so an
+unreadable case stays a loss. Diff-scoped -- already-committed state isn't re-flagged; this catches the *next*
 strip at commit time.
+
+Residual gap: an editor resave that drops a whole scripted section together with the property that held it
+(the fresh-worktree first-open variant in gotcha_godot_editor_resave_hazards) reads as a deletion.
 
 Modes:
     tres_script_strip_guard.py              # scan staged (git diff --cached); exit 1 on strip
@@ -27,8 +35,8 @@ Modes:
     tres_script_strip_guard.py --editor-check  # warn when a Godot editor runs on an assembly newer
                                              # than its boot (the preventable bind-failure window)
 
-Escape hatch (rare intentional removal of a genuinely-deleted scripted sub-resource):
-set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 in the environment.
+Owner escape hatch, which no deny offers (a deleted or moved section needs none): set
+HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 in the environment or inline on the command. The guard cannot tell who set it.
 
 Commit scope is `hooks/_commit_scope.py`: it names the invocations that publish the index and the
 paths a merge authors.
@@ -69,15 +77,22 @@ def tree_write_blockers():
 
 REMOVED = re.compile(r"^-\s*script = ExtResource\(")
 ADDED = re.compile(r"^\+\s*script = ExtResource\(")
-FILE_HDR = re.compile(r"^\+\+\+ (?:b/(.*)|/dev/null)$")
+SCRIPT_LINE = re.compile(r"^\s*script = ExtResource\(")
+SECTION = re.compile(r"^\[(gd_resource|gd_scene|ext_resource|sub_resource|resource|node|connection|editable)\b.*\]\s*$")
+SECTION_TYPE = re.compile(r'\btype="([^"]*)"')
+# Sections that carry a script binding of their own: a scriptless one of the same type is where a strip lands.
+BOUND_KINDS = ("sub_resource", "resource", "node")
+FILE_HDR = re.compile(r'^\+\+\+ (?:b/(.*?)|"b/(.*)"|/dev/null)\t?$')
+# Context lines for the second read: every line of the file, so a removed binding finds its section.
+WHOLE_FILE = 1000000
 
 # The commit's git environment, set by hook() from the invocation it judges: the staged diff is read
 # from the index that commit publishes (`GIT_INDEX_FILE=<f> git commit`). None inherits.
 _GIT_ENV = None
 
 
-def diff_lines(range_arg, worktree=False):
-    cmd = ["git", "diff", "-U0", "--no-color"]
+def diff_lines(range_arg, worktree=False, context=0):
+    cmd = ["git", "diff", "-U%d" % context, "--no-color"]
     if worktree:
         cmd += ["HEAD"]
     elif range_arg:
@@ -85,7 +100,8 @@ def diff_lines(range_arg, worktree=False):
     else:
         cmd += ["--cached"]
     cmd += ["--", "*.tres"]
-    return _git_run.run(cmd[1:], env=_GIT_ENV).text.splitlines()
+    # quotepath off: a non-ASCII path stays readable, so a finding names a path the repair and the authored filter can open.
+    return _git_run.run(cmd[1:], env=_GIT_ENV, prefix=("-c", "core.quotepath=off")).text.splitlines()
 
 
 def _authored(findings, repo, git_env):
@@ -94,28 +110,115 @@ def _authored(findings, repo, git_env):
     return [row for row in findings if row[0] in keep]
 
 
-def find_strips(range_arg, worktree=False):
-    """Return [(path, removed, added)] for files with a net script-binding loss."""
-    per_file = {}
-    current = None
-    for line in diff_lines(range_arg, worktree):
-        hdr = FILE_HDR.match(line)
-        if hdr:
-            # `+++ /dev/null` is a DELETED file (group 1 None): its script binding goes away with the
-            # file, which is a deletion and not an editor strip. Clearing `current` is what stops
-            # those removals being charged to the PREVIOUS file in the diff — measured 2026-08-13, a
-            # deleted .tres reported a phantom strip in its alphabetical neighbour.
-            current = hdr.group(1)
-            if current is not None:
-                per_file.setdefault(current, [0, 0])
+class FileDiff:
+    """One changed .tres: the lines of each side the diff shows, and its script-line counts."""
+
+    def __init__(self):
+        self.old, self.new, self.removed, self.added = [], [], 0, 0
+
+
+def file_diffs(lines):
+    """{path: FileDiff} for every non-deleted file in a `git diff` text.
+
+    `+++ /dev/null` is a DELETED file (group 1 None): its script binding goes away with the file, which is a
+    deletion and not an editor strip. Clearing `current` is what stops those removals being charged to the
+    PREVIOUS file in the diff (measured 2026-08-13: a deleted .tres reported a phantom strip in its
+    alphabetical neighbour). A content line always starts with a space, `+` or `-`, so `diff --git` and `@@`
+    only ever open a header or a hunk."""
+    files, current, in_hunk = {}, None, False
+    for line in lines:
+        if line.startswith("diff --git "):
+            current, in_hunk = None, False
             continue
-        if current is None:
+        if line.startswith("@@"):
+            in_hunk = True
             continue
+        if not in_hunk:
+            hdr = FILE_HDR.match(line)
+            if hdr:
+                current = hdr.group(1) or hdr.group(2)
+                if current is not None:
+                    files.setdefault(current, FileDiff())
+            continue
+        if current is None or line.startswith("\\"):
+            continue
+        diff, side = files[current], line[:1]
+        if side != "+":
+            diff.old.append(line[1:])
+        if side != "-":
+            diff.new.append(line[1:])
         if REMOVED.match(line):
-            per_file[current][0] += 1
+            diff.removed += 1
         elif ADDED.match(line):
-            per_file[current][1] += 1
-    return [(p, r, a) for p, (r, a) in per_file.items() if r > a]
+            diff.added += 1
+    return files
+
+
+def sections(lines):
+    """([(header, kind, type, scripted)], stray) for a .tres' lines: `stray` counts script lines above every header."""
+    found, stray = [], 0
+    for line in lines:
+        head = SECTION.match(line)
+        if head:
+            typed = SECTION_TYPE.search(line)
+            found.append([line.rstrip(), head.group(1), typed.group(1) if typed else "", False])
+        elif SCRIPT_LINE.match(line):
+            if found:
+                found[-1][3] = True
+            else:
+                stray += 1
+    return found, stray
+
+
+def stripped_sections(diff):
+    """The headers of sections the change left in the file but stripped of `script`, or None when the removed
+    lines cannot be tied to sections."""
+    before, stray = sections(diff.old)
+    if stray:
+        return None
+    after, _ = sections(diff.new)
+    unmatched = {}
+    for sec in after:
+        unmatched.setdefault(sec[0], []).append(sec)
+    kept, gone = [], []
+    for sec in before:
+        slot = unmatched.get(sec[0])
+        if slot:
+            kept.append((sec, slot.pop(0)))
+        else:
+            gone.append(sec)
+    stripped = [old[0] for old, new in kept if old[3] and not new[3]]
+    appeared = [sec for slot in unmatched.values() for sec in slot
+                if sec[1] in BOUND_KINDS and not sec[3]]
+    for sec in gone:
+        if not sec[3]:
+            continue
+        twin = next((new for new in appeared if (new[1], new[2]) == (sec[1], sec[2])), None)
+        if twin is not None:
+            appeared.remove(twin)
+            stripped.append(sec[0])
+    return stripped
+
+
+def find_strips(range_arg, worktree=False):
+    """Return [(path, removed, added, sections)] for files that lost a script binding.
+
+    `sections` names the headers that kept their place and lost `script`; it is empty for a file whose
+    removed lines could not be attributed, which keeps the net count of removed over added lines."""
+    changed = file_diffs(diff_lines(range_arg, worktree))
+    suspects = {path: diff for path, diff in changed.items() if diff.removed}
+    if not suspects:
+        return []
+    whole = file_diffs(diff_lines(range_arg, worktree, WHOLE_FILE))
+    findings = []
+    for path, diff in suspects.items():
+        stripped = stripped_sections(whole[path]) if path in whole else None
+        if stripped is None:
+            if diff.removed > diff.added:
+                findings.append((path, diff.removed, diff.added, ()))
+        elif stripped:
+            findings.append((path, len(stripped), diff.added, tuple(stripped)))
+    return findings
 
 
 SCRATCH_DIR = Path(__file__).resolve().parents[1] / "scratch"
@@ -127,16 +230,19 @@ def scratch_list(session_id=""):
     stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in (session_id or "pid%d" % os.getpid()))
     return str(Path(SCRATCH_DIR) / ("tres_script_strip_findings.%s.txt" % stem))
 INSTRUCTION = (
-    "A custom-Resource .tres that loses its `script = ExtResource(...)` line loads as a "
-    "bare Godot.Resource -> casts to its C# type throw at runtime with a green build (the "
+    "A custom-Resource .tres section that keeps its place but loses its `script = ExtResource(...)` line "
+    "loads as a bare Godot.Resource -> casts to its C# type throw at runtime with a green build (the "
     "stale-registry editor-resave strip; gotcha_godot_editor_resave_hazards). "
-    "Restore the binding with `tres_script_strip_guard.py --worktree --repair-inplace`, "
-    "or if you genuinely deleted a scripted sub-resource, set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1."
+    "Restore the binding with `tres_script_strip_guard.py --worktree --repair-inplace` "
+    "(by hand where the file has no `resource_local_to_scene = \"\"` marker), then stage the file again."
 )
 
 
-def finding_row(path, removed, added):
-    return f"  {path}: script bindings removed={removed} added={added}"
+def finding_row(path, removed, added, sections=()):
+    if not sections:
+        return f"  {path}: script bindings removed={removed} added={added}"
+    shown = "; ".join(sections[:3]) + (f"; +{len(sections) - 3} more" if len(sections) > 3 else "")
+    return f"  {path}: {removed} section(s) lost `script`: {shown}"
 
 
 def report_parts(findings):
@@ -197,9 +303,9 @@ def hook():
             return 0
 
         reason = (
-            f"Blocked (rules/godot_files.md): {len(findings)} staged .tres lost a `script = ExtResource(...)` binding "
-            "(editor-resave script strip -> bare-Resource load / InvalidCastException). Restore the "
-            "binding, or set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 if the removal is intentional."
+            f"Blocked (rules/godot_files.md): {len(findings)} staged .tres kept a section but lost its "
+            "`script = ExtResource(...)` binding (editor-resave script strip -> bare-Resource load / "
+            "InvalidCastException). Restore the binding and stage the file again."
         )
         lead, rows = report_parts(findings)
         sys.stdout.write(bounded_decision(lambda text: json.dumps({"hookSpecificOutput": {
@@ -298,7 +404,7 @@ def worktree_scan(revert, repair=False):
         lead = header + f"[tres-script-strip-guard] Repaired {len(findings)} file(s) in place (bindings restored).\n"
         sys.stdout.write(bounded_report(lead, rows + results, scratch_list()))
     elif revert:
-        _git_run.run(["checkout", "--", *[p for p, _, _ in findings]])
+        _git_run.run(["checkout", "--", *[row[0] for row in findings]])
         lead = header + f"[tres-script-strip-guard] Reverted {len(findings)} file(s) from HEAD.\n" + (
             "WARNING: git-restore re-plants OLD-FORMAT .tres (ext_resource uid backfill pending), "
             "re-arming the dirty-flag bomb -- the strip recurs at the next editor save. Prefer "
@@ -363,7 +469,7 @@ def repair_inplace(findings):
     serialization and re-adds only the lost script binding, making the file a fixed point.
     """
     results = []
-    for path, _, _ in findings:
+    for path, *_ in findings:
         wf = Path(path)
         text = wf.read_text(encoding="utf-8")
         if "resource_local_to_scene = \"\"" not in text:

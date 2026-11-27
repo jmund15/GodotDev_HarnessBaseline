@@ -13,7 +13,11 @@ tool spawns git here and nothing here decides anything.
 a call whose work scales with the repository — `worktree add`/`remove`, `submodule update`, `clone`, `fetch`,
 `checkout` of a tree, `gc` — passes `timeout=None`, because no fixed cap fits a cost that grows with the repo
 (measured on a 14.7k-file repo: `worktree add` 8.7 s, `submodule update --init` 7.8 s on a quiet machine).
-A hook that must answer inside its own budget keeps an explicit cap.
+A hook that must answer inside its own budget keeps an explicit cap. An uncapped call still ends on a stall: its
+git, and every git it starts, gets `GIT_HTTP_LOW_SPEED_LIMIT=1` and `GIT_HTTP_LOW_SPEED_TIME=STALL_SECONDS` (a
+value in `env` wins), so an HTTP transfer that receives nothing for that long exits nonzero instead of hanging,
+and a caller that retries a dropped connection retries it. A slow transfer that still moves is never cut. SSH
+remotes are outside this bound.
 
 `GitResult` holds bytes, so a blob is never altered by a text pipe; `.text` and `.err_text` decode them as
 UTF-8 with `"replace"` and strip nothing, and `.check(args)` returns the result or raises the `CalledProcessError`
@@ -86,6 +90,9 @@ class Clock:
 
 
 _clock = None
+# A healthy fetch's longest silent phase is the server's object counting, and GitHub streams progress through
+# it; two minutes with no byte is a dead connection, and the retry costs one more fetch.
+STALL_SECONDS = 120
 
 
 @contextmanager
@@ -166,6 +173,8 @@ def _launcher_env(env, root):
 
 def run(args, *, cwd=None, env=None, input=None, timeout=30, prefix=(), optional_locks=True, creationflags=0):
     argv = ["git"] + ([] if optional_locks else ["--no-optional-locks"]) + list(prefix) + list(args)
+    if timeout is None:
+        env = {"GIT_HTTP_LOW_SPEED_LIMIT": "1", "GIT_HTTP_LOW_SPEED_TIME": str(STALL_SECONDS), **(env or {})}
     executable, child_env = None, git_environ(env)
     root = _launcher_root(os.environ.get("PATH", "")) if _WINDOWS and _is_read(argv[1:]) else None
     if root:

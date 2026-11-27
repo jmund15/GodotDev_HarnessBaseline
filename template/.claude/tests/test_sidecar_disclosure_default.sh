@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof that disclosure follows the kind in lib/sidecar_common.sh (guards/tool_profiles.json `kinds`):
-#   1. scout is bare, lens is pointer, reviewer/author/judge are full: the parser leaves the row's tier;
+#   1. scout, lens, reviewer, author and judge are full: the parser leaves the row's tier;
 #   2. -D refuses on every kind ("disclosure follows the kind: pass -G <kind>"), the row's own tier included;
 #   3. the one exception is -G arm, whose row has no disclosure: the caller's -D is required and kept.
 # Each case sources the lib in a fresh subshell so one case's flags cannot leak into the next.
@@ -33,20 +33,34 @@ refuses() {  # $1 label, rest: flags -> the parser exits 2 naming the kind
   esac
 }
 
-check "scout is bare"            bare    "$(tier_for -G scout)"
-check "lens is pointer"          pointer "$(tier_for -G lens)"
+cwd_for() {  # flags -> "same" when sc_build_disclosure leaves the run cwd at the checkout, "scratch" otherwise
+  local wd; wd="$(mktemp -d)"
+  ( . "$LIB" >/dev/null 2>&1
+    sc_parse_flags "$@" -m sonnet >/dev/null 2>&1
+    SC_WORKDIR="$wd"; SC_MODEL="${SC_MODEL:-claude-sonnet-4-5}"
+    sc_build_disclosure >/dev/null 2>&1
+    if [ "$SC_RUN_CWD" = "$SC_WORKDIR" ]; then printf same; else printf scratch; fi )
+  rm -rf "$wd" 2>/dev/null || :
+}
+
+check "scout is full"            full    "$(tier_for -G scout)"
+check "lens is full"             full    "$(tier_for -G lens)"
 check "reviewer is full"         full    "$(tier_for -G reviewer)"
 check "author is full"           full    "$(tier_for -G author)"
 check "judge is full"            full    "$(tier_for -G judge)"
 check "bench-score is pointer"   pointer "$(tier_for -G bench-score)"
 check "bench-review is bare"     bare    "$(tier_for -G bench-review)"
 check "arm keeps the caller's -D" pointer "$(tier_for -G arm -D pointer)"
+check "a scout child runs in the checkout"  same    "$(cwd_for -G scout)"
+check "a lens child runs in the checkout"   same    "$(cwd_for -G lens)"
+check "bench-review stays in a scratch cwd" scratch "$(cwd_for -G bench-review)"
+check "arm with -D bare stays in a scratch cwd" scratch "$(cwd_for -G arm -D bare)"
 refuses "scout -D full refuses"       -G scout -D full
 refuses "lens -D bare refuses"        -G lens -D bare
 refuses "reviewer -D full refuses"    -G reviewer -D full
 refuses "author -D pointer refuses"   -G author -D pointer
 refuses "judge -D bare refuses"       -G judge -D bare
 
-[ "$ran" -eq 13 ] || { echo "FAIL expected 13 cases, ran $ran"; fail=1; }
+[ "$ran" -eq 17 ] || { echo "FAIL expected 17 cases, ran $ran"; fail=1; }
 [ "$fail" = 0 ] && echo "PASS test_sidecar_disclosure_default" || echo "FAIL test_sidecar_disclosure_default"
 exit "$fail"

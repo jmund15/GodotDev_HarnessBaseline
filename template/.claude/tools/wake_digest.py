@@ -34,8 +34,9 @@ MARKER_LINES = 8
 # The output file is read from its end: a shell's tail never needs its first megabytes.
 TAIL_BYTES = 65536
 UNRATED_SHOWN = 12
-# Twice the longest Bash timeout the harness sets (the session watcher's 7200000 ms): an older launch with no
-# end row lost its notification, so it is no live work.
+# Twice the session watcher's 7200000 ms Bash timeout. A launch older than this with no end row counts as running only
+# while the client still lists it (`client_live`): a background shell's own life has no bound, so age alone never ends
+# one, but a launch whose notification was lost (a restarted client) is listed by no client and stops counting here.
 SHELL_LIVE_SECONDS = 4 * 3600
 SHELL_CHUNK_BYTES = 8 << 20
 # A foreground call returns within the Bash tool's 600000 ms cap or moves to the background with a result row; an
@@ -44,9 +45,10 @@ PENDING_CALL_SECONDS = 660
 SHELL_ROW_KEYS = (b"backgroundTaskId", b"watch_records", b"<task-notification>", b"Successfully stopped",
                   b'"tool_use"', b'"tool_result"')
 FAILURE_MARKER = re.compile(r"Traceback|\bfail(?:ed|ure|s)?\b|\berror\b|exception|\bfatal\b|\bpanic\b", re.IGNORECASE)
-# A background shell that ran `watch_records.py` ends with one of its own terminal lines, then the client's
+# A background shell that ran `watch_records.py` (the watcher or its pane) ends with one of its own terminal lines, then the client's
 # `[exited with code N]` trailer. It reports itself.
-WATCHER_TERMINALS = ("STILL RUNNING", "NONE", "COVERED by")
+WATCHER_TERMINALS = ("STILL RUNNING", "COVERED by", "IDLE:")  # line prefixes
+WATCHER_EXACT_END = "NONE"  # a whole line
 EXIT_TRAILER = re.compile(r"^\[exited with code -?\d+\]$")
 
 
@@ -200,7 +202,7 @@ def transcript_path(session_id):
 
 def new_shell_scan():
     return {"offset": 0, "launched": {}, "ended": set(), "delivered": set(), "watchers": set(), "calls": {},
-            "notices": []}
+            "notices": [], "described": {}}
 
 
 def _epoch(stamp):
@@ -250,7 +252,9 @@ def _scan_row(raw, pos, scan):
         if not isinstance(item, dict):
             continue
         if item.get("type") == "tool_use":
-            if _runs_watcher(str((item.get("input") or {}).get("command", ""))):
+            given = item.get("input") or {}
+            scan["described"][item.get("id")] = head(given.get("description") or given.get("command"), 80)
+            if _runs_watcher(str(given.get("command", ""))):
                 scan["watchers"].add(item.get("id"))
             else:
                 scan["calls"][item.get("id")] = _epoch(row.get("timestamp"))
@@ -259,6 +263,8 @@ def _scan_row(raw, pos, scan):
             task = result.get("backgroundTaskId") if isinstance(result, dict) else None
             if task:
                 scan["launched"][task] = (item.get("tool_use_id"), _epoch(row.get("timestamp")))
+            else:
+                scan["described"].pop(item.get("tool_use_id"), None)
 
 
 def advance_shell_scan(path, scan):
@@ -315,16 +321,29 @@ def _launched_watcher(scan, notice):
     return launch[0] in scan["watchers"] if launch else _is_watcher(notice)
 
 
-def running_shells(path, scan, now=None):
+def running_shells(path, scan, now=None, client_live=()):
     """The ids of this session's running Bash/PowerShell background tasks. A task is running once its launch row
     (a main-session `toolUseResult.backgroundTaskId`) has no `<task-notification>` and no successful TaskStop
-    result naming it, and was launched within `SHELL_LIVE_SECONDS`. A watcher's own shell is not work."""
+    result naming it, and was launched within `SHELL_LIVE_SECONDS` or is in `client_live`, the ids the client last
+    listed as running. A watcher's own shell is not work."""
     if advance_shell_scan(path, scan) is None:
         return set()
     now = time.time() if now is None else now
+    listed = {str(task) for task in client_live or ()}
     return {task for task, (use, when) in scan["launched"].items()
             if task not in scan["ended"] and use not in scan["watchers"]
-            and (when is None or now - when <= SHELL_LIVE_SECONDS)}
+            and (when is None or now - when <= SHELL_LIVE_SECONDS or task in listed)}
+
+
+def shell_note(scan, task, now=None):
+    """` for <age>: <launch description>` for a launched task, or "" when the scan holds no launch time for it."""
+    use, when = scan["launched"].get(task, (None, None))
+    if when is None:
+        return ""
+    minutes = int(((time.time() if now is None else now) - when) // 60)
+    age = "%dh%02dm" % (minutes // 60, minutes % 60) if minutes >= 60 else "%d min" % minutes
+    described = scan["described"].get(use)
+    return " for %s%s" % (age, ": " + described if described else "")
 
 
 def pending_calls(path, scan, now=None):
@@ -351,7 +370,7 @@ def _is_watcher(notice):
     text = _tail_text(notice.get("output_file") or "")
     last = next((l.strip() for l in reversed((text or "").splitlines())
                  if l.strip() and not EXIT_TRAILER.match(l.strip())), "")
-    return last.startswith(WATCHER_TERMINALS[0]) or last == WATCHER_TERMINALS[1] or last.startswith(WATCHER_TERMINALS[2])
+    return last == WATCHER_EXACT_END or last.startswith(WATCHER_TERMINALS)
 
 
 def shell_text(notice):

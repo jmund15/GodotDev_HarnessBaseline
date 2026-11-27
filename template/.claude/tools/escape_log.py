@@ -99,8 +99,14 @@ def mandate_keys(claude=None):
     return frozenset(review_ledger.load_catalog(Path(claude or claude_dir())))
 
 
+def mandate_of(row):
+    """The row's `shouldHaveCaught` key, a renamed catalog key read as its current name (`review_ledger.LEGACY_MANDATE_KEYS`)."""
+    key = row.get("shouldHaveCaught")
+    return review_ledger.LEGACY_MANDATE_KEYS.get(key, key) if isinstance(key, str) else key
+
+
 def rows(path=None):
-    """Every readable row of the log, oldest first; an absent file is no rows."""
+    """Every readable row of the log, oldest first, each `shouldHaveCaught` under its current key; an absent file is no rows."""
     out = []
     target = path or log_path()
     try:
@@ -112,6 +118,8 @@ def rows(path=None):
                     except ValueError:
                         continue
                     if isinstance(record, dict):
+                        if "shouldHaveCaught" in record:
+                            record["shouldHaveCaught"] = mandate_of(record)
                         out.append(record)
     except OSError:
         return []

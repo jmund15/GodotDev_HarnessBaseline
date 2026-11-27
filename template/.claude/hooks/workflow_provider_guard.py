@@ -1511,13 +1511,14 @@ def _cross_plan_route(payload, transport, data, plan=None):
     except Exception:
         got = {}
     transports = (data or {}).get("transports") or {}
-    # An unmetered plan has no room reading by design and still takes the job.
+    # An unmetered plan and a free route have no room reading by design and still take the job.
     rows = [r for r in got.get("plans") or []
-            if (r.get("room") is not None or r.get("unmetered")) and r["transport"] != plan]
+            if (r.get("room") is not None or r.get("unmetered") or r.get("free")) and r["transport"] != plan]
     if not rows:
         return ("Native dispatch waits for this transport's reset; no cross-transport row has quota and a "
                 "readable capacity. Run the job inline, or wait for the reset.")
-    names = "; ".join("%s via %s" % (_dispatch_checks.provider_bands.plan_entry(
+    names = "; ".join("%s via %s" % ("%s %s" % (r["transport"], r["why"]) if r.get("free") else
+                                     _dispatch_checks.provider_bands.plan_entry(
         r["transport"], _dispatch_checks.read_capacity(r["transport"], data)), ", ".join(
         v for k in ("launcher", "launcherProxy") if (v := (transports.get(r["transport"]) or {}).get(k))))
         for r in rows)

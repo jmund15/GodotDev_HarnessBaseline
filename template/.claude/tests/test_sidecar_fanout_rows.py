@@ -76,7 +76,6 @@ def fresh():
     sf.FALLBACKS.clear()
     sf.PLACED.clear()
     sf.SLOTS.clear()
-    sf.FULL_WINDOW.clear()
     sf._LIVE["load"] = {}
     pb._ledger_jobs = lambda: []
     pb._samples = lambda: []
@@ -142,6 +141,15 @@ def rows_over_three_routes_land_on_go_when_go_ranks_first():
                      live("anthropic", "anthropic-secondary"))
     return (flag(argv, "-m") == "go-deepseek-flash" and flag(argv, "-e") == "high"
             and argv_plan(argv) == os.path.basename(launcher_of("go"))), str(argv)[:300] + err[-300:]
+
+
+@case
+def a_job_carrying_window_is_refused_and_the_same_job_without_it_launches():
+    readings = {"anthropic": reading("anthropic", 0.9)}
+    refused, err = plan(readings, job(rows={"sonnet": "high"}, window="full"), live("anthropic"))
+    launched, err2 = plan(readings, job(rows={"sonnet": "high"}), live("anthropic"))
+    return (isinstance(refused, str) and refused.startswith("REFUSED") and "window" in refused
+            and flag(launched, "-m") == "sonnet"), str(refused)[:300] + err[-200:] + err2[-200:]
 
 
 @case
@@ -454,6 +462,119 @@ def an_unmetered_plan_decides_nothing_so_its_launcher_gate_decides():
         except sf.JobError as exc:
             got = "REFUSED: " + str(exc)
     return (placed.blind and got == "agy" and "unreadable" not in err.getvalue()), f"blind={placed.blind} got={got} {err.getvalue()[-300:]}"
+
+
+def free_route(data=None, **cap):
+    """`data` (default: the live registry, anthropic only) with a planted one-slot free route and its row `box-m`."""
+    data = copy.deepcopy(data) if data is not None else live("anthropic")
+    data["transports"]["box"] = {"costModel": "free", "capacityUnsupported": {"reason": "no account"},
+                                 "launcher": ".claude/scripts/box_planted.sh", "effortValues": ["low", "high"],
+                                 "maxChildren": {"count": 1, "basis": "one GPU"}, **cap}
+    data["models"].append({"transport": "box", "id": "box/m", "alias": "box-m", "family": "box", "roles": ["executor"],
+                           "lifecycle": "current", "limits": {"contextTokens": 1000000, "maxOutputTokens": 32000},
+                           "price": {"cacheHitPer1M": 0.0, "cacheMissPer1M": 0.0, "outputPer1M": 0.0},
+                           "effort": {"evidence": "see-ladder"}, "input": ["text"]})
+    return data
+
+
+MIXED = {"sonnet": "medium", "box-m": "high"}
+
+
+def pick(readings, rows, data, load=None, plans=None, rest=None):
+    """(plan or the JobError text, stderr) of one `pick_plan` over planted readings and running jobs `load`."""
+    fresh()
+    err = io.StringIO()
+    spec = job(rows=rows)
+    route, legal = sf.job_routes(spec, data)
+    with contextlib.redirect_stderr(err):
+        try:
+            got = sf.pick_plan("j", route, plans or legal, data, read=reader(readings), job=spec, load=load or {},
+                               rest=rest)
+        except sf.JobError as exc:
+            got = "REFUSED: " + str(exc)
+    return got, err.getvalue()
+
+
+@case
+def a_mixed_job_runs_on_the_free_route_while_its_slot_is_open():
+    argv, err = plan({"anthropic": reading("anthropic", 1.6, "Surplus")}, job(rows=MIXED), free_route())
+    return (flag(argv, "-m") == "box-m" and flag(argv, "-e") == "high" and argv_plan(argv) == "box_planted.sh"
+            and "plan box, row box-m (high) (free: no quota, no charge; 1 job at a time (one GPU)" in err
+            and "unreadable" not in err), str(argv)[:200] + err[-500:]
+
+
+@case
+def a_taken_slot_sends_a_mixed_job_to_the_plan_that_holds_it():
+    rest = []
+    got, err = pick({"anthropic": reading("anthropic", 0.8)}, MIXED, free_route(), {"box": [("box/m", "high", "arm")]},
+                    rest=rest)
+    return (got == "anthropic" and "box has no open slot: 1 job on it, 1 job at a time" in err
+            and rest == []), str(rest) + err[-500:]
+
+
+@case
+def two_mixed_jobs_of_one_fan_out_take_one_slot():
+    fresh()
+    data = free_route()
+    saved, pb.read_capacity = pb.read_capacity, reader({"anthropic": reading("anthropic", 0.8)})
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            got = [flag(sf.plan_job(job(label, rows=MIXED), data, TMP, False)[1], "-m") for label in ("a", "b")]
+    finally:
+        pb.read_capacity = saved
+    return got == ["box-m", "sonnet"], str(got)
+
+
+@case
+def a_free_only_job_queues_on_a_taken_slot():
+    got, err = pick({}, {"box-m": "high"}, free_route(), {"box": [("box/m", "high", "arm")]})
+    refused = sf.admission_refusal([job(alias="box-m", effort="high")], free_route(), read=reader({}), now=NOW,
+                                   load={"box": [("box/m", "high", "arm")]})
+    return got == "box" and "waits for the slot" in err and refused is None, str(refused) + err[-400:]
+
+
+@case
+def a_mixed_job_queues_on_a_taken_slot_when_no_plan_has_room():
+    readings = {"anthropic": dict(reading("anthropic", 0.0), status="exhausted")}
+    got, err = pick(readings, MIXED, free_route(), {"box": [("box/m", "high", "arm")]})
+    return got == "box", got + err[-400:]
+
+
+@case
+def a_free_route_with_no_cap_always_has_room():
+    data = free_route()
+    data["transports"]["box"].pop("maxChildren")
+    got, err = pick({"anthropic": reading("anthropic", 0.8)}, MIXED, data, {"box": [("box/m", "high", "arm")] * 9})
+    return got == "box", got + err[-300:]
+
+
+@case
+def a_named_plan_still_overrides_the_free_route():
+    argv, err = plan({"anthropic": reading("anthropic", 0.8)}, job(rows=MIXED, plan="anthropic"), free_route())
+    return flag(argv, "-m") == "sonnet", str(argv)[:200] + err[-300:]
+
+
+@case
+def a_free_placement_never_reads_a_meter_or_warns_that_capacity_is_unreadable():
+    seen = []
+
+    def read(name, _data=None, **_kw):
+        seen.append(name)
+        return None
+    fresh()
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        sf.pick_plan("j", "box", ["box"], free_route(), read=read, job=job(alias="box-m", effort="high"), load={})
+    return "box" not in seen and "cannot be read" not in err.getvalue(), str(seen) + err.getvalue()
+
+
+@case
+def the_live_registry_places_inkling_when_its_slot_is_open_and_a_plan_holds_the_job():
+    rows = {"sonnet": "high", "inkling-local": "high"}
+    got, err = pick({"anthropic": reading("anthropic", 1.6, "Surplus")}, rows, live("anthropic"))
+    busy, _ = pick({"anthropic": reading("anthropic", 1.6, "Surplus")}, rows, live("anthropic"),
+                   {"local": [("local/x", "high", "arm")]})
+    return got == "local" and busy == "anthropic", "%s %s %s" % (got, busy, err[-300:])
 
 
 failed = []

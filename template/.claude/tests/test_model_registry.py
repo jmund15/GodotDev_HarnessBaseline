@@ -254,6 +254,10 @@ def _anthropic_window_cli(argv, limits=None):
     return __import__("json").loads(output.getvalue()) if code == 0 else {"exit": code}
 
 
+_INKLING_98K = {"id": "local/inkling-test", "transport": "local",
+                "limits": {"contextTokens": 98304, "maxOutputTokens": 32768}}
+_INKLING_128K = {"id": "local/inkling-test-128k", "transport": "local",
+                 "limits": {"contextTokens": 131072, "maxOutputTokens": 32768}}
 _TIERED = {"limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
            "longContextTier": {"thresholdInputTokens": 100000, "multipliers": {"input": 5, "output": 5}}}
 
@@ -691,11 +695,9 @@ CASES = [
                                  "limits": {"contextTokens": 1000000}})) == {
          "model": "vendor-test", "autoCompactWindow": 500000, "maxContextTokens": 1000000,
          "contextWindow": 500000, "contextWindowSource": "anthropic-auto-compact"}),
-    ("a non-Claude row under the login cap is not raised, and full_window skips the cap",
-     lambda: _with_login(500000, lambda: (
-         mr.anthropic_window({"id": "vendor-test", "limits": {"contextTokens": 272000}})["autoCompactWindow"] is None
-         and mr.anthropic_window({"id": "vendor-test", "limits": {"contextTokens": 1000000}},
-                                 full_window=True)["autoCompactWindow"] is None))),
+    ("a non-Claude row under the login cap is not raised",
+     lambda: _with_login(500000, lambda:
+         mr.anthropic_window({"id": "vendor-test", "limits": {"contextTokens": 272000}})["autoCompactWindow"] is None)),
     ("compaction_point takes the login cap on every transport, not only Anthropic",
      lambda: _with_login(500000, lambda: mr.compaction_point(
          {"id": "vendor-test", "transport": "go", "limits": {"contextTokens": 1000000, "maxOutputTokens": 64000}},
@@ -746,20 +748,26 @@ CASES = [
      lambda: _with_login(300000, lambda: _anthropic_window_cli(["synthetic"]))["autoCompactWindow"] == 233000
      and _with_login(300000, lambda: _with_env({"SIDECAR_COMPACT_AT_TOKENS": "117000"},
                                                  lambda: _anthropic_window_cli(["synthetic"])))["autoCompactWindow"] == 150000),
-    ("full_window skips the login cap: a 1M row keeps its own window under a 500000 login; the default stays capped",
+    ("no job lifts the login cap: a 1M row compacts at a 500000 login, and a leftover SIDECAR_FULL_WINDOW=1 changes nothing",
      lambda: _with_login(500000, lambda: (
-         mr.anthropic_window(_FULL_ROW, full_window=True)["autoCompactWindow"] == 1000000
-         and mr.anthropic_window(_FULL_ROW)["autoCompactWindow"] == 500000
-         and mr.anthropic_window(_FULL_ROW, full_window=False)["autoCompactWindow"] == 500000))),
-    ("the CLI with SIDECAR_FULL_WINDOW=1 skips the login cap; without it the cap holds",
+         mr.anthropic_window(_FULL_ROW)["autoCompactWindow"] == 500000
+         and _with_env({"SIDECAR_FULL_WINDOW": "1"}, lambda: _anthropic_window_cli(["synthetic"], _FULL_ROW["limits"]))["autoCompactWindow"] == 500000
+         and mr.compaction_point(_FULL_ROW, {"transport": "anthropic", "window": "full"})
+         == mr.compaction_point(_FULL_ROW, {"transport": "anthropic"})))),
+    ("-K, a measurement's pin, still sets the point past the login cap's reach",
+     lambda: _with_login(500000, lambda:
+         mr.anthropic_window(_FULL_ROW, compact_override=117000)["autoCompactWindow"] == 150000)),
+    ("-K above the login cap keeps its own window: a 300000 login does not cap a 400000 point",
+     lambda: _with_login(300000, lambda:
+         mr.anthropic_window(_FULL_ROW, compact_override=400000)["autoCompactWindow"] == 400000 + 20000 + 13000
+         and mr.anthropic_window(_FULL_ROW)["autoCompactWindow"] == 300000)),
+    ("compaction_point sizes a long-context job at the larger window: a stepped 1M row is held to its step by default and to the login cap under longContext",
      lambda: _with_login(500000, lambda: (
-         _with_env({"SIDECAR_FULL_WINDOW": "1"}, lambda: _anthropic_window_cli(["synthetic"], _FULL_ROW["limits"]))["autoCompactWindow"] == 1000000
-         and _anthropic_window_cli(["synthetic"], _FULL_ROW["limits"])["autoCompactWindow"] == 500000))),
-    ("-K still wins with full_window, and a non-Claude row ignores it",
-     lambda: _with_login(500000, lambda: (
-         mr.anthropic_window(_FULL_ROW, compact_override=117000, full_window=True)["autoCompactWindow"] == 150000
-         and mr.anthropic_window({"id": "gpt-x", "limits": {"contextTokens": 272000}}, full_window=True)
-         == mr.anthropic_window({"id": "gpt-x", "limits": {"contextTokens": 272000}})))),
+         lambda row: mr.compaction_point(row, {"transport": "anthropic"}) == (220333, "auto-compact")
+         and mr.compaction_point(row, {"transport": "anthropic", "longContext": True}) == (467000, "auto-compact")
+         and mr.compaction_point(row, {"transport": "anthropic", "longContext": False}) == (220333, "auto-compact"))(
+         dict(_TIERED, id="claude-opus-test", transport="anthropic",
+              longContextTier={"thresholdInputTokens": 200000, "multipliers": {"input": 2, "output": 2}})))),
     ("anthropic-window --shape review is accepted and changes nothing",
      lambda: _with_login(500000, lambda: _anthropic_window_cli(["synthetic", "--shape", "review"]))
      == _with_login(500000, lambda: _anthropic_window_cli(["synthetic"]))
@@ -781,7 +789,43 @@ CASES = [
                                   "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
                                  {"transport": "go"}) == (467000, "auto-compact")
          and mr.compaction_point({"id": "claude-opus-test", "longContextTier": None,
-                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}})[1] == "usable-window"))),
+                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}})
+         == (467000, "auto-compact")))),
+
+    # ---- one client formula for every row: window - min(output cap, 20000) - 13000 ---------------------------
+    ("the 98k and 128k Inkling rows compact at the client formula (observed first triggers 65346 and 98069), not window less cap",
+     lambda: _with_login(500000, lambda: (
+         mr.compaction_point(_INKLING_98K, {"transport": "local"}) == (65304, "declared-window")
+         and mr.compaction_point(_INKLING_128K, {"transport": "local"}) == (98072, "declared-window")
+         and mr.compaction_point(_INKLING_98K)[0] == 65304))),
+    ("the client reserve is min(output cap, 20000) plus 13000 on any row below the login window",
+     lambda: _with_login(500000, lambda: (
+         mr.compaction_point({"id": "v/a", "limits": {"contextTokens": 100000, "maxOutputTokens": 10000}})[0] == 77000
+         and mr.compaction_point({"id": "v/a", "limits": {"contextTokens": 200000, "maxOutputTokens": 50000}})[0] == 167000
+         and mr.compaction_point({"id": "v/a", "limits": {"contextTokens": 200000}})[0] == 167000))),
+    ("a transport whose launcher passes its own output cap compacts at its declared window (window less that cap) less the client reserve of that cap",
+     lambda: _with_login(500000, lambda: (
+         mr.compaction_point({"id": "v/a", "transport": "t",
+                              "limits": {"contextTokens": 258400, "maxOutputTokens": 128000}},
+                             data={"transports": {"t": {"childOutputCap": 16000}}}) == (213400, "declared-window")
+         and mr.compaction_point({"id": "v/a", "transport": "u",
+                                  "limits": {"contextTokens": 258400, "maxOutputTokens": 128000}},
+                                 data={"transports": {"u": {}}}) == (225400, "declared-window")))),
+    ("child_output_cap reads the row's transport, and a row on a transport without one has none",
+     lambda: (mr.child_output_cap({"transport": "t"}, {"transports": {"t": {"childOutputCap": 16000}}}) == 16000
+              and mr.child_output_cap({"transport": "u"}, {"transports": {"u": {}}}) is None
+              and mr.child_output_cap({}, {"transports": {}}) is None)),
+    ("client_reserve is the one owner of the clamp and margin",
+     lambda: (mr.client_reserve(None) == 33000 and mr.client_reserve(10000) == 23000
+              and mr.client_reserve(50000) == 33000)),
+    ("a job and no job size the same row to the same point; the login cap applies either way",
+     lambda: _with_login(500000, lambda: (
+         mr.compaction_point(_FULL_ROW) == mr.compaction_point(_FULL_ROW, {}) == (467000, "auto-compact")))),
+    ("a long-context job on a row with no larger window is sized at its default window, not at the uncapped one",
+     lambda: _with_login(500000, lambda:
+         mr.compaction_point(_FULL_ROW, {"longContext": True}) == mr.compaction_point(_FULL_ROW, {}))),
+    ("a row that states no window has no compaction point",
+     lambda: mr.compaction_point({"id": "v/none", "limits": {"maxOutputTokens": 64000}})[0] is None),
 
     # ---- context-window modes ----------------------------------------------
     ("the default context query uses contextTokens and the provider percentage",
@@ -825,28 +869,28 @@ CASES = [
      lambda: (mr._effective_window({"contextTokens": 272000, "effectiveContextPercent": 95}, False) == 258400
               and mr._effective_window({"contextTokens": 1, "maxContextTokens": 1000}, True) == 1000
               and mr._effective_window({"maxOutputTokens": 64000}, False) is None)),
-    ("usable_window is the effective window less the max-output cap, the cap bounded to a quarter of the window",
-     lambda: (mr.usable_window({"limits": {"contextTokens": 100000, "maxOutputTokens": 10000}}) == 90000
-              and mr.usable_window({"limits": {"contextTokens": 1000000, "maxOutputTokens": 384000}}) == 750000
-              and mr.usable_window({"limits": {"contextTokens": 272000, "effectiveContextPercent": 95}}) == 258400
-              and mr.usable_window({"limits": {"maxOutputTokens": 64000}}) is None
-              and mr.usable_window({}) is None)),
-    ("a row with a price step keeps its input under the step: usable is 95% of the threshold, the window adds "
-     "the output reserve, and --max ignores the step",
-     lambda: (mr.usable_window(_TIERED) == 95000
-              and mr.effective_window(_TIERED) == 126666
-              and mr.usable_window(dict(_TIERED, limits={"contextTokens": 1000000, "maxOutputTokens": 10000})) == 95000
-              and mr.effective_window(_TIERED, use_max=True) == 1000000
-              and mr.usable_window(dict(_TIERED, longContextTier=None)) == 872000
-              and mr.effective_window({"limits": {"contextTokens": 272000, "effectiveContextPercent": 95},
-                                       "longContextTier": {"thresholdInputTokens": 272000,
-                                                           "multipliers": {"input": 2, "output": 1.5}}}) == 258400)),
-    ("a declared compactAtTokens replaces the step room: the child compacts there, past the step by choice",
-     lambda: (mr.usable_window(dict(_TIERED, limits=dict(_TIERED["limits"], compactAtTokens=200000))) == 200000
-              and mr.effective_window(dict(_TIERED, limits=dict(_TIERED["limits"], compactAtTokens=200000))) == 266666
+    ("compaction_point is the effective window less the client reserve of the max-output cap, the cap bounded to a quarter of the window",
+     lambda: _with_login(None, lambda: (
+         mr.compaction_point({"id": "v/a", "limits": {"contextTokens": 100000, "maxOutputTokens": 10000}})[0] == 77000
+         and mr.compaction_point({"id": "v/a", "limits": {"contextTokens": 1000000, "maxOutputTokens": 384000}})[0] == 967000
+         and mr.compaction_point({"id": "v/a", "limits": {"contextTokens": 272000, "effectiveContextPercent": 95}})[0] == 225400
+         and mr.compaction_point({"id": "v/a", "limits": {"maxOutputTokens": 64000}})[0] is None
+         and mr.compaction_point({"id": "v/a", "limits": {}})[0] is None))),
+    ("a row with a price step declares a window that holds its input under the step, and compacts under it; --max ignores the step",
+     lambda: _with_login(None, lambda: (
+         mr.effective_window(_TIERED) == 126666
+         and mr.compaction_point(dict(_TIERED, id="v/t"))[0] == 93666
+         and mr.compaction_point(dict(_TIERED, id="v/t", limits={"contextTokens": 1000000, "maxOutputTokens": 10000}))[0] == 82000
+         and mr.effective_window(_TIERED, use_max=True) == 1000000
+         and mr.compaction_point(dict(_TIERED, id="v/t", longContextTier=None))[0] == 967000
+         and mr.effective_window({"limits": {"contextTokens": 272000, "effectiveContextPercent": 95},
+                                  "longContextTier": {"thresholdInputTokens": 272000,
+                                                      "multipliers": {"input": 2, "output": 1.5}}}) == 258400))),
+    ("a declared compactAtTokens replaces the step room in the window a launcher declares, and --max ignores it",
+     lambda: (mr.effective_window(dict(_TIERED, limits=dict(_TIERED["limits"], compactAtTokens=200000))) == 266666
               and mr.effective_window(dict(_TIERED, limits=dict(_TIERED["limits"], compactAtTokens=200000)),
                                       use_max=True) == 1000000)),
-    ("max-output prints the cap usable_window subtracts, from one output_cap",
+    ("max-output prints the cap compaction_point reserves for, from one output_cap",
      lambda: (mr.output_cap({"contextTokens": 1000000, "maxOutputTokens": 384000}) == 250000
               and _capture_max_output(["m"], {"contextTokens": 1000000, "maxOutputTokens": 384000}) == (0, "250000")
               and mr.output_cap({"contextTokens": 272000}) is None)),
@@ -1394,9 +1438,9 @@ def _identity_cases(live):
                          "cacheWrite5mPer1M", "cacheWrite1hPer1M"))
                      and str(m["price"].get("source", "")).startswith("https://platform.claude.com/")
                      for m in live["models"] if m["transport"] == "anthropic")),
-        ("`available` prints no dollar rate beside a plan-quota row and keeps it for a marginal-usd row",
+        ("`available` prints a dollar rate beside a marginal-usd row alone: a plan-quota or free row spends none",
          lambda: (lambda pairs: pairs and all(
-             ("/1M in" in rate_line) == (live["transports"][row["transport"]]["costModel"] != "plan-quota")
+             ("/1M in" in rate_line) == (live["transports"][row["transport"]]["costModel"] == "marginal-usd")
              for row, rate_line in pairs if isinstance(row.get("price"), dict))
              and any("/1M in" in rate_line for _row, rate_line in pairs))(
              [(mr.row_by_id(ln.split()[1], live), lines[i + 1])

@@ -95,24 +95,34 @@ def _ai_worker_absent() -> bool:
 # absent tool and silently changes search behavior instead. The grant is decided by which MCP servers
 # CONNECT, not by auth: semantic-search connects at init; ai-worker connects a turn or two later, so a short
 # dispatch can still miss it.
-# Canon: gotcha_sidecar_child_mcp_tool_grant.md.
+# Canon: gotcha_sidecar_child_mcp_tool_grant.md (connection timing); gotcha_sidecar_mcp_deferral_by_route.md (route delivery).
 #
-# The ai-worker bullet is machine-dependent for the same reason it exists: it asserts the tool IS
-# available, and `tools/workstation_profile.py` reads whether the server is registered at all. On a
-# machine where it is not, the bullet grants the route that machine has instead — the same bounded
-# Read it already named as the tool-not-found fallback, plus a subagent. Unknown keeps the bullet.
+# Both granted bullets read the same on every route and machine: whether a child's schemas are deferred behind
+# ToolSearch is a fact the child sees in its own tool list, so each bullet says "if ToolSearch is among your tools,
+# load the schema first" and no route lookup picks its wording. Only the ai-worker bullet depends on the machine and
+# route: `tools/workstation_profile.py` reads whether the server is registered at all, and the route's `transportMcp`
+# policy (`tool_profiles.transport_policy`) lists a server it does not grant (`dropServers`). Where ai-worker is
+# absent or not granted, the bullet grants the route the child has instead: the same bounded Read it already named
+# as the tool-not-found fallback, plus a subagent. Unknown keeps the granted bullet.
 DELEGATE_TOOL_GRANT_HEAD = """\
 [delegate tool grant — overrides tool routing wherever CLAUDE.core.md §9 or a rails block names an absent tool; canon: gotcha_sidecar_child_mcp_tool_grant]
-- semantic-search IS available here (mcp__plugin_semantic-search_semantic-search__search, same name as a normal session). Route to it exactly as CLAUDE.core.md §9 directs — do NOT substitute Grep.
 """
+DELEGATE_SEARCH_GRANT = (
+    "- semantic-search IS available here (mcp__plugin_semantic-search_semantic-search__search, same name as a normal session). "
+    "If ToolSearch is among your tools, load its schema with "
+    "`select:mcp__plugin_semantic-search_semantic-search__search` before the first call. "
+    "Route to it exactly as CLAUDE.core.md §9 directs — do NOT substitute Grep.\n"
+)
 DELEGATE_AI_WORKER_GRANT = (
     "- ai-worker IS available too (mcp__ai-worker__read_files / write_doc), though it can connect "
-    "a turn or two after init. Route to it as `~/.claude/CLAUDE.md` §Local worker directs. Only if a "
+    "a turn or two after init. If ToolSearch is among your tools, load a tool's schema with "
+    "`select:mcp__ai-worker__<name>` before the first call. "
+    "Route to it as `~/.claude/CLAUDE.md` §Local worker directs. Only if a "
     "call fails with tool-not-found: use bounded Read (offset/limit) of the named files and say so "
     "in your deliverable.\n"
 )
 DELEGATE_AI_WORKER_ABSENT = (
-    "- ai-worker is NOT registered on this machine, so nothing here routes to it: substitute "
+    "- ai-worker is NOT available to this child, so nothing here routes to it: substitute "
     "bounded Read (offset/limit) of the named files, or hand the extraction to a subagent, and "
     "say so in your deliverable.\n"
 )
@@ -121,10 +131,20 @@ DELEGATE_TOOL_GRANT_TAIL = """\
 """
 
 
+def _mcp_policy() -> dict:
+    """The MCP policy of this child's route (`dropServers` is the key the grant reads); `{}` when it names none or cannot be read."""
+    try:
+        import tool_profiles
+        return tool_profiles.transport_policy(os.environ.get("CLAUDE_CODE_TRANSPORT"))
+    except Exception:
+        return {}
+
+
 def delegate_tool_grant() -> str:
-    """The grant block, with the ai-worker bullet rendered against THIS machine."""
-    bullet = DELEGATE_AI_WORKER_ABSENT if _ai_worker_absent() else DELEGATE_AI_WORKER_GRANT
-    return DELEGATE_TOOL_GRANT_HEAD + bullet + DELEGATE_TOOL_GRANT_TAIL
+    """The grant block, with the ai-worker bullet rendered against THIS machine and THIS child's route."""
+    absent = _ai_worker_absent() or "ai-worker" in _mcp_policy().get("dropServers", [])
+    return (DELEGATE_TOOL_GRANT_HEAD + DELEGATE_SEARCH_GRANT
+            + (DELEGATE_AI_WORKER_ABSENT if absent else DELEGATE_AI_WORKER_GRANT) + DELEGATE_TOOL_GRANT_TAIL)
 
 
 # Injected when the session runs on ANY non-Anthropic endpoint. One block, filled from the
