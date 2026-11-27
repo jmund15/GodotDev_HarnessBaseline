@@ -1,0 +1,11 @@
+[dispatch] exec-m2b: C:\Program Files\Git\bin\bash.exe .claude/scripts/codex_proxy_sidecar.sh -m luna -f C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/parts/exec_m2.md ...
+post_check: claims pass -> C:\Users\fixture-user\Work\Projects\{{PROJECT_NAME}}\.claude\scratch\laneb\parts\exec_out\post_check_claims.json
+sidecar check: fail VERIFIED=0 UNVERIFIED=0 UNCHECKED=0 -> C:\Users\fixture-user\Work\Projects\{{PROJECT_NAME}}\.claude\scratch\laneb\parts\exec_out\claims.json
+sidecar check: fail VERIFIED=0 UNVERIFIED=0 UNCHECKED=0 -> C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/parts/exec_out/exec-m2b.record.json.claims.json
+
+--- results ---
+ok    exec-m2b  -> C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/parts/exec_out/exec-m2b.md  stdout C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/parts/exec_out/exec-m2b.out.json
+
+1/1 exited 0
+
+[exited with code 1]

@@ -1,14 +1,13 @@
 """Contract tests for the Antigravity CLI seat, `scripts/antigravity_sidecar.sh`.
 
-Each case runs the launcher through Git Bash against a stub `agy` (AGY_BIN) that replays streams cut from
-live agy 1.5.14 runs (`fixtures/agy/`), so nothing is billed and no Google login is touched. The stub is a
-`.cmd` wrapper around Python because the seat spawns agy from Python (`tools/agy_seat.py run`), which
-cannot start a shebang script on Windows. Stopping the process tree and the exit code are what the
-spawned cases decide.
+Each case runs the launcher through Bash against a stub `agy` (AGY_BIN) that replays streams cut from
+live agy 1.5.14 runs (`fixtures/agy/`), so nothing is billed and no Google login is touched. The spawned
+cases check process-tree shutdown and exit codes using a native wrapper around the same Python stub.
 """
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -70,8 +69,13 @@ class AntigravitySeat(unittest.TestCase):
         self.work = Path(tmp.name)
         stub = self.work / "agy_stub.py"
         stub.write_text(STUB, encoding="utf-8")
-        self.bin = self.work / "agy.cmd"
-        self.bin.write_text('@"%s" "%s" %%*\r\n' % (sys.executable, stub), encoding="utf-8")
+        if os.name == "nt":
+            self.bin = self.work / "agy.cmd"
+            self.bin.write_text('@"%s" "%s" %%*\r\n' % (sys.executable, stub), encoding="utf-8")
+        else:
+            self.bin = self.work / "agy"
+            self.bin.write_text('#!/bin/sh\nexec %s "$@"\n' % shlex.join([sys.executable, str(stub)]), encoding="utf-8")
+            self.bin.chmod(0o755)
         self.home = self.work / "home"
         (self.home / ".gemini").mkdir(parents=True)
         self.sentinel = self.home / ".gemini" / "oauth_creds.json"

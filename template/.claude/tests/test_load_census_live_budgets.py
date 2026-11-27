@@ -79,6 +79,9 @@ class PlantedLowCapFailsTests(unittest.TestCase):
         injected through the report's merged `budgets` (the tool's own interface: base `BUDGETS` plus
         each `tools/load_census.*.json` profile), never by editing load_census.py."""
         report = lc.build_report(ROOT, profile_hooks_flag=False, need_budget_hooks=False)
+        if "cs_bundle_bytes" not in report["rules"]:
+            self.skipTest("this checkout adopts no godot layer, so it carries no C# rule bundle "
+                          "(cs_bundle_bytes) and no cs_rule_bundle_bytes cap; the case's subject is absent")
         live_bytes = report["rules"]["cs_bundle_bytes"]
         baseline = report["budgets"]["cs_rule_bundle_bytes"][1]
         report["budgets"]["cs_rule_bundle_bytes"] = (live_bytes - 1, baseline)

@@ -1,0 +1,136 @@
+{
+ "runId": "wf_c9e94863-f44",
+ "timestamp": "2026-10-19T14:55:42.892Z",
+ "taskId": "witd1lzv2",
+ "scriptPath": "C:\\Users\\fixture-user\\.claude\\projects\\C--Users-fixture-user-Work-Projects-{{PROJECT_NAME}}\\30b7e19d-8945-4de9-ab38-4b02699ef340\\workflows\\scripts\\laneb-followups-wf_c9e94863-f44.js",
+ "result": {
+  "fixes": [
+   {
+    "job": "fix:anchor-timeout",
+    "result": "Branch: `worktree-wf_c9e94863-f44-2`. Commit: `17fa37b2c`. Both hooks now finish well inside the 30 s timeout on the real transcript, and their output is byte-identical to before. The anchor is still 16.1 s, because the rating-debt count still scans the parent transcript (about 9 s). I did not run the 112 other bound proofs the commit left to the close.\n\n**What changed**\n- **Rating count, cause fix.** `pending_count` in `orchestration_metrics.py` now reads sidecar records with `priced=False`, so it no longer reprices them. Debt only needs each row's run and label. `pending_detail` and `collect_session_sidecar` still price by default for callers that report cost. Repricing was 13 s of the 22 s count.\n- **Rating count, deadline.** `rating_debt_line(sid, budget)` in `compact_directive_anchor.py` runs the count in a daemon thread with `RATING_DEADLINE_SEC = 20`. It prints nothing if the count is late. I kept this alongside the cause fix because the remaining transcript scan still grows with the drive. `reply_contexts` now runs before the count, so the deadline covers the last heavy step.\n- **`owner_prompts` prefilter.** In `session_digest.py`, `recover_meta_command_prompts` skips lines without `ARGUMENTS:`. `recover_question_answers` skips lines that neither name `AskUserQuestion` nor contain an asked tool_use id. Both are ASCII substrings that JSON never escapes.\n- **Ledger.** `prior_summaries` in `compact_directive_ledger.py` skips lines without `isCompactSummary`.\n\n**RED (before the fix)**\n- `test_compact_directive_anchor.py`: `TypeError: rating_debt_line() takes 1 positional argument but 2 were given`.\n- `test_orchestration_metrics_pending.py`: `FAIL pending_count reads sidecar records without repricing them`.\n\n**GREEN (after the fix)**\n- `test_compact_directive_anchor.py`: `102/102 cases pass`.\n- `test_orchestration_metrics_pending.py`: `78/78 cases pass`.\n- `test_compact_directive_ledger.py`: 65/65. `test_session_digest.py`: 38 checks, 0 fail. `test_session_digest_question_answers.py`: 12/12. `test_orchestration_metrics_session_sidecar.py`: 46/46.\n\n**Real input (session 30b7e19d, 340 MB, main-checkout payloads)**\n\n| Measure | Before | After |\n|---|---|---|\n| Anchor wall time | 35.1 s | 16.1 s |\n| Ledger wall time | 15.3 s | 8.2 s |\n| `owner_prompts` | 8.4 s | 6.0 s |\n| `pending_detail` | 21.9 s | 8.9 s |\n\n- **Output equality:** anchor and ledger outputs are `cmp`-identical to before. `owner_prompts` from HEAD and from the working tree both return 105 messages and compare equal, as do the meta and question-answer passes separately. `pending_detail` returns the same `remaining` (0) and 171 sidecar rows either way.\n- **The rating line:** it did not print in either run, because the session has 0 unrated dispatches. So the byte comparison does not exercise a nonzero line. The tests do, through the `HARNESS_PENDING_COUNT` seam.\n\n**Not done**\n- The remaining ~9 s is the parent-transcript scan in `_sidecar_record_launches` and `_fanout_jobs_paths`, mostly `json.loads` and `shlex`. I did not prefilter it, because a substring test there would risk changing which launches are attributed. The 20 s deadline bounds it.\n- The wall-time figures are single runs, so some jitter is expected."
+   },
+   {
+    "job": "fix:scratch-prune-copy",
+    "result": "Branch `worktree-wf_c9e94863-f44-3`, commit `ae27cc315`. The tool fix is in, but it does not move f3. f3 stays KEEP-GIT at 111,444,121,275 bytes, and no row changed bucket or git field on the real input.\n\n**What changed**\n- `.claude/tools/scratch_prune.py`: I added `_owns_git_file()`, and `walk_entry()` now sets `info['git']` only for a `.git` directory or an owned `.git` file.\n- A `.git` file counts as owned only when the admin dir it names exists and that dir's `gitdir` back-pointer resolves to this same file. A copied worktree or an orphan falls through to referenced / recent / CANDIDATE.\n- I kept the walk into `.git` directory contents, because it is needed for correct sizes.\n- `.claude/tests/test_scratch_prune.py` (tracked, `git add -f`) gained five planted cases:\n  - a real clone stays KEEP-GIT\n  - a copied worktree, whose back-pointer names elsewhere, becomes CANDIDATE with git=None\n  - an orphan `.git` file becomes CANDIDATE\n  - a live registered worktree nested in an entry gives KEEP-WORKTREE\n  - a `.git` directory's bytes still count toward size\n\n**RED:** `FAIL: test_copied_worktree_whose_backpointer_names_elsewhere_is_not_git`, `FAIL: test_orphan_git_file_is_not_git`, then `Ran 33 tests in 8.729s` / `FAILED (failures=2)`.\n\n**GREEN:** `Ran 33 tests in 6.200s` / `OK`.\n\n**Real-input observation:**\n- I ran the old tool (from HEAD) and the new tool on the main checkout's scratch, read-only, with `--out` files under my worktree's `.claude/scratch/`. Neither run applied, trimmed, or deleted anything.\n- Both runs gave the same result: 3975 rows, KEEP-GIT 1426 (114,354,353,747 bytes), KEEP-WORKTREE 3, KEEP-REFERENCED 445, KEEP-RECENT 2101, CANDIDATE 0. It reconciles.\n- A row-by-row comparison of bucket and git field shows 0 rows changed.\n- f3 contains 135 copied worktree `.git` files, and those no longer count.\n- f3 also contains real `.git` directories:\n  - `f3/headrev/.claude/cache/godot-docs/.git`\n  - the same directory inside a copied worktree\n  - `recon_fixture_*/repo/.git` and `recon_fixture_*/store/.git` under `headrev/.claude/worktrees/bench-exec-probes/`\n\n  The spec counts any `.git` directory as a clone, so f3 stays KEEP-GIT.\n\n**Not done:** The real f3 incident is still unresolved. Clearing it needs a stricter rule for `.git` directories. One option is to count a `.git` directory only when it holds commits no remote has, checked with `git log --branches --not --remotes`. The fixture repos have no remote, so that alone would not clear f3. A rule that fixed f3 would have to treat `.git` directories inside a copied `.claude/` tree as copies. That goes beyond the spec I was given, so I left it for you to decide.\n\nI did not run `harness_tests.py`. The commit hook says the 2 proofs bound to these paths are left to the close."
+   },
+   {
+    "job": "fix:ledger-jmodot",
+    "result": "Branch: `worktree-wf_c9e94863-f44-4`\nCommit: `bb83d81ceca29d640f4e516cd5378ad71dbb3b28` (fix(review-ledger): a gitlink move owes the submodule files it changed)\n\n**What changed** (`C:\\Users\\fixture-user\\Work\\Projects\\{{PROJECT_NAME}}\\.claude\\worktrees\\wf_c9e94863-f44-4\\.claude\\tools\\review_ledger.py`)\n- **Gitlink moves now owe Jmodot files.** `range_commits` now reads `git log --raw --no-abbrev` instead of `--name-only`. Over fcb0e07b8..f98dc313d, merges included, it lists exactly the same paths. Each gitlink change becomes the `<gitlink>/<file>` paths changed inside the submodule between the old and new pins (added, modified or deleted, `--no-renames`). This is done by the new `gitlink_files`. For a merge, it keeps only files whose resolved pin differs from every parent's pin.\n- **The gitlink path itself is dropped.** Ctx never hashes a gitlink as a blob, so no row can record it. Keeping it would owe a pair that nothing can cover. Its change is reviewed through the expanded files instead.\n- **Deleted submodule files get a tombstone.** `Ctx.deleted_hash` returns `deleted:<submodule commit that deleted it>`, read from the commit the gitlink pins at the head. If the gitlink itself was removed, it falls back to the superproject commit that removed it. `record` and `owed` use the same function, so a review of the deletion covers it.\n- **`owed_range` now hashes submodule paths from the submodule's own objects** (via `blob_at`). Before, its superproject `cat-file` call reported them as missing.\n- **Unreadable submodule history fails closed.** The new `readable_submodule` raises `LedgerUnreadable` when the checkout is uninitialized or a pinned commit is not local. `owed` then exits 2 and the push gate reports the check as unavailable.\n- **Callers covered:** `owed`/`owed_range` (the CLI and the `git_guardrails.py` push gate), `session_audit_inputs.py` (its doctrine filter over `range_commits`, plus `deleted_hash`), and `record` (`deleted_hash`).\n- **Excluded:**\n  - `build_scope`'s `_gitlinks`: the PR delta scope reports pins and does not use `range_commits`.\n  - `fold_check._expand_gitlinks`: it diffs the working tree, not the ledger.\n  - A gitlink nested inside a submodule is not expanded further.\n- **Docs:** the module docstring's `owed` paragraph now describes this behaviour.\n\n**Proof** (`C:\\Users\\fixture-user\\Work\\Projects\\{{PROJECT_NAME}}\\.claude\\worktrees\\wf_c9e94863-f44-4\\.claude\\tests\\test_review_ledger.py`)\n- New class `SubmodulePointerMoveTests` builds a real superproject and submodule. A pointer move adds, modifies and deletes submodule files. Each pair stays owed until a row covers it, the deletion gets its tombstone, and an absent pinned commit fails closed: `range_commits` and `deleted_hash` raise, and `owed` exits 2.\n- `RangeCommitsTests` was updated for the `--raw` argv and output, including a combined-merge line.\n\nRED (before the fix, all 4 new tests failed):\n`AssertionError: Lists differ: [('S2 move lib', ['lib'])] != [('S2 move lib', ['lib/core/gone.cs', 'lib/core/mod.cs', 'lib/core/new.cs'])]`\n`AssertionError: 'S2 move lib' not found in ''`\n\nGREEN:\n- `test_review_ledger.py`: 277 cases in 4 shards, all passed.\n- `test_review_ledger_doctrine.py`: 17 tests OK.\n- `test_session_audit_inputs.py`: 20 tests OK.\n- `test_git_guardrails_doctrine.py`: exit 0.\n\n**Real input:** I ran `owed --base-ref fcb0e07b8` and `owed_range` from the worktree at HEAD f98dc313d, with Jmodot initialized via `git submodule update --init Jmodot`.\n- **Before:** ee34f00dd and 5f5b58672 owed the gitlink `Jmodot` under an unrelated old tombstone, `deleted:8524b325d` (\"fixing spells\").\n- **After, the Jmodot files now owed:**\n  - ee34f00dd: `Jmodot/Implementation/AI/BehaviorTree/Composites/EngageCycle.cs`\n  - 5f5b58672: `Jmodot/Core/AI/Perception/Percept2D.cs` and `Jmodot/Core/AI/Perception/Percept3D.cs`\n- The list of owed commits is the same 37 lines before and after. No submodule file was deleted in that range, so the real input exercised no tombstone.\n\n**Not done:**\n- No case covers the merge path (a pin compared against every parent).\n- The 62 bound proofs were left to the close, as the task instructed. The commit hook flagged the commit as unproven until `harness_tests.py --proofs-for` or the close runs them."
+   }
+  ],
+  "audit": "The summaries held up: none of the 12 lost anything material, two were complete, and ten had minor losses. The real cost lever is compacting earlier, at about 250k tokens instead of about 550k: about 31\u201335% less context-read spend on this drive (~$50\u201358 of $165). Full report: `C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/compaction/fidelity_report.md`. Extractors are in `C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/compaction/x/`.\n\n**Q1 Loss.** No summary lost a running job, an open question or a promise, and U1663 survived all 12 verbatim. The repeating losses were:\n- command recipes dropped, recovered by 24 calls that searched the session transcript (~$1);\n- the dispatch-guard rule missing or wrong, causing 8 denials;\n- one quote elided with \"\u2026\" (U18's \"shrink it to half the size\").\n\n| C | Trigger | Rating | What the next segment lacked |\n|---|---|---|---|\n| C1 | manual | complete | none |\n| C2 | manual | minor | dropped lane-B input paths (needed in segment 3) |\n| C3 | manual | minor | placeholder ledger command, missing lane-B inputs: 5 transcript searches, 1 denial |\n| C4 | manual | minor | wrong guard recipe, acted on: denial at 04:59 |\n| C5 | auto | minor | review/plan-check recipe dropped (5 searches), no guard line (denial), Codex 5h command missing |\n| C6 | manual | complete | none |\n| C7 | manual | minor | wrong guard recipe: denial; the owner's corrections were about pre-compaction actions |\n| C8 | manual | minor | 3 transcript searches, hedged guard line: denial |\n| C9 | manual | minor | 3 transcript searches; U18 elision recovered with `--show` |\n| C10 | manual | minor | worktree recipe dropped (summary 9 had it), 5 transcript searches, denial |\n| C11 | auto | minor | 3 transcript searches; owner messages without IDs (\"U-new\") |\n| C12 | auto (idle) | minor | carried the false f3 \"git-tracked\" claim to the owner; denial |\n\n**Q2 Wrong facts.**\n- **\"Three compactions\":** no summary or hook ever states the compaction number, so the model guessed. At the 10th compaction the agent headed its retro notes \"After compaction 3\", and the postmortem copied it. The session digest also miscounts (20 for 10).\n- **f3 \"git-tracked\":** false. It has 0 tracked files and `.claude/scratch/` is gitignored. The prune tool's KEEP-GIT label means \"contains git repos\"; the agent paraphrased it at 07:46 and summary 12 carried it to you.\n- **Guard recipe:** summaries 4 and 7 said a ladder-slice print satisfies the dispatch guard. For untiered or `author` launches it needs a full Read, so both caused denials.\n- **Minor:** U2800 mislabelled, the F4\u2192O5 decision id drifts between D1 and D5, and U5229 is \"done\" in one section but \"holds\" in another.\n\n**Q3 Dead weight.** The Owner-directives ledger is about 25% of summary bytes. It pays for the governing directives (U1663 was cited 46 times in briefs) but carries lane-A quotes and duplicate IDs long after they stopped mattering. Errors and Problem Solving are mostly history (13\u201314% reuse). The bigger dead weight is outside the summary, in the 86k-token floor after each compaction (a fresh start is ~43k):\n- about 24k tokens of re-attached skills, some stale;\n- `instruction_quality` is 23.8k chars, the client re-attaches only 20k, so it was re-invoked in 10 of 12 segments (+6k each);\n- the PreCompact hook's own instructions (~2.3k tokens) get carried into every manual segment;\n- the anchor (~2.3k tokens) duplicates the ledger;\n- the guard forces a full ladder Read (~4.6k tokens) in 9 of 12 segments.\n\n**Q4 Anchor loss.** No directive loss in segments 7, 10, 11 and 12, but the evidence is thin: few owner messages there. The anchor timed out after compaction 7 (35.3s on the 340 MB transcript against a 30s limit).\n\n**Q5 Manual vs auto.** Auto lost no more than manual and resumed the exact in-flight step. Its cost is triggering late: the segments that ended in an auto compaction averaged 337\u2013358k context at ~$0.09 per call, against ~$0.07 for manual.\n\n**Q6 Recommendations.**\n1. **Compact at about 250k** (`autoCompactWindow` ~265\u2013270k), after items 2\u20134. My recalibrated simulation gives $109\u2013116 against $167, for 18 more compactions and about 22 minutes. The earlier `ctx_curve.json` estimate is wrong: it assumed a 38k floor, its baseline doesn't match actual spend, and it overstates the savings at low thresholds.\n2. **State the exact guard rule in the post-compaction context line**, or have the guard accept a slice for every shape. This removes about 8 denials per drive.\n3. **Turn the recurring recipes into tools:** one review-launch command plus the lane-worktree tool. Until then, change the summary rule to keep any command already run that a pending step needs.\n4. **Make the anchor and ledger hooks read an incrementally kept owner-message file, then dedupe the ledger quotes.** Have both hooks log their output so auto runs can be checked.\n5. **Trim the five skills over 20k chars** (instruction_quality, codify, plan_check, session_audit, regression_gate) below the re-attach cap. Stale skill re-attachment is the client's behavior, not ours.\n6. **Stop the PreCompact instructions from being carried into the next segment.**\n7. **Have the post-compaction context state the compaction number**, and fix the digest's count.\n8. **Small summary-rule fixes:** no \"\u2026\" inside quotes, no duplicate IDs, close a lane's directives when it ends, drop commit-hash history, copy tool labels word for word.\n\n**Not measured:** whether the ledger hook ran at the auto compactions, the implicit effect of stale skills or the anchor, decision quality at a lower compaction point, the summary call's own billing, the D1/D5 id, and what happened to the BT delivery-cap warning (dropped at compaction 5, no worklog item found).\n\n**Next step:** item 1 should wait for items 2\u20134. Once they land, set `autoCompactWindow` to ~265\u2013270k and confirm where auto fires on the next long drive."
+ },
+ "agentCount": 4,
+ "logs": [],
+ "durationMs": 820364,
+ "summary": "Fix compaction anchor timeout, scratch_prune copied-worktree keep, ledger Jmodot expansion; audit compaction fidelity",
+ "workflowName": "laneb-followups",
+ "status": "completed",
+ "startTime": 1792420922470,
+ "defaultModel": "claude-opus-5-5",
+ "workflowProgress": [
+  {
+   "type": "workflow_phase",
+   "index": 1,
+   "title": "Fix"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 2,
+   "title": "Audit"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 1,
+   "label": "audit:compaction-fidelity",
+   "phaseIndex": 2,
+   "phaseTitle": "Audit",
+   "agentId": "ab37f6d8c7fe8023d",
+   "model": "claude-opus-5-5",
+   "state": "done",
+   "startedAt": 1792420922544,
+   "queuedAt": 1792420922540,
+   "attempt": 1,
+   "lastToolName": "Edit",
+   "lastToolSummary": "C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claud\u2026",
+   "promptPreview": "Read-only audit of compaction quality for one long Claude Code session. Write nothing outside C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/compaction/ and never commit.\n\nSession 30b7e19d ran ~40 h (lane-B overnight drive) and compacted 12 times (9 manual /compact by the owner at stopping points, 3 auto at ~550-570k tokens; window setting autoCompactWindow 600000). Inp\u2026",
+   "promptFramed": true,
+   "lastProgressAt": 1792421740814,
+   "tokens": 337156,
+   "toolCalls": 73,
+   "durationMs": 818269,
+   "resultPreview": "The summaries held up: none of the 12 lost anything material, two were complete, and ten had minor losses. The real cost lever is compacting earlier, at about 250k tokens instead of about 550k: about 31\u201335% less context-read spend on this drive (~$50\u201358 of $165). Full report: `C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.claude/scratch/laneb/compaction/fidelity_report.md`. Extractors are \u2026"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 2,
+   "label": "fix:anchor-timeout",
+   "phaseIndex": 1,
+   "phaseTitle": "Fix",
+   "agentId": "ad369ac80d16458dc",
+   "isolation": "worktree",
+   "model": "claude-sonnet-5-5",
+   "state": "done",
+   "startedAt": 1792420930016,
+   "queuedAt": 1792420922574,
+   "attempt": 1,
+   "lastToolName": "Bash",
+   "lastToolSummary": "cd C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.cl\u2026",
+   "promptPreview": "You work in your own git worktree of the {{PROJECT_NAME}} repo; edit and commit only there. Before your first edit of a .claude/ file, invoke Skill(skill=\"instruction_quality\"). Follow .claude/rules/harness_tooling.md: RED-first proof (write the failing case, run it, watch it fail, then fix), tracked proof under .claude/tests/ (git add -f), and run the change on the real input named below and quote t\u2026",
+   "promptFramed": true,
+   "lastProgressAt": 1792421407887,
+   "tokens": 123055,
+   "toolCalls": 43,
+   "durationMs": 477871,
+   "resultPreview": "Branch: `worktree-wf_c9e94863-f44-2`. Commit: `17fa37b2c`. Both hooks now finish well inside the 30 s timeout on the real transcript, and their output is byte-identical to before. The anchor is still 16.1 s, because the rating-debt count still scans the parent transcript (about 9 s). I did not run the 112 other bound proofs the commit left to the close.\n\n**What changed**\n- **Rating count, cause fi\u2026"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 3,
+   "label": "fix:scratch-prune-copy",
+   "phaseIndex": 1,
+   "phaseTitle": "Fix",
+   "agentId": "a5b271df70b945ded",
+   "isolation": "worktree",
+   "model": "claude-sonnet-5-5",
+   "state": "done",
+   "startedAt": 1792420934554,
+   "queuedAt": 1792420922574,
+   "attempt": 1,
+   "lastToolName": "Bash",
+   "lastToolSummary": "git commit -q -F .claude/scratch/msg_sp.txt -- .claude/test\u2026",
+   "promptPreview": "You work in your own git worktree of the {{PROJECT_NAME}} repo; edit and commit only there. Before your first edit of a .claude/ file, invoke Skill(skill=\"instruction_quality\"). Follow .claude/rules/harness_tooling.md: RED-first proof (write the failing case, run it, watch it fail, then fix), tracked proof under .claude/tests/ (git add -f), and run the change on the real input named below and quote t\u2026",
+   "promptFramed": true,
+   "lastProgressAt": 1792421228647,
+   "tokens": 70744,
+   "toolCalls": 32,
+   "durationMs": 294092,
+   "resultPreview": "Branch `worktree-wf_c9e94863-f44-3`, commit `ae27cc315`. The tool fix is in, but it does not move f3. f3 stays KEEP-GIT at 111,444,121,275 bytes, and no row changed bucket or git field on the real input.\n\n**What changed**\n- `.claude/tools/scratch_prune.py`: I added `_owns_git_file()`, and `walk_entry()` now sets `info['git']` only for a `.git` directory or an owned `.git` file.\n- A `.git` file cou\u2026"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 4,
+   "label": "fix:ledger-jmodot",
+   "phaseIndex": 1,
+   "phaseTitle": "Fix",
+   "agentId": "ae1abeba7c68c0632",
+   "isolation": "worktree",
+   "model": "claude-opus-5-5",
+   "state": "done",
+   "startedAt": 1792420938653,
+   "queuedAt": 1792420922574,
+   "attempt": 1,
+   "lastToolName": "Bash",
+   "lastToolSummary": "cd \"C:/Users/fixture-user/Work/Projects/{{PROJECT_NAME}}/.c\u2026",
+   "promptPreview": "You work in your own git worktree of the {{PROJECT_NAME}} repo; edit and commit only there. Before your first edit of a .claude/ file, invoke Skill(skill=\"instruction_quality\"). Follow .claude/rules/harness_tooling.md: RED-first proof (write the failing case, run it, watch it fail, then fix), tracked proof under .claude/tests/ (git add -f), and run the change on the real input named below and quote t\u2026",
+   "promptFramed": true,
+   "lastProgressAt": 1792421509036,
+   "tokens": 124886,
+   "toolCalls": 52,
+   "durationMs": 570382,
+   "resultPreview": "Branch: `worktree-wf_c9e94863-f44-4`\nCommit: `bb83d81ceca29d640f4e516cd5378ad71dbb3b28` (fix(review-ledger): a gitlink move owes the submodule files it changed)\n\n**What changed** (`C:\\Users\\fixture-user\\Work\\Projects\\{{PROJECT_NAME}}\\.claude\\worktrees\\wf_c9e94863-f44-4\\.claude\\tools\\review_ledger.py`)\n- **Gitlink moves now owe Jmodot files.** `range_commits` now reads `git log --raw --no-abbrev` i\u2026"
+  }
+ ],
+ "totalTokens": 655841,
+ "totalToolCalls": 200
+}

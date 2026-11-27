@@ -32,7 +32,10 @@ class LensCatalogContracts(unittest.TestCase):
         guard_spec = importlib.util.spec_from_file_location('indexed_guard_subject', ROOT / '.claude/hooks/indexed_reference_guard.py')
         guard = importlib.util.module_from_spec(guard_spec)
         guard_spec.loader.exec_module(guard)
-        result = guard.process({'tool_name':'Read', 'tool_input':{'file_path':str(ROOT / '.claude/commands/agents/plan_check_agents.md')}})
+        # A main session's advice: an empty environ plants that fact, so a run from inside a sidecar or
+        # sdk-cli child (a delegate, which is blocked) still decides the advisory branch.
+        result = guard.process({'tool_name':'Read', 'tool_input':{'file_path':str(ROOT / '.claude/commands/agents/plan_check_agents.md')}},
+                               environ={})
         self.assertIsNotNone(result)
         message = result['advisory']
         self.assertIn('gate', message)

@@ -1,0 +1,4 @@
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01DTih3fKgRnv1tKcLer7tCL", "name": "Read", "input": {"file_path": "C:\\Users\\fixture-user\\Work\\BenchmarkArms\\t1r-haiku-r1\\.claude\\stress-test\\T1-addon-survey.md"}}]}}
+{"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto", "pre_tokens": 217724, "post_tokens": 8312, "duration_ms": 267531}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01W5Z9fxmesTE76Y5WNnLyVP", "name": "Read", "input": {"file_path": "C:\\Users\\fixture-user\\Work\\BenchmarkArms\\t1r-haiku-r1\\.claude\\stress-test\\T1-addon-survey.md"}}]}}
+{"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto", "pre_tokens": 233363, "post_tokens": 13685, "duration_ms": 35309}}

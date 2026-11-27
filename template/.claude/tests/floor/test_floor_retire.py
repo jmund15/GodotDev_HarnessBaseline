@@ -20,7 +20,6 @@ v1 cases not carried, each with its subject gone (`test_floor_ported.md`): the s
 files and stored edits of a worktree this session created (`own`, `--created`), untracked Godot `.import` files and
 Godot import temp files stay allowed, as in v1 (b2 G5).
 """
-import atexit
 import json
 import os
 import shutil
@@ -39,6 +38,7 @@ import _git_commit
 import _git_fixture
 import _own_worktree
 import test_floor_retire_verdict as planted
+from _hook_call import copy_repo
 from case import bash
 from conftest import git, write
 
@@ -65,60 +65,56 @@ def head(repo):
 
 
 def seeded(root, name, files, branch="main"):
+    """A source repository with one commit "seed", written in process (no `git init`, `add` or `commit` spawn). A tree
+    `.gitignore` makes `commit_all` take git's own `add` and `commit`, so each seed costs at most two spawns and a
+    plain one none."""
     repo = Path(root, name)
-    repo.mkdir(parents=True)
-    git(repo, "init", "-q", "-b", branch)
+    _git_fixture.init_repo(repo, branch=branch)
     for rel, text in files.items():
         write(repo, rel, text)
-    git(repo, "add", "-A")
-    git(repo, "commit", "-qm", "seed")
+    _git_fixture.commit_all(repo, "seed")
     return repo
 
 
 # --- The project every row clones ---------------------------------------------------------------------------------------
-_TEMPLATE = []
 SEED = {"a.txt": "a\n", "t2.txt": "t2\n", "t3.txt": "t3\n", "tools/bin/run.sh": "#!/bin/sh\n",
         ".gitignore": ".claude/worktrees/\n.claude/scratch/\n.claude/tmp/\n.godot/\n.devdb/\n.env.local\n"
                       "dist-preview/\nlogs/\ntest-results/\n"}
 EXCLUDE = "/bin/\nobj/\n.agents/\n*.tmp\n*.TMP\n.search-index/\n"  # what a project's `.git/info/exclude` holds beside its .gitignore
 
 
-def project_remote(root):
-    """A bare remote of a fixture project carrying a submodule (`git worktree remove` refuses every worktree that
-    carries one, so a retired worktree goes by a recursive delete). Built once per session in a template folder and
-    copied per project (the submodule URL is relative, so a copied pair stays a pair)."""
-    if not _TEMPLATE:
-        _TEMPLATE.append(Path(tempfile.mkdtemp(prefix="retire_remotes_")))
-        atexit.register(rmtree, _TEMPLATE[0])
-        _build_remotes(_TEMPLATE[0])
-    for name in ("sub_remote.git", "proj_remote.git", "proj_seed"):
-        shutil.copytree(_TEMPLATE[0] / name, Path(root, name))
-    return Path(root, "proj_remote.git")
-
-
-def _build_remotes(root):
+@pytest.fixture(scope="module")
+def project_tree(tmp_path_factory):
+    """Git creates the relative submodule link and the checkout once; each project gets its own copy."""
+    root = tmp_path_factory.mktemp("retire_project")
     sub_seed = seeded(root, "sub_seed", {"s.txt": "s\n"})
-    git(root, "clone", "-q", "--bare", str(sub_seed), str(Path(root, "sub_remote.git")))
-    proj_seed = seeded(root, "proj_seed", SEED)
+    tree = root / "tree"
+    tree.mkdir()
+    git(tree, "clone", "-q", "--bare", str(sub_seed), "sub_remote.git")
+    proj_seed = seeded(tree, "proj_seed", SEED)
     git(proj_seed, *SUB, "submodule", "add", "-q", "../sub_remote.git", "Sub")
     git(proj_seed, "commit", "-qm", "sub")
-    git(root, "clone", "-q", "--bare", str(proj_seed), str(Path(root, "proj_remote.git")))
+    git(tree, "clone", "-q", "--bare", str(proj_seed), "proj_remote.git")
+    project = tree / "proj"
+    project.mkdir()
+    git(project, "clone", "-q", "../proj_remote.git", ".")  # relative to the project, so a copy stays a pair
+    with (project / ".git/info/exclude").open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(EXCLUDE)
+    (project / ".claude/worktrees").mkdir(parents=True)
+    (project / ".claude/scratch").mkdir()
+    return tree
 
 
 class Project:
-    """A clone of `project_remote` with `.claude/worktrees/` and `.claude/scratch/` homes."""
+    """An isolated copy of the planted project and its two local remotes."""
 
-    def __init__(self, root, remote=None):
+    def __init__(self, root, template):
         self.base = Path(root)
-        self.remote = remote or project_remote(self.base)
+        for name in ("proj", "proj_remote.git", "sub_remote.git"):
+            copy_repo(template / name, self.base / name)
         self.root = self.base / "proj"
-        git(self.base, "clone", "-q", str(self.remote), str(self.root))
-        with open(self.root / ".git" / "info" / "exclude", "a", encoding="utf-8", newline="\n") as fh:
-            fh.write(EXCLUDE)
         self.home = self.root / ".claude" / "worktrees"
-        self.home.mkdir(parents=True)
         self.scratch = self.root / ".claude" / "scratch"
-        self.scratch.mkdir(parents=True)
 
     def wt(self, name, branch=None):
         path = self.home / name
@@ -143,8 +139,8 @@ class Project:
 
 
 @pytest.fixture(scope="module")
-def world(tmp_path_factory):
-    return Project(tmp_path_factory.mktemp("retire"))
+def world(tmp_path_factory, project_tree):
+    return Project(tmp_path_factory.mktemp("retire"), project_tree)
 
 
 @pytest.fixture
@@ -495,10 +491,10 @@ def nested_root(tmp_path_factory):
     """A project whose `child` submodule holds a `grand` submodule, with a worktree whose submodules git itself
     initialized, and a second worktree whose submodules are not."""
     base = tmp_path_factory.mktemp("states")
-
-    def init(name):
-        return seeded(base, name, {"f.txt": "f\n", ".gitignore": "*.local\n.cache/\nempty/\n"})
-    grand, child, root = init("grand-source"), init("child-source"), init("project")
+    grand = seeded(base, "grand-source", {"f.txt": "f\n", ".gitignore": "*.local\n.cache/\nempty/\n"})
+    child, root = base / "child-source", base / "project"
+    for dest in (child, root):
+        copy_repo(grand, dest)
     git(child, *SUB, "submodule", "add", "-q", str(grand), "grand")
     git(child, "commit", "-qam", "grandchild")
     git(root, *SUB, "submodule", "add", "-q", str(child), "child")
@@ -593,9 +589,9 @@ def test_every_planted_submodule_status_line_is_what_git_prints(nested_root):
 
 
 @pytest.fixture(scope="module")
-def stored(tmp_path_factory):
+def stored(tmp_path_factory, project_tree):
     """A project whose main checkout holds the submodule's store (`.git/modules/Sub`), which ignores `*.local`."""
-    world = Project(tmp_path_factory.mktemp("admin_gone"))
+    world = Project(tmp_path_factory.mktemp("admin_gone"), project_tree)
     git(world.root, *SUB, "submodule", "update", "-q", "--init")
     with open(world.root / ".git/modules/Sub/info/exclude", "a", encoding="utf-8", newline="\n") as fh:
         fh.write("*.local\n")
@@ -657,12 +653,11 @@ def test_an_orphan_goes_only_when_every_file_is_a_blob_or_a_regenerable_entry(wo
     assert not world.retired(dirty, own=True)[0]
 
 
-def test_an_orphan_beside_the_project_is_this_repositorys_only_when_its_admin_directory_is(world, tmp_path):
+def test_an_orphan_beside_the_project_is_this_repositorys_only_when_its_admin_directory_is(world, tmp_path, project_tree):
     siblings = tmp_path / "siblings"
     siblings.mkdir()
     assert world.retired(world.orphan("s_clean", where=siblings))[0]
-    (tmp_path / "other_project").mkdir()
-    other = Project(tmp_path / "other_project", world.remote)
+    other = Project(tmp_path / "other_project", project_tree)
     assert not world.retired(other.orphan("s_other", where=siblings))[0]
 
 

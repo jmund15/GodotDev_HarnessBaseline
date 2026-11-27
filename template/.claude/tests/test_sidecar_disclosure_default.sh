@@ -23,6 +23,11 @@ check() {  # $1 label, $2 expected, $3 actual
   if [ "$3" = "$2" ]; then echo "OK   $1 -> $3"; else echo "FAIL $1: expected $2, got '${3}'"; fail=1; fi
 }
 
+skip() {  # $1 label, $2 why: a case whose subject this checkout does not carry
+  ran=$((ran + 1))
+  echo "SKIP $1 ($2)"
+}
+
 refuses() {  # $1 label, rest: flags -> the parser exits 2 naming the kind
   local label="$1" out; shift
   out="$( ( . "$LIB" >/dev/null 2>&1; sc_parse_flags "$@" ) 2>&1; echo "rc=$?" )"
@@ -54,7 +59,13 @@ check "arm keeps the caller's -D" pointer "$(tier_for -G arm -D pointer)"
 check "a scout child runs in the checkout"  same    "$(cwd_for -G scout)"
 check "a lens child runs in the checkout"   same    "$(cwd_for -G lens)"
 check "bench-review stays in a scratch cwd" scratch "$(cwd_for -G bench-review)"
-check "arm with -D bare stays in a scratch cwd" scratch "$(cwd_for -G arm -D bare)"
+if [ -f "$HERE/../guards/arm.md" ]; then
+  check "arm with -D bare stays in a scratch cwd" scratch "$(cwd_for -G arm -D bare)"
+else
+  # guards/arm.md carries this project's bench-campaign paths and is local, so a consumer without it
+  # cannot assemble an arm seat at all.
+  skip "arm with -D bare stays in a scratch cwd" "this checkout carries no guards/arm.md (project-local)"
+fi
 refuses "scout -D full refuses"       -G scout -D full
 refuses "lens -D bare refuses"        -G lens -D bare
 refuses "reviewer -D full refuses"    -G reviewer -D full

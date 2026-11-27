@@ -20,8 +20,9 @@ import pytest
 
 import pre_bash_dispatch
 
+from _hook_call import copy_repo
 from case import bash, derived
-from conftest import git, write
+from conftest import git, plant_project, write
 
 # --- test_dangerous_shell_guard_rm_scope.py -------------------------------------------------------------------
 RM_SCOPE_BLOCK = [
@@ -276,15 +277,21 @@ ABSENT_BLOCKED = [
 ]
 
 
-@pytest.fixture
-def absent_plant(plant):
-    scratch = plant / ".claude" / "scratch"
+@pytest.fixture(scope="module")
+def absent_tree(tmp_path_factory):
+    scratch = tmp_path_factory.mktemp("absent_tree")
     write(scratch, "evidence_tree/run.json", "{}\n")
     clone = scratch / "probe"
     clone.mkdir()
     git(clone, "init", "-q")
     git(clone, "commit", "-q", "--allow-empty", "-m", "unpushed")
     write(scratch, "0f0e0d0c-1b1a-2918-1716-151413121110/out/job.log", "peer output\n")
+    return scratch
+
+
+@pytest.fixture
+def absent_plant(plant, absent_tree):
+    copy_repo(absent_tree, plant / ".claude/scratch", overlay=True)
     return plant
 
 
@@ -309,25 +316,34 @@ def test_absent_target_symlink_escape_blocked(absent_plant, tmp_path):
     assert bash("rm -rf .claude/scratch/escape/x", absent_plant).denied
 
 
-@pytest.fixture
-def linked(plant, monkeypatch):
-    """A main repository with a registered linked worktree and an unregistered stray checkout, each holding a
-    scratch file and a scratch entry with a repository."""
-    main = plant / "main_repo"
+@pytest.fixture(scope="module")
+def linked_tree(tmp_path_factory):
+    root = tmp_path_factory.mktemp("linked_tree")
+    main = root / "main_repo"
     main.mkdir()
     git(main, "init", "-q", "-b", "main")
     write(main, "README.md")
     git(main, "add", "-A")
     git(main, "commit", "-q", "-m", "init")
+    stray = root / "stray_checkout"
+    stray.mkdir()
+    git(stray, "init", "-q", "-b", "main")
+    write(stray, ".claude/scratch/fan_dbg.json")
+    write(stray, ".claude/scratch/dir_with_repo/.keep")
+    git(stray / ".claude/scratch/dir_with_repo", "init", "-q")
+    return root
+
+
+@pytest.fixture
+def linked(plant, linked_tree):
+    """Create the linked worktree at its real path; copy the repositories that carry no path links."""
+    main = plant / "main_repo"
+    copy_repo(linked_tree / "main_repo", main)
     linked = plant / "linked_wt"
     git(main, "worktree", "add", "-q", "--detach", str(linked))
     stray = plant / "stray_checkout"
-    stray.mkdir()
-    git(stray, "init", "-q", "-b", "main")
-    for tree in (linked, stray):
-        write(tree, ".claude/scratch/fan_dbg.json")
-        write(tree, ".claude/scratch/dir_with_repo/.keep")
-        git(tree / ".claude" / "scratch" / "dir_with_repo", "init", "-q")
+    copy_repo(linked_tree / "stray_checkout", stray)
+    copy_repo(stray / ".claude", linked / ".claude")
     return main, linked, stray
 
 
@@ -485,8 +501,10 @@ OUTPUTS_BLOCK = [
 ]
 
 
-@pytest.fixture
-def outputs_plant(plant):
+@pytest.fixture(scope="module")
+def outputs_tree(tmp_path_factory, _planted_template):
+    plant = tmp_path_factory.mktemp("outputs_tree") / "project"
+    copy_repo(_planted_template, plant)
     with open(plant / ".git" / "info" / "exclude", "a", encoding="utf-8", newline="\n") as fh:
         fh.write("/bin/\nobj/\n.agents/\n/scripts/bin/\n")
     for rel in ("bin/Debug/app.dll", "obj/a.json", ".agents/workflows/run.md", "src/obj/b.json", "Art/desktop.ini",
@@ -504,6 +522,11 @@ def outputs_plant(plant):
     write(sub, "obj/o.json")
     git(sub, "add", "-f", "bin/tracked.dll")
     return plant
+
+
+@pytest.fixture
+def outputs_plant(tmp_path, monkeypatch, outputs_tree):
+    return plant_project(tmp_path, monkeypatch, outputs_tree)
 
 
 @pytest.mark.parametrize("command", OUTPUTS_PASS)
@@ -542,16 +565,9 @@ def test_cache_expansion_token_under_a_temp_cwd(plant, command):
     assert bash(command, work).denied
 
 
-@pytest.mark.parametrize("command,blocked", [
-    ("rm -rf .claude/tmp/pe_absent_repo_abcdefgh", True),
-    ("rm -rf .claude/tmp/pe_absent_repo_abcdefgh/repo", True),
-    ("rm -rf .claude/tmp/pe_absent_empty_abcdefgh", False),
-    ("rm -rf .claude/tmp/pe_absent_empty_abcdefgh/repo", False),
-    ("rm -rf .claude/tmp/pe_absent_files_abcdefgh", False),
-    ("rm -rf .claude/tmp/pe_absent_files_abcdefgh/sub", False),
-])
-def test_cache_planted_proof_folder(plant, command, blocked):
-    tmp = plant / ".claude" / "tmp"
+@pytest.fixture(scope="module")
+def proof_folder_tree(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("proof_folders")
     write(tmp, "pe_absent_files_abcdefgh/sub/fixture.txt", "a proof's own fixture\n")
     repo = tmp / "pe_absent_repo_abcdefgh" / "repo"
     write(repo, "work.txt", "unpushed work\n")
@@ -562,6 +578,19 @@ def test_cache_planted_proof_folder(plant, command, blocked):
     empty.mkdir(parents=True)
     git(empty, "init", "-q")
     git(empty, "commit", "-q", "--allow-empty", "-m", "unpushed")
+    return tmp
+
+
+@pytest.mark.parametrize("command,blocked", [
+    ("rm -rf .claude/tmp/pe_absent_repo_abcdefgh", True),
+    ("rm -rf .claude/tmp/pe_absent_repo_abcdefgh/repo", True),
+    ("rm -rf .claude/tmp/pe_absent_empty_abcdefgh", False),
+    ("rm -rf .claude/tmp/pe_absent_empty_abcdefgh/repo", False),
+    ("rm -rf .claude/tmp/pe_absent_files_abcdefgh", False),
+    ("rm -rf .claude/tmp/pe_absent_files_abcdefgh/sub", False),
+])
+def test_cache_planted_proof_folder(plant, proof_folder_tree, command, blocked):
+    copy_repo(proof_folder_tree, plant / ".claude/tmp")
     assert bash(command, plant).denied is blocked
 
 

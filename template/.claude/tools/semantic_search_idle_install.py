@@ -344,11 +344,13 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
     elif sha256_file(paths.checker) != state.get("checker_sha256"):
         problems.append(f"installed checker content changed: {paths.checker}")
 
-    for name in CSHARP_ASSETS:
+    # The state is what the install recorded, so a pure consumer's shim has no C# assets to expect.
+    pinned_assets = state.get("csharp_sha256") or {}
+    for name in sorted(pinned_assets):
         asset = paths.state_dir / name
         if not asset.exists():
             problems.append(f"C# asset missing: {asset}")
-        elif sha256_file(asset) != (state.get("csharp_sha256") or {}).get(name):
+        elif sha256_file(asset) != pinned_assets[name]:
             problems.append(f"C# asset content changed or unpinned: {asset}")
 
     # Run from a checkout, the sources are present: an install older than them serves the old hook.
@@ -362,6 +364,9 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
                  if copy.exists() and source.exists() and sha256_file(copy) != sha256_file(source)]
         if stale:
             behind.append(f"installed copy differs from this repo's source, run --install: {', '.join(stale)}")
+        shipped = {name for name in CSHARP_ASSETS if (root / PROXY_SOURCE.parent / name).exists()}
+        for name in sorted(shipped - set(pinned_assets)):
+            problems.append(f"C# asset not installed: {paths.state_dir / name}")
 
     manifest_path = Path(state.get("manifest", install_path / ".mcp.json"))
     if not manifest_path.exists():
@@ -453,11 +458,15 @@ def install(paths: Paths, plugin_root: Path | None = None) -> dict:
     root = repo_root()
     source_proxy = root / PROXY_SOURCE
     source_checker = root / CHECKER_SOURCE
-    source_assets = [source_proxy.parent / name for name in CSHARP_ASSETS]
-    for needed in (source_proxy, source_checker, *source_assets):
+    for needed in (source_proxy, source_checker):
         if not needed.exists():
             raise Drift(f"installer source missing: {needed}")
-    csharp_contract(paths, source_proxy.parent / CSHARP_HOOK_NAME, install_path)
+    # The C# hook and its tree-sitter data ship with the coding layer. A consumer that adopts only
+    # `pure` carries none and has no C# to index, so its shim installs without them.
+    source_assets = [source_proxy.parent / name for name in CSHARP_ASSETS
+                     if (source_proxy.parent / name).exists()]
+    if (source_proxy.parent / CSHARP_HOOK_NAME).exists():
+        csharp_contract(paths, source_proxy.parent / CSHARP_HOOK_NAME, install_path)
 
     manifest_path = install_path / ".mcp.json"
     if not manifest_path.exists():
@@ -493,7 +502,7 @@ def install(paths: Paths, plugin_root: Path | None = None) -> dict:
         "backup": str(backup),
         "proxy_sha256": sha256_file(paths.proxy),
         "checker_sha256": sha256_file(paths.checker),
-        "csharp_sha256": {name: sha256_file(paths.state_dir / name) for name in CSHARP_ASSETS},
+        "csharp_sha256": {source.name: sha256_file(paths.state_dir / source.name) for source in source_assets},
         "installed_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     write_json_atomic(paths.state, state)

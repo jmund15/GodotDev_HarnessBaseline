@@ -751,36 +751,6 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
 # Step 6: publish (push, PR, checks, merge)
 # ---------------------------------------------------------------------------
 
-def _merge_local(repo: str, branch: str, expected_head: str, work_parent: Path) -> str:
-    """Push a branch and merge it into main in a local (non-network) repository.
-
-    Real `gh pr merge` talks to GitHub's server; this is the mechanism a fake `gh` test
-    fixture uses to actually perform that merge against a local bare remote, since there is
-    no GitHub server in a proof. Not called by `_publish` itself.
-    """
-    if not (str(repo).lower().startswith("file://") or Path(str(repo)).is_dir()):
-        raise PublishError(f"the local merge seam accepts only a local repository, not {repo}")
-    merge_dir = work_parent / "merge-checkout"
-    if merge_dir.exists():
-        shutil.rmtree(merge_dir, ignore_errors=True)
-    merge_dir.parent.mkdir(parents=True, exist_ok=True)
-    result = sync.run_git_network(
-        ["git", "clone", "--no-checkout", str(repo), str(merge_dir)], ["clone"], "git clone")
-    if result.returncode != 0:
-        detail = _lf(result.stderr).decode(errors="replace").strip()
-        raise PublishError("could not clone merge checkout" + (": " + detail if detail else ""))
-    _git(merge_dir, ["config", "user.email", "baseline@invalid"])
-    _git(merge_dir, ["config", "user.name", "baseline-publisher"])
-    _git(merge_dir, ["fetch", "origin", branch])
-    _git(merge_dir, ["checkout", "-q", "-B", "main", "origin/main"])
-    fetched_head = _git_text(merge_dir, ["rev-parse", "FETCH_HEAD^{commit}"])
-    if fetched_head != expected_head:
-        raise PublishError("published branch moved before merge")
-    _git(merge_dir, ["merge", "--no-ff", "-m", "merge baseline publication", f"origin/{branch}"])
-    _git(merge_dir, ["push", "-q", "origin", "HEAD:refs/heads/main"])
-    return _git_text(merge_dir, ["rev-parse", "HEAD"])
-
-
 def _resolve_gh() -> str:
     found = shutil.which("gh")
     if not found:

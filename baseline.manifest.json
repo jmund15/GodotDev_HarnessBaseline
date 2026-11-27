@@ -4002,6 +4002,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/finding_id_vectors.json",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/gate_trend/gate_run_20261026-162451-95356.out",
       "layer": "godot",
       "sync": "auto"
@@ -4397,6 +4402,71 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/wake_digest/launch_bash.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/notice_fail.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/notice_ok.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/shell_fail.output",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/shell_ok.output",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/sidecar.claims.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/workflow_host.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wake_digest/workflow_journal.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/watch/bench_cell_cycle.progress.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/watch/bench_cell_progress_advancing.progress.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/watch_progress/gatefix_trim.stream",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/watch_progress/opencode_trim.stream",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/watch_progress/survey_trim.stream",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/wide_test_guard/lane_author_payload.json",
       "layer": "pure",
       "sync": "auto"
@@ -4408,6 +4478,11 @@
     },
     {
       "path": ".claude/tests/fixtures/workflow_replay/session/workflows/wf_7c3b636b-5e2.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/worklog_relevance/captured_placeholder.json",
       "layer": "pure",
       "sync": "auto"
     },

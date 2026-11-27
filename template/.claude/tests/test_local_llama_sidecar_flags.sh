@@ -4,6 +4,13 @@
 # SC_UPSTREAM_KEY=local; a dispatch without -e exits 2 before uv runs; -X detaches (and -X without -R is refused
 # by the lib before uv runs). `uv` is a stub that records argv.
 set -uo pipefail
+# The local llama seat is a Windows workstation facility: backend_hold.py spawns the child from Windows
+# Python through an absolute Git Bash path, and the launch memory floor reads Windows headroom. A host
+# without those facilities has no seat to prove.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *) echo "SKIP: the local llama seat spawns through Windows Python and Git Bash and reads Windows memory headroom; $(uname -s) has none of the three"; exit 0 ;;
+esac
 unset CLAUDE_CODE_SESSION_ID  # the proof is no session: an invoking session's dispatch-doctrine state must not deny its launches
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 R="$HERE/.."

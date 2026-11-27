@@ -31,6 +31,11 @@ import time
 import uuid
 from pathlib import Path
 
+from _platform_skip import skip_proof
+
+if os.name != "nt":
+    skip_proof(Path(__file__).name, "the live proof uses Windows process ancestry, MSYS bash and taskkill")
+
 HERE = Path(__file__).resolve().parent
 CLAUDE = HERE.parent
 SCRATCH = tempfile.mkdtemp(prefix="dup_launch_scratch_")
