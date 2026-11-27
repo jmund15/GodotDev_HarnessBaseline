@@ -27,6 +27,8 @@ sys.path[:0] = [str(TOOLS), str(REPO / ".claude" / "hooks"), str(HERE)]
 import _git_fixture  # noqa: E402
 import _hook_call  # noqa: E402
 import _mcp_plant  # noqa: E402
+import review_ledger  # noqa: E402
+from _planted_reads import planted  # noqa: E402
 from _planted_checkout import enter_planted_checkout  # noqa: E402
 
 enter_planted_checkout()  # the rigor reader asks git about the working directory
@@ -191,7 +193,8 @@ class Fixture:
             return subprocess.run([sys.executable, str(TOOLS / "lens_briefs.py"), *argv, "--no-launch"],
                                   capture_output=True, text=True, encoding="utf-8",
                                   cwd=str(self.root), env=self.env, timeout=180)
-        return _hook_call.run_main(lens_briefs, argv, env=self.env, cwd=self.root)
+        with planted(review_ledger):  # the plan's repository reads are answered from the planted checkout
+            return _hook_call.run_main(lens_briefs, argv, env=self.env, cwd=self.root)
 
     def args(self):
         path = self.out / "args.json"

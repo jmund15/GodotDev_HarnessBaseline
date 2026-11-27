@@ -281,6 +281,8 @@ def rebind_checks():
 
 
 def main():
+    import io
+    from contextlib import redirect_stdout
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -387,8 +389,17 @@ def main():
             tr.open_record("roles", "inline-author", "role chain")
             tr.add_job("roles", "inline-author", "design", "session", "launched", subject=["subject.txt"])
             Path(repo, "subject.txt").write_text("draft\n", encoding="utf-8")
-            architect = tr.add_job("roles", "inline-author", "design", "session", "accepted",
-                                  role="architect", subject=["subject.txt"])
+            import review_snapshot
+            readers, real_reader = [], review_snapshot._batch_process
+
+            def reader(root):
+                readers.append(root)
+                return real_reader(root)
+            with patch.object(review_snapshot, "_batch_process", reader):
+                architect = tr.add_job("roles", "inline-author", "design", "session", "accepted",
+                                      role="architect", subject=["subject.txt"])
+            check("one job's subject reads (HEAD, its blobs' types) share one object reader", len(readers) == 1,
+                  readers)
             check("inline architect has a transcript-observed actor", architect.get("modelObserved") is True
                   and architect.get("identityBasis") == "sessionTranscript", architect)
             try:
@@ -504,10 +515,13 @@ def main():
     check("the self-supersede refusal left the decision live",
           later["id"] in [d["id"] for d in tr.load("s1-drive")["decisions"]])
 
-    # freshness check: fresh -> STALE -> MISSING; a decision without a reproduction is hash-only
-    rows = tr.check_record("s1-drive")
-    check("check reports fresh rows and hash-only for a decision without a reproduction",
-          all(r["status"] == "fresh" for r in rows) and any(r.get("repro") == "hash-only" for r in rows), rows)
+    for rerun in (False, True):
+        rows = {r["id"]: r for r in tr.check_record("s1-drive", rerun=rerun)}
+        check(f"check reports no premise verdict for hashes or no evidence (rerun={rerun})",
+              all(rows[k]["status"] == "UNCHECKED" for k in (d["id"], new["id"])), rows)
+    projected = {d["id"]: d for d in tr.all_decisions("s1-drive")}
+    check("audit and lineage reads do not turn an archived empty decision into evidence",
+          projected[old["id"]].get("premise_check") == "UNCHECKED")
     with open(evidence, "w", encoding="utf-8") as fh:
         fh.write("v2\n")
     rows = tr.check_record("s1-drive")
@@ -869,12 +883,29 @@ def main():
 
     # Decisions use the four-kind evidence contract, not an exit-code-only shell command.
     tr.open_record("ev-1", session_id=sid, title="Evidence items")
+    tr.open_record("ev-empty", session_id=sid, title="No premise items")
     plant([owner_row("u1", quote)])
 
     def evidence_cli(*items, task="ev-1", extra=()):
         flags = [part for item in items for part in ("--evidence-item", json.dumps(item))]
         return cli("add", task, "decision", "keep the premise", *flags, *extra,
                    cwd=root, env=cond_env())
+
+    def decision_readout(*args):
+        with patch.dict(os.environ, cond_env()), io.TextIOWrapper(io.BytesIO()) as out, redirect_stdout(out):
+            rc = tr.main(args)
+            out.seek(0)
+            return rc, out.read()
+
+    add_rc, written = decision_readout("add", "ev-empty", "decision", "run the dependent step last")
+    show_rc, shown = decision_readout("show", "ev-empty")
+    row = json.loads(shown)["decisions"][0]
+    check("add and show report an empty decision as unchecked, without storing a verdict",
+          add_rc == show_rc == 0 and json.loads(written).get("premise_check") == row.get("premise_check") == "UNCHECKED"
+          and "premise_check" not in tr.load("ev-empty")["decisions"][0])
+    rc, checked = decision_readout("check", "ev-empty", "--rerun")
+    check("an empty decision cannot make rerun exit clean",
+          rc == 1 and checked.split()[:3] == ["UNCHECKED", "D1", "decision"], (rc, checked))
 
     r = evidence_cli({"owner": "the owner never said this"})
     check("a decision with an unheld owner quote is refused at add",

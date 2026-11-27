@@ -34,6 +34,7 @@ _NODE_RECORDER = os.path.join(_RECORDER_DIR, "node_recorder.js")
 RECORDABLE = (".py", ".js", ".mjs")
 
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "hooks"))
+import _msys  # noqa: E402
 from _bounded_run import ProcessTree  # noqa: E402
 
 
@@ -127,10 +128,6 @@ _PYTEST_HANDOFF_RE = re.compile(r"pytest\.main\(\s*\[\s*__file__")
 _GLOBALS_COLLECTOR_RE = re.compile(r"globals\(\)[\s\S]{0,200}?startswith\(\s*['\"]test_")
 _PLATFORM_SKIP_RE = re.compile(r"^(?:# )?PLATFORM-SKIP-PROOF ", re.M)  # tests/_platform_skip.skip_proof
 
-# A bare "bash" on Windows PATH can resolve to System32's WSL shim, a different filesystem
-# namespace that cannot see a Windows-style path. Prefer Git's bash.exe when present.
-_GIT_BASH_CANDIDATES = (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe")
-
 # Windows GetTempPath reads TMP first, Python's tempfile TMPDIR first, POSIX tools TMPDIR.
 _TEMP_ENV = ("TMP", "TEMP", "TMPDIR")
 _CALLER_IDENTITY_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_PROMPT_FILE",
@@ -163,14 +160,6 @@ def _slot_root():
 
 def _norm(rel):
     return rel.replace(os.sep, "/")
-
-
-def _bash_exe():
-    if os.name == "nt":
-        for candidate in _GIT_BASH_CANDIDATES:
-            if os.path.isfile(candidate):
-                return candidate
-    return "bash"
 
 
 def _pytest_cases(path):
@@ -255,25 +244,31 @@ def _runner_cmd(path):
     if path.endswith(".mjs"):
         return ["node", "--test", path]
     if path.endswith(".sh"):
-        return [_bash_exe(), path]
+        return [_msys.bash() or "bash", path]
     if path.endswith(".ps1"):
         return ["pwsh", "-NoProfile", "-File", path]
     raise ValueError("no runner for %s" % path)
 
 
-def _land_path(value):
-    """`value` without the folders Git Bash prepends on Windows (its install's `usr/bin`, `usr/local/bin`,
-    `mingw64/bin` and `bin`, and `~/bin`). The land runner starts proofs from pwsh, whose PATH holds none of
-    them, so a proof that needs a Git tool by bare name fails there; without them it fails in a session too."""
+def _proof_path(value):
+    """`value` with Git for Windows' folders replaced by its binary's folder, `mingw64/bin`, last. A session's PATH
+    starts with the folders Git Bash prepends (its install's `usr/bin`, `usr/local/bin`, `mingw64/bin` and `bin`, and
+    `~/bin`); the main check's, started from pwsh, holds only `cmd`, whose `git.exe` is a launcher that respawns
+    `mingw64/bin/git.exe`. So a proof sees one PATH from either caller, and each `git` it spawns is one process. Placed
+    last, the folder only fills names the caller's PATH lacks. The binary puts `mingw64/bin` and `usr/bin` on the PATH
+    of what it runs (`sh` for a hook or a script command) only where MSYSTEM is unset, so `proof_env` unsets it too.
+    The install is the one `value`'s own `git` names (`_msys.git_root`), so its launcher is the one removed."""
     if os.name != "nt":
         return value
-    bash = _bash_exe()
-    git_root = os.path.dirname(os.path.dirname(bash)) if os.path.isabs(bash) else None
-    shell = {os.path.normcase(os.path.normpath(os.path.join(git_root, *parts)))
-             for parts in (("usr", "bin"), ("usr", "local", "bin"), ("mingw64", "bin"), ("bin",))} if git_root else set()
-    shell.add(os.path.normcase(os.path.normpath(os.path.join(os.path.expanduser("~"), "bin"))))
-    return os.pathsep.join(entry for entry in value.split(os.pathsep)
-                           if entry and os.path.normcase(os.path.normpath(entry)) not in shell)
+    git_root = _msys.git_root(value)
+    if not git_root:
+        return value
+    binary = os.path.join(git_root, "mingw64", "bin")
+    git = {os.path.normcase(os.path.normpath(os.path.join(git_root, *folder)))
+           for folder in (("usr", "bin"), ("usr", "local", "bin"), ("mingw64", "bin"), ("bin",), ("cmd",))}
+    git.add(os.path.normcase(os.path.normpath(os.path.join(os.path.expanduser("~"), "bin"))))
+    kept = [entry for entry in value.split(os.pathsep) if entry and os.path.normcase(os.path.normpath(entry)) not in git]
+    return os.pathsep.join(kept + [binary])
 
 
 def _chmod_and_retry(func, path, _exc):
@@ -487,7 +482,8 @@ def proof_env(temp_root, timeout, root=None, reuse_cases=None, *, pytest_lane=Fa
     env.setdefault("HARNESS_CASE_JOBS", "2")
     env.update({name: temp_root for name in _TEMP_ENV})
     if "PATH" in env:
-        env["PATH"] = _land_path(env["PATH"])
+        env["PATH"] = _proof_path(env["PATH"])
+    env.pop("MSYSTEM", None)
     sandbox_slots = os.path.join(temp_root, "slots")
     env["HARNESS_SLOT_DIR"] = sandbox_slots
     # A lane is loaned to the proof: the code it exercises (RuntimeSlots.ps1, a case pool) takes none of its own.

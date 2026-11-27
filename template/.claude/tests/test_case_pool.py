@@ -12,7 +12,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _case_pool import emit_section, run_cases, run_sections, run_sharded, unittest_cases  # noqa: E402
+from _case_pool import check, checked_cases, emit_section, run_cases, run_sections, run_sharded, unittest_cases  # noqa: E402
 
 
 def _timed(name):
@@ -58,6 +58,15 @@ def case_fails():
 
 def case_exits():
     os._exit(3)
+
+
+def checks_one_failed():
+    check("planted check", False, "its detail")
+    check("a later check", True)
+
+
+def checks_all_pass():
+    check("a passing check", True)
 
 
 def case_fails_with_log():
@@ -126,11 +135,13 @@ def sections_proof():
     return problems
 
 
-def _run_only(only, runner_slot=None):
-    saved = {k: os.environ.pop(k, None) for k in ("HARNESS_CASES_ONLY", "HARNESS_SLOT_DIR")}
+def _run_only(only, runner=False):
+    """Run three cases under `HARNESS_CASES_ONLY=only`, as a direct run or (`runner`) as a proof the runner launched.
+    The slot store `main` planted stays set either way: a proof that plants one is still a direct run."""
+    saved = {k: os.environ.pop(k, None) for k in ("HARNESS_CASES_ONLY", "HARNESS_PROOF_TIMEOUT_S")}
     os.environ["HARNESS_CASES_ONLY"] = only
-    if runner_slot:
-        os.environ["HARNESS_SLOT_DIR"] = runner_slot
+    if runner:
+        os.environ["HARNESS_PROOF_TIMEOUT_S"] = "120"
     out = io.StringIO()
     try:
         with contextlib.redirect_stdout(out):
@@ -158,7 +169,7 @@ def only_proof():
     rc, text = _run_only("no_such_case")
     if rc != 1 or "case_reads_env" not in text:
         problems.append("a filter matching no case fails and lists the names: rc=%s %r" % (rc, text))
-    rc, text = _run_only("reads_env", runner_slot=tempfile.mkdtemp())
+    rc, text = _run_only("reads_env", runner=True)
     if rc != 1 or "FAIL case_fails" not in text or "partial" in text:
         problems.append("under the runner every case runs: rc=%s %r" % (rc, text))
     ok = not problems
@@ -198,6 +209,16 @@ def main():
     print("%-4s a multi-line failure names its reason line, never only the log tail that ends it: %r" % ("ok" if ok else "FAIL", line))
     if not ok:
         failures.append("multi-line failure line: %r" % line)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = run_cases(checked_cases({"case_x": checks_one_failed, "helper": case_fails, "case_y": checks_all_pass}), jobs=2)
+    text = out.getvalue()
+    named = [line.split()[1].rstrip(":") for line in text.splitlines() if line.startswith("FAIL ")]
+    ok = (rc == 1 and named == ["checks_one_failed"] and "planted check: its detail" in text
+          and "ok checks_all_pass" in text and "1/2 cases pass" in text)
+    print("%-4s a checked case fails with the checks it failed, alone, and only case_* names run: %s" % ("ok" if ok else "FAIL", named))
+    if not ok:
+        failures.append("checked cases: rc=%s %r" % (rc, text[-400:]))
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rc = run_cases(unittest_cases(PlantedUnit), jobs=2)

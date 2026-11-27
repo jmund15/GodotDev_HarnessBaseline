@@ -506,6 +506,40 @@ class WakeUnit(unittest.TestCase):
         self.assertNotIn("DONE a", again)
 
 
+class GoneDirectory(unittest.TestCase):
+    """A record whose directory was deleted past the launch grace (its worktree or scratch folder went) can never be
+    written again: GONE, one waking end that holds no live work. Inside the grace, or in a present directory, an
+    unwritten record is a launch still allocating: NO-IDENTITY and live."""
+
+    def setUp(self):
+        sys.path.insert(0, TOOLS)
+        import watch_records
+        self.wr = watch_records
+        self.dir = tempfile.mkdtemp(prefix="gone_dir_")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.old = time.time() - watch_records.UNRESOLVED_GRACE_SECONDS - 60
+        self.missing = os.path.join(self.dir, "deleted", "seat.record.json")
+
+    def test_a_present_directory_keeps_an_unwritten_record_no_identity(self):
+        present = os.path.join(self.dir, "seat.record.json")
+        self.assertEqual(self.wr.record_state(present, launched=self.old)[0], "NO-IDENTITY")
+
+    def test_a_missing_directory_past_the_grace_is_gone_found_by_the_directory(self):
+        self.assertEqual(self.wr.record_state(self.missing, launched=self.old)[::2], ("GONE", "directory"))
+
+    def test_a_missing_directory_inside_the_grace_or_without_a_launch_time_is_still_allocating(self):
+        self.assertEqual(self.wr.record_state(self.missing, launched=time.time())[0], "NO-IDENTITY")
+        self.assertEqual(self.wr.record_state(self.missing)[0], "NO-IDENTITY")
+
+    def test_a_gone_record_is_one_waking_end_and_holds_no_live_work(self):
+        lines, live, _ = self.wr._wake({"u": {"records": [("seat", self.missing)], "launched": self.old}})
+        self.assertEqual(live, 0, lines)
+        self.assertTrue(any(kind == "end" and text.startswith("GONE seat") and trigger
+                            for kind, _, text, trigger in lines), lines)
+        lines, live, _ = self.wr._wake({"u": {"records": [("seat", self.missing)], "launched": time.time()}})
+        self.assertEqual(live, 1, "a missing directory inside the grace still counts live: %r" % (lines,))
+
+
 class ProcessIdentity(unittest.TestCase):
     """A live pid whose derived creation time reads a little after its stamp is the same process, not a reused pid."""
 

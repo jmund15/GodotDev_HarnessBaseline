@@ -25,9 +25,26 @@ def _fake(returncode=0, stdout=b"", stderr=b""):
     return run, seen
 
 
+def _no_git_on_path():
+    """PATH holding no git, so a case about argv and env meets no launcher whatever the caller's PATH."""
+    return mock.patch.dict(os.environ, {"PATH": tempfile.mkdtemp(prefix="gitrun_nopath_")})
+
+
+def _plant_install(root):
+    """A Git for Windows layout: the `cmd` launcher, the `mingw64/bin` binary it runs, and `usr/bin`."""
+    name = "git.exe" if os.name == "nt" else "git"
+    for parts in (("cmd", name), ("bin", name), ("mingw64", "bin", "git.exe"), ("mingw64", "bin", name)):
+        path = os.path.join(root, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb"):
+            pass
+        os.chmod(path, 0o755)
+    os.makedirs(os.path.join(root, "usr", "bin"), exist_ok=True)
+
+
 def case_argv_prefix_order_and_optional_locks_flag():
     fake, seen = _fake()
-    with mock.patch.object(subprocess, "run", fake):
+    with mock.patch.object(subprocess, "run", fake), _no_git_on_path():
         gr.run(["status"], prefix=("-C", "x", "-c", "a=b"), optional_locks=False)
         assert seen["argv"] == ["git", "--no-optional-locks", "-C", "x", "-c", "a=b", "status"], seen["argv"]
         gr.run(["log"])
@@ -36,7 +53,8 @@ def case_argv_prefix_order_and_optional_locks_flag():
 
 def case_env_overlay_unsets_a_none_value():
     fake, seen = _fake()
-    with mock.patch.object(subprocess, "run", fake), mock.patch.dict(os.environ, {"GIT_DIR": "/x", "KEEP": "1"}):
+    with mock.patch.object(subprocess, "run", fake), mock.patch.dict(os.environ, {"GIT_DIR": "/x", "KEEP": "1"}), \
+            _no_git_on_path():
         gr.run(["log"], env={"GIT_DIR": None, "GIT_INDEX_FILE": "idx"})
         env = seen["env"]
         assert "GIT_DIR" not in env and env["GIT_INDEX_FILE"] == "idx" and env["KEEP"] == "1"
@@ -44,7 +62,7 @@ def case_env_overlay_unsets_a_none_value():
 
 def case_empty_overlay_inherits_the_environment():
     fake, seen = _fake()
-    with mock.patch.object(subprocess, "run", fake):
+    with mock.patch.object(subprocess, "run", fake), _no_git_on_path():
         gr.run(["log"])
         assert seen["env"] is None
         gr.run(["log"], env={})
@@ -143,6 +161,88 @@ def case_stdin_reaches_git():
     with mock.patch.object(subprocess, "run", fake):
         gr.run(["cat-file", "--batch-check"], input=b"HEAD\n", timeout=60)
     assert seen["input"] == b"HEAD\n" and seen["timeout"] == 60
+
+
+READS = (["rev-parse", "HEAD"], ["--no-optional-locks", "status", "--porcelain"], ["-C", "x", "log", "-1"],
+         ["-c", "core.quotepath=off", "diff", "--name-only"], ["--git-dir=.git", "cat-file", "-t", "HEAD"],
+         ["hash-object", "--stdin"], ["ls-files"], ["for-each-ref"], ["merge-base", "a", "b"], ["rev-list", "HEAD"],
+         ["show", "HEAD"], ["worktree", "list", "--porcelain"], ["remote"], ["remote", "get-url", "origin"],
+         ["blame", "f"])
+NOT_READS = (["commit", "-m", "x"], ["worktree", "add", "w"], ["worktree"], ["remote", "add", "o", "u"], ["push"],
+             ["st"], ["--exec-path=x", "log"], ["-C", "x"], ["checkout", "--", "f"], [])
+
+
+def case_a_read_through_a_launcher_spawns_the_binary_it_runs_with_its_environment():
+    """`cmd/git.exe` respawns `mingw64/bin/git.exe` after prepending its `mingw64/bin`, `usr/bin` and `$HOME/bin` to
+    PATH and setting MSYSTEM; a read skips that spawn and hands git the same environment. Anything else keeps the
+    launcher, and a PATH whose git is no launcher, or a non-Windows host, changes nothing."""
+    root = tempfile.mkdtemp(prefix="gitrun_install_")
+    _plant_install(root)
+    direct = os.path.join(root, "mingw64", "bin", "git.exe")
+    home = os.path.join(root, "home")
+    fake, seen = _fake()
+    try:
+        with mock.patch.object(subprocess, "run", fake), mock.patch.object(gr, "_WINDOWS", True), \
+                mock.patch.dict(os.environ, {"PATH": os.path.join(root, "cmd"), "HOME": home, "KEEP": "1"}):
+            for args in READS:
+                gr.run(args, env={"GIT_DIR": None, "OVERLAY": "1"})
+                assert seen["argv"] == ["git"] + args and seen["executable"] == direct, (args, seen)
+                env = seen["env"]
+                head = env["PATH"].split(os.pathsep)[:4]
+                assert head == [os.path.join(root, "mingw64", "bin"), os.path.join(root, "usr", "bin"),
+                                os.path.join(home, "bin"), os.path.join(root, "cmd")], (args, head)
+                assert env["MSYSTEM"] == "MINGW64" and env["KEEP"] == "1" and env["OVERLAY"] == "1", args
+                assert "GIT_DIR" not in env, args
+            for args in NOT_READS:
+                gr.run(args)
+                assert seen["executable"] is None and seen["env"] is None, (args, seen)
+            gr.run(["rev-parse"], prefix=("-C", "x"), optional_locks=False)
+            assert seen["executable"] == direct, seen
+        with mock.patch.object(subprocess, "run", fake), mock.patch.object(gr, "_WINDOWS", True), \
+                mock.patch.dict(os.environ, {"PATH": os.path.join(root, "mingw64", "bin")}):
+            gr.run(["log"])
+            assert seen["executable"] is None and seen["env"] is None, ("direct binary already first", seen)
+        with mock.patch.object(subprocess, "run", fake), mock.patch.object(gr, "_WINDOWS", False), \
+                mock.patch.dict(os.environ, {"PATH": os.path.join(root, "cmd")}):
+            gr.run(["log"])
+            assert seen["executable"] is None and seen["env"] is None, ("not Windows", seen)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _git_for_windows_launcher():
+    for root in (r"C:\Program Files\Git", r"C:\Program Files (x86)\Git"):
+        if all(os.path.isfile(os.path.join(root, *p)) for p in (("cmd", "git.exe"), ("mingw64", "bin", "git.exe"))):
+            return root
+    return None
+
+
+def case_the_environment_matches_the_live_launchers_for_every_spawn_git_makes():
+    """Live: on a PATH without Git's own folders (the land runner's), what git hands a program it spawns (here an
+    alias's shell, standing in for a filter, textconv or hook) is the same through the launcher and through the
+    direct binary with `_launcher_env`. Not Windows or no Git for Windows install: nothing to compare."""
+    root = _git_for_windows_launcher() if os.name == "nt" else None
+    if root is None:
+        print("     (no Git for Windows launcher on this host: the live comparison has no subject)")
+        return
+    own = {os.path.normcase(os.path.join(root, *p)) for p in (("usr", "bin"), ("usr", "local", "bin"),
+                                                              ("mingw64", "bin"), ("bin",))}
+    own.add(os.path.normcase(os.path.join(os.path.expanduser("~"), "bin")))
+    base = {k: v for k, v in os.environ.items() if k not in ("MSYSTEM", "PLINK_PROTOCOL", "EXEPATH", "SHLVL")}
+    base["PATH"] = os.pathsep.join(e for e in base.get("PATH", "").split(os.pathsep)
+                                   if e and os.path.normcase(os.path.normpath(e)) not in own)
+    alias = ["-c", "alias.e=!env", "e"]
+
+    def child_env(exe, env):
+        out = subprocess.run([exe] + alias, capture_output=True, env=env, timeout=60).stdout.decode("utf-8", "replace")
+        return {k: v for k, v in (line.split("=", 1) for line in out.splitlines() if "=" in line) if k != "_"}
+
+    for label, mod in (("as given", {}), ("HOME unset", {"HOME": None}), ("MSYSTEM preset", {"MSYSTEM": "MSYS"})):
+        env = {k: v for k, v in dict(base, **mod).items() if v is not None}
+        via_launcher = child_env(os.path.join(root, "cmd", "git.exe"), env)
+        direct = child_env(os.path.join(root, "mingw64", "bin", "git.exe"), gr._launcher_env(env, root))
+        differs = sorted(k for k in set(via_launcher) | set(direct) if via_launcher.get(k) != direct.get(k))
+        assert via_launcher and not differs, (label, {k: (via_launcher.get(k), direct.get(k)) for k in differs})
 
 
 def main():

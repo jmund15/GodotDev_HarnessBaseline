@@ -17,6 +17,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 BRIEFS = os.path.join(HERE, "..", "tools", "lens_briefs.py")
@@ -73,18 +75,11 @@ def review_keys():
 STATE = tempfile.mkdtemp(prefix="nestedfanout_state_")
 
 
-def arm_ladder(session_id):
-    """The doctrine check is not under test: mark the ladder read and the orchestration skill loaded, so only
-    the nested-fan-out check decides."""
-    path = os.path.join(STATE, (session_id or "default")[:8] + ".json")
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"model_ladder_ready": True,
-                   "fired_since_compaction": {"skill_in_context:orchestration": True}}, fh)
-
-
 def run(payload, extra_env=None):
-    arm_ladder(payload.get("session_id") or "")
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE, **(extra_env or {}))
+    # The doctrine check is not under test: the doctrine is loaded, so only the nested-fan-out check decides.
+    _hook_call.arm_doctrine(payload.get("session_id") or "", STATE,
+                            root=env.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
     r = checked_run([sys.executable, HOOK], input=json.dumps(payload, ensure_ascii=False),
                     capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
     out = (r.stdout or "").strip()

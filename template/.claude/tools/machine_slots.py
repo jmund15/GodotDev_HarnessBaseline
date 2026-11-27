@@ -17,6 +17,7 @@ HARNESS_SLOT_DIR isolates planted pools; HARNESS_MACHINE_ROOT preserves the real
 pool across proof HOME/temp changes. HARNESS_SLOT_BUDGET loans one held lane to a
 serial child. parallel_budget borrows only free extra lanes, never waits for them.
 `run` exports HARNESS_LANE_CORES, the held lanes' share of the machine's cores.
+Every take leaves its lease in the pool's leases.jsonl, which `lease_log.py` owns and queries.
 """
 import argparse
 from contextlib import contextmanager
@@ -31,12 +32,14 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 _CLAUDE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_CLAUDE / 'hooks'))
 import _file_lock
 from _msys import resolve_argv
 from _hook_state import SUBAGENT_CACHE_WARM_SECONDS, read_json_salvage, update_json_locked
+import lease_log
 
 
 class SlotStoreError(OSError):
@@ -235,6 +238,18 @@ def release(handle):
 def release_all(handles):
     for handle in handles or ():
         release(handle)
+    if isinstance(handles, _Lease) and handles.row is not None:
+        lease_log.append(handles.path, dict(handles.row, event='end', at=lease_log.stamp(), ended='released'))
+        handles.row = None
+        handles.clear()
+
+
+class _Lease(list):
+    """The lanes one take holds, with its history row: `release_all` writes the matching end row once."""
+
+    def __init__(self, handles, path, row):
+        super().__init__(handles)
+        self.path, self.row = path, row
 
 
 def _proxy_take(exclusive, count, folder, width, deadline, notice, holder=None):
@@ -319,6 +334,39 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
     except OSError as exc:
         raise SlotStoreError('machine slot directory unusable: %s (%s)' % (folder, exc)) from exc
     note = holder or _holder_note()
+    split = {} if split is None else split
+    began = time.time()
+    held = _queue_take(exclusive, count, folder, width, deadline, notice, split, note)
+    return _record(folder, note, exclusive, count, width, began, split, held)
+
+
+def _record(folder, note, exclusive, count, width, began, split, held):
+    """The take's history row (`lease_log`): a held take comes back as a `_Lease` whose release writes its end row; a
+    missed deadline writes its end row now. A deadline already due on entry still writes one: a broker's deadline can
+    pass during its own start-up, after its caller waited."""
+    try:
+        who = json.loads(note)
+    except ValueError:
+        who = None
+    if not isinstance(who, dict):
+        who = {'command': str(note)}
+    row = {'v': 1, 'id': uuid.uuid4().hex[:12], 'pool': 'lane', 'kind': 'lane', 'pid': who.get('pid'),
+           'caller_pid': who.get('caller_pid'), 'label': who.get('label') or '', 'command': who.get('command') or '',
+           'checkout': who.get('checkout') or '', 'start': lease_log.stamp(began),
+           'ask': {'lanes': 'all' if exclusive else count, 'width': width}, 'wait': {'lane': round(time.time() - began, 3)},
+           'split': {phase: round(secs, 3) for phase, secs in split.items()}}
+    path = os.path.join(folder, 'leases.jsonl')
+    if held is None:
+        lease_log.append(path, dict(row, event='end', at=lease_log.stamp(), ended='deadline', got={'lanes': []}))
+        return None
+    lanes = sorted(int(m.group(1)) for m in (re.search(r'slot-(\d+)\.lock$', h.path) for h in held) if m)
+    row = dict(row, event='take', at=lease_log.stamp(), got={'lanes': lanes})
+    lease_log.append(path, row)
+    return _Lease(held, path, row)
+
+
+def _queue_take(exclusive, count, folder, width, deadline, notice, split, note):
+    """`take`'s queue: the lanes once this ticket is the live head and collects them, or None at the deadline."""
     held = []
     ticket = drain = None
     try:
@@ -336,8 +384,7 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
         phase, since = 'behind', began
         while True:
             now = time.monotonic()
-            if split is not None:
-                split[phase] = split.get(phase, 0.0) + now - since
+            split[phase] = split.get(phase, 0.0) + now - since
             since = now
             phase = 'behind'
             if _live_ticket_before(queue, name):

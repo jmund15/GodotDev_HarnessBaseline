@@ -95,6 +95,15 @@ def _field(value, key):
     return value.get(key) if isinstance(value, dict) else getattr(value, key)
 
 
+def _fake_gh_main(script: Path):
+    """The fake `gh` script's own `main`, imported instead of started: one source for the state
+    machine, its env toggles and its argv contract, with no interpreter start per poll."""
+    spec = importlib.util.spec_from_file_location("fake_gh_in_process", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.main
+
+
 def _load_publish():
     assert PUBLISH.exists(), "publication target is missing"
     spec = importlib.util.spec_from_file_location("baseline_publish_under_test", PUBLISH)
@@ -104,6 +113,23 @@ def _load_publish():
         spec.loader.exec_module(module)
     except Exception as exc:
         raise AssertionError("publication target failed to load: %s" % exc) from exc
+    # A planted `gh` answers in this process: `_gh`'s retry, timeout and argv decisions still run, and
+    # the poll no longer pays an interpreter start. `HARNESS_FAKE_GH_SUBPROCESS=1` keeps the real
+    # child, for the case that proves the executable transport itself.
+    real_gh_run = module._gh_run
+
+    def gh_run(cmd, cwd, use_shell):
+        state = os.environ.get("GH_FAKE_STATE")
+        script = Path(state).parent / "bin" / "fake_gh.py" if state else None
+        if os.environ.get("HARNESS_FAKE_GH_SUBPROCESS") == "1" or script is None or not script.is_file():
+            return real_gh_run(cmd, cwd, use_shell)
+        out, err = io.StringIO(), io.StringIO()
+        argv = [str(item) for item in cmd[1:]]
+        with contextlib.chdir(Path(cwd)), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = _fake_gh_main(script)(argv)
+        return subprocess.CompletedProcess(argv, code, out.getvalue().encode("utf-8"), err.getvalue().encode("utf-8"))
+
+    module._gh_run = gh_run
     return module
 
 
@@ -491,6 +517,9 @@ def test_tracer_publishes_one_row_to_fixture_remote() -> None:
 
         publish = _load_publish()
         env = _install_fake_gh(path)
+        # The one case that proves the `gh` executable boundary: the fake runs as the child process
+        # `_gh` starts, through the `.cmd` launcher, as it does for a real publish.
+        env["HARNESS_FAKE_GH_SUBPROCESS"] = "1"
         with _patched_env(env):
             journal = publish.run(
                 root,
@@ -629,6 +658,39 @@ def test_materialize_keeps_a_100755_source_entry_executable() -> None:
         _git(worktree, "add", "-A")
         assert staged_mode(exec_rel) == "100755", staged_mode(exec_rel)
         assert staged_mode(plain_rel) == "100644", staged_mode(plain_rel)
+
+
+def test_materialize_writes_removes_and_stages_every_row_in_one_call_and_returns_its_head() -> None:
+    """Materialize reads every row's bytes and mode in one call each and stages them by mode, so a deleted row, an
+    executable one and a plain one land together. The head it returns is the worktree's on a new branch (the pin) and
+    on the branch a lost attempt left (a resume)."""
+    exec_rel, plain_rel, gone_rel = ".claude/scripts/run_all.sh", ".claude/tools/plain_all.py", ".claude/tools/gone.py"
+    with _fixture() as path:
+        cache = path / "cache"
+        _init_repo(cache)
+        _write(cache / "template" / gone_rel, b"gone = 1\n")
+        baseline_sha = _commit(cache, "seed")
+        root = path / "consumer"
+        _init_repo(root)
+        _write(root / exec_rel, b"#!/bin/sh\ntrue\n")
+        _write(root / plain_rel, b"value = 1\n")
+        _git(root, "add", "-A")
+        _git(root, "update-index", "--chmod=+x", exec_rel)
+        _git(root, "commit", "-q", "-m", "consumer")
+        source = {"kind": "commit", "repo": str(root), "commit": _branch_sha(root)}
+        records = [{"relpath": rel, "source_path": rel, "dest_path": "template/" + rel, "kind": "lock", "op": op}
+                   for rel, op in ((exec_rel, "A"), (gone_rel, "D"), (plain_rel, "A"))]
+        lock = {"substitutions": {}, "files": {rel: {"layer": "pure"} for rel in (exec_rel, plain_rel, gone_rel)}}
+        publish = _load_publish()
+        worktree = path / "publish-worktree"
+        for attempt in ("new branch", "resumed branch"):
+            head = publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+            assert head == _git(worktree, "rev-parse", "HEAD").decode().strip(), (attempt, head)
+            staged = {line.split("\t", 1)[1]: line.split()[0]
+                      for line in _git(worktree, "ls-files", "-s", "template").decode().splitlines()}
+            assert staged == {"template/" + exec_rel: "100755", "template/" + plain_rel: "100644"}, (attempt, staged)
+            assert (worktree / "template" / plain_rel).read_bytes() == b"value = 1\n", attempt
+            shutil.rmtree(worktree)
 
 
 def test_materialize_stages_a_judged_row_the_baseline_gitignore_matches() -> None:
@@ -2682,6 +2744,38 @@ def test_publish_commit_message_names_rows_subject_and_ledger_reason() -> None:
     assert "Why:" not in body2, body2
 
 
+def test_publish_identity_uses_transaction_pin_not_cache_head() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        root = path / "consumer"
+        cache = root / publish.sync.CACHE_CLONE
+        _init_repo(cache)
+        _git(cache, "remote", "add", "origin", str(path / "remote.git"))
+        shared = cache / "template" / "shared.txt"
+        _write(shared, b"old-vocabulary\n")
+        old = _commit(cache, "old detached cache")
+        _write(shared, b"FixtureSubsystem\n")
+        pin = _commit(cache, "transaction pin")
+        _git(cache, "checkout", "--detach", old)
+        _seed_project_subsystems(root)
+        _write(root / publish.baseline_identity.DEFAULT_SUBSYSTEMS_PATH,
+               _SUBSYSTEMS_SKILL_SEED.replace(b"fixture-subsystem", b"FixtureSubsystem"))
+        lock = {"baseline_repo": str(path / "remote.git")}
+        _write(root / publish.sync.LOCK_RELPATH, json.dumps(lock).encode())
+        profiles = []
+        original_scrub, original_step = publish._scrub, publish._step
+        publish._scrub = lambda _tree, _rows, _lock, _hits, profile: profiles.append(profile)
+        publish._step = lambda _journal, _path, step, run: run() if step == 3 else None
+        try:
+            publish._steps_from_index({}, path / "journal", root, lock, {}, [], path, "publish",
+                                      cache, pin, [], False, False, True, 3)
+        finally:
+            publish._scrub, publish._step = original_scrub, original_step
+        assert len(profiles) == 1
+        assert "FixtureSubsystem" not in profiles[0]["topology"], profiles[0]["topology"]
+        assert _git(cache, "rev-parse", "HEAD").decode().strip() == old
+
+
 def test_publish_message_withholds_identity_lines_and_names_the_consumer_label() -> None:
     """The message enters the shared baseline's history: the source is the hashed consumer label,
     never the local checkout path, and any free-text line the identity profile flags is left out
@@ -2962,6 +3056,7 @@ def main(part: int = 1) -> int:
         test_unknown_check_bucket_fails_step_six_closed,
         test_pr_body_lists_each_carried_row,
         test_publish_commit_message_names_rows_subject_and_ledger_reason,
+        test_publish_identity_uses_transaction_pin_not_cache_head,
         test_publish_message_withholds_identity_lines_and_names_the_consumer_label,
         test_validate_leaves_the_battery_to_ci_unless_the_flag_asks,
         test_battery_mode_is_full_only_on_the_flag,
@@ -2982,6 +3077,7 @@ def main(part: int = 1) -> int:
         test_collect_without_rows_takes_only_push_verdicts,
         test_collect_publishes_a_committed_deletion_of_a_push_row,
         test_materialize_keeps_a_100755_source_entry_executable,
+        test_materialize_writes_removes_and_stages_every_row_in_one_call_and_returns_its_head,
         test_materialize_stages_a_judged_row_the_baseline_gitignore_matches,
         test_materialize_writes_source_bytes_unsubstituted,
         test_materialize_records_new_row_layers_and_regenerates_manifest,

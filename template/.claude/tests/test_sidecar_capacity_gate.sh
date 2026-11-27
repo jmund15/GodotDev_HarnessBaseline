@@ -7,13 +7,24 @@ LIB="$HERE/../scripts/lib/sidecar_common.sh"
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/tools"
+# The runner is the boundary this proof plants; the reduction from a reading to the gate's fields
+# is the real tool's, so a schema change cannot pass here by being copied into the fake.
+export REAL_TOOLS="$HERE/../tools"
 cat > "$ROOT/tools/provider_capacity.py" <<'PY'
-import os,sys
-mode=os.environ.get("CAP_MODE", "available")
-if sys.argv[1:] == ["unknown"]: sys.exit(2)  # the real reader refuses a transport it does not know
-if mode == "invalid": print("not-json"); sys.exit(0)
+import json, os, sys
+sys.path.insert(0, os.environ["REAL_TOOLS"])
+import provider_capacity as real
+mode = os.environ.get("CAP_MODE", "available")
 if mode == "runner-fail": sys.exit(2)
-print(os.environ["CAP_JSON"])
+if mode == "invalid": print("not-json"); sys.exit(0)
+reading = json.loads(os.environ["CAP_JSON"])
+if sys.argv[1:2] == ["host-band"]:
+    band = sys.argv[sys.argv.index("--min-band") + 1] if "--min-band" in sys.argv else None
+    print("\x1f".join(str(x) for x in real.host_band_fields(reading, band)))
+elif sys.argv[-1] == "--fields":
+    print("\x1f".join(str(x) for x in real.capacity_fields(reading)))
+else:
+    print(json.dumps(reading))
 PY
 
 # The calling session's seat resolver: a working one answers a plan name, an empty answer is a session

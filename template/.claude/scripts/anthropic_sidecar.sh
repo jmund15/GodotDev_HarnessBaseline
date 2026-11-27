@@ -133,6 +133,8 @@ ac_require_key() {
 }
 
 SC_MODEL="sonnet"   # resolved through the registry; alias or full id both fine
+# The child is Claude Code, so the one registry read also resolves the client window contract.
+SC_CLIENT_WINDOW=1
 
 # sc_scrub_env unsets every ANTHROPIC* variable the caller carried, ANTHROPIC_API_KEY included.
 # That is what a LOGIN plan wants (AC_BLANK_KEY re-blanks the variable after `env -u`, so a stray
@@ -164,11 +166,19 @@ ac_export_key() {
   export ANTHROPIC_API_KEY="$AC_KEY"
 }
 
+# The client window is one of the facts sc_load_facts already carries (SC_CLIENT_WINDOW), so this
+# only moves them into the names the spawn below reads.
 ac_resolve_window() {
-  local config
-  config="$(SIDECAR_MAX_OUTPUT_TOKENS="${SC_MAX_OUTPUT:-}" python3 "$SC_REGISTRY_CLI" anthropic-window "$1" ${SC_LONG_CONTEXT:+--max})" || sc_die 2 "cannot resolve Anthropic client window for $1"
-  IFS='|' read -r AC_CLIENT_MODEL AC_AUTO_COMPACT_WINDOW AC_MAX_CONTEXT_TOKENS SC_CONTEXT_TOKENS SC_CONTEXT_WINDOW_SOURCE <<< "$(
-    printf '%s' "$config" | python3 -c 'import json,sys; c=json.load(sys.stdin); print("|".join(str(c[k]) if c[k] is not None else "" for k in ("model","autoCompactWindow","maxContextTokens","contextWindow","contextWindowSource")))')"
+  sc_load_facts || sc_die 2 "cannot resolve Anthropic client window for $1"
+  if [ -n "${SC_AC_ERROR:-}" ]; then
+    printf '%s\n' "$SC_AC_ERROR" >&2
+    sc_die 2 "cannot resolve Anthropic client window for $1"
+  fi
+  [ -n "${SC_AC_CLIENT_MODEL:-}" ] ||
+    sc_die 2 "cannot resolve Anthropic client window for $1: the launch's registry facts carry none"
+  AC_CLIENT_MODEL="$SC_AC_CLIENT_MODEL"
+  AC_AUTO_COMPACT_WINDOW="$SC_AC_AUTO_COMPACT_WINDOW"
+  AC_MAX_CONTEXT_TOKENS="$SC_AC_MAX_CONTEXT_TOKENS"
 }
 
 # A real one-turn dispatch for --check --deep only. The ordinary structural check runs at
@@ -199,19 +209,7 @@ if [ "${1:-}" = "--check" ]; then
   sc_check_model_override "$@"
   sc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
 
-  _check_reg="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" --plan "$SC_PLAN" 2>&1)" || {
-    echo "UNAVAILABLE (model registry unusable: ${_check_reg%%$'\n'*})"; exit 2; }
-
-  _check_state="$(python3 "$SC_REGISTRY_CLI" transport-status "$SC_TRANSPORT" 2>/dev/null \
-    | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("state", "available"))
-except Exception:
-    print("available")' 2>/dev/null)"
-  if [ "$_check_state" = "unavailable" ]; then
-    echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
-    exit 7
-  fi
+  sc_check_registry
 
   if [ -n "$AC_CRED_VAR" ]; then
     # Named, never valued: this line is published into the session's context at SessionStart.
@@ -239,7 +237,7 @@ except Exception:
   sc_check_gates
   case " $* " in
     *" --deep "*)
-      _check_out="$(ac_probe_child "${_check_reg%%|*}")"; _check_rc=$?
+      _check_out="$(ac_probe_child "$SC_MODEL")"; _check_rc=$?
       if printf '%s' "${_check_out:-}" | grep -q '"is_error" *: *true\|"api_error_status" *: *4'; then
         echo "UNAVAILABLE (credential present at $AC_CRED_DESC but the probe dispatch failed — re-login)"
         exit 3
@@ -264,10 +262,10 @@ usage=next((r.get("modelUsage", {}) for r in reversed(rows) if r.get("type")=="r
 model=next(iter(usage), next((r.get("model") for r in rows if r.get("subtype")=="init"), "unknown"))
 window=(usage.get(model) or {}).get("contextWindow")
 print("servedModel=%s reportedWindow=%s" % (model, window if window else "unknown"))')"
-      echo "OK (model=${_check_reg%%|*} $_check_report endpoint=anthropic-direct cred=$AC_CRED_DESC probe=dispatched)"
+      echo "OK (model=$SC_MODEL $_check_report endpoint=anthropic-direct cred=$AC_CRED_DESC probe=dispatched)"
       ;;
     *)
-      echo "OK (model=${_check_reg%%|*} endpoint=anthropic-direct cred=$AC_CRED_DESC probe=skipped; --deep to dispatch one)"
+      echo "OK (model=$SC_MODEL endpoint=anthropic-direct cred=$AC_CRED_DESC probe=skipped; --deep to dispatch one)"
       ;;
   esac
   exit 0
@@ -330,7 +328,7 @@ SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "${SC_SETTINGS_JSON:-}")" || ex
 
 ac_scrub
 
-AC_CACHE_TTL="${SIDECAR_CACHE_TTL:-$(python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$SC_SHAPE" --field=cacheTtl | tr -d '\r')}"
+AC_CACHE_TTL="${SIDECAR_CACHE_TTL:-${SC_KIND_CACHE_TTL:-5m}}"
 case "$AC_CACHE_TTL" in 5m|1h) ;; *) sc_die 2 "invalid cache TTL '$AC_CACHE_TTL' (SIDECAR_CACHE_TTL: 5m|1h)" ;; esac
 
 # NO ANTHROPIC_BASE_URL and NO ANTHROPIC_AUTH_TOKEN, on purpose: unset is what routes the child

@@ -14,7 +14,7 @@ nonzero when it could not do its job, and `finalize` ends nonzero when the run r
 
 close     Fetches `origin/main` and the state branch, resets the worktree to the tip, updates its submodules to the
           tip's gitlinks, writes the run's start to the state, and runs the project's pytest over `.claude/tests`
-          (`pytest -n auto`, then the `proof_serial` proofs alone) with a junit file. The junit file becomes the close
+          (`pytest -n $MAIN_CHECK_WORKERS`, `auto` when the env sets none, then the tip's `proof_serial` proofs alone) with a junit file, printing each pass's command and its exit with its last line. The junit file becomes the close
           record: a file with a failing case is a red proof row (its first failing line, or `timeout` for a case that
           outran its bound), and each `proof_quarantine` entry prints with its cause and its result. A red never stops
           another test and nothing is retried or bisected, so a row carries no culprit commit. The run is killed at
@@ -86,7 +86,7 @@ GH_READ_TIMEOUT_S = 60
 
 HARNESS_PATH = re.compile(r"^\.claude/|^\.github/|\.md$|^\.gitignore$|^\.searchignore$", re.IGNORECASE)
 FAILURE_MARK = re.compile(r"^(FAIL|not ok)\b|Error|Exception", re.IGNORECASE)
-CLOSE_ECHO = re.compile(r"^(FAILED |ERROR |QUARANTINE |=+ .* in [\d.]+s)")
+CLOSE_ECHO = re.compile(r"^(FAILED |ERROR |QUARANTINE )")
 PROOF_FILE = re.compile(r"^(?:test_.+|.+_test)\.(?:py|js|mjs|sh|ps1)$")
 TIMEOUT_LINE = re.compile(r"TIMEOUT after \d+s")
 CRASH_LINE = re.compile(r"worker '\S+' crashed while running")
@@ -127,8 +127,8 @@ def platform_name():
 
 def git_try(repo, *args, input=None):
     """The GitResult of a git call. `input` goes in as bytes: a text-mode pipe would turn its newlines into CRLF
-    on Windows, which `git mktree` reads as part of the file name. No fixed cap: this check fetches, checks out the
-    landed tree and updates submodules, and each cost grows with the repository."""
+    on Windows, which breaks the byte counts of a `git fast-import` stream. No fixed cap: this check fetches, checks
+    out the landed tree and updates submodules, and each cost grows with the repository."""
     return git_run(args, cwd=str(repo), input=b"" if input is None else input.encode("utf-8"), timeout=None)
 
 
@@ -332,23 +332,15 @@ def session_of(repo, commit):
 
 def range_session(repo, range_start, tip):
     """The one session that landed every commit of the range, else None. The close runs no bisect, so a red belongs to a
-    session only when no other session landed beside it."""
-    commits = git_try(repo, "rev-list", "%s..%s" % (range_start, tip)).text.split()
-    sessions = {session_of(repo, commit) for commit in commits}
+    session only when no other session landed beside it. One `log` reads every commit's trailer, each record opening
+    with a NUL."""
+    out = git_try(repo, "log", "--format=%x00%(trailers:key=Claude-Session,valueonly)", "%s..%s" % (range_start, tip)).text
+    sessions = {next((line.strip() for line in record.splitlines() if line.strip()), None)
+                for record in out.split("\0")[1:]}
     return sessions.pop() if len(sessions) == 1 else None
 
 
 # ---- the state branch --------------------------------------------------------------------------------------------
-
-def fetch_branch(repo, branch):
-    """The remote branch's sha, or None when the remote has no such branch."""
-    result = remote_git(repo, "fetch", "-q", REMOTE, "+refs/heads/%s:refs/remotes/%s/%s" % (branch, REMOTE, branch))
-    if result.returncode == 0:
-        return git(repo, "rev-parse", "refs/remotes/%s/%s" % (REMOTE, branch))
-    if "couldn't find remote ref" in result.err_text:
-        return None
-    raise GitError("git fetch %s failed: %s" % (branch, result.err_text.strip()))
-
 
 def parse_state(text):
     try:
@@ -360,24 +352,46 @@ def parse_state(text):
     return doc
 
 
-def load_state(repo):
-    """(sha, doc) of the remote state branch after a fetch; StateError when it is missing or malformed."""
-    sha = fetch_branch(repo, STATE_BRANCH)
-    if sha is None:
-        raise StateError("no state branch %s on %s: S1m seeds it" % (STATE_BRANCH, REMOTE))
-    return sha, parse_state(git(repo, "show", "%s:%s" % (sha, STATE_FILE)))
+def load_state(repo, with_main=False):
+    """(sha, doc, main) of the remote state branch after one fetch; with `with_main` the same fetch takes `main` too and
+    `main` is its sha, else None. StateError when the state branch is missing or malformed; GitError when the fetch
+    fails otherwise."""
+    branches = ("main", STATE_BRANCH) if with_main else (STATE_BRANCH,)
+    refs = ["refs/remotes/%s/%s" % (REMOTE, branch) for branch in branches]
+    result = remote_git(repo, "fetch", "-q", REMOTE, *("+refs/heads/%s:%s" % pair for pair in zip(branches, refs)))
+    if result.returncode != 0:
+        if "couldn't find remote ref refs/heads/" + STATE_BRANCH in result.err_text:
+            raise StateError("no state branch %s on %s: S1m seeds it" % (STATE_BRANCH, REMOTE))
+        raise GitError("git fetch %s failed: %s" % (" ".join(branches), result.err_text.strip()))
+    shas = git(repo, "rev-parse", *refs).split()
+    return shas[-1], parse_state(git(repo, "show", "%s:%s" % (shas[-1], STATE_FILE))), shas[0] if with_main else None
 
 
-def update_state(repo, mutate):
+def state_commit(repo, parent, doc):
+    """The sha of a commit on `parent` whose tree holds only `doc` as the state file, from one `fast-import`: its
+    working ref is reset to nothing before the import ends, so no ref is left behind. Author and committer are
+    main-check at the local time and offset, as `commit-tree` writes them."""
+    text, message = json.dumps(doc, indent=1) + "\n", "main check state\n"
+    now = int(time.time())
+    offset = (time.localtime(now).tm_gmtoff or 0) // 60
+    who = "main-check <main-check@localhost> %d %s%02d%02d" % (now, "-" if offset < 0 else "+", abs(offset) // 60,
+                                                              abs(offset) % 60)
+    ref = "refs/main-check/state-commit"
+    stream = ("commit {ref}\nmark :1\nauthor {who}\ncommitter {who}\ndata {mlen}\n{message}from {parent}\ndeleteall\n"
+              "M 100644 inline {file}\ndata {tlen}\n{text}\nget-mark :1\nreset {ref}\nfrom {null}\n\n").format(
+        ref=ref, who=who, mlen=len(message.encode("utf-8")), message=message, parent=parent, file=STATE_FILE,
+        tlen=len(text.encode("utf-8")), text=text, null="0" * len(parent))
+    return git(repo, "fast-import", "--quiet", input=stream)
+
+
+def update_state(repo, mutate, held=None):
     """Applies `mutate` (a pure function of the state) to the remote state and pushes it with a lease on the sha it
-    read. A lost lease rereads the remote state and reapplies once more; a second loss raises."""
+    read. `held` is a (sha, doc) this run already read, which the first try uses in place of a fresh read. A lost lease
+    rereads the remote state and reapplies once more; a second loss raises."""
     for attempt in (1, 2):
-        old, doc = load_state(repo)
+        old, doc = held if attempt == 1 and held else load_state(repo)[:2]
         new = mutate(copy.deepcopy(doc))
-        blob = git(repo, "hash-object", "-w", "--stdin", input=json.dumps(new, indent=1) + "\n")
-        tree = git(repo, "mktree", input="100644 blob %s\t%s\n" % (blob, STATE_FILE))
-        commit = git(repo, "-c", "user.name=main-check", "-c", "user.email=main-check@localhost", "commit-tree", tree,
-                     "-p", old, "-m", "main check state")
+        commit = state_commit(repo, old, new)
         result = remote_git(repo, "push", "-q", "--force-with-lease=refs/heads/%s:%s" % (STATE_BRANCH, old), REMOTE,
                             "%s:refs/heads/%s" % (commit, STATE_BRANCH))
         if result.returncode == 0:
@@ -431,35 +445,52 @@ def close_record(junit_paths, head, base, quarantine):
             "quarantine": {name: results.get(name, "not run") for name in quarantine}}
 
 
+def close_doc(code, text, junits, tip, range_start, quarantine, began, ended):
+    """The `close` record of a run whose last pytest pass ended `code` (None: the cap killed it) with output `text` over
+    the junit files of its passes. `record` is None when the run did not finish, which `finalize` reads as no verdict;
+    `cause` is the last output line naming an error, else its last line."""
+    finished = code in (0, 1) and all(os.path.exists(path) for path in junits)
+    lines = [l for l in text.splitlines() if l.strip()]
+    return {"exit": code, "timedOut": code is None, "startedAt": began, "endedAt": ended, "wall": ended - began,
+            "record": close_record(junits, tip, range_start, quarantine) if finished else None,
+            "cause": next((l for l in reversed(lines) if CAUSE_LINE.search(l)), lines[-1] if lines else "no output")}
+
+
 def quarantine_lines(quarantine, record):
     return ["QUARANTINE %s: %s (cause: %s)" % (name, (record.get("quarantine") or {}).get(name, "not run"), cause)
             for name, cause in sorted(quarantine.items())]
 
 
-def pytest_passes(run_folder, serial):
-    """[(command, junit path)] for the close's pytest passes: the parallel pass over the tests folder, then the serial
-    pass when the project names any `proof_serial` proof."""
+def pytest_passes(run_folder, serial, workers):
+    """[(command, junit path)] for the close's pytest passes: the parallel pass over the tests folder at `workers` (a
+    count, or `auto`), then, when the tip's `serial` (`proof_serial`) names any proof, one pass that runs those alone:
+    the tests conftest's `--harness-serial` selects them, as it does for the baseline CI."""
     base = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xunit1", "-rfE",
             "--continue-on-collection-errors", "--durations=20"]
 
-    def one(label, *mode):
+    def one(label, targets, *mode):
         junit = os.path.join(run_folder, "close_%s.xml" % label)
-        return base + list(mode) + ["--junitxml=" + junit, CLOSE_TESTS], junit
+        return base + list(mode) + ["--junitxml=" + junit, *targets], junit
 
-    passes = [one("parallel", "-n", os.environ.get("MAIN_CHECK_WORKERS", "auto"))]
-    return passes + [one("serial", "-p", "no:xdist", "--harness-serial")] * bool(serial)
+    passes = [one("parallel", [CLOSE_TESTS], "-n", workers)]
+    return passes + [one("serial", [CLOSE_TESTS], "-p", "no:xdist", "--harness-serial")] * bool(serial)
+
+
+def pass_line(label, code, out):
+    """A pass's own verdict for the log: its exit (None: the cap killed it) and its last output line, which pytest
+    ends on its summary, bare under `-q`."""
+    last = next((l.strip() for l in reversed(out.splitlines()) if l.strip()), "no output")
+    return "pytest %s pass %s: %s" % (label, "killed at its cap" if code is None else "exit %s" % code, last)
 
 
 def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
     began = time.time()
     sweep_run_dirs(repo, run_id)
-    fetch = remote_git(repo, "fetch", "-q", REMOTE, "+refs/heads/main:refs/remotes/%s/main" % REMOTE)
-    if fetch.returncode != 0:
-        say("git fetch of main failed: " + fetch.err_text.strip())
-        return 1
-    tip = git(repo, "rev-parse", "refs/remotes/%s/main" % REMOTE)
     try:
-        _sha, state = load_state(repo)
+        state_sha, state, tip = load_state(repo, with_main=True)
+    except GitError as exc:
+        say(str(exc))
+        return 1
     except StateError as exc:
         say("state branch: %s" % exc)
         return 3
@@ -470,13 +501,14 @@ def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
     run = {"id": run_id, "start": iso(began), "liveUntil": iso(live_until), "end": None, "stage": "close",
            "outcome": None, "detail": None, "wall": None}
     try:
-        update_state(repo, lambda doc: dict(doc, run=run))
+        update_state(repo, lambda doc: dict(doc, run=run), held=(state_sha, state))
     except (StateError, GitError) as exc:
         say("start write failed, the run goes on: %s" % exc)
 
-    problem = None
+    problem, present = None, {}
     try:
         git(repo, "checkout", "-q", "--force", "--detach", tip)
+        present = tracked_proofs(repo, tip)
         result = remote_git(repo, "submodule", "update", "-q", "--init", "--recursive")
         if result.returncode != 0:
             problem = "submodule: git submodule update failed: " + (result.err_text or result.text).strip()
@@ -496,23 +528,22 @@ def run_close(repo, run_id, dispatched=False, cap_minutes=DEFAULT_CAP_MINUTES):
     quarantine = adaptation.get(claude, "proof_quarantine") or {}
     deadline = began + cap_minutes * 60 * DEADLINE_SHARE
     code, text, junits = 0, "", []
-    for command, junit in pytest_passes(run_dir(repo, run_id), adaptation.get(claude, "proof_serial")):
+    for command, junit in pytest_passes(run_dir(repo, run_id), adaptation.get(claude, "proof_serial"),
+                                        env.get("MAIN_CHECK_WORKERS", "auto")):
+        label = os.path.basename(junit)[len("close_"):-len(".xml")]
+        say("pytest %s pass: %s" % (label, " ".join(command)))
         code, out = run_logged(command, cwd=repo, env=env, log_path=junit.replace(".xml", ".log"),
                                echo=CLOSE_ECHO, cap_seconds=max(1, deadline - time.time()))
+        say(pass_line(label, code, out or ""))
         text += out or ""
         junits.append(junit)
         if code not in (0, 1):
             break
-    finished = code in (0, 1) and all(os.path.exists(path) for path in junits)
-    record = close_record(junits, tip, range_start, quarantine) if finished else None
-    lines = [l for l in text.splitlines() if l.strip()]
-    cause = next((l for l in reversed(lines) if CAUSE_LINE.search(l)), lines[-1] if lines else "no output")
-    if record:
-        for line in quarantine_lines(quarantine, record):
+    doc = close_doc(code, text, junits, tip, range_start, quarantine, closed, time.time())
+    if doc["record"]:
+        for line in quarantine_lines(quarantine, doc["record"]):
             say(line)
-    ended = time.time()
-    put_record(repo, run_id, "close", {"exit": code, "timedOut": code is None, "startedAt": closed, "endedAt": ended,
-                                       "wall": ended - closed, "record": record, "cause": cause})
+    put_record(repo, run_id, "close", doc)
     return 0
 
 
@@ -634,14 +665,14 @@ def baseline_session(slug, sha):
     return None
 
 
-def read_baseline_source(repo, tip):
+def read_baseline_source(repo, tip, present):
     """(source, rows) for the baseline's Linux lanes at the pin `tip` carries.
 
     `source` is `{readAt, status, reason, pendingSha, sha, failed, passed}`: `failed` is the run's red proof set and
     `passed` the proofs its log lists as passed, which is the only thing that clears an older row (a run red for a
     non-proof step proves nothing, and a lane that never ran its proofs lists neither). `rows` are the fresh
-    `platform: linux` proof rows of a run that failed, for the proofs `tip` tracks: a proof the project lacks is a row
-    nobody there can fix."""
+    `platform: linux` proof rows of a run that failed, for the proofs in `present` (those `tip` tracks): a proof the
+    project lacks is a row nobody there can fix."""
     now = iso()
     source = {"readAt": now, "status": "unreadable", "reason": "", "pendingSha": None, "sha": None, "failed": None,
               "passed": None}
@@ -694,7 +725,6 @@ def read_baseline_source(repo, tip):
             run.get("databaseId"), run.get("conclusion"))
         return source, []
     session = baseline_session(slug, sha)
-    present = tracked_proofs(repo, tip)
     rows = [new_row(name, "proof", sha, session, line, now, platform="linux")
             for name, line in sorted(failed.items()) if name in present]
     source.update(failed=set(failed), reason="baseline run %s %s" % (run.get("databaseId"), run.get("conclusion")))
@@ -730,8 +760,8 @@ def judge_close(start, closed):
 
 def judge_gate(gate, owed):
     """(ok, reason, failed ids, passed): an owed gate is a verdict only as exit 0 or as exit 1 naming its failed
-    tests. The gate stage's own `owed: false` stands, so a stage and finalize never disagree on a project with no gate."""
-    if not owed or (gate or {}).get("owed") is False:
+    tests. `owed` is the gate stage's own when it recorded one, so a stage and finalize never disagree."""
+    if not owed:
         return True, None, [], False
     if not gate:
         return False, "gate: no record of this run", [], False
@@ -809,21 +839,22 @@ def run_finalize(repo, run_id):
         return 1
     tip, range_start = start["tip"], start["rangeStart"]
     closed, gate = record(repo, run_id, "close"), record(repo, run_id, "gate")
-    owed, _why = gate_owed(repo, range_start, tip, start.get("dispatched", False))
+    owed = gate["owed"] if isinstance((gate or {}).get("owed"), bool) else gate_owed(
+        repo, range_start, tip, start.get("dispatched", False))[0]
     close_ok, close_why, rec = judge_close(start, closed)
     gate_ok, gate_why, failed, gate_pass = judge_gate(gate, owed)
     now = iso()
     passed, _failing = settled_by(rec)
     present = tracked_proofs(repo, tip)
     rows, new_reds = [], set()
-    if rec:
-        for red in rec.get("red") or []:
-            name, detail = red.get("proof"), red.get("detail")
-            cause = red.get("cause")  # `timeout` or `crash`: a case that outran its bound
-            rows.append(new_row(name, "proof", None, range_session(repo, range_start, tip), first_failure_line(detail), now,
-                                cause=cause))
-            if cause is None:
-                new_reds.add(name)
+    reds = (rec or {}).get("red") or []
+    session = range_session(repo, range_start, tip) if reds else None
+    for red in reds:
+        name, detail = red.get("proof"), red.get("detail")
+        cause = red.get("cause")  # `timeout` or `crash`: a case that outran its bound
+        rows.append(new_row(name, "proof", None, session, first_failure_line(detail), now, cause=cause))
+        if cause is None:
+            new_reds.add(name)
     if failed:
         commit = non_harness_commit(repo, range_start, tip)
         for test_id in failed:
@@ -832,7 +863,7 @@ def run_finalize(repo, run_id):
     reasons = [why for why in (close_why, gate_why) if why]
     outcome = "no-verdict" if not advance else "red" if (rec.get("red") or failed) else "green"
     wall = {"close": (closed or {}).get("wall"), "gate": (gate or {}).get("wall"), "finalize": None}
-    linux, linux_rows = read_baseline_source(repo, tip)
+    linux, linux_rows = read_baseline_source(repo, tip, present)
     res = {"now": now, "tip": tip, "advance": advance, "rows": rows, "passed": passed, "gate_pass": gate_pass,
            "present": set(present), "new_reds": new_reds, "linux": linux, "linux_rows": linux_rows}
     wall["finalize"] = time.time() - began
@@ -877,17 +908,15 @@ def print_rows(repo, session):
 
 def _unchecked(repo, checked):
     """(commits on origin/main past `checked`, the committer time of the oldest one). Either is None when git cannot
-    read the range, which the health line counts as overdue."""
-    counted = git_try(repo, "rev-list", "--count", "%s..%s" % (checked, ORIGIN_MAIN))
-    if counted.returncode != 0 or not counted.text.strip().isdigit():
+    read the range, which the health line counts as overdue. One `log` lists each commit's committer time; the oldest
+    is its last line, as `rev-list` orders the range."""
+    listed = git_try(repo, "log", "--format=%ct", "%s..%s" % (checked, ORIGIN_MAIN))
+    if listed.returncode != 0:
         return None, None
-    count = int(counted.text)
-    if count == 0:
+    times = listed.text.split()
+    if not times:
         return 0, None
-    listed = git_try(repo, "rev-list", "%s..%s" % (checked, ORIGIN_MAIN))
-    oldest = listed.text.split()[-1] if listed.returncode == 0 and listed.text.split() else None
-    when = git_try(repo, "show", "-s", "--format=%ct", oldest).text.strip() if oldest else ""
-    return count, int(when) if when.isdigit() else None
+    return len(times), int(times[-1]) if times[-1].isdigit() else None
 
 
 def run_cap(run):

@@ -18,7 +18,8 @@ lifetime, never beyond it.
 The module also owns the history facts a coverage check asks of the same repository — whether a commit's line
 reaches HEAD (`reaches`), whether a merge rewrote a path (`merge_touched`), the commits in a range
 (`range_commits`) — and the path identity helpers that name a reviewed file (`worktree_split`, `normalize_files`,
-`resolve_citation`). Git process execution belongs to `hooks/_git_run`: this module spawns nothing itself.
+`resolve_citation`). Git process execution belongs to `hooks/_git_run`; the one process this module starts itself
+is a command's object reader (`_batch_process`), a long-lived `cat-file` that `_git_run` has no form for.
 
 Proof: tests/test_review_snapshot.py.
 """
@@ -27,7 +28,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 import os
+import subprocess
 import sys
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
@@ -39,7 +43,9 @@ if str(_TOOLS) not in sys.path:
 if str(CLAUDE_DIR / "hooks") not in sys.path:
     sys.path.insert(0, str(CLAUDE_DIR / "hooks"))
 
-from _git_run import root_relative as _root_relative, run as _git  # noqa: E402
+import _checkout_root  # noqa: E402
+from _bounded_run import ProcessTree  # noqa: E402
+from _git_run import remaining as _remaining, root_relative as _root_relative, run as _git  # noqa: E402
 
 
 class Blob(NamedTuple):
@@ -112,6 +118,9 @@ def repo_facts():
         yield
     finally:
         if outer is None:
+            for answer in _FACTS.values():
+                if isinstance(answer, _Objects):
+                    answer.close()
             _FACTS = None
 
 
@@ -137,6 +146,13 @@ def facts(name, root, keys, ask_many):
         for key, answer in ask_many(missing).items():
             _FACTS[(name, folder, key)] = answer
     return {key: _FACTS[(name, folder, key)] for key in keys}
+
+
+def layout(root):
+    """`_checkout_root.layout(root)`, asked once per command: the ledger path, the task store, the post-check
+    home and the main checkout are each read from it. The 30 s bound is `_git_run`'s for a call whose work is
+    fixed by its answer."""
+    return fact("layout", root, lambda: _checkout_root.layout(root, timeout=30))
 
 
 def _in_git(root) -> bool:
@@ -254,13 +270,165 @@ def _literal(path):
     return ":(literal)" + path
 
 
+def _plain(path):
+    """True when `<rev>:./<path>` names exactly `path`: git reads that form after normalizing an empty, `.` or `..`
+    segment (and a backslash on Windows) away, where a literal pathspec does not."""
+    return "\\" not in path and all(part not in ("", ".", "..") for part in path.split("/"))
+
+
+_PATHSPEC_CHARS = 24000  # per process: Windows refuses a command line past 32,767 characters
+
+
+def _listing(args, root, paths):
+    """`git <args> -- <paths>` over as many processes as the command-line cap needs: the joined stdout, or the first
+    failed result (Unreadable or the nonzero GitResult). One process for a list that fits."""
+    out, chunk, size = [], [], 0
+    specs = [_literal(path) for path in paths]
+    for index, spec in enumerate(specs):
+        chunk.append(spec)
+        size += len(spec) + 3
+        if size >= _PATHSPEC_CHARS or index == len(specs) - 1:
+            done = _call(args + ["--"] + chunk, root)
+            if isinstance(done, Unreadable) or done.returncode != 0:
+                return done
+            out.append(_text(done.stdout))
+            chunk, size = [], 0
+    return "".join(out)
+
+
 # ---- object reads -----------------------------------------------------------------------------------------
 
 
+def _batch_process(root):
+    return subprocess.Popen(["git", "cat-file", "--batch-command"], cwd=str(root), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+class _Objects:
+    """One `git cat-file --batch-command` in a folder. A command's object questions (a revision's commit, an object's
+    type, a blob's bytes) share it instead of one process each: git reads refs and objects afresh per question, so a
+    ref moved or an object written while the command runs answers as a new process would. One watchdog thread per
+    process holds each question to the 30 s bound a one-shot read had. Ending the process ends its whole tree: where
+    `git` is the `cmd\\git.exe` launcher (a proof's PATH), the reader is the launcher's child."""
+
+    def __init__(self, root):
+        self.root = root
+        self.proc = self.tree = None
+        self.answered = 0  # questions the running process has answered
+        self.due = None  # the deadline of the question in flight, which the watchdog reads
+        self.killed = False  # the watchdog ended the process at a deadline
+        self.cond = threading.Condition()
+
+    def ask(self, verb, name):
+        """`(oid, type, bytes or None)` for `name`; None when git names it missing or ambiguous; Unreadable when the
+        read failed (no git, the bound, a process that cannot answer). A process that answered before and then died
+        is replaced once, since a one-shot read would have started a fresh one; a timed-out question is not retried."""
+        if not name.strip() or "\n" in name:
+            return None
+        while True:
+            try:
+                if self.proc is None:
+                    self._start()
+                return self._exchange(verb, name)
+            except (OSError, ValueError) as exc:
+                reused = self.answered and not self.killed
+                self.close()
+                if not reused:
+                    return Unreadable(f"git cat-file failed: {exc}")
+
+    def _start(self):
+        self.proc = _batch_process(self.root)
+        self.tree = ProcessTree(self.proc)
+        self.answered, self.killed = 0, False
+        threading.Thread(target=self._watch, args=(self.proc, self.tree), daemon=True).start()
+
+    def _watch(self, proc, tree):
+        with self.cond:
+            while self.proc is proc:
+                if self.due is None:
+                    self.cond.wait()
+                elif time.monotonic() < self.due:
+                    self.cond.wait(self.due - time.monotonic())
+                else:
+                    self.killed = True
+                    break
+            else:
+                return
+        tree.end()
+
+    def _exchange(self, verb, name):
+        with self.cond:
+            self.due = time.monotonic() + _remaining(30)
+            self.cond.notify()
+        try:
+            self.proc.stdin.write(f"{verb} {name}\n".encode("utf-8"))
+            self.proc.stdin.flush()
+            header = self.proc.stdout.readline()
+            if header.endswith((b" missing\n", b" ambiguous\n")):
+                self.answered += 1
+                return None
+            fields = header.split()
+            if len(fields) != 3 or not fields[2].isdigit():
+                raise OSError(f"cat-file answered {header[:80]!r}")
+            body = None
+            if verb == "contents":
+                size = int(fields[2])
+                body = self.proc.stdout.read(size + 1)
+                if len(body) != size + 1:
+                    raise OSError("cat-file ended inside an object")
+                body = body[:size]
+            self.answered += 1
+            return fields[0].decode("ascii"), fields[1].decode("ascii"), body
+        finally:
+            with self.cond:
+                self.due = None
+
+    def close(self):
+        with self.cond:
+            proc, tree, self.proc, self.tree = self.proc, self.tree, None, None
+            self.cond.notify()
+        if proc is None:
+            return
+        try:
+            proc.stdin.close()
+            proc.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        tree.end()  # a live tree ends; an exited one only frees its job
+        proc.stdout.close()
+
+
+@contextmanager
+def _objects(root):
+    """The folder's object reader: the command's own inside a `repo_facts()` block, else one for this question."""
+    if _FACTS is not None:
+        yield fact("objects", root, lambda: _Objects(root))
+        return
+    reader = _Objects(root)
+    try:
+        yield reader
+    finally:
+        reader.close()
+
+
+def _object(root, verb, name):
+    """`_Objects.ask` with a failed read as None, for a question whose caller treats both alike."""
+    with _objects(root) as reader:
+        found = reader.ask(verb, name)
+    return None if isinstance(found, Unreadable) else found
+
+
+def _commit_of(root, rev):
+    """The commit `rev` names in `root`, or None when it names none or the read failed."""
+    found = _object(root, "info", rev + "^{commit}")
+    return found[0] if found else None
+
+
 def cat_blob(root: Path, sha: str):
-    """The bytes of blob `sha` in `root`'s object store, or None when it is absent or unreadable."""
-    done = _call(["cat-file", "blob", sha], root)
-    return None if isinstance(done, Unreadable) or done.returncode != 0 else done.stdout
+    """The bytes of blob `sha` in `root`'s object store, or None when it is absent or unreadable. A tag peels to its
+    blob, as `cat-file blob` does."""
+    found = _object(root, "contents", sha + "^{blob}")
+    return found[2] if found else None
 
 
 def hash_object(root: Path, data: bytes, rel: str | None = None, *, write=False, filters=False) -> str:
@@ -298,17 +466,14 @@ def hash_objects(root: Path, paths, *, write=False) -> dict:
 def object_kinds(root: Path, shas) -> dict:
     """sha -> object type in `root`'s store (`missing` when absent)."""
     ordered = sorted(set(shas))
-    if not ordered:
-        return {}
-    done = _call(["cat-file", "--batch-check"], root, input=("\n".join(ordered) + "\n").encode("utf-8"))
-    if isinstance(done, Unreadable) or done.returncode != 0:
-        return {sha: "unreadable" for sha in ordered}
     out = {}
-    for line in _text(done.stdout).splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            out[parts[0]] = parts[1]
-    return {sha: out.get(sha, "missing") for sha in ordered}
+    with _objects(root) as reader:
+        for sha in ordered:
+            found = reader.ask("info", sha)
+            if isinstance(found, Unreadable):
+                return {sha: "unreadable" for sha in ordered}
+            out[sha] = found[1] if found and found[0] == sha else "missing"
+    return out
 
 
 def _diff_lines(data: bytes) -> list[str]:
@@ -397,11 +562,10 @@ class Snapshot:
         return self.head
 
     def commit_for(self, rev: str):
-        def ask():
-            done = _call(["rev-parse", "--verify", "--quiet", rev + "^{commit}"], self.repo)
-            return None if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
         # No command moves HEAD; a fetch can make another revision resolvable, so only HEAD is asked once.
-        return fact("HEAD", self.repo, ask) if rev == "HEAD" else ask()
+        if rev == "HEAD":
+            return fact("HEAD", self.repo, lambda: _commit_of(self.repo, rev))
+        return _commit_of(self.repo, rev)
 
     # -- content --
 
@@ -464,13 +628,27 @@ class Snapshot:
             return {}
         if revision == "INDEX":
             return self._index_entries(root, paths)
-        done = _call(["ls-tree", "-r", "-z", revision, "--"] + [_literal(p) for p in paths], root)
-        if isinstance(done, Unreadable) or done.returncode != 0:
+        out = {}
+        if _FACTS is not None:
+            # Inside a command the object reader is open: a blob it names at `<revision>:./<path>` is the entry
+            # ls-tree would list. Any other answer (absent, a tree, a failed read) is the listing's to settle, since
+            # only it tells an absent entry from one whose object is unreadable.
+            with _objects(root) as reader:
+                for path in paths:
+                    found = reader.ask("info", f"{revision}:./{path}") if _plain(path) else None
+                    if found and not isinstance(found, Unreadable) and found[1] == "blob":
+                        out[path] = Blob(found[0])
+        rest = [path for path in paths if path not in out]
+        return dict(out, **self._listed_entries(root, revision, rest)) if rest else out
+
+    def _listed_entries(self, root: Path, revision: str, paths) -> dict:
+        done = _listing(["ls-tree", "-r", "-z", revision], root, paths)
+        if not isinstance(done, str):
             reason = done.reason if isinstance(done, Unreadable) else (
                 _text(done.stderr).strip() or f"cannot list {revision}")
             return {path: Unreadable(reason) for path in paths}
         seen = {}
-        for entry in _text(done.stdout).split("\0"):
+        for entry in done.split("\0"):
             if not entry:
                 continue
             meta, _, path = entry.partition("\t")
@@ -490,12 +668,12 @@ class Snapshot:
         return out
 
     def _index_entries(self, root: Path, paths) -> dict:
-        done = _call(["ls-files", "-s", "-z", "--"] + [_literal(p) for p in paths], root)
-        if isinstance(done, Unreadable) or done.returncode != 0:
+        done = _listing(["ls-files", "-s", "-z"], root, paths)
+        if not isinstance(done, str):
             reason = done.reason if isinstance(done, Unreadable) else _text(done.stderr).strip()
             return {path: Unreadable(reason or "cannot read the index") for path in paths}
         staged = {}
-        for entry in _text(done.stdout).split("\0"):
+        for entry in done.split("\0"):
             if not entry:
                 continue
             meta, _, path = entry.partition("\t")
@@ -576,8 +754,11 @@ class Snapshot:
         head = self.revision
         if not head or isinstance(self.source, Disk):
             return None
-        if self.commit_for(head) is None:
+        commit = self.commit_for(head)
+        if commit is None:
             return None
+        if self._deleted_by(commit, path):
+            return Deleted("deleted:" + commit)
         found = split_submodule(self.toplevel, path)
         pinned = None
         if found:
@@ -596,6 +777,20 @@ class Snapshot:
             commits = _log(["log", "-1", "--format=%H", "--no-renames", "--diff-filter=D", head, "--",
                             found[0] if found else path], self.toplevel)
         return Deleted("deleted:" + commits[0]) if commits else None
+
+    def _deleted_by(self, commit: str, path: str) -> bool:
+        """True when `commit`, the revision this snapshot read `path` absent at, deleted it itself: one parent that
+        held it as a blob. The newest deletion `log -1 --diff-filter=D <commit> -- <path>` finds is then `commit`, so
+        a command with its object reader open needs no walk. A merge, an index or recorded read, a path inside a
+        worktree or submodule, a glob character and a failed read all leave it to the walk."""
+        if (_FACTS is None or not isinstance(self.source, Commit) or not _plain(path) or set(path) & set("*?[")
+                or worktree_split(path) or split_submodule(self.toplevel, path)):
+            return False
+        with _objects(self.toplevel) as reader:
+            if reader.ask("info", commit + "^2") is not None:
+                return False
+            found = reader.ask("info", f"{commit}^:./{path}")
+        return bool(found) and not isinstance(found, Unreadable) and found[1] == "blob"
 
     # -- history --
 
@@ -642,6 +837,8 @@ class Snapshot:
 
     def merge_touched(self, sha: str, path: str) -> bool:
         """True when a merge between `sha` and HEAD rewrote `path` in its conflict resolution."""
+        if sha == self.head:  # `<head>..HEAD` holds no commit
+            return False
         if sha not in self._merges:
             done = _call(["rev-list", "--merges", f"{sha}..HEAD"], self.repo)
             self._merges[sha] = _text(done.stdout).split() if not isinstance(done, Unreadable) and done.returncode == 0 else []
@@ -677,8 +874,7 @@ def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
 
 
 def _commit_present(repo: Path, sha: str) -> bool:
-    done = _call(["cat-file", "-e", sha + "^{commit}"], repo)
-    return not isinstance(done, Unreadable) and done.returncode == 0
+    return _commit_of(repo, sha) is not None
 
 
 def _patch_id(repo: Path, sha: str, cache: dict):
@@ -708,6 +904,15 @@ def _file_patch_id(repo: Path, commit: str, path: str, cache: dict):
 
 
 def merge_base(repo: Path, base_ref: str, head: str | None):
+    if _FACTS is not None:
+        # Inside a command the object reader is open, so naming both commits costs no process: a name that names no
+        # commit has no merge base, and a head that sits on its base is its own. A failed read asks merge-base.
+        with _objects(repo) as reader:
+            base, tip = (reader.ask("info", name + "^{commit}") for name in (base_ref, head or "HEAD"))
+        if base is None or tip is None:
+            return None
+        if not isinstance(base, Unreadable) and not isinstance(tip, Unreadable) and base[0] == tip[0]:
+            return base[0]
     done = _call(["merge-base", base_ref, head or "HEAD"], repo)
     return None if isinstance(done, Unreadable) or done.returncode != 0 else _text(done.stdout).strip()
 

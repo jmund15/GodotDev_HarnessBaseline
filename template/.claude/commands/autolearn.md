@@ -20,7 +20,7 @@ Signal detection runs over the digest, never over what survived compaction. In `
 python3 .claude/tools/session_digest.py --prompt-tail autolearn --handoff
 ```
 
-Use the handoff only as the bounded orientation packet. Then dispatch one `kind: reviewer` job through `/delegate` pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
+Use the handoff only as the bounded orientation packet. Then dispatch one `kind: reviewer` job through `/delegate` pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects), the handed-rows query (§Signal detection, Handed recommendations) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
 
 ```bash
 python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>
@@ -73,10 +73,12 @@ Scan the session for:
 
 **Friction** (mandatory disposition — the class that is otherwise glossed over and never fixed)
 - Every digest friction row: a denied tool call, an error that needed a workaround, a blocking wait, a user interrupt, a user complaint about process ("this used to not happen", "why do you keep…")
-- Each row → `fixed` / `harness` (name the file and the edit shape: allow rule, hook fix, skill line, launcher flag) / `worklog` / `accepted: <class>: <why>` (`guard-working` | `outside` | `owner-held` | `one-off`). Friction that recurred in this digest, or that already sits in a prior archive entry, routes to `harness` unless `/codify` §Step 0 rules no change; then it is `accepted` with the target's quoted text
+- Each row → `fixed` / `harness` (name the file and the edit shape: allow rule, hook fix, skill line, launcher flag) / `worklog` / `accepted: <class>: <why>` (`guard-working` | `outside` | `owner-held` | `one-off`). Friction that recurred in this digest, or that an earlier ledger row records (§Packet outcomes), routes to `harness` unless `/codify` §Step 0 rules no change; then it is `accepted` with the target's quoted text
 - Unlike corrections, friction needs no user words to count: the tool error is the signal
 
 **Fixed defects** — each commit this session made whose subject starts `fix` (`git log -F --grep='<this session's Claude-Session URL>' --format='%h %s'`) is a signal with no correction or friction row needed: `/codify` §Step 0 names the choice upstream of the defect, and the commit is its `Signal:` evidence.
+
+**Handed recommendations** — this session's `recorded` ledger rows (`python3 .claude/tools/autolearn_outcomes.py unswept --rows --session <this session's id>`) are signals with no correction or friction row needed, including each harness change the session handed over instead of asking (a retro's recommendation, a review's harness finding; `CLAUDE.interactive.md` §Corrections and surfaced work).
 
 **Predecessor tail** — when this session resumed another session's work (a handoff, `/overnight_review`, a digest pickup), that session's friction rows after its own `/autolearn` ran are signals here, because its run could not see them.
 
@@ -103,7 +105,7 @@ Proposals reach the owner as one packet (`CLAUDE.interactive.md` §Answering and
 
 Run each approved row's named executor (§Step 0). A `/codify` row runs its §Steps 6–7, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing, which lands the change and proves it fires. Commit as `chore(autolearn): <brief description>` and report what changed.
 
-Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --row <R#> --target <target> --signal <signal> --recommended <apply|choose> --outcome applied|declined --reason <text>`, with the owner's stated reason or `none given`. The tool rejects a malformed row and caps the file.
+Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --row <R#> --target <target> --signal <signal> --recommended <apply|choose> --outcome applied|declined --reason <text>`, with the owner's stated reason or `none given`. The tool rejects a malformed row and caps the file. A packet row marks this session's earlier `recorded` rows read, so the cross-session sweep does not run them through Steps 0–5 again; `--session` therefore carries the same id the handed rows carry.
 
 ## Cross-session sweep
 

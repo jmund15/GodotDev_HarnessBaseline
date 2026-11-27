@@ -3,9 +3,10 @@
 
 The load-bearing case is the refusal: on Windows a bare `bash` can resolve to the System32 WSL shim,
 whose HOME is a different filesystem, so a launcher run through it misreports a logged-in account
-as logged out. `git_bash()` must never hand that shim back -- it raises instead. The other cases pin
-the override, the non-Windows path, candidate preference, and that `run_launcher` passes argv, cwd
-and merged env through to a real bash.
+as logged out. `git_bash()` must never hand that shim back: when `_msys.bash()` finds no Git Bash it
+raises instead (tests/test_msys.py decides the search itself, with this caller's planted-install
+case). The other cases pin the override and that `run_launcher` passes argv, cwd and merged env
+through to a real bash.
 
 Run: python3 .claude/tests/test_sidecar_launch.py
 """
@@ -13,7 +14,6 @@ import importlib.util
 import os
 import sys
 import tempfile
-import types
 from unittest.mock import patch
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -28,33 +28,18 @@ spec = importlib.util.spec_from_file_location("sl", MOD)
 sl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sl)
 
-REAL_OS = sl.os
-REAL_WHICH = sl.shutil.which
-REAL_CANDIDATES = sl._GIT_BASH_CANDIDATES
-
-
-def fake_os(name, environ, isfile):
-    """A stand-in for the module's `os` with a controllable platform, environment and file probe."""
-    path = types.SimpleNamespace(isfile=isfile)
-    return types.SimpleNamespace(name=name, environ=environ, path=path)
-
-
-def with_env(name, environ, candidates=REAL_CANDIDATES, isfile=lambda p: False, which=lambda _: None):
-    sl.os = fake_os(name, environ, isfile)
-    sl._GIT_BASH_CANDIDATES = candidates
-    sl.shutil.which = which
-    try:
+def with_env(sidecar_bash, found):
+    """`git_bash()` with SIDECAR_BASH set or unset and `_msys.bash()` answering `found`."""
+    with patch.dict(os.environ, {"SIDECAR_BASH": sidecar_bash} if sidecar_bash else {}), \
+            patch.object(sl._msys, "bash", return_value=found):
+        if not sidecar_bash:
+            os.environ.pop("SIDECAR_BASH", None)
         return sl.git_bash()
-    finally:
-        sl.os = REAL_OS
-        sl._GIT_BASH_CANDIDATES = REAL_CANDIDATES
-        sl.shutil.which = REAL_WHICH
 
 
-def raises_on_wsl_only():
+def raises_when_no_git_bash():
     try:
-        with_env("nt", {}, candidates=("C:/nope/bash.exe",),
-                 which=lambda _: r"C:\Windows\System32\bash.exe")
+        with_env(None, None)
     except RuntimeError as exc:
         return "SIDECAR_BASH" in str(exc)
     return False
@@ -63,22 +48,11 @@ def raises_on_wsl_only():
 def main():
     cases = []
     cases.append(("SIDECAR_BASH overrides every other rule",
-                  with_env("nt", {"SIDECAR_BASH": "/custom/bash"}) == "/custom/bash"))
-    cases.append(("a non-Windows host trusts shutil.which",
-                  with_env("posix", {}, which=lambda _: "/usr/bin/bash") == "/usr/bin/bash"))
-    cases.append(("a non-Windows host with no bash on PATH falls back to the bare name",
-                  with_env("posix", {}) == "bash"))
-    first, second = "C:/Git/bin/bash.exe", "C:/Git/usr/bin/bash.exe"
-    cases.append(("Windows prefers the first existing Git Bash candidate",
-                  with_env("nt", {}, candidates=(first, second), isfile=lambda p: True) == first))
-    cases.append(("Windows skips a missing candidate",
-                  with_env("nt", {}, candidates=(first, second),
-                           isfile=lambda p: p == second) == second))
-    cases.append(("Windows accepts a non-System32 bash from PATH when no candidate exists",
-                  with_env("nt", {}, candidates=(first,),
-                           which=lambda _: "D:/tools/msys/bash.exe") == "D:/tools/msys/bash.exe"))
-    cases.append(("NEGATIVE: Windows refuses the System32 WSL shim and names the override",
-                  raises_on_wsl_only()))
+                  with_env("/custom/bash", "C:/Git/bin/bash.exe") == "/custom/bash"))
+    cases.append(("with no override the launch runs the Git Bash _msys finds",
+                  with_env(None, "C:/Git/bin/bash.exe") == "C:/Git/bin/bash.exe"))
+    cases.append(("NEGATIVE: no Git Bash (only the WSL shim) raises and names the override",
+                  raises_when_no_git_bash()))
 
     tmp = tempfile.mkdtemp(prefix="sidecar_launch_")
     launcher = os.path.join(tmp, "probe.sh")

@@ -27,6 +27,39 @@ import _inprocess_hook  # noqa: E402
 _serial = itertools.count()
 
 
+REPO = os.path.dirname(os.path.dirname(_HOOKS))
+
+
+def arm_doctrine(session_id, state_dir, root=REPO, skill=True, ladder=True):
+    """Record the dispatch doctrine as in context, as live loads record it: the `orchestration` skill under the body
+    digest of `root`'s copy, and a full Read of `root`'s ladder under its text digest. A `root` holding no ladder gets
+    REPO's first, so a planted root needs no copy of its own; one it holds is never overwritten. For a proof whose
+    subject is not the doctrine gate; the gate then credits only a `root` holding that same text."""
+    import _compaction_record
+    import _hook_state
+    import model_ladder_gate
+    saved = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = str(state_dir)
+    try:
+        if skill:
+            _hook_state.mark_skill_in_context(
+                session_id, "orchestration", digest=_compaction_record.skill_file_digest("orchestration", root))
+        if ladder:
+            path = os.path.join(root, model_ladder_gate.RELATIVE_PATH)
+            if not os.path.isfile(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                shutil.copy(os.path.join(REPO, model_ladder_gate.RELATIVE_PATH), path)
+            digest = _hook_state.ladder_text_digest(path)
+            written, _ = _hook_state.update_json_locked(
+                _hook_state.state_path(session_id), lambda s: _hook_state.record_ladder_load(s, digest, full=True))
+            assert written and digest, "no ladder load recorded under %s" % root
+    finally:
+        if saved is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = saved
+
+
 def compact_start(hook_path, env, session_id, agent_id=None):
     payload = {"hook_event_name": "SessionStart", "source": "compact", "session_id": session_id}
     if agent_id is not None:

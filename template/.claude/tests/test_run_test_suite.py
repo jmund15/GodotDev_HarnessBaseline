@@ -44,18 +44,24 @@ def mode_cases(tmp, batch):
     glow = planted_class(tmp, "GlowRenderTests", True)
     plain = planted_class(tmp, "LogicOnlyTests", False)
 
-    def route_mode(filter_text, *extra, label, want, mixed=False):
+    def route_mode(filter_text, *extra, label, want):
         def verify(rc, out, err):
-            lines = out.splitlines()
-            modes, skipped, raw = [l for l in lines if l.startswith("MODE=")], [l for l in lines if l.startswith("RENDER_SKIPPED")], out + err
-            ok = rc == 0 and modes == [want]
-            ok = ok and (len(skipped) == 1 and glow in skipped[0] and plain not in skipped[0] if mixed else not skipped)
-            check(label, ok, raw)
+            modes = [l for l in out.splitlines() if l.startswith("MODE=")]
+            check(label, rc == 0 and modes == [want] and "RENDER_SKIPPED" not in out, out + err)
         batch.add(call("-Filter", filter_text, "-RouteOnly", "-IgnoreEditor", "-Repo", tmp, *extra), verify)
+
+    def refused(filter_text, label):
+        def verify(rc, out, err):
+            raw = out + err
+            check(label, rc == 126 and "STATUS=MIXED_RENDER_FILTER" in raw and glow in raw and plain not in raw
+                  and "MODE=" not in raw and "ROUTE=" not in raw, raw)
+        batch.add(call("-Filter", filter_text, "-RouteOnly", "-IgnoreEditor", "-Repo", tmp), verify)
     route_mode("FullyQualifiedName~Tests.Integration.Visual.GlowRenderTests", label="a filter whose every class is renderer-tagged runs windowed", want="MODE=windowed")
     route_mode("FullyQualifiedName~Tests.Integration.Visual.LogicOnlyTests", label="an untagged filter runs headless", want="MODE=headless")
-    route_mode("FullyQualifiedName~Tests.Integration.Visual.", label="a mixed filter runs headless and prints one line naming the tagged class it will not render",
-               want="MODE=headless", mixed=True)
+    refused("FullyQualifiedName~Tests.Integration.Visual.", "a mixed filter is refused before any run: exit 126, the tagged class named, no mode chosen")
+    route_mode("FullyQualifiedName~Tests.Integration.Visual.", "-Windowed", label="-Windowed runs a mixed filter windowed whole, with nothing refused", want="MODE=windowed")
+    route_mode("FullyQualifiedName~Tests.Integration.Visual.", "-RunMode", "headless",
+               label="a caller that decided the mode (the pool) is never refused on a mixed filter", want="MODE=headless")
     route_mode("FullyQualifiedName~Tests.Integration.Visual.LogicOnlyTests", "-Windowed", label="-Windowed runs windowed whatever the filter selects", want="MODE=windowed")
     route_mode("FullyQualifiedName~Tests.Integration.Visual.GlowRenderTests", "-RunMode", "headless",
                label="a caller's -RunMode headless is taken as decided, never re-derived from a renderer-tagged filter", want="MODE=headless")

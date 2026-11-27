@@ -27,6 +27,7 @@ def main(tmp):
     batch.add(body, lambda rc, out, _: check("a valid string key is returned", rc == 0 and "value=val" in out, f"rc={rc} {out!r}"),
               {"ADAPT_REPO": os.path.join(tmp, "good")})
     reader_and_mode(tmp, batch)
+    silence_budget_cases(tmp, batch)
     plan_cases(tmp, batch)
     trx_cases(tmp, batch)
     batch.run(tmp, TOOL)
@@ -114,6 +115,9 @@ def reader_and_mode(tmp, batch):
     mode_case("a mixed filter runs headless and names the tagged class it will not render",
               "(FullyQualifiedName~Tests.Integration.Visual.TaggedFileScopedTests|FullyQualifiedName~Tests.Integration.Visual.PlainTests)",
               f"mode=headless skipped={v}TaggedFileScopedTests")
+    mode_case("a bare term is vstest's FullyQualifiedName~ shorthand: a bare tagged class runs windowed", "TaggedFileScopedTests", "mode=windowed skipped=")
+    mode_case("a bare untagged class runs headless", "PlainTests", "mode=headless skipped=")
+    mode_case("a bare mixed filter names the tagged class it will not render", "TaggedFileScopedTests|PlainTests", f"mode=headless skipped={v}TaggedFileScopedTests")
     mode_case("-Windowed forces windowed", "FullyQualifiedName~Tests.Integration.Visual.PlainTests", "mode=windowed skipped=", windowed=True)
     mode_case("a filter selecting no class fails closed to headless", "FullyQualifiedName~Tests.Integration.Nothing.Here.", "mode=headless skipped=")
     mode_case("a filter on another property fails closed to headless", "TestCategory=Render", "mode=headless skipped=")
@@ -180,6 +184,60 @@ def trx_cases(tmp, batch):
             f"$m = Read-BatchManifest -Path '{man}'; \"units=$(($m.seconds.Keys) -join ',') wall=$($m.batchWall['Render'])\"")
     batch.add(body, lambda rc, out, err: check("the manifest keeps the Render unit though it is not a Tests/Integration segment",
                                                out.strip() == "units=Render wall=6", f"rc={rc} {out!r} {err!r}"))
+
+
+BURST = """namespace Sample.Game.Tests.Stress.Trail;
+using GdUnit4;
+[TestSuite]
+[RequireGodotRuntime]
+public partial class BurstTests
+{
+    [TestCase(Timeout = 300000)]
+    public async Task Nominal() { }
+
+    [TestCase(Timeout = 120000)]
+    [TestCase(Timeout = 180000)]
+    public async Task Extreme() { }
+
+    // [TestCase(Timeout = 900000)]
+    public void Commented() { }
+
+    private const string Doc = "[TestCase(Timeout = 900000)]";
+
+    [TestCase(Timeout = 2000), RequireGodotRuntime]
+    public void Quick() { }
+}
+"""
+UNTIMED = """namespace Sample.Game.Tests.Stress.Trail;
+[TestSuite]
+public partial class UntimedTests
+{
+    [TestCase]
+    public void Plain() { }
+}
+"""
+
+
+def silence_budget_cases(tmp, batch):
+    repo = os.path.join(tmp, "budgetrepo")
+    for name, body in (("BurstTests.cs", BURST), ("UntimedTests.cs", UNTIMED)):
+        path = os.path.join(repo, "Tests", "Stress", "Trail", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+
+    def budget(label, filter_text, want):
+        batch.add(f"[int64] (Get-FilterSilenceBudgetMs -Repo '{repo}' -Filter '{filter_text}')",
+                  lambda rc, out, err: check(label, out.strip() == want, f"rc={rc} {out!r} {err!r}"))
+
+    ns = "FullyQualifiedName~Tests.Stress.Trail."
+    budget("a class filter's silence budget is the longest declared case timeout of the class, ignoring a commented or quoted one",
+           ns + "BurstTests", "300000")
+    budget("a method filter's budget is that method's longest timeout, so the slow neighbour does not widen it", ns + "BurstTests.Extreme", "180000")
+    budget("a class declaring no timeout owes no silence budget", ns + "UntimedTests", "0")
+    budget("a mixed selection takes the longest budget among the selected methods only", f"({ns}BurstTests.Quick|{ns}UntimedTests)", "2000")
+    budget("a filter outside the readable grammar owes no budget: the stall bound stays at its base", "TestCategory=Stress", "0")
+    budget("a filter selecting no timed class owes no budget", "FullyQualifiedName~Tests.Nothing.Here.", "0")
 
 
 if __name__ == "__main__":

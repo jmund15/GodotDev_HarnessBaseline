@@ -57,7 +57,7 @@ Otherwise the Part's sizing (`_brainstorm_shared/drive_spine.md` §Sizing) sets 
 
 Five phases, run in order. Before skipping or softening any phase, read [`reference/plan_part_composition.md`](reference/plan_part_composition.md) §Anti-patterns.
 
-**Warm chain.** When the `/design_drive` session that recorded the grounding base runs this Part, Phase 3 checks only the delta. Read the base from that drive's task record: `task_record.py show <drive task>`, the decision whose text starts `design-lock base`. List the changed files, working tree included: `git diff --name-only --no-renames <base>` plus `git ls-files --others --exclude-standard`. Phase 2 still loads the Source-cell sections verbatim. Phase 3 verifies only the claims that name a changed file or a type declared in one. Phase 4 rules on that subset, and a subset with no changed file is clean. Any other session, or a chain with no recorded base, runs every phase in full.
+**Warm chain.** When the `/design_drive` session that recorded the grounding base runs this Part, Phase 3 checks only the delta. Read the `design-lock base` decision from `task_record.py show <drive task>` and resolve its SHA as a commit before using it. List the changed files, working tree included: `git diff --name-only --no-renames <base>` plus `git ls-files --others --exclude-standard`. Phase 2 still loads the Source-cell sections verbatim. Phase 3 verifies only the claims that name a changed file or a type declared in one. Phase 4 rules on that subset, and a subset with no changed file is clean. Any other session, or a chain with no resolvable base, runs every phase in full.
 
 ### Phase 1 — Resolve the Part
 

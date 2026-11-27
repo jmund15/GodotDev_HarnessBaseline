@@ -93,19 +93,38 @@ _out="$( (SC_MODEL=go-beta; sc_gate_exhausted; printf 'allowed') 2>&1 )"; _rc=$?
   || bad "transport marker expires"
 
 mkdir -p "$TMPD/tools"
+# The planted boundary is the reading; the reduction to the gate's fields is the real tool's.
+export REAL_TOOLS="$R/tools"
 cat > "$TMPD/tools/provider_capacity.py" <<'PY'
-import json
-print(json.dumps({"status": "available", "quota": {
+import json, os, sys
+sys.path.insert(0, os.environ["REAL_TOOLS"])
+import provider_capacity as real
+reading = {"status": "available", "quota": {
     "routingBand": "Hot", "routingWindow": "thirty_day", "bindingWindow": "thirty_day",
     "windows": [{"name": "seven_day", "pressure": 0.1},
                 {"name": "thirty_day", "pressure": 1.9}],
-}}))
+}}
+if sys.argv[1:2] == ["host-band"]:
+    if os.environ.get("PLANT_MALFORMED") == "1":
+        sys.exit(3)   # the reducer could not type the reading, as a broken meter's shape does
+    band = sys.argv[sys.argv.index("--min-band") + 1] if "--min-band" in sys.argv else None
+    print("\x1f".join(str(x) for x in real.host_band_fields(reading, band)))
+else:
+    print(json.dumps(reading))
 PY
 _out="$( (SC_ROOT="$TMPD"; SC_REGISTRY_CLI="$R/tools/model_registry.py";
           SC_MIN_BAND=Hot; SC_AUTHORIZED=0; CLAUDE_CODE_TRANSPORT=go;
           sc_gate_band; printf '%s|%s' "$SC_BAND" "$SC_BAND_P") 2>&1 )"; _rc=$?
 [ "$_rc" = 0 ] && [ "$_out" = 'Hot|1.9' ] && ok "host band shows its routing window's pressure" \
   || bad "host band shows its routing window's pressure"
+_out="$( (export PLANT_MALFORMED=1; SC_ROOT="$TMPD"; SC_REGISTRY_CLI="$R/tools/model_registry.py";
+          SC_MIN_BAND=Hot; SC_AUTHORIZED=0; CLAUDE_CODE_TRANSPORT=go;
+          sc_gate_band; printf '%s|%s' "$SC_BAND" "$SC_BAND_P") 2>&1 )"; _rc=$?
+case "$_out" in
+  *"unknown|?"*) [ "$_rc" = 0 ] && ok "a reading the reducer cannot type launches with an unknown band" \
+                   || bad "an untypeable reading refused: rc=$_rc $_out" ;;
+  *) bad "an untypeable reading did not read as an unknown band: rc=$_rc $_out" ;;
+esac
 
 echo
 echo "capacity migration: $PASS passed, $FAIL failed"

@@ -9,8 +9,10 @@ carries the whole `for-role` text for every tier the registry claims and records
 names each missing tier with its dispatch consumer. A slice credits when the run's own stdout appears whole
 inside the delivered output: the Bash PostToolUse entry (`--bash-credit`) compares against the text the run
 staged, so a command joined with `&&` earns credit and one cut by a pipe, filter or redirect earns none.
-Each recorded load carries the digest of the text it delivered (the skill's body, the ladder file), so a session
-holding a copy the file has since left behind is denied until it reloads (`ladder_credit`, `_hook_state.skill_in_context`).
+Each recorded load is keyed by the digest of the text it delivered (the body of the SKILL.md read or invoked, the
+ladder file read, the ladder a `for-role` run or an embedded deny cut from), so a session holding a copy the file
+has since left behind is denied until it reloads, and one that loaded two checkouts' differing copies is current
+against each (`ladder_credit`, `_hook_state.skill_in_context`).
 Class: process guard, blocking because the advisory that replaced it let the skip recur (instruction_quality §3)."""
 import json
 import os
@@ -21,11 +23,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import (LADDER_DIGEST_KEY, fire_once_since_compaction, LADDER_READY_KEY, LADDER_SLICE_KEY, adopt_ladder_digest,  # noqa: E402
+from _hook_state import (fire_once_since_compaction, ladder_loads, ladder_text_digest, record_ladder_load,  # noqa: E402
                          mark_ladder_slice, read_json_salvage, state_path, update_json_locked, skill_in_context, consume_ladder_receipt, fail_ladder_receipt,
                          ladder_receipt_failure, normalize_stdout, stdout_sha256)
 
-STATE_KEY = LADDER_READY_KEY
 SLICE_COMMAND = "python3 .claude/tools/model_registry.py for-role"
 RELATIVE_PATH = Path(".claude") / "reference" / "model_ladder_evidence.md"
 NOTICE_TAG = "[dispatch-prep]"
@@ -42,11 +43,7 @@ def expected_path(payload):
 
 
 def _digest_under(root):
-    try:
-        with open(Path(root) / RELATIVE_PATH, "rb") as fh:
-            return stdout_sha256(fh.read().decode("utf-8", errors="replace"))
-    except OSError:
-        return None
+    return ladder_text_digest(Path(root) / RELATIVE_PATH)
 
 
 def ladder_digest(payload):
@@ -75,17 +72,19 @@ def ladder_credit(session_id="", root=None, state=None):
     """The one reading of a session's ladder loads, for every gate, notice and tool: its `LadderCredit` against the
     ladder file under `root` (default: the hook's root, `CLAUDE_PROJECT_DIR` else the cwd), so a tool passes the
     checkout it reads. `state` is the session state a caller already holds, else it is read for `session_id`;
-    unreadable state reads as NONE. A record with no digest cannot be told stale and stands."""
+    unreadable state reads as NONE. Only the loads of that file's current text count, so loads of two checkouts'
+    differing ladders each credit their own; a load with no digest cannot be told stale and stands."""
     if state is None:
         state = read_json_salvage(state_path(session_id or ""))
-    full, tiers = state.get(STATE_KEY) is True, state.get(LADDER_SLICE_KEY)
-    tiers = frozenset(t for t in tiers if isinstance(t, str)) if isinstance(tiers, list) else frozenset()
-    if not (full or tiers):
+    loads = {digest: load for digest, load in ladder_loads(state).items() if load["full"] or load["tiers"]}
+    if not loads:
         return LadderCredit(NONE, False, frozenset())
-    recorded = state.get(LADDER_DIGEST_KEY)
-    if recorded and recorded != _digest_under(root if root is not None else _root({})):
+    now = _digest_under(root if root is not None else _root({}))
+    held = [load for digest, load in loads.items() if digest in ("", now)]
+    if not held:
         return LadderCredit(STALE, False, frozenset())
-    return LadderCredit(CURRENT, full, tiers)
+    return LadderCredit(CURRENT, any(load["full"] for load in held),
+                        frozenset(tier for load in held for tier in load["tiers"]))
 
 
 def _full_read_succeeded(payload):
@@ -109,10 +108,10 @@ def _full_read_succeeded(payload):
 
 
 def mark_loaded(payload):
-    """Arm readiness from a delivery that reached context: a successful exact-path Read covering the whole
-    ladder, or a `for-role` run whose staged stdout appears whole inside the delivered output. A Bash result
-    that was piped, filtered, redirected, persisted, interrupted or failed credits nothing, and records why for
-    the next deny."""
+    """Arm readiness from a delivery that reached context: a successful Read covering a whole ladder file (any
+    checkout's, credited for that file's text), or a `for-role` run whose staged stdout appears whole inside the
+    delivered output (credited for the ladder that run cut from). A Bash result that was piped, filtered,
+    redirected, persisted, interrupted or failed credits nothing, and records why for the next deny."""
     if not isinstance(payload, dict):
         return False
     if payload.get("tool_name") == "Bash":
@@ -125,23 +124,21 @@ def mark_loaded(payload):
     raw_path = tool_input.get("file_path")
     if not isinstance(raw_path, str) or not raw_path:
         return False
-    root = _root(payload)
     candidate = Path(raw_path)
     if not candidate.is_absolute():
-        candidate = root / candidate
+        candidate = _root(payload) / candidate
     try:
-        actual = os.path.normcase(os.path.realpath(candidate))
-        expected = os.path.normcase(expected_path(payload))
+        actual = Path(os.path.realpath(candidate))
     except OSError:
         return False
-    if actual != expected:
+    if [os.path.normcase(part) for part in actual.parts[-3:]] != [os.path.normcase(part) for part in RELATIVE_PATH.parts]:
+        return False
+    digest = ladder_text_digest(actual)
+    if digest is None:
         return False
 
-    digest = ladder_digest(payload)
-
     def update(state):
-        adopt_ladder_digest(state, digest)
-        state[STATE_KEY] = True
+        record_ladder_load(state, digest, full=True)
         return True
 
     written, marked = update_json_locked(state_path(payload.get("session_id") or ""), update)
@@ -210,8 +207,9 @@ def _credit_delivered_slice(payload):
         fail_ladder_receipt(session_id, reason)
         return False
     tiers = [tier for tier in receipt.get("tiers") or [] if isinstance(tier, str) and tier]
-    return bool(tiers and mark_ladder_slice(session_id, tiers, clear_receipt_failure=True,
-                                            digest=ladder_digest(payload)))
+    # A receipt staged before receipts named their ladder falls back to the hook's root, the one record it can have.
+    ladder = receipt.get("ladder") if isinstance(receipt.get("ladder"), str) else ladder_digest(payload)
+    return bool(tiers and mark_ladder_slice(session_id, tiers, clear_receipt_failure=True, digest=ladder))
 
 
 FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this call is allowed without it. "
@@ -291,7 +289,11 @@ def _embedded_slice(session_id, payload):
             text = model_registry.ladder_slice(claimed)
         except Exception:
             return None
-    return text if mark_ladder_slice(session_id, claimed, digest=ladder_digest(payload)) else None
+    try:
+        digest = ladder_text_digest(model_registry.ladder_path())
+    except Exception:
+        return None
+    return text if digest and mark_ladder_slice(session_id, claimed, digest=digest) else None
 
 
 def _skill_held(session_id, payload):

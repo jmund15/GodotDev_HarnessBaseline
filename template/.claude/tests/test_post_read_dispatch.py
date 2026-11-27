@@ -75,15 +75,17 @@ def main():
                         "tool_response": {"content": "# Model Ladder"}}), env)
     marker_path = os.path.join(state_dir, "prd00004.json")
     marker = json.load(open(marker_path, encoding="utf-8")) if os.path.exists(marker_path) else {}
+    import model_ladder_gate
     check("full ladder Read arms the compaction-scoped dispatch marker",
-          r.returncode == 0 and marker.get("model_ladder_ready") is True, repr(marker))
+          r.returncode == 0 and model_ladder_gate.ladder_credit(root=tmp, state=marker).full, repr(marker))
     r = run(json.dumps({"tool_name": "Read", "session_id": "prd00005",
                         "tool_input": {"file_path": ladder, "limit": 20},
                         "tool_response": {"content": "# Model Ladder"}}), env)
     bounded_path = os.path.join(state_dir, "prd00005.json")
     bounded = json.load(open(bounded_path, encoding="utf-8")) if os.path.exists(bounded_path) else {}
     check("bounded ladder Read does not arm the marker",
-          r.returncode == 0 and "model_ladder_ready" not in bounded, repr(bounded))
+          r.returncode == 0 and model_ladder_gate.ladder_credit(root=tmp, state=bounded).status
+          == model_ladder_gate.NONE, repr(bounded))
 
     # 3b. A full SKILL.md Read records that skill as loaded; a bounded one does not.
     skill_md = os.path.join(tmp, ".claude", "skills", "instruction_quality", "SKILL.md")

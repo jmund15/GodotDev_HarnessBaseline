@@ -49,6 +49,11 @@
   holds it. It is separate from the checkout record, whose presence is the admission contract for held children. The write
   is best-effort and skipped when a live record already names the caller (re-entry on the same thread); a taker removes
   only a record it wrote, before it releases the mutex. Get-CheckoutHolder returns the record only while its process lives.
+
+.LEASE HISTORY
+  Every checkout-lock or runtime-slot lease (Enter-RunLocks, Enter-TwinLock) appends a take row when it holds and an end
+  row when it lets go to <record dir>\leases.jsonl (Add-LeaseRow); a take that gives up writes only the end row.
+  tools/lease_log.py owns the row fields and the `waits` query that reads them; nothing else reads them.
 #>
 
 . (Join-Path $PSScriptRoot 'GodotProcess.ps1')
@@ -89,6 +94,10 @@ $script:RecompileSnapshotReads = 0
 # How long Add-RuntimeSlotTrigger waits, per wait, before it drops a diagnostics line so it never holds a gate.
 # A proof raises it so a starved host cannot lose a line; production keeps the default.
 $script:RuntimeSlotTriggerWaitMs = 2000
+# A lock wait past this prints one LOCKWAIT line naming its stage, so a tailed run log never reads a lock queue as the
+# phase line before it. An uncontended take ends within seconds (median 3 s over a drive's 270 runs), and the lane
+# pool's own queued notice (machine_slots.NOTICE_AFTER) starts at 30 s, so both lock layers report a queue at one age.
+$script:LockWaitNoticeMs = 30000
 
 function Get-RuntimeSlotNames {
     Set-StrictMode -Version Latest
@@ -272,6 +281,10 @@ function Get-CheckoutHolder {
     $rec
 }
 
+function Get-CallerSessionId {
+    if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } elseif ($env:CLAUDE_CODE_SESSION_ID) { $env:CLAUDE_CODE_SESSION_ID } else { $null }
+}
+
 # Writes the caller's holder record unless a live one already names the caller. True only when this call wrote it.
 function Write-CheckoutHolder {
     param([Parameter(Mandatory)] [string] $Repo, [string] $Label = '', [string] $RecordDir = '', [switch] $Runtime)
@@ -280,14 +293,13 @@ function Write-CheckoutHolder {
         $dir = Get-RuntimeSlotRecordDir -RecordDir $RecordDir
         $cur = Get-CheckoutHolder -Repo $Repo -RecordDir $dir
         if ($null -ne $cur -and [int] $cur.holderPid -eq $PID) { return $false }
-        $sid = if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } elseif ($env:CLAUDE_CODE_SESSION_ID) { $env:CLAUDE_CODE_SESSION_ID } else { $null }
         Write-SlotRecord -RecordDir $dir -Name (Get-CheckoutHolderName -Repo $Repo) -Record ([ordered]@{
             holderPid  = $PID
             procStart  = (Get-ProcStartUtc (Get-Process -Id $PID))
             checkout   = $Repo
             label      = $Label
             runtime    = [bool] $Runtime
-            sessionId  = $sid
+            sessionId  = (Get-CallerSessionId)
             acquiredAt = (Get-Date).ToUniversalTime().ToString('o')
         })
         $now = Get-CheckoutHolder -Repo $Repo -RecordDir $dir
@@ -687,6 +699,69 @@ function Invoke-RuntimeSlotSweep {
     $killed.ToArray()
 }
 
+# ------------------------------------------------------------------ lease history (.LEASE HISTORY)
+# tools/lease_log.py CAP_BYTES and KEEP_ROWS: a file past the cap keeps its newest rows before the next one.
+$script:LeaseLogCapBytes = 4000000
+$script:LeaseLogKeepRows = 6000
+
+function Get-LeaseStamp {
+    (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# A lease's take row before its waits: the caller fills wait, got and at.
+function New-LeaseRow {
+    param([ValidateSet('run', 'twin')] [string] $Kind, [string] $Repo, [string] $Label, [string] $CheckoutLock,
+          [System.Collections.IDictionary] $Ask)
+    Set-StrictMode -Version Latest
+    [ordered]@{
+        v = 1; event = 'take'; id = [guid]::NewGuid().ToString('N').Substring(0, 12); pool = 'runtime'; kind = $Kind
+        pid = $PID; label = $Label; checkout = $Repo; checkoutLock = $(if ($CheckoutLock) { $CheckoutLock } else { $null })
+        sessionId = (Get-CallerSessionId); start = (Get-LeaseStamp); at = $null; ask = $Ask
+        wait = [ordered]@{ checkout = 0.0; lane = 0.0; runtime = 0.0 }; got = [ordered]@{ slots = @() }
+    }
+}
+
+# Appends one row through one handle that shuts out other writers (FileShare.Read), trimming a file past the cap to its
+# newest rows first. Best-effort: a row that cannot open the file within 500 ms is dropped, so the history never holds a lease.
+function Add-LeaseRow {
+    param([string] $RecordDir = '', [Parameter(Mandatory)] [System.Collections.IDictionary] $Row)
+    Set-StrictMode -Version Latest
+    try {
+        $dir = Get-RuntimeSlotRecordDir -RecordDir $RecordDir
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $path = Join-Path $dir 'leases.jsonl'
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        $bytes = $utf8.GetBytes(($Row | ConvertTo-Json -Compress -Depth 5) + "`n")
+        $deadline = [DateTime]::UtcNow.AddMilliseconds(500)
+        while ($true) {
+            try { $fs = [System.IO.FileStream]::new($path, 'OpenOrCreate', 'ReadWrite', 'Read'); break }
+            catch [System.IO.IOException] {
+                if ([DateTime]::UtcNow -gt $deadline) { return }
+                Start-Sleep -Milliseconds 20
+            }
+        }
+        try {
+            if ($fs.Length -gt $script:LeaseLogCapBytes) {
+                $reader = [System.IO.StreamReader]::new($fs, $utf8, $false, 65536, $true)
+                $lines = @($reader.ReadToEnd() -split "`n" | Where-Object { $_ })
+                $reader.Dispose()
+                $tail = $utf8.GetBytes((@($lines | Select-Object -Last $script:LeaseLogKeepRows) -join "`n") + "`n")
+                $fs.SetLength(0); $fs.Write($tail, 0, $tail.Length)
+            }
+            [void] $fs.Seek(0, 'End'); $fs.Write($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
+    } catch { }
+}
+
+# Turns $Row into its end row in place and writes it, once.
+function Complete-LeaseRow {
+    param([string] $RecordDir = '', [System.Collections.IDictionary] $Row, [Parameter(Mandatory)] [string] $Ended)
+    Set-StrictMode -Version Latest
+    if ($null -eq $Row -or $Row.event -eq 'end') { return }
+    $Row.event = 'end'; $Row.at = Get-LeaseStamp; $Row.ended = $Ended
+    Add-LeaseRow -RecordDir $RecordDir -Row $Row
+}
+
 # ------------------------------------------------------------------ lock objects
 # A run lock is a named object with WaitOne(ms) -> bool, ReleaseMutex() and Dispose(), and a wait that finishes through a
 # dead owner throws AbandonedMutexException after granting the lock. Windows uses a kernel mutex. A Linux .NET named
@@ -839,7 +914,8 @@ function Test-OtherSlotBusy {
 }
 
 function Enter-MachineWorkLease {
-    param([int] $TimeoutMs = 600000, [string] $Holder = '')
+    # -OnWait runs once when no lane is held after -NoticeMs, while the broker still waits.
+    param([int] $TimeoutMs = 600000, [string] $Holder = '', [int] $NoticeMs = 0, [scriptblock] $OnWait = $null)
     if ($env:HARNESS_SLOT_BUDGET -eq '1') { return $null }
     $tool = if ($env:HARNESS_SLOT_SCRIPT) { $env:HARNESS_SLOT_SCRIPT } else { Join-Path $PSScriptRoot '../tools/machine_slots.py' }
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -861,8 +937,15 @@ function Enter-MachineWorkLease {
     $keep = $false
     try {
         [void] $proc.Start()
-        $line = $proc.StandardOutput.ReadLine()
-        if (-not $line) { throw "machine slot broker failed: $($proc.StandardError.ReadToEnd())" }
+        $read = $proc.StandardOutput.ReadLineAsync()
+        if ($OnWait -and $NoticeMs -lt $TimeoutMs -and -not $read.Wait([math]::Max(0, $NoticeMs))) { & $OnWait }
+        $line = $read.GetAwaiter().GetResult()
+        if (-not $line) {
+            $stderr = $proc.StandardError.ReadToEnd()
+            [void] $proc.WaitForExit(5000)
+            $code = if ($proc.HasExited) { $proc.ExitCode } else { 'still running' }
+            throw "machine slot broker failed (exit code $code): $stderr"
+        }
         $ready = $line | ConvertFrom-Json -AsHashtable
         if ($ready.ContainsKey('error')) { throw $ready.error }
         if ($null -eq $ready.held) { return $null }
@@ -929,10 +1012,44 @@ function Enter-RunLocks {
         Records      = @{}
         Opened       = $opened
         MachineWork  = $null
+        Row          = $null
     }
+    $ckName = if ($HeldCheckout) { $null } elseif ($CheckoutLockName) { $CheckoutLockName } else { Get-CheckoutLockName -Repo $Repo }
+    $row = New-LeaseRow -Kind run -Repo $Repo -Label $Label -CheckoutLock $ckName -Ask ([ordered]@{
+        checkout = -not $HeldCheckout; lane = $env:HARNESS_SLOT_BUDGET -ne '1'
+        runtime = $(if (-not $Runtime) { $null } elseif ($SlotCount -ge 2) { 'one' } else { 'all' })
+        of = $(if ($SlotCount -ge 2) { $SlotCount } else { $names.Count })
+    })
     # The compile is not a wait: WaitMs and every timeout below count only time spent on locks and their bookkeeping.
     if ((Get-HostPlatform) -eq 'linux') { Import-HarnessFileLock }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # The stage being waited for and when it began; $advance closes it into the row's wait and starts $Next.
+    $stage = @{ name = 'checkout'; ms = 0L; noticed = $false }
+    $advance = {
+        param([string] $Next)
+        $now = $sw.ElapsedMilliseconds
+        if ($stage.name) { $row.wait[$stage.name] = [math]::Round(($now - $stage.ms) / 1000.0, 3) }
+        $stage.name = $Next; $stage.ms = $now; $stage.noticed = $false
+    }
+    # Write-Host: this function's success stream is its return value.
+    $notice = {
+        $stage.noticed = $true
+        $waited = $sw.ElapsedMilliseconds - $stage.ms
+        Write-Host ("LOCKWAIT stage={0} waiting={1}s since={2}" -f $stage.name, [int]($waited / 1000),
+            (Get-Date).ToUniversalTime().AddMilliseconds(-$waited).ToString('yyyy-MM-ddTHH:mm:ssZ'))
+    }
+    $noticeLeft = { $script:LockWaitNoticeMs - ($sw.ElapsedMilliseconds - $stage.ms) }
+    # Wait-RunLock for the rest of the timeout, with the stage's one notice once the wait passes LockWaitNoticeMs.
+    $waitStage = {
+        param([object[]] $Handles)
+        $quiet = & $noticeLeft
+        if (-not $stage.noticed -and $quiet -lt ($TimeoutMs - $sw.ElapsedMilliseconds)) {
+            $first = Wait-RunLock -Handles $Handles -TimeoutMs ([math]::Max(0, $quiet))
+            if ($first.Index -ge 0) { return $first }
+            & $notice
+        }
+        Wait-RunLock -Handles $Handles -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
+    }
     $reaped = [System.Collections.Generic.List[int]]::new()
     $sweep = {
         $t = [System.Diagnostics.Stopwatch]::StartNew()
@@ -941,6 +1058,9 @@ function Enter-RunLocks {
     }
     $fail = {
         param([string] $Blocker)
+        & $advance ''
+        $ended = switch ($Blocker) { 'checkout' { 'timeout:checkout' } 'machine-slots' { 'timeout:lane' } 'runtime-slots' { 'timeout:runtime' } 'held' { 'held-refused' } default { 'error' } }
+        Complete-LeaseRow -RecordDir $lease.RecordDir -Row $row -Ended $ended
         foreach ($k in @($lease.Records.Keys)) {
             $lease.Records[$k].releasedAt = (Get-Date).ToUniversalTime().ToString('o')
             Write-SlotRecord -RecordDir $lease.RecordDir -Name "slot-$k" -Record $lease.Records[$k]
@@ -960,26 +1080,28 @@ function Enter-RunLocks {
     try {
         # Checkout lock first, always, unless this is a held child: its ancestor holds that lock.
         if (-not $HeldCheckout) {
-            $ckName = if ($CheckoutLockName) { $CheckoutLockName } else { Get-CheckoutLockName -Repo $Repo }
             $ck = New-RunLock $ckName; $opened.Add($ck)
-            $r = Wait-RunLock -Handles @($ck) -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
+            $r = & $waitStage @($ck)
             if ($r.Index -lt 0) { & $fail 'checkout'; return $lease }
             $held.Add($ck)
             if ($r.Abandoned) { $lease.Abandoned = $true }
             $lease.HolderRecord = Write-CheckoutHolder -Repo $Repo -Label $Label -RecordDir $lease.RecordDir -Runtime:$Runtime
         }
+        & $advance 'lane'
 
         if ($env:HARNESS_SLOT_BUDGET -ne '1') {
             $work = if ($Label) { "RuntimeSlots $Label" } else { 'RuntimeSlots' }
             $holder = @{ pid = $PID; command = $work; checkout = $Repo } | ConvertTo-Json -Compress
-            $lease.MachineWork = Enter-MachineWorkLease -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds) -Holder $holder
+            $lease.MachineWork = Enter-MachineWorkLease -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds) -Holder $holder `
+                -NoticeMs (& $noticeLeft) -OnWait $notice
             if ($null -eq $lease.MachineWork) { & $fail 'machine-slots'; return $lease }
         }
+        & $advance 'runtime'
         if ($Runtime) {
             $slotHandles = @(foreach ($nm in $names) { $m = New-RunLock $nm; $opened.Add($m); $m })
             if ($SlotCount -ge 2) {
                 $order = @(($SlotCount - 1)..0)
-                $r = Wait-RunLock -Handles @($order | ForEach-Object { $slotHandles[$_] }) -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
+                $r = & $waitStage @($order | ForEach-Object { $slotHandles[$_] })
                 if ($r.Index -lt 0) { & $fail 'runtime-slots'; return $lease }
                 $slot = $order[$r.Index]
                 $held.Add($slotHandles[$slot])
@@ -1000,7 +1122,7 @@ function Enter-RunLocks {
                 $lease.AcquiredAt = $now
             } else {
                 foreach ($slot in 0..($names.Count - 1)) {
-                    $r = Wait-RunLock -Handles @($slotHandles[$slot]) -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
+                    $r = & $waitStage @($slotHandles[$slot])
                     if ($r.Index -lt 0) { & $fail 'runtime-slots'; return $lease }
                     $held.Add($slotHandles[$slot])
                     if ($r.Abandoned) { $lease.Abandoned = $true }
@@ -1034,6 +1156,10 @@ function Enter-RunLocks {
         $lease.Held = @($held)
         $lease.Reaped = [int[]] @($reaped)
         $lease.WaitMs = $sw.ElapsedMilliseconds
+        & $advance ''
+        $row.got.slots = @($lease.Slots); $row.at = Get-LeaseStamp
+        Add-LeaseRow -RecordDir $lease.RecordDir -Row $row
+        $lease.Row = $row
         return $lease
     } catch {
         & $fail 'error'
@@ -1073,6 +1199,7 @@ function Exit-RunLocks {
             $Lease.MachineWork = $null
         }
         $Lease.Held = @()
+        if ($Lease.PSObject.Properties['Row']) { Complete-LeaseRow -RecordDir $Lease.RecordDir -Row $Lease.Row -Ended released; $Lease.Row = $null }
     } catch { }
 }
 

@@ -315,25 +315,33 @@ def main():
     case("plan-for-launcher prints the credential variable and the expanded credential file after the "
          "three original fields", plan_for_launcher_credential_fields)
 
-    def sidecar_fields_plan():
-        row = exec_row(live())["id"]
-        _, off = capture(mr._cmd_sidecar_fields, [row, "--plan", SECONDARY], suspended())
-        _, on = capture(mr._cmd_sidecar_fields, [row, "--plan", SECONDARY], forced())
-        _, bare = capture(mr._cmd_sidecar_fields, [row], live())
-        cols = lambda t: t.strip().split("|")
-        ok = (cols(off)[7] == "unavailable" and cols(off)[8] and cols(on)[7] == "available"
-              and cols(bare)[7] == "available" and cols(on)[9] == "plan-quota")
-        return ok, repr((off, on, bare))
-    case("sidecar-fields --plan reports the plan's own status in column 8", sidecar_fields_plan)
+    def facts(data, row, plan=None):
+        original_load = mr.load
+        mr.load = lambda *_a, **_k: data
+        try:
+            return mr.launch_facts(row, plan=plan)
+        finally:
+            mr.load = original_load
 
-    def sidecar_fields_foreign_plan():
+    def launch_facts_plan():
+        row = exec_row(live())["id"]
+        off = facts(suspended(), row, SECONDARY)
+        on = facts(forced(), row, SECONDARY)
+        bare = facts(live(), row)
+        ok = (off["SC_TRANSPORT_STATE"] == "unavailable" and off["SC_TRANSPORT_REASON"]
+              and on["SC_TRANSPORT_STATE"] == "available" and bare["SC_TRANSPORT_STATE"] == "available"
+              and on["SC_COST_MODEL"] == "plan-quota")
+        return ok, repr((off, on, bare))
+    case("launch-fields --plan reports the paying plan's own status", launch_facts_plan)
+
+    def launch_facts_foreign_plan():
         row = exec_row(live())["id"]
         try:
-            capture(mr._cmd_sidecar_fields, [row, "--plan", "codex"], forced())
+            facts(forced(), row, "codex")
         except mr.RegistryError as exc:
             return "codex" in str(exc), str(exc)
         return False, "no error"
-    case("sidecar-fields --plan refuses a plan that does not pay for the row", sidecar_fields_foreign_plan)
+    case("launch-fields --plan refuses a plan that does not pay for the row", launch_facts_foreign_plan)
 
     def plan_for_launcher_cli():
         d = forced()

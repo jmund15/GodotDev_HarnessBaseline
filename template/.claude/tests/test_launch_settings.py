@@ -22,6 +22,7 @@ class SettingsProof(unittest.TestCase):
         lib = root / "scripts/lib/sidecar_common.sh"
         lib.parent.mkdir(parents=True)
         shutil.copyfile(CLAUDE / "scripts/lib/sidecar_common.sh", lib)
+        shutil.copyfile(CLAUDE / "scripts/lib/launch_settings.py", root / "scripts/lib/launch_settings.py")
         for rel in ("hooks/_checkout_root.py", "hooks/_git_run.py", "tools/adaptation.py", "tools/tool_profiles.py",
                     "tools/plugin_registry.py", "guards/tool_profiles.json"):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)

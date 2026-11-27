@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -354,15 +354,20 @@ def _normalize_repo_url(value: str) -> str:
     return text.casefold()
 
 
-def _origin(path: Path) -> str:
+class _NotRepository(BaselineError):
+    """A baseline path that is no git repository: never replaced like a cache with another origin."""
+
+
+def _assert_origin(path: Path, expected: str, not_repository: str) -> None:
+    """Raise `_NotRepository(not_repository)` when `path` is no git repository, and a BaselineError when
+    its `origin` is missing or names another repository. `remote get-url` answers only inside a repository,
+    so a found URL settles both; only a failed one asks which it was."""
     result = _git(path, ["remote", "get-url", "origin"], check=False)
     if result.returncode != 0:
+        if not _git_repo(path):
+            raise _NotRepository(not_repository)
         raise BaselineError(f"baseline checkout at {path} has no origin remote")
-    return _lf(result.stdout).decode("utf-8", errors="replace").strip()
-
-
-def _assert_origin(path: Path, expected: str) -> None:
-    actual = _origin(path)
+    actual = _lf(result.stdout).decode("utf-8", errors="replace").strip()
     if _normalize_repo_url(actual) != _normalize_repo_url(expected):
         raise BaselineError(
             f"baseline origin mismatch at {path}: expected {expected}, got {actual}"
@@ -457,24 +462,32 @@ def _batch_header(header: bytes) -> tuple[bytes, int] | None:
 
 
 class _BatchReader:
-    """One persistent `git cat-file --batch` reader for an invocation."""
+    """One persistent `git cat-file --batch` reader of `repo` for an invocation, started by its first read:
+    a command that opens the baseline and reads nothing through it (a publish pin) spawns no reader."""
 
     def __init__(self, repo: Path, commit: str):
+        self.repo = repo
         self.commit = commit
-        try:
-            self.process = subprocess.Popen(
-                ["git", "-C", str(repo), "cat-file", "--batch"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except OSError as exc:
-            raise BaselineError(f"could not start git cat-file --batch: {exc}") from exc
+        self.process: subprocess.Popen | None = None
 
     def read(self, relpath: str, commit: str | None = None) -> bytes | None:
+        return self.blob(f"{commit or self.commit}:template/{relpath}")
+
+    def blob(self, spec: str) -> bytes | None:
+        """The object `spec` (`<rev>:<path>`) names, None when it is missing."""
+        if self.process is None:
+            try:
+                self.process = subprocess.Popen(
+                    ["git", "-C", str(self.repo), "cat-file", "--batch"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except OSError as exc:
+                raise BaselineError(f"could not start git cat-file --batch: {exc}") from exc
         if self.process.stdin is None or self.process.stdout is None:
             raise BaselineError("git cat-file --batch pipes are unavailable")
-        query = f"{commit or self.commit}:template/{relpath}\n".encode("utf-8")
+        query = f"{spec}\n".encode("utf-8")
         try:
             self.process.stdin.write(query)
             self.process.stdin.flush()
@@ -497,6 +510,8 @@ class _BatchReader:
         return body
 
     def close(self) -> None:
+        if self.process is None:
+            return
         stdin = self.process.stdin
         if stdin is not None:
             try:
@@ -516,6 +531,7 @@ class BaselineSource:
     sha: str
     batch: _BatchReader
     _exec: frozenset[str] | None = None
+    _touches: dict[str, dict[str, list[str]]] = field(default_factory=dict, repr=False, compare=False)
 
     def read(self, relpath: str) -> bytes | None:
         return self.batch.read(relpath)
@@ -531,6 +547,18 @@ class BaselineSource:
             self._exec = frozenset(path[len("template/"):] for path, mode in baseline_identity.file_modes(out).items()
                                    if mode == "100755")
         return self._exec
+
+    def touches(self, *, at_pin: bool = True) -> dict[str, list[str]]:
+        """Path-changing commits, newest first: the pin's first-parent line (the reconcile points a
+        row's carried copy is found on), or every ref (`at_pin=False`, a legacy hash's search)."""
+        key = self.sha if at_pin else ""
+        if key not in self._touches:
+            self._touches[key] = _template_touches(self.path, first_parent=self.sha if at_pin else None)
+        return self._touches[key]
+
+    def is_ancestor(self, older: str, newer: str) -> bool:
+        """Whether `older` is an ancestor of `newer` in this object store."""
+        return _git(self.path, ["merge-base", "--is-ancestor", older, newer], check=False).returncode == 0
 
     def close(self) -> None:
         self.batch.close()
@@ -579,15 +607,16 @@ def project_root() -> Path:
     """The nearest directory holding `.claude/`, searched upward from cwd but never above the git
     top level: an ancestor `.claude/` outside the repository (a home directory has one) is not
     this project's."""
-    path = Path.cwd().resolve()
-    top = None
-    probe = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path,
-                           capture_output=True, text=True)
-    if probe.returncode == 0 and probe.stdout.strip():
-        top = Path(probe.stdout.strip()).resolve()
+    start = Path.cwd().resolve()
+    path = start
+    top = _UNREAD
     while True:
         if path.name != ".claude" and (path / ".claude").is_dir():
             return path
+        if top is _UNREAD:  # asked only when the walk must leave cwd: a root at cwd needs no bound
+            probe = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=start,
+                                   capture_output=True, text=True)
+            top = Path(probe.stdout.strip()).resolve() if probe.returncode == 0 and probe.stdout.strip() else None
         if path == top or path == path.parent:
             break
         path = path.parent
@@ -739,9 +768,7 @@ def _open_source(lock: dict, root: Path, baseline_dir: str | None) -> BaselineSo
         raise BaselineError("lock has no baseline_repo")
     if baseline_dir:
         path = Path(baseline_dir).resolve()
-        if not _git_repo(path):
-            raise BaselineError(f"{path} is not a git baseline repository")
-        _assert_origin(path, repo)
+        _assert_origin(path, repo, f"{path} is not a git baseline repository")
         pinned = _git_sha(path, "HEAD")
     else:
         cache = (root / CACHE_CLONE).resolve()
@@ -749,10 +776,10 @@ def _open_source(lock: dict, root: Path, baseline_dir: str | None) -> BaselineSo
         # half-built repository, so only one process sets up and fetches it at a time.
         with _file_mutex(root / CACHE_MUTEX_RELPATH, "baseline cache", 300.0):
             if cache.exists():
-                if not _git_repo(cache):
-                    raise BaselineError(f"baseline cache at {cache} is not a git repository")
                 try:
-                    _assert_origin(cache, repo)
+                    _assert_origin(cache, repo, f"baseline cache at {cache} is not a git repository")
+                except _NotRepository:
+                    raise
                 except BaselineError:
                     if _has_linked_worktree(cache):
                         raise BaselineError(
@@ -1098,7 +1125,7 @@ def _cat_file_many(repo: Path, specs: list[str]) -> list[bytes | None] | None:
         return []
     try:
         result = subprocess.run(
-            ["git", "-C", _repo_arg(repo), "cat-file", "--batch"],
+            ["git", "-C", _repo_arg(repo), "-c", "core.longpaths=true", "cat-file", "--batch"],
             input="".join(spec + "\n" for spec in specs).encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1183,7 +1210,7 @@ def _content_sha(root: Path, relpath: str) -> str | None:
 
 
 def _git_clean_path(root: Path, relpath: str) -> bool:
-    result = _git(root, ["status", "--porcelain", "--", relpath], check=False)
+    result = _git(root, ["--no-optional-locks", "status", "--porcelain", "--", relpath], check=False)
     return result.returncode == 0 and not result.stdout.strip()
 
 
@@ -1192,8 +1219,8 @@ def _source_root_bytes(source: BaselineSource | Path, relpath: str) -> bytes | N
         if relpath.startswith("template/"):
             spec = relpath[len("template/"):]
             return _read_upstream_bytes(source, spec)
-        result = _git(source.path, ["show", f"{source.sha}:{relpath}"], check=False)
-        return _lf(result.stdout) if result.returncode == 0 else None
+        data = source.batch.blob(f"{source.sha}:{relpath}")
+        return _lf(data) if data is not None else None
     path = Path(source)
     commit = baseline_commit(path)
     if not commit:
@@ -1346,17 +1373,38 @@ def _reconcile_base(source: BaselineSource | Path, lock: dict, relpath: str, ent
     return base
 
 
+def _reconcile_text(root: Path, source: BaselineSource | Path, lock: dict, relpath: str, entry: dict,
+                    local: str | None, upstream: str | None) -> str | None:
+    subs = lock.get("substitutions", {})
+    base = _reconcile_base(source, lock, relpath, entry, local)
+    text = _upstream_text_at(source, relpath, base, subs)
+    if (base and local is not None and local != text and upstream != text
+            and _entry_status(entry) == "tracked" and isinstance(source, BaselineSource)):
+        # Exact carried copies on the published line advance a stale row base. A side branch, a
+        # version predating the recorded base, or an uncommitted copy is not evidence of a carry.
+        for commit in source.touches().get(relpath, ()):
+            if commit == base:
+                break
+            if _upstream_text_at(source, relpath, commit, subs) != local:
+                continue
+            if source.is_ancestor(base, commit) and _git_clean_path(root, relpath):
+                return local
+    return text
+
+
 _PIN_BASE = object()
-_TOUCHES_CACHE: dict[str, dict[str, list[str]]] = {}
+_TOUCHES_CACHE: dict[tuple[str, str | None], dict[str, list[str]]] = {}
 
 
-def _template_touches(source: BaselineSource | Path) -> dict[str, list[str]]:
-    """relpath -> the baseline commits that changed it, newest first. One `git log` for the whole
-    baseline, read once per repository, so migrating many legacy rows costs one spawn."""
+def _template_touches(source: BaselineSource | Path, *, first_parent: str | None = None) -> dict[str, list[str]]:
+    """Path-changing commits, newest first. One history walk for all rows at the selected pin;
+    legacy hash migration (no pin argument) still searches every ref."""
     repo = str(source.path if isinstance(source, BaselineSource) else source)
-    cached = _TOUCHES_CACHE.get(repo)
+    key = (repo, first_parent)
+    cached = _TOUCHES_CACHE.get(key)
     if cached is None:
-        log = _git(Path(repo), ["log", "--all", "--format=%H", "--name-only", "--", "template/"],
+        revisions = ["--first-parent", "--diff-merges=first-parent", first_parent] if first_parent else ["--all"]
+        log = _git(Path(repo), ["log", *revisions, "--format=%H", "--name-only", "--", "template/"],
                    check=False)
         cached = {}
         commit = None
@@ -1367,7 +1415,7 @@ def _template_touches(source: BaselineSource | Path) -> dict[str, list[str]]:
                 commit = line
             elif line.startswith("template/") and commit is not None:
                 cached.setdefault(line[len("template/"):], []).append(commit)
-        _TOUCHES_CACHE[repo] = cached
+        _TOUCHES_CACHE[key] = cached
     return cached
 
 
@@ -1380,7 +1428,9 @@ def _legacy_base(source: BaselineSource | Path, relpath: str, recorded: str,
         return _PIN_BASE
     repo = source.path if isinstance(source, BaselineSource) else Path(source)
     reader = getattr(source, "read_at", None)
-    for commit in _template_touches(source).get(relpath, ()):
+    commits = (source.touches(at_pin=False) if isinstance(source, BaselineSource)
+               else _template_touches(repo))
+    for commit in commits.get(relpath, ()):
         if reader is not None:
             data = reader(commit, relpath)
         else:
@@ -1525,12 +1575,11 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
     local = local_text(root, relpath)
     if upstream is not None and local is not None and local == upstream:
         return "in-sync"
-    base = _reconcile_base(source, lock, relpath, entry, local)
-    if base is None:
+    if _row_base(lock, entry) is None:
         # No reconcile point could be derived (a legacy `hash` naming no commit, or none at all):
         # local and upstream cannot be separated, so report the unknown, never a guessed state.
         return "base-unknown"
-    base_text = _upstream_text_at(source, relpath, base, subs)
+    base_text = _reconcile_text(root, source, lock, relpath, entry, local, upstream)
     if upstream is None:
         # No upstream at the row's base either: the baseline never shipped this row, so nothing was removed.
         return "removed-upstream" if base_text is not None else "unpublished"
@@ -1546,14 +1595,22 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
     return "diverged"
 
 
-def _manifest_layers_at(repo: Path, commit: str) -> dict[str, str]:
-    """Each manifest path's layer at `commit`; empty when that commit holds no readable manifest."""
-    shown = _git(repo, ["show", f"{commit}:baseline.manifest.json"], check=False)
-    try:
-        return {item["path"]: item.get("layer") for item in json.loads(shown.stdout).get("files", [])
-                if isinstance(item, dict) and "path" in item} if shown.returncode == 0 else {}
-    except (ValueError, AttributeError):
-        return {}
+def _manifest_layers_at(source: BaselineSource | Path, commits: list[str]) -> list[dict[str, str]]:
+    """Each manifest path's layer at each of `commits`, in one read of the object store; empty for a commit
+    that holds no readable manifest."""
+    specs = [f"{commit}:{MANIFEST_NAME}" for commit in commits]
+    if isinstance(source, BaselineSource):
+        blobs = [source.batch.blob(spec) for spec in specs]
+    else:
+        blobs = _cat_file_many(Path(source), specs) or [None] * len(specs)
+    layers = []
+    for blob in blobs:
+        try:
+            layers.append({item["path"]: item.get("layer") for item in json.loads(blob).get("files", [])
+                           if isinstance(item, dict) and "path" in item} if blob is not None else {})
+        except (ValueError, AttributeError):
+            layers.append({})
+    return layers
 
 
 def move_pin(lock: dict, source: BaselineSource | Path, new_pin: str, taken: set[str]) -> None:
@@ -1577,7 +1634,7 @@ def move_pin(lock: dict, source: BaselineSource | Path, new_pin: str, taken: set
             elif relpath in changed and "base" not in entry:
                 # A recorded unknown base (None) stays unknown: the move is no reconcile point.
                 entry["base"] = old
-        before, after = _manifest_layers_at(repo, old), _manifest_layers_at(repo, new_pin)
+        before, after = _manifest_layers_at(source, [old, new_pin])
         for relpath, entry in files.items():
             was, now = before.get(relpath), after.get(relpath)
             if (_entry_status(entry) in ("tracked", "forked") and was and now and now != was
@@ -1953,29 +2010,28 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         raise UsageError("--inputs is only valid with --status composed")
     if inputs:
         _validate_relpaths(inputs)
-    # A `local` row may name a path only upstream carries: the consumer declines that file.
-    absent_upstream: dict[str, str] = {}
-    present = _git_contents(root, relpaths)
-    missing = [relpath for relpath in relpaths if relpath not in present]
     source, source_error = _try_source(root, baseline_dir)
     snapshots: dict[str, dict] = {}
-    if missing and status == "local":
-        if source is None:
-            raise BaselineError(source_error)
-        lock_now = load_lock(root)
-        for relpath in missing:
-            upstream = _upstream_sha(source, relpath, lock_now.get("substitutions", {}))
-            if upstream is not None:
-                absent_upstream[relpath] = upstream
 
     def apply(lock: dict):
+        # One read of the rows, under the lock mutex: the bytes recorded are the ones the checks below saw.
+        committed = _git_contents(root, relpaths)
+        # A `local` row may name a path only upstream carries: the consumer declines that file.
+        absent_upstream: dict[str, str] = {}
+        missing = [relpath for relpath in relpaths if relpath not in committed]
+        if missing and status == "local":
+            if source is None:
+                raise BaselineError(source_error)
+            for relpath in missing:
+                upstream = _upstream_sha(source, relpath, lock.get("substitutions", {}))
+                if upstream is not None:
+                    absent_upstream[relpath] = upstream
         snapshots["before"] = copy.deepcopy(lock)
         files = lock.setdefault("files", {})
         source_entry = files.get(source_relpath) if source_relpath else None
         if source_relpath and source_entry is None:
             raise BaselineError(f"--from is not a lock row: {source_relpath}")
         profile = None  # built on the first tracked row: it reads the pinned template tree
-        committed = _git_contents(root, relpaths)
         for relpath in relpaths:
             if relpath not in committed and relpath not in absent_upstream:
                 raise BaselineError(
@@ -2070,11 +2126,6 @@ def _commit_shas(root: Path, commit: str, relpaths: list[str]) -> dict[str, str 
         return {relpath: None for relpath in relpaths}
     return {relpath: (content_sha(relpath, data) if data is not None else None)
             for relpath, data in zip(relpaths, blobs)}
-
-
-def _commit_blob(root: Path, commit: str, relpath: str) -> bytes | None:
-    blobs = _cat_file_many(root, [f"{commit}:{relpath}"])
-    return blobs[0] if blobs else None
 
 
 _DEPENDENCY_MEANING = {
@@ -2767,7 +2818,8 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
         snapshots["before"] = copy.deepcopy(lock)
         files = lock.get("files", {})
         decisions = {}
-        current = _commit_shas(root, commit, relpaths) if commit else _content_shas(root, relpaths)
+        current = {rel: None if data is None else content_sha(rel, data) if commit else sha(data)
+                   for rel, data in _row_bytes(root, commit, relpaths).items()}
         deletions = []
         for relpath in relpaths:
             if relpath not in files:
@@ -2816,7 +2868,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
             if verdict == "push":
                 if profile is None:
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir, source=source)
-                data = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
+                data = _row_bytes(root, commit, relpaths)[relpath]
                 try:
                     accepted = _push_preflight(root, relpath, entry, data, profile, subs, source, source_error,
                                                accept_hits, lock, pushing, commit)
@@ -2859,7 +2911,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                 if (after.get("files", {}).get(relpath, {}).get("judged") or {}).get("deleted"):
                     pushed[relpath] = None
                 else:
-                    blob = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
+                    blob = _row_bytes(root, commit, relpaths)[relpath]
                     if blob is not None:
                         pushed[relpath] = blob
             _print_dependent_notes(root, pushed, after or None, source)
@@ -3089,28 +3141,6 @@ def _write_row(root: Path, source: BaselineSource, relpath: str, data: bytes | s
     _apply_source_mode(root, source, relpath)
 
 
-ENGINE_RELPATH = ".claude/tools/baseline_sync.py"
-ENGINE_UPDATED_ENV = "BASELINE_SYNC_ENGINE_UPDATED"
-
-
-def _pending_engine_rows(root: Path, source: BaselineSource, lock: dict, layers: list[str]) -> list[str]:
-    """The `.claude/tools/*.py` rows a bare pull would write, when the running engine is this project's own and
-    one of them is the engine: pulled first, so the rest of the pull runs on the code it brings and proves them
-    beside the rows they may need (a binary row written by an engine that predates binary rows is rewritten as
-    text). Empty on the rerun."""
-    if os.environ.get(ENGINE_UPDATED_ENV) or Path(__file__).resolve() != (root / ENGINE_RELPATH).resolve():
-        return []
-    files = lock.get("files", {})
-    rows = [path for path, entry in sorted(files.items())
-            if path.startswith(".claude/tools/") and path.endswith(".py") and in_profile(entry, layers)
-            and _v2_state(root, source, lock, path, entry) in ("upstream-updated", "new-upstream")]
-    rows += [path for path, item in sorted(_manifest_items_v2(source).items())
-             if path not in files and path.startswith(".claude/tools/") and path.endswith(".py")
-             and item.get("sync") not in ("offer", "seed") and (not item.get("layer") or item["layer"] in layers)
-             and not (root / path).exists()]
-    return rows if ENGINE_RELPATH in rows else []
-
-
 MERGE_COPY_DIR = Path(".claude") / "scratch" / "baseline_merge"
 MERGE_MARKER_RE = re.compile(r"^(?:<{7} local|={7}|>{7} upstream)$", re.M)
 
@@ -3121,7 +3151,8 @@ def _merge_base_marker(copy_path: Path) -> Path:
 
 
 def _merge_row(root: Path, source: BaselineSource | Path, lock: dict, relpath: str, entry: dict,
-               upstream: str, unsettled: list[tuple[str, str, Path | None]]) -> str | None:
+               upstream: str, unsettled: list[tuple[str, str, Path | None]], *,
+               write_conflicts: bool) -> str | None:
     """The 3-way merge of a row's local copy and its upstream copy over the upstream copy at its base: the
     merged text to land, or None with the reason recorded in `unsettled`. A hunk conflict leaves a marker copy
     under `MERGE_COPY_DIR` that the owner resolves in place; a later pull reads that copy as the merge while
@@ -3146,7 +3177,7 @@ def _merge_row(root: Path, source: BaselineSource | Path, lock: dict, relpath: s
         # No upstream copy at the base: merge over an empty base, so every line the two sides
         # disagree on is a conflict hunk.
         text, hunks = _merge3(local, base or "", upstream)
-        if hunks:
+        if hunks and write_conflicts:
             _write_lf(copy_path, text)
             _write_lf(marker, inputs + "\n")
     if hunks:
@@ -3164,218 +3195,275 @@ def _drop_merge_copy(root: Path, relpath: str) -> None:
 MERGEABLE_STATES = ("diverged", "forked-upstream-moved")
 
 
-def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
-            prove: bool = True, only: set[str] | None = None) -> int:
-    """A pull lands every row it plans together or writes no live file: a bare pull plans each upstream change
-    and 3-way merges the rows both sides changed, and a row that cannot settle (a conflict, a dirty path, a
-    binary row) is named in `unsettled` and stops every write. `only` narrows the
-    writes of a settled pull to those rows (the engine phase: the rest runs on the engine it brings)."""
+@dataclass
+class PullPlan:
+    """What a pull would do at one pin, decided without touching a live file. `rows` holds each
+    target's `(relpath, action, content)`: `None` adopts a new row, `noop`, `update`, `merge`,
+    `seed`, `retire` and `keep-local` are the other actions, and only a merge carries merged text."""
+    rows: list[tuple[str, str | None, str | None]]
+    unsettled: list[tuple[str, str, Path | None]]
+    offered: list[str]
+    unrowed_differs: list[str]
+    skipped: int
+    manifest_layers: dict[str, str | None]
+    layers: list[str]
+
+
+@dataclass
+class AppliedPull:
+    """What an applied plan wrote, by the line `v2_pull` prints for each path. `changed` holds every
+    path the pull touched, in plan order; the other lists name the report class of the paths in it."""
+    changed: list[str]
+    retired: list[str]
+    kept_local: list[str]
+    kept_seeds: list[str]
+    merged: list[str]
+
+
+def plan_pull(root: Path, source: BaselineSource, lock: dict, relpaths: list[str], layers: list[str],
+              force: bool, *, write_conflicts: bool = False) -> PullPlan:
+    """Plan a pull without touching live files. Only an applying caller writes scratch conflict copies."""
     _validate_relpaths(relpaths)
     manifest_items = _manifest_items_v2(source)
     manifest_layers = {relpath: item.get("layer") for relpath, item in manifest_items.items()}
+    files = lock.get("files", {})
     skipped = 0
     unrowed_differs: list[str] = []
-    kept_seeds: list[str] = []
-    retired: list[str] = []
-    kept_local: list[str] = []
     offered: list[str] = []
-    merged: list[str] = []
     unsettled: list[tuple[str, str, Path | None]] = []
-
-    def apply(lock: dict):
-        nonlocal skipped
-        files = lock.setdefault("files", {})
-        if relpaths:
-            targets = []
-            for path in relpaths:
-                entry = files.get(path)
-                layer = entry.get("layer") if entry is not None else manifest_layers.get(path)
-                if layer and layer not in layers:
-                    skipped += 1
-                    continue
-                targets.append(path)
-        else:
-            targets = []
-            for path, entry in sorted(files.items()):
-                if not in_profile(entry, layers):
-                    continue
-                state = _v2_state(root, source, lock, path, entry)
-                if state in ("upstream-updated", "new-upstream", *MERGEABLE_STATES) or (
-                    state == "removed-upstream" and _entry_status(entry) == "tracked"
-                ):
-                    targets.append(path)
-            unrowed = _unrowed_manifest_paths(lock, manifest_items, layers)
-            offered[:] = [path for path in unrowed if manifest_items[path].get("sync") == "offer"]
-            targets.extend(path for path in unrowed if path not in offered)
-        targets = list(dict.fromkeys(targets))
-        plans = []
-        for relpath in targets:
-            entry = files.get(relpath)
-            # A tracked row whose upstream file is gone: the upstream deletion reaches the
-            # consumer here, never as a refusal (retire an unmodified copy, keep a modified one).
-            if entry is not None and _entry_status(entry) == "tracked" and (
-                upstream_text(source, relpath, lock.get("substitutions", {})) is None
+    states = {}
+    if relpaths:
+        targets = []
+        for path in relpaths:
+            entry = files.get(path)
+            layer = entry.get("layer") if entry is not None else manifest_layers.get(path)
+            if layer and layer not in layers:
+                skipped += 1
+                continue
+            targets.append(path)
+    else:
+        targets = []
+        for path, entry in sorted(files.items()):
+            if not in_profile(entry, layers):
+                continue
+            state = _v2_state(root, source, lock, path, entry)
+            if state in ("upstream-updated", "new-upstream", *MERGEABLE_STATES) or (
+                state == "removed-upstream" and _entry_status(entry) == "tracked"
             ):
-                plans.append((relpath, "retire", None))
-                continue
-            upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
-            if upstream is None:
+                targets.append(path)
+                states[path] = state
+        unrowed = _unrowed_manifest_paths(lock, manifest_items, layers)
+        offered = [path for path in unrowed if manifest_items[path].get("sync") == "offer"]
+        targets.extend(path for path in unrowed if path not in offered)
+    plans = []
+    for relpath in dict.fromkeys(targets):
+        entry = files.get(relpath)
+        upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
+        if upstream is None:
+            if entry is None or _entry_status(entry) != "tracked":
                 raise _missing_error(relpath)
-            if entry is None:
-                local = local_text(root, relpath)
-                if manifest_items.get(relpath, {}).get("sync") == "seed":
-                    plans.append((relpath, "seed", upstream if local is None else None))
+            local = local_text(root, relpath)
+            base_text = _reconcile_text(root, source, lock, relpath, entry, local, None)
+            action = "retire" if local is None or local == base_text else "keep-local"
+            plans.append((relpath, action, None))
+            continue
+        if entry is None:
+            local = local_text(root, relpath)
+            if manifest_items.get(relpath, {}).get("sync") == "seed":
+                plans.append((relpath, "seed", upstream if local is None else None))
+                continue
+            if local is not None and sha(local.encode("utf-8")) != sha(upstream.encode("utf-8")):
+                if relpaths and not force:
+                    raise BaselineError(f"pull requires --force: {relpath} exists locally with "
+                                        "different content and no lock row")
+                if not relpaths:
+                    unrowed_differs.append(relpath)
                     continue
-                if local is not None and sha(local.encode("utf-8")) != sha(upstream.encode("utf-8")):
-                    if relpaths and not force:
-                        raise BaselineError(f"pull requires --force: {relpath} exists locally with "
-                                            "different content and no lock row")
-                    if not relpaths:
-                        unrowed_differs.append(relpath)
-                        continue
-                plans.append((relpath, None, upstream))
-                continue
-            state = _v2_state(root, source, lock, relpath, entry)
-            if state == "in-sync":
-                plans.append((relpath, "noop", upstream))
-                continue
-            if state in ("composed-drift", "removed-upstream"):
-                raise BaselineError(f"pull refuses {state}: {relpath}")
-            if state in MERGEABLE_STATES and not relpaths:
-                text = _merge_row(root, source, lock, relpath, entry, upstream, unsettled)
-                if text is not None:
-                    plans.append((relpath, "merge", text))
-                continue
-            needs_force = state in {
-                "local-modified", "diverged", "forked", "forked-upstream-moved",
-                "forked-base-unknown", "local", "watch",
-            }
-            if needs_force and not force:
-                hint = "; a bare `pull` merges both sides" if state in MERGEABLE_STATES else ""
-                raise BaselineError(f"pull requires --force for {state}: {relpath}{hint}")
-            if force and not _git_clean_path(root, relpath):
-                raise BaselineError(f"forced pull refuses a dirty path: {relpath}")
-            plans.append((relpath, "update", upstream))
-        if unsettled:
-            return NO_CHANGE
-        plans = [plan for plan in plans if only is None or plan[0] in only]
-        changed = []
-        seeds = []
-        taken: set[str] = set()
-        subs = lock.get("substitutions", {})
-        for relpath, action, content in plans:
-            if action == "noop":
-                continue
-            if action == "seed":
-                if content is not None:
-                    _write_row(root, source, relpath, content)
-                else:
-                    kept_seeds.append(relpath)
-                seeds.append(relpath)
-                changed.append(relpath)
-                taken.add(relpath)
-                continue
-            if action == "retire":
-                local = local_text(root, relpath)
-                base_text = _upstream_text_at(
-                    source, relpath, _reconcile_base(source, lock, relpath, files[relpath], local), subs)
-                if local is None or (base_text is not None and local == base_text):
-                    if local is not None:
-                        (root / relpath).unlink()
-                    del files[relpath]
-                    retired.append(relpath)
-                else:
-                    files[relpath]["status"] = "local"
-                    files[relpath].pop("base", None)
-                    kept_local.append(relpath)
-                changed.append(relpath)
-                taken.add(relpath)
-                continue
-            if action == "merge":
-                _write_row(root, source, relpath, content)
-                _drop_merge_copy(root, relpath)
-                merged.append(relpath)
-                if _entry_status(files[relpath]) == "forked":
-                    # A fork stays a fork: its base moves to the upstream this merge saw, and its verdict
-                    # judges the merged content.
-                    files[relpath]["base"] = source.sha
-                    files[relpath]["judged"] = _decision(
-                        root, relpath, None, sha_value=content_sha(relpath, content.encode("utf-8")))
-                else:
-                    taken.add(relpath)
-                changed.append(relpath)
-                continue
-            _write_row(root, source, relpath, content)
-            if action is None:
-                files[relpath] = {
-                    "status": "tracked",
-                    "layer": manifest_layers.get(relpath),
-                }
-                taken.add(relpath)
-            else:
-                # A row that follows upstream now holds the upstream copy: any verdict it carried
-                # judged older content. A `forked` or `local` row keeps its status and its base.
-                follows_upstream = _entry_status(files[relpath]) not in ("forked", "local")
-                files[relpath].pop("judged", None)
-                files[relpath].pop("absent", None)
-                if follows_upstream:
-                    taken.add(relpath)
-            changed.append(relpath)
-        # Seed rows are decided after every write, so a composed settings.json row sees the
-        # settings.base.json this same pull delivered.
-        for relpath in seeds:
-            files.update(_seed_rows(root, relpath, manifest_layers.get(relpath), files, layers))
-        if not changed:
-            return NO_CHANGE
-        move_pin(lock, source, source.sha, taken)
-        lock.setdefault("profile", ",".join(layers))
-        return changed
+            plans.append((relpath, None, upstream))
+            continue
+        state = states.get(relpath) or _v2_state(root, source, lock, relpath, entry)
+        if state == "in-sync":
+            plans.append((relpath, "noop", upstream))
+            continue
+        if state == "composed-drift":
+            raise BaselineError(f"pull refuses {state}: {relpath}")
+        if state in MERGEABLE_STATES and not relpaths:
+            text = _merge_row(root, source, lock, relpath, entry, upstream, unsettled,
+                              write_conflicts=write_conflicts)
+            if text is not None:
+                plans.append((relpath, "merge", text))
+            continue
+        needs_force = state in {
+            "local-modified", "diverged", "forked", "forked-upstream-moved",
+            "forked-base-unknown", "local", "watch",
+        }
+        if needs_force and not force:
+            hint = "; a bare `pull` merges both sides" if state in MERGEABLE_STATES else ""
+            raise BaselineError(f"pull requires --force for {state}: {relpath}{hint}")
+        if force and not _git_clean_path(root, relpath):
+            raise BaselineError(f"forced pull refuses a dirty path: {relpath}")
+        plans.append((relpath, "update", upstream))
+    return PullPlan(plans, unsettled, offered, unrowed_differs, skipped, manifest_layers, layers)
 
+
+@dataclass
+class _PullApply:
+    """What one applied pull carries between its row handlers: the tree, the lock rows it
+    mutates, the report it fills, the rows the pin move takes, and the seed rows decided last."""
+    root: Path
+    source: BaselineSource
+    plan: PullPlan
+    files: dict
+    report: AppliedPull
+    taken: set[str]
+    seeds: list[str]
+
+
+def _apply_seed(state: _PullApply, relpath: str, content: str | None) -> None:
+    """A manifest `seed` row: project-owned once it exists, so a new copy lands and an existing file
+    is kept, and the row becomes `local` after every write (the seed step runs last)."""
+    if content is not None:
+        _write_row(state.root, state.source, relpath, content)
+    else:
+        state.report.kept_seeds.append(relpath)
+    state.seeds.append(relpath)
+    state.taken.add(relpath)
+
+
+def _apply_retire(state: _PullApply, relpath: str, _content: str | None) -> None:
+    """An unmodified row upstream removed: its file goes and its lock row with it."""
+    (state.root / relpath).unlink(missing_ok=True)
+    del state.files[relpath]
+    state.report.retired.append(relpath)
+    state.taken.add(relpath)
+
+
+def _apply_keep_local(state: _PullApply, relpath: str, _content: str | None) -> None:
+    """A modified copy upstream removed: the file stays and the row records the project's own."""
+    entry = state.files[relpath]
+    entry["status"] = "local"
+    entry.pop("base", None)
+    state.report.kept_local.append(relpath)
+    state.taken.add(relpath)
+
+
+def _apply_merge(state: _PullApply, relpath: str, content: str | None) -> None:
+    """A 3-way merge that settled: the merged text lands, its conflict copy goes, and a fork stays a
+    fork with its base moved to the upstream this merge saw and its verdict judging the merged text."""
+    _write_row(state.root, state.source, relpath, content)
+    _drop_merge_copy(state.root, relpath)
+    state.report.merged.append(relpath)
+    entry = state.files[relpath]
+    if _entry_status(entry) == "forked":
+        entry["base"] = state.source.sha
+        entry["judged"] = _decision(
+            state.root, relpath, None, sha_value=content_sha(relpath, content.encode("utf-8")))
+    else:
+        state.taken.add(relpath)
+
+
+def _apply_adopt(state: _PullApply, relpath: str, content: str | None) -> None:
+    """A path upstream ships that has no lock row: it is written and tracked at the manifest's layer."""
+    _write_row(state.root, state.source, relpath, content)
+    state.files[relpath] = {"status": "tracked", "layer": state.plan.manifest_layers.get(relpath)}
+    state.taken.add(relpath)
+
+
+def _apply_update(state: _PullApply, relpath: str, content: str | None) -> None:
+    """A row that follows upstream now holds the upstream copy: any verdict it carried judged older
+    content. A `forked` or `local` row keeps its status and its base."""
+    _write_row(state.root, state.source, relpath, content)
+    entry = state.files[relpath]
+    entry.pop("judged", None)
+    entry.pop("absent", None)
+    if _entry_status(entry) not in ("forked", "local"):
+        state.taken.add(relpath)
+
+
+# One row per plan action; `noop` has no effect, so it never reaches this table.
+_PULL_APPLY = {
+    "seed": _apply_seed,
+    "retire": _apply_retire,
+    "keep-local": _apply_keep_local,
+    "merge": _apply_merge,
+    None: _apply_adopt,
+    "update": _apply_update,
+}
+
+
+def apply_pull_plan(root: Path, lock: dict, plan: PullPlan, source: BaselineSource) -> AppliedPull | None:
+    """Apply a planned pull: each row's write and lock mutation, the seed rows it decides last, the
+    pin and the profile. None when nothing changed. The planner has already written any conflict
+    copy; an unsettled plan lands nothing. The caller reports the result, runs the proofs and keeps
+    the journal."""
+    if plan.unsettled:
+        return None
+    state = _PullApply(root=root, source=source, plan=plan, files=lock.setdefault("files", {}),
+                       report=AppliedPull([], [], [], [], []), taken=set(), seeds=[])
+    for relpath, action, content in plan.rows:
+        if action == "noop":
+            continue
+        _PULL_APPLY[action](state, relpath, content)
+        state.report.changed.append(relpath)
+    # Seed rows are decided after every write, so a composed settings.json row sees the
+    # settings.base.json this same pull delivered.
+    for relpath in state.seeds:
+        state.files.update(_seed_rows(root, relpath, plan.manifest_layers.get(relpath),
+                                      state.files, plan.layers))
+    if not state.report.changed:
+        return None
+    move_pin(lock, source, source.sha, state.taken)
+    lock.setdefault("profile", ",".join(plan.layers))
+    return state.report
+
+
+def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool) -> int:
+    """Apply one row set at one pin, including engine updates. Conflicts stop live writes;
+    the proofs and remaining local callers are checked against the complete delivered set."""
+    def apply(lock: dict):
+        nonlocal plan
+        plan = plan_pull(root, source, lock, relpaths, layers, force, write_conflicts=True)
+        applied = apply_pull_plan(root, lock, plan, source)
+        return NO_CHANGE if applied is None else applied
+
+    plan: PullPlan
     result = mutate_lock(root, apply, source=source)
-    if unsettled:
-        for relpath, reason, copy_path in unsettled:
+    written = [] if result is NO_CHANGE else [
+        relpath for relpath in result.changed
+        if relpath not in result.retired and relpath not in result.kept_local
+        and relpath not in result.kept_seeds]
+    # A deleted file's importers and runners are proofs of the deletion, so a retired path is proved like a written one.
+    gone = [] if result is NO_CHANGE else [relpath for relpath in result.changed if relpath in result.retired]
+    if plan.unsettled:
+        for relpath, reason, copy_path in plan.unsettled:
             print(f"unsettled: {relpath} ({reason})" + (f" -> {copy_path}" if copy_path else ""))
-        print(f"nothing written: {len(unsettled)} row(s) cannot settle; settle each, then pull again to land every row together")
+        print(f"nothing written: {len(plan.unsettled)} row(s) cannot settle; settle each, then pull again to land every row together")
     elif result is NO_CHANGE:
         print("no change")
     else:
-        for relpath in result:
-            if relpath in retired:
+        for relpath in result.changed:
+            if relpath in result.retired:
                 print(f"retired: {relpath}")
-            elif relpath in kept_local:
+            elif relpath in result.kept_local:
                 print(f"kept local (modified, removed upstream): {relpath}")
-            elif relpath in kept_seeds:
+            elif relpath in result.kept_seeds:
                 print(f"kept (seed, local row added): {relpath}")
-            elif relpath in merged:
+            elif relpath in result.merged:
                 print(f"merged: {relpath}")
             else:
                 print(f"pulled: {relpath}")
-        written = [relpath for relpath in result
-                   if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
         for relpath in _ignored_untracked(root, written):
             print(f"ignored: {relpath} (add with git add -f)")
-    if only is None:  # the engine phase reports no skip: the rest of the pull decides them again and says so
-        for relpath in dict.fromkeys(unrowed_differs):
-            print(f"skipped (local file differs, no lock row): {relpath}")
-        if offered:
-            print(f"offered: {len(offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
-        if skipped:
-            print(f"profile: {','.join(layers)} — {skipped} row(s) skipped")
-    if not unsettled:
-        render_lane_agents(root)
-        write_harness_ignore_block(root)
-    written = [] if result is NO_CHANGE else [
-        relpath for relpath in result
-        if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
-    # A deleted file's importers and runners are proofs of the deletion, so a retired path is proved like a written one.
-    gone = [] if result is NO_CHANGE else [relpath for relpath in result if relpath in retired]
-    if not prove and _pull_proof and _pull_proof.record_state(root)[0] != _pull_proof.UNREADABLE:
-        # The engine phase: a pulled tool can need a row only the rest of the pull brings, so these go to the
-        # journal as pending and the rest of the pull proves them beside every row it writes.
-        _pull_proof.write(root, {relpath: "pending" for relpath in [*written, *gone]}, source.sha)
-        hits = local_attr_hits(root, written)
-        _report_local_attr_hits(hits)
-        return 1 if unsettled or hits else 0
+    for relpath in dict.fromkeys(plan.unrowed_differs):
+        print(f"skipped (local file differs, no lock row): {relpath}")
+    if plan.offered:
+        print(f"offered: {len(plan.offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
+    if plan.skipped:
+        print(f"profile: {','.join(layers)} — {plan.skipped} row(s) skipped")
+    if plan.unsettled:
+        return 1
+    render_lane_agents(root)
+    write_harness_ignore_block(root)
     # A path whose proof is still pending or red is proved again, so a rerun of this pull releases its commit.
     unresolved, earlier = [], []
     if _pull_proof:
@@ -3396,7 +3484,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     proved = _prove_pulled(root, list(dict.fromkeys([*written, *gone, *unresolved])), source.sha)
     hits = local_attr_hits(root, written)
     _report_local_attr_hits(hits)
-    return 1 if unsettled or proved or hits else 0
+    return 1 if proved or hits else 0
 
 
 def _uncommitted_lock_paths(root: Path) -> list[str]:
@@ -4721,17 +4809,7 @@ def main(argv=None) -> int:
                 cmd_diff(root, lock, source, args.relpaths[0], layers)
                 return 0
             if args.op == "pull":
-                engine = _pending_engine_rows(root, source, lock, layers) if not args.relpaths else []
-                if not engine:
-                    return v2_pull(root, source, args.relpaths, layers, args.force)
-                engine_code = v2_pull(root, source, [], layers, False, prove=False, only=set(engine))
-                source.close()
-                source = None
-                if engine_code != 0:
-                    return engine_code
-                print("engine updated; the rest of the pull runs on it")
-                return subprocess.run([sys.executable, str(root / ENGINE_RELPATH), *raw_argv], cwd=root,
-                                      env=dict(os.environ, **{ENGINE_UPDATED_ENV: "1"})).returncode
+                return v2_pull(root, source, args.relpaths, layers, args.force)
             if args.op == "never-ship":
                 return v2_never_ship(root, args.relpaths, source)
             if args.op == "migrate":

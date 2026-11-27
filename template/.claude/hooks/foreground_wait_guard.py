@@ -22,14 +22,21 @@ a caller should use depends on whether a backgrounded job wakes it:
    untouched. When the loop's done-test reads a file that a still-running `run_in_background` command of this session
    writes (a `>`/`>>`/`tee` target of its command, or its task output file), that command's completion already wakes
    the orchestrator, so the conversion carries an advisory naming the task and the file (`_live_writer`); the call is
-   still converted. A loop whose whole job is one `grep -q` for a
-   run's END line (or ROSTER DONE/HALT) in one bench roster or run log is rewritten to the bench suite's `wait <log>` subcommand, which owns
-   the check-in deadline (`_bench_wait`); any doubt (a second test, an unresolvable path, a log outside bench's roots)
-   leaves the command as it was. A subagent's timeout is clamped to
+   still converted. A loop (`until`, `while !`, or a `for ... seq` that breaks) whose whole test is one `grep -q` of a
+   runner's terminal words in one log is rewritten to one `tools/run_wait.py` call (`_runner_wait`): it ends at that
+   runner's own terminal line, a new runner being one row of its RUNNERS, and its bound is the call's (a foreground
+   call's timeout less run_wait.MARGIN_S; a never-woken caller's call runs at its clamp) or the check-in's. In a
+   woken orchestrator's background check-in, a loop on a bench run's END line (or ROSTER DONE/HALT) goes to the bench
+   plugin's `wait_call` instead, which owns its own deadline. Any doubt (another test or marker, an unresolvable path, a
+   loop inside a quoted body) leaves the command as it was. A never-woken caller's or subagent's direct `run_wait.py`
+   call gets its clamp as its timeout, the bound run_wait's default returns inside. A subagent's timeout is clamped to
    SUBAGENT_WAIT_MS (under its 5-minute prompt cache), and so is a print-mode child's unless its launcher put it on the
    1-hour cache (`CLAUDE_CODE_PROMPT_CACHE_TTL=1h`, `wait_clamp_ms`): that child's clamp is the Bash ceiling. Neither is backgrounded: guards/common.md owns its bounded foreground wait.
 2. A never-woken caller's `run_in_background` call that holds no wait loop draws an advisory naming the missing wake
-   (one that holds a wait loop is item 11's deny).
+   (one that holds a wait loop is item 11's deny). A Bash call also gets `EXIT_LINE` appended, as a clamped call does
+   (item 6), so `run_wait.py` ends on its output file whether the caller or the client backgrounded it, and its
+   advisory names that file. Any other tool's output file gets no terminal line, so its advisory, once per window,
+   names the tool-neutral wait (`_WAIT_RECIPE`).
 3. Repeated status poll. A status-only command (every segment a read: date, tail, wc, ls, grep,
    Get-CimInstance, Start-Sleep …, no `>` write) whose shape (only count and delay arguments normalized) matches the caller's
    previous POLL_LIMIT - 1 consecutive Bash calls is denied: each call is a full model turn that
@@ -115,7 +122,7 @@ from _win_path import drive_path  # noqa: E402
 # Shell syntax, not prose: a bash `until|while <cond>; do ... sleep ... done` whose `; do` follows the
 # condition on its line, or a PowerShell `while (...) { ... Start-Sleep ... }`.
 _LOOP_SLEEP = re.compile(
-    r"\b(?:until|while|for)\b[^\n;]*;\s*do\b(?:(?!\bdone\b).)*?\bsleep\b"
+    r"\b(?:until|while|for)\b[^\n;]*;\s*do\b(?:(?!(?-i:\bdone\b)).)*?\bsleep\b"
     r"|\bwhile\s*\([^\n]*\)\s*\{(?:(?!\}).)*?\bStart-Sleep\b",
     re.IGNORECASE | re.DOTALL,
 )
@@ -160,9 +167,10 @@ _HARMLESS_REDIRECT = re.compile(r"\d?>\s*(?:/dev/null|\$null|nul)\b|\d?>&\d", re
 _DETACHED_LINE = re.compile(r"(?<![&>|<])&[ \t]*(?=\r?\n|\Z)")
 
 _WAIT_RECIPE = (
-    "wait in foreground calls: `until <done-test>; do sleep 30; done` with a Bash timeout of at most "
-    "%d ms in a subagent or a `claude -p` child (its cache lives 5 minutes), repeated only while "
-    "the job runs (guards/common.md)" % SUBAGENT_WAIT_MS
+    "wait in foreground calls with a Bash timeout of at most %d ms in a subagent or a `claude -p` child (its cache "
+    "lives 5 minutes), repeated only while the job runs: `python3 .claude/tools/run_wait.py <file>` on a run's log "
+    "or a Bash call's output file, `until <done-test>; do sleep 30; done` on a job that writes neither "
+    "(guards/common.md)" % SUBAGENT_WAIT_MS
 )
 MONITOR_REASON = (
     "BLOCKED Monitor timeout_ms %d: the tool caps every Monitor at %d ms (%d minutes) and ends it there with no "
@@ -194,10 +202,17 @@ BACKGROUND_LOOP_REASON = (
     "nothing you watch, and the turn can end before it does (guards/common.md). Instead, %s"
 )
 NO_WAKE_ADVICE = (
-    "[wait] No completion notification reaches this session for a backgrounded job. To wait for this "
-    "one, keep working, then %s; never re-check it call after call." % _WAIT_RECIPE
+    "[wait] No completion notification reaches this session for a backgrounded job. This call's output file now ends "
+    "with an `EXIT <code>` line: keep working, then wait with `python3 .claude/tools/run_wait.py <that file>` in "
+    "foreground calls (guards/common.md); never re-check it call after call."
 )
-NO_WAKE_SHORT = "[wait] No wake reaches this session: wait on this job in foreground calls, as before."
+NO_WAKE_SHORT = ("[wait] No wake reaches this session: wait on this call's output file with "
+                 "`python3 .claude/tools/run_wait.py <that file>`, as before.")
+# A PowerShell call's output file gets no EXIT line, so its note names the tool-neutral wait.
+NO_WAKE_OTHER = (
+    "[wait] No completion notification reaches this session for a backgrounded job. To wait for this one, keep "
+    "working, then %s; never re-check it call after call." % _WAIT_RECIPE
+)
 
 
 WATCH_REASON = (
@@ -226,7 +241,7 @@ CLAMP_NOTE = (
 )
 CLAMP_WAIT = (
     " If it is still running then, the client moves it to the background and names its output file; this call now "
-    "ends with an `EXIT <code>` line there, so wait in `until grep -q '^EXIT ' <that file>; do sleep 30; done` calls."
+    "ends with an `EXIT <code>` line there, so wait with `python3 .claude/tools/run_wait.py <that file>`."
 )
 DETACHED_ADVICE = (
     "[wait] A trailing `&` detaches this job outside the run_in_background wake (`CLAUDE.interactive.md` §Waits and wakes). "
@@ -618,7 +633,14 @@ _WRITE_TARGET = re.compile(
     r"|\btee\s+(?:-\w+\s+)*(?P<tee>\"[^\"]+\"|'[^']+'|[^\s;&|<>()]+)")
 _LEADING_CD = re.compile(r"^\s*cd\s+(\"[^\"]+\"|'[^']+'|\S+)\s*&&")
 _LOOP_CONDITION = re.compile(r"\b(?:until|while)\b([^\n;]*);\s*do\b")
-_BENCH_LOOP = re.compile(r"\buntil\s+(?P<cond>[^\n;]*?)\s*;\s*do\s+sleep\s+\d+\s*;?\s*done\b")
+# A wait loop whose one test is a grep on a log: `until <cond>; do sleep N; done`, `while ! <cond>; ...`, or
+# `for i in $(seq ...); do <cond> && break; sleep N; done`.
+_RUN_LOOP = re.compile(
+    r"\b(?:until|while\s+!)\s+(?P<cond>[^\n;]*?)\s*;\s*do\s+sleep\s+\d+\s*;?\s*done\b"
+    r"|\bfor\s+\w+\s+in\s+(?:\$\(seq(?:\s+\d+){1,3}\)|\{\d+\.\.\d+\})\s*;\s*do\s+(?P<forcond>[^\n;]*?)\s*&&\s*break\s*;"
+    r"\s*sleep\s+\d+\s*;?\s*done\b")
+# A loop that is the whole single-quoted body of `[timeout N] bash -c '...'`: the wrapper goes with it.
+_WRAPPED = re.compile(r"(?:(?:/usr/bin/)?timeout\s+(?P<secs>\d+)\s+)?bash\s+-c\s+'(?P<body>[^']*)'")
 _BENCH_END_WORDS = frozenset(("END", "ROSTER DONE", "HALT"))
 _OUTPUT_PATH = re.compile(r"written to: (\S[^\n]*?\.output)")
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
@@ -715,51 +737,91 @@ BENCH_NOTE = (
     "[wait] Rewrote the hand-written loop on bench log %s to the bench's own `wait` subcommand (the rewritten call), "
     "which owns the check-in deadline (its `wait --help`)."
 )
+RUN_WAIT_NOTE = (
+    "[wait] Rewrote the loop on %s to `run_wait.py`, which ends at the run's own terminal line and prints its verdict "
+    "(exit 0), returns at its bound while the run goes on (exit 3), or reports a run that ended without one (exit 2)."
+)
 
 
 CLAUDE_DIR = os.path.join(_PROJECT_ROOT, ".claude")
 
 
-def _bench_wait(command):
-    """(rewritten command, log) when `command` holds one until-loop whose only test is `grep -q[E] '<END pattern>' <log>`
-    on a log the bench plugin's entry owns (`wait_call`), with the loop replaced by the call it returns; else None.
-    An absent or unreadable plugin and any error fail open to None."""
+def _tool(name):
+    tools = os.path.join(CLAUDE_DIR, "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    return __import__(name)
+
+
+def _loop_wait(code):
+    """(span, grep pattern parts, log, the caller's own bound or None) when `code` holds one wait loop whose only test
+    is `grep -q <pattern> <log>`, outside any quoted body or as the whole body of a `[timeout N] bash -c` wrapper (the
+    span then covers the wrapper), else None."""
+    loops = list(_RUN_LOOP.finditer(code))
+    if len(loops) != 1 or len(_LOOP_SLEEP.findall(code)) != 1:
+        return None
+    match = loops[0]
+    span, cap = match.span(), None
+    if any(m.start() < match.start() < m.end() for m in _QUOTED.finditer(code)):
+        wrap = next((w for w in _WRAPPED.finditer(code) if w.start("body") <= match.start() < w.end("body")), None)
+        if not wrap or wrap.group("body").strip() != match.group(0):
+            return None
+        span, cap = wrap.span(), int(wrap.group("secs")) if wrap.group("secs") else None
+    words = shlex.split(match.group("cond") or match.group("forcond"))
+    words = [w for i, w in enumerate(words)
+             if not re.match(r"^\d*>", w) and not (i and re.fullmatch(r"\d*>", words[i - 1]))]
+    flags = [w for w in words[1:] if w.startswith("-")]
+    rest = [w for w in words[1:] if not w.startswith("-")]
+    if words[:1] != ["grep"] or len(rest) != 2 or not flags or set("".join(flags)) - set("-qEsa") or "q" not in "".join(flags):
+        return None
+    pattern = rest[0]
+    alternatives = pattern.split("|") if "E" in "".join(flags) else pattern.split("\\|")
+    parts = [p.strip("^()$\\ ") for p in alternatives]
+    target = rest[1].replace("\\", "/")
+    for var in set(re.findall(r"\$\{?(\w+)\}?", target)):
+        assigned = re.findall(r"(?:^|[;&\n]\s*)%s=(\"[^\"$`]+\"|'[^']+'|[^\s;&|$`\"']+)\s*(?=[;&\n])" % re.escape(var), code)
+        if len(assigned) != 1:
+            return None
+        target = re.sub(r"\$\{?%s\}?(?!\w)" % re.escape(var), lambda _m: assigned[0].strip("\"'").replace("\\", "/"), target)
+    if "$" in target or "`" in target:
+        return None
+    return span, parts, target, cap
+
+
+def _runner_wait(command, bound_s, check_in=False):
+    """(rewritten command, log, note) when `command` holds one wait loop on a runner log, with the loop replaced by
+    the call that waits on it; else None. Terminal words of a `tools/run_wait.py` row select its call: a foreground
+    call returns MARGIN_S inside its `bound_s` timeout, a background check-in at `bound_s`. The bench plugin's END
+    words select the plugin's `wait_call`, which owns its deadline and takes none from the caller, so only a check-in
+    (a woken orchestrator's background wait) uses it. An absent or unreadable plugin and any error fail open."""
     try:
-        code = shell_code(command)
-        loops = _BENCH_LOOP.findall(code)
-        if len(loops) != 1 or len(_LOOP_SLEEP.findall(code)) != 1:
-            return None
-        match = _BENCH_LOOP.search(code)
-        words = shlex.split(match.group("cond").replace("\\", "/"))
-        if words and words[-1] == "2>/dev/null":
-            words = words[:-1]
-        if len(words) != 4 or words[0] != "grep" or not re.fullmatch(r"-(?:qE|Eq|q)", words[1]):
-            return None
-        parts = [p.strip().lstrip("^").strip() for p in re.sub(r"^\(|\)$", "", words[2]).split("|")]
-        if not set(parts) <= _BENCH_END_WORDS:
-            return None
-        target = words[3]
-        var = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", target)
-        if var:
-            name = var.group(1) or var.group(2)
-            assigned = re.findall(r"(?:^|[;&\n]\s*)%s=(\"[^\"$`]+\"|'[^']+'|[^\s;&|$`\"']+)\s*(?=[;&\n])" % re.escape(name), code)
-            if len(assigned) != 1:
-                return None
-            target = assigned[0].strip("\"'")
-        elif "$" in target or "`" in target:
-            return None
-        tools = os.path.join(CLAUDE_DIR, "tools")
-        if tools not in sys.path:
-            sys.path.insert(0, tools)
-        import adaptation
-        bench = adaptation.plugin_entry(CLAUDE_DIR, "bench")
-        found = bench.wait_call(target) if bench else None
+        found = _loop_wait(shell_code(command))
         if not found:
             return None
-        call, log = found
-        return command[:match.start()] + call + command[match.end():], log
+        span, parts, target, cap = found
+        run_wait = _tool("run_wait")
+        words = [r.word.rstrip("= ") for r in run_wait.RUNNERS]
+        if parts and all(p and any(p.startswith(w) for w in words) for p in parts):
+            tool = os.path.join(CLAUDE_DIR, "tools", "run_wait.py").replace("\\", "/")
+            max_s = min(bound_s if check_in else bound_s - run_wait.MARGIN_S, cap or bound_s)
+            call = "python3 %s --max %d %s" % (shlex.quote(tool), max(1, int(max_s)), shlex.quote(target))
+            note = RUN_WAIT_NOTE % target
+        elif check_in and set(parts) <= _BENCH_END_WORDS:
+            bench = _tool("adaptation").plugin_entry(CLAUDE_DIR, "bench")
+            got = bench.wait_call(target) if bench else None
+            if not got:
+                return None
+            call, target = got
+            note = BENCH_NOTE % target
+        else:
+            return None
+        return command[:span[0]] + call + command[span[1]:], target, note
     except Exception:  # a guard never costs the call
         return None
+
+
+def _runs_run_wait(command):
+    return any(_invoked_script(_words(seg.strip())) == "run_wait.py" for seg in _segments(shell_code(command)))
 
 
 def _deny(reason):
@@ -999,13 +1061,19 @@ def main():
         if not (unwoken or _caller(payload)) and runs_watch_records(command) and _watcher_live(payload):
             return _deny(COVERED_REASON)
         if unwoken:
-            wake = NO_WAKE_ADVICE if _first_in_window(payload, "nowake:" + str(payload.get("agent_id") or "")) else NO_WAKE_SHORT
+            agent = str(payload.get("agent_id") or "")
+            if payload.get("tool_name") == "Bash":
+                wake = NO_WAKE_ADVICE if _first_in_window(payload, "nowake:" + agent) else NO_WAKE_SHORT
+                if not command.rstrip().endswith(EXIT_LINE):
+                    tool_input, dropped = dict(tool_input, command=command.rstrip() + "\n" + EXIT_LINE), True
+            else:
+                wake = NO_WAKE_OTHER if _first_in_window(payload, "nowake-other:" + agent) else None
             _advise(" ".join(n for n in (note, wake) if n), tool_input if dropped else None)
         elif _LOOP_SLEEP.search(shell_code(command)):
-            bench = _bench_wait(command)
-            if bench:
-                _check_in(payload, bench[0], dict(tool_input, command=bench[0]),
-                          " ".join(n for n in (note, BENCH_NOTE % bench[1]) if n), bounded=True)
+            found = _runner_wait(command, ORCHESTRATOR_WAIT_MS // 1000, check_in=True)
+            if found:
+                _check_in(payload, found[0], dict(tool_input, command=found[0]),
+                          " ".join(n for n in (note, found[2]) if n), bounded=True)
             else:
                 _check_in(payload, command, tool_input, note if note or not dropped else "")
         elif dropped:
@@ -1021,25 +1089,29 @@ def main():
         except (TypeError, ValueError):
             budget = BASH_DEFAULT_MS
         updated, note = None, None
-        if _caller(payload) or unwoken:
-            if budget > clamp:
-                updated = dict(tool_input, timeout=clamp)
-                note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/common.md).' % (budget, clamp)
-        elif budget > SUBAGENT_WAIT_MS:
+        woken_main = not (_caller(payload) or unwoken)
+        if woken_main and budget > SUBAGENT_WAIT_MS:
             writer = _live_writer(payload, command)
             notes = ['[wait] Backgrounded the long foreground wait; act on its one wake (`CLAUDE.interactive.md` §Waits and wakes).']
             if writer:
                 notes.insert(0, WAKE_NOTE % writer)
-            bench = _bench_wait(command)
-            if bench:
-                command = bench[0]
-                notes.append(BENCH_NOTE % bench[1])
+            found = _runner_wait(command, ORCHESTRATOR_WAIT_MS // 1000, check_in=True)
+            if found:
+                command = found[0]
+                notes.append(found[2])
             return _check_in(payload, command, dict(tool_input, command=command, run_in_background=True),
-                             ' '.join(notes), bounded=bool(bench))
+                             ' '.join(notes), bounded=bool(found))
+        bound = budget if woken_main else clamp
+        found = _runner_wait(command, bound // 1000)
+        if found:
+            updated = dict(tool_input, command=found[0], timeout=bound)
+            note = found[2] if _first_in_window(payload, "runwait") else None
+        elif not woken_main and budget > clamp:
+            updated = dict(tool_input, timeout=clamp)
+            note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/common.md).' % (budget, clamp)
         if updated:
-            _count_poll(payload, command)
-            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                  'updatedInput': updated, 'additionalContext': note}}))
+            _count_poll(payload, updated["command"] if found else command)
+            _advise(note, updated)
             return 0
     elif not (_caller(payload) or unwoken):
         try:
@@ -1055,6 +1127,10 @@ def main():
             budget = int(tool_input.get("timeout") or BASH_DEFAULT_MS)
         except (TypeError, ValueError):
             budget = BASH_DEFAULT_MS
+        if budget < clamp and _runs_run_wait(command):
+            _count_poll(payload, command)
+            _advise(None, dict(tool_input, timeout=clamp))
+            return 0
         if budget > clamp:
             bash_tool = payload.get("tool_name") == "Bash"
             updated = dict(tool_input, timeout=clamp,

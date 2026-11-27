@@ -7,8 +7,14 @@
   proof that times out again alone is a red the FIRST RED bisect skips. A close counts only a red that is not
   pre-existing at its base, and reruns its reds at that base side by side.
 - `--also` adds named proofs to a ranged close's selection and runs each once: no timeout or alone retry.
-- A proof runs on the PATH the runner gives it (`_land_path`): the folders Git Bash prepends are not on it.
+- A proof runs on the PATH the runner gives it (`_proof_path`), the same from a session and from the main check: Git's
+  binary folder is its one Git folder, so `git` spawns one process, not a launcher and the binary.
 - A proof that checks every tracked row is bound to every file under `.claude/`.
+
+A close's scheduling is decided in process: `planted_close` answers each proof's launch (a red while `unit.py` is bad, a
+race that passes on its alone retry, a timeout) with no child and no sleep, through the real close checkout, slot
+admission and retries. `case_a_ranged_close_runs_every_alone_retry` is the close's live end-to-end: real children in a
+real private checkout.
 
     python3 .claude/tests/test_harness_tests_gate_time.py
 """
@@ -30,15 +36,7 @@ sys.path.insert(0, _SCRIPTS_DIR)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness_tests  # noqa: E402
 from _harness_repo_case import RepoCase  # noqa: E402
-
-FAILURES = []
-
-
-def check(label, ok, detail=""):
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if not ok:
-        FAILURES.append("%s: %s" % (label, detail))
-
+from _case_pool import check, checked_cases, run_cases  # noqa: E402
 
 def make_repo(durations):
     repo = tempfile.mkdtemp(prefix="harness_gate_time_")
@@ -317,7 +315,7 @@ READ_UNIT = ("from pathlib import Path\n"
              "unit = (Path(__file__).resolve().parents[1] / 'hooks/unit.py').read_text()\n")
 
 
-def close_repo(proofs, durations):
+def close_repo(proofs, durations, planted=False):
     """(case, range start) with `proofs` ({file name: source}) committed at the range start and `unit.py` set
     to `bad` by the range's one commit. Each proof's source may hold `%(log)r` and `%(marker)r`, its start log
     and its once-marker, under the case's temp root."""
@@ -330,12 +328,14 @@ def close_repo(proofs, durations):
     # Only a sleeping proof is meant to time out, and its sleep outlasts the cap. A loaded machine that starts a
     # proof late must not turn it into a timeout, so every other proof gets a cap no start delay reaches.
     case.write(".claude/skills/project_subsystems/adaptation.json", json.dumps(
-        {"proof_timeouts": {name: 6 if "time.sleep" in source else 60 for name, source in proofs.items()}}))
+        {"proof_timeouts": {name: 6 if name in SLEEPERS else 60 for name in proofs}}))
     durations_path = case.tmp_path("proof_durations.json")
     with open(durations_path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(durations, fh)
     patch.object(harness_tests, "durations_path", lambda: durations_path).start()
     patch.object(harness_tests, "_TIMEOUT_SEC", 1).start()
+    if planted:
+        planted_close(case)
     case.base = case.commit("plant the proofs")
     case.git("update-ref", "refs/remotes/origin/main", case.base)
     case.write(".claude/hooks/unit.py", "VALUE = 'bad'\n")
@@ -359,6 +359,35 @@ def starts(case, name):
         return len(Path(case.tmp_path(name)).read_text(encoding="utf-8").splitlines())
     except OSError:
         return 0
+
+
+# What each planted proof does. `unit.py` reads `bad` in the working tree and `good` at the range start, as in `RED`.
+PLANTED = {"test_red.py": "red", "test_red2.py": "red2", "test_flaky.py": "flaky", "test_slow.py": "slow_once",
+           "test_hang.py": "hang", "test_also_hang.py": "hang"}
+SLEEPERS = ("test_slow.py", "test_hang.py", "test_also_hang.py")  # the proofs that would run past their 6 s cap
+
+
+def planted_close(case):
+    """Replace the proof launch (`run_proof`) with planted answers keyed by proof name, each logging its start as the real
+    proofs do. A red fails while the checkout it runs in reads `bad`; a flaky proof fails once; a slow-once proof times
+    out once; a hanging proof always times out. Everything else, the checkout, slot admission and the retries, is real."""
+    def launch(path, timeout=None, root=None, **_):
+        name, kind = os.path.basename(path), PLANTED[os.path.basename(path)]
+        first = starts(case, name) == 0
+        with open(case.tmp_path(name), "a", encoding="utf-8") as fh:
+            fh.write("x\n")
+        unit = (Path(root) / ".claude" / "hooks" / "unit.py").read_text(encoding="utf-8")
+        if kind in ("red", "red2"):
+            return ("fail", 0.1, "FAIL: unit regressed" + (" again" if kind == "red2" else "")) if "bad" in unit \
+                else ("pass", 0.1, "")
+        if kind == "flaky" and first:
+            return "fail", 0.1, "FAIL: shared temp race"
+        if kind == "hang" or (kind == "slow_once" and first):
+            return "fail", 6.0, "TIMEOUT after 6s"
+        return "pass", 0.1, ""
+    patcher = patch.object(harness_tests, "run_proof", launch)
+    patcher.start()
+    case.addCleanup(patcher.stop)
 
 
 def check_close(label, ok, case, out, detail=""):
@@ -401,7 +430,7 @@ HANG = READ_UNIT + ("import time\n"
 
 def case_a_ranged_close_runs_the_timeout_retry_after_a_red_fails_alone():
     case, base = close_repo({"test_red.py": RED, "test_slow.py": SLOW_ONCE},
-                            {"test_red.py": 1.0, "test_slow.py": 1.0})
+                            {"test_red.py": 1.0, "test_slow.py": 1.0}, planted=True)
     try:
         code, out = close_once(case, base, ranged=True)
         check_close("a ranged close runs the timeout retry after a red fails alone",
@@ -411,7 +440,7 @@ def case_a_ranged_close_runs_the_timeout_retry_after_a_red_fails_alone():
         case.doCleanups()
 
     case, base = close_repo({"test_red.py": RED, "test_slow.py": SLOW_ONCE},
-                            {"test_red.py": 1.0, "test_slow.py": 1.0})
+                            {"test_red.py": 1.0, "test_slow.py": 1.0}, planted=True)
     try:
         code, out = close_once(case, ranged=False)
         check_close("an unranged close still skips the timeout retry after a red fails alone",
@@ -424,7 +453,7 @@ def case_a_ranged_close_runs_the_timeout_retry_after_a_red_fails_alone():
 
 def case_a_timeout_red_skips_the_first_red_bisect():
     case, base = close_repo({"test_red.py": RED, "test_hang.py": HANG},
-                            {"test_red.py": 1.0, "test_hang.py": 1.0})
+                            {"test_red.py": 1.0, "test_hang.py": 1.0}, planted=True)
     try:
         code, out = close_once(case, base, ranged=True)
         reds = {r["proof"]: r for r in close_record(case)["red"]}
@@ -474,7 +503,7 @@ def case_also_runs_a_named_proof_once_in_the_pool():
                  "    fh.write('x\\n')\n"
                  "time.sleep(30)\n")
     case, base = close_repo({"test_red.py": RED, "test_also_hang.py": also_hang},
-                            {"test_red.py": 1.0, "test_also_hang.py": 1.0})
+                            {"test_red.py": 1.0, "test_also_hang.py": 1.0}, planted=True)
     try:
         code, out = close_once(case, base, ranged=True, also=[".claude/tests/test_also_hang.py"])
         record = close_record(case)
@@ -485,31 +514,52 @@ def case_also_runs_a_named_proof_once_in_the_pool():
         case.doCleanups()
 
 
-def case_a_proof_runs_on_the_land_path():
+def case_a_proof_runs_git_the_same_from_a_session_and_the_main_check():
     if os.name != "nt":
         print("ok   (the Git Bash PATH is a Windows condition; nothing to strip here)")
         return
     root = tempfile.mkdtemp(prefix="harness_gate_git_")
-    shell_dirs = [os.path.join(root, *parts) for parts in (("usr", "bin"), ("mingw64", "bin"), ("usr", "local", "bin"))]
-    kept = os.path.join(root, "cmd")
+    binary = os.path.join(root, "mingw64", "bin")
+    git_dirs = [os.path.join(root, *parts) for parts in (("usr", "bin"), ("usr", "local", "bin"), ("bin",), ("cmd",))]
     home_bin = os.path.join(os.path.expanduser("~"), "bin")
-    for folder in shell_dirs + [kept, os.path.join(root, "bin")]:
+    kept = [os.path.join(root, "other"), os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")]
+    for folder in git_dirs + [binary, kept[0]]:
         os.makedirs(folder, exist_ok=True)
+    for folder in (os.path.join(root, "cmd"), binary):
+        open(os.path.join(folder, "git.exe"), "wb").close()
     probe = os.path.join(root, "test_path_probe.py")
     with open(probe, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("import os, sys\nsys.stdout.write(os.environ['PATH'])\nsys.exit(1)\n")
-    real_bash, saved = harness_tests._attempt._bash_exe, os.environ.get("PATH", "")
-    harness_tests._attempt._bash_exe = lambda: os.path.join(root, "bin", "bash.exe")
-    os.environ["PATH"] = os.pathsep.join(shell_dirs + [home_bin, kept, saved])
+        fh.write("import os, shutil, sys\nsys.stdout.write('%s\\n%s\\n%s' % (shutil.which('git'), "
+                 "os.environ.get('MSYSTEM'), os.environ['PATH']))\nsys.exit(1)\n")
+    # The planted install sits outside Program Files: the runner finds it from the `git` the caller's PATH holds.
+    saved = {k: os.environ.get(k) for k in ("PATH", "MSYSTEM")}
+    # A session's (Git Bash: its folders first, MSYSTEM set) and the main check's (pwsh: only Git's `cmd` launcher).
+    callers = {"session": ([binary] + git_dirs + [home_bin, binary] + kept, "MINGW64"),
+               "main check": ([os.path.join(root, "cmd")] + kept, None)}
+    seen = {}
     try:
-        _, _, detail = harness_tests.run_proof(probe, 30)
+        for name, (entries, msystem) in callers.items():
+            os.environ["PATH"] = os.pathsep.join(entries)
+            os.environ.pop("MSYSTEM", None)
+            if msystem:
+                os.environ["MSYSTEM"] = msystem
+            _, _, detail = harness_tests.run_proof(probe, 30)
+            git, msys, path = [line.strip() for line in detail.strip().split("\n", 2)]
+            seen[name] = (os.path.normcase(git), msys, [os.path.normcase(p) for p in path.split(os.pathsep)])
     finally:
-        harness_tests._attempt._bash_exe = real_bash
-        os.environ["PATH"] = saved
-    seen = [os.path.normcase(p) for p in detail.strip().split(os.pathsep)]
-    check("a proof's PATH drops the folders Git Bash prepends and keeps the rest",
-          not any(os.path.normcase(d) in seen for d in shell_dirs + [home_bin]) and os.path.normcase(kept) in seen,
-          "proof PATH head=%s" % seen[:5])
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+    want = [os.path.normcase(p) for p in kept + [binary]]
+    check("a proof's PATH is the same from a session and from the main check: Git's binary folder once, after the "
+          "caller's other folders, and none of the folders Git Bash or its launcher add",
+          all(path == want for _, _, path in seen.values()), seen)
+    check("`git` in a proof is the binary, never the launcher that respawns it",
+          all(git == os.path.normcase(os.path.join(binary, "git.exe")) for git, _, _ in seen.values()), seen)
+    # The binary sets up the folders its scripts and helpers need only where MSYSTEM is unset.
+    check("a proof runs with no MSYSTEM, as from the main check, so git sets up its own folders",
+          all(msys == "None" for _, msys, _ in seen.values()), seen)
 
 
 def case_a_whole_tree_closure_proof_binds_every_claude_file():
@@ -537,27 +587,8 @@ def case_red_rule_refuses_non_callable_judge_and_direct_init():
 
 
 def main():
-    for case in (case_an_ordinary_confirmation_takes_no_exclusive_lease, case_a_peer_lane_never_stalls_a_confirmation,
-                 case_a_serial_proof_keeps_its_own_exclusive_take, case_a_red_alone_skips_the_timeout_retries,
-                 case_timeout_retries_confirm_side_by_side_after_the_assertion_retries,
-                 case_a_close_judges_only_new_reds, case_a_red_alone_skips_the_other_assertion_retries,
-                 case_reds_rerun_at_base_side_by_side, case_a_ranged_close_runs_the_timeout_retry_after_a_red_fails_alone,
-                 case_a_timeout_red_skips_the_first_red_bisect, case_a_proof_whose_own_subprocess_timed_out_is_a_timeout,
-                 case_a_ranged_close_runs_every_alone_retry,
-                 case_also_runs_a_named_proof_once_in_the_pool, case_a_proof_runs_on_the_land_path,
-                 case_a_whole_tree_closure_proof_binds_every_claude_file,
-                 case_red_rule_refuses_non_callable_judge_and_direct_init):
-        try:
-            case()
-        except Exception as exc:  # noqa: BLE001 - a crashing case is a failed case
-            check(case.__name__, False, "%s: %s" % (type(exc).__name__, exc))
-    if FAILURES:
-        print("\n%d failure(s)" % len(FAILURES))
-        for failure in FAILURES:
-            print("  FAIL " + failure)
-        return 1
-    print("\nall ok")
-    return 0
+    """Every `case_*` function in the pool. Each case builds its own repo and sets the runner's module state."""
+    return run_cases(checked_cases(globals()))
 
 
 if __name__ == "__main__":

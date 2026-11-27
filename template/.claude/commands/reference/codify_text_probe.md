@@ -14,9 +14,9 @@ Read at `/codify` Step 7 for a text fix or rule-removal candidate. Use fresh rea
 
 ## Text-fix mode
 
-Fresh readers of the failing model class run the old text and the new text.
+Fresh readers run the old text and the new text, both arms on the same row so the text is the one factor that varies. Start on the cheapest fanout row that claims the tier. Add a reader of the failing model's class when either arm splits there, or when the faithful old arm passes there.
 
-- The old-text arm must reproduce the failure first; an arm that does not fail means the probe is too clean and proves nothing. Each arm also runs cases the fix was not written from, at least one its reason reaches and at least one it must not, scored against an oracle written before any reader runs from the owner's quoted words (Step 0 item 1), never the session's paraphrase.
+- The old-text arm must reproduce the failure first; an arm that does not fail means the probe is too clean and proves nothing about the text. Rebuild that case from the live artifacts the failing reader held (its own earlier files, its task and the frame it decided in), because a bare proposal is a different decision. When the faithful old arm still passes and the failing-class reader passes too, the text was clear, and the case takes `/codify` Step 0's loaded-and-ignored row. Each arm also runs cases the fix was not written from, at least one its reason reaches and at least one it must not, scored against an oracle written before any reader runs from the owner's quoted words (Step 0 item 1), never the session's paraphrase.
 - Stage the readers: run the old arm first, and add a second old reader before calling one clean pass too clean; spend nothing on the new arm until the old arm fails. Then run two readers per arm, the smallest count that can show a split, and a third only in an arm that splits. Report the spread.
 
 ## Rule-removal ablation

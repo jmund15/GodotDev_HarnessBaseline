@@ -8,6 +8,8 @@ not depend on each other's order or leftovers, and must not assert wall-clock de
     from _case_pool import run_cases
     sys.exit(run_cases(cases))
 
+A proof of check-style cases (`case_*` functions that call `check`) runs them with `run_cases(checked_cases(globals()))`.
+
 `run_sections` is the same for a proof whose cases share one script's setup: the proof re-runs itself once
 per section (`--section K`), each child ends with `emit_section(cases)`, and the parent merges the results.
 
@@ -95,10 +97,10 @@ def _reused():
 
 
 def _only(cases):
-    """The cases `HARNESS_CASES_ONLY` names (comma-separated name parts), or None for every case. The harness runner
-    sets `HARNESS_SLOT_DIR` for each proof it runs, and there the filter is ignored: its pass covers every case."""
+    """The cases `HARNESS_CASES_ONLY` names (comma-separated name parts), or None for every case. A proof the runner
+    launches carries `HARNESS_PROOF_TIMEOUT_S` (`proof_env`), and there the filter is ignored: its pass covers every case."""
     parts = [p.strip() for p in os.environ.get("HARNESS_CASES_ONLY", "").split(",") if p.strip()]
-    if not parts or os.environ.get("HARNESS_SLOT_DIR"):
+    if not parts or os.environ.get("HARNESS_PROOF_TIMEOUT_S"):
         return None
     return [case for case in cases if any(part in case.__name__ for part in parts)]
 
@@ -178,6 +180,34 @@ class _Method:
             text = "\n".join(text for _, text in result.failures + result.errors)
             print(text, file=sys.stderr, flush=True)
             raise AssertionError(text.strip().splitlines()[-1])
+
+
+_FAILED = []
+
+
+def check(label, ok, detail=""):
+    """One check of a `checked_cases` case: prints `ok`/`FAIL <label>`, and a failed one fails the case when it returns."""
+    print("%-4s %s" % ("ok" if ok else "FAIL", label))
+    if not ok:
+        _FAILED.append("%s: %s" % (label, detail))
+
+
+class _Checked:
+    """A `case_*` function as a pool case. It runs in its own process, so the failures it raises are its own checks."""
+
+    def __init__(self, case):
+        self.__name__, self.case = case.__name__, case
+
+    def __call__(self):
+        self.case()
+        if _FAILED:
+            raise AssertionError("; ".join(_FAILED)[:600])
+
+
+def checked_cases(namespace):
+    """Every `case_*` function in a proof's `globals()`, in definition order, as cases for `run_cases`; each case
+    reports through `check`."""
+    return [_Checked(value) for name, value in list(namespace.items()) if name.startswith("case_") and callable(value)]
 
 
 def unittest_cases(*classes):

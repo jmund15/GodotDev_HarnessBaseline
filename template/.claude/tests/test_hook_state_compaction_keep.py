@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
-SKILL_KEY = "skill_in_context:orchestration"
 
 
 @pytest.fixture
@@ -22,15 +21,19 @@ def hs(tmp_path, monkeypatch):
 def _armed(hs, sid, *skills):
     for name in skills:
         hs.mark_skill_in_context(sid, name)
-    hs.mark_ladder_slice(sid, ["architect"])
-    assert hs.update_json_locked(hs.state_path(sid), lambda s: s.__setitem__("model_ladder_ready", True))[0]
+    hs.mark_ladder_slice(sid, ["architect"], digest="ladder-a")
+    assert hs.update_json_locked(hs.state_path(sid), lambda s: hs.record_ladder_load(s, "ladder-b", full=True))[0]
+    # The single-slot record an older hook writes beside the keyed one: `ladder_loads` reads it as a load.
+    legacy = {hs.LADDER_READY_KEY: True, hs.LADDER_SLICE_KEY: ["reviewer"], hs.LADDER_DIGEST_KEY: "ladder-old"}
+    assert hs.update_json_locked(hs.state_path(sid), lambda s: s.update(legacy) or True)[0]
 
 
 def test_a_compaction_clears_every_skill_and_the_ladder_markers(hs):
     _armed(hs, "keep0001", "orchestration", "instruction_quality")
     assert hs.clear_compaction_keys("keep0001") is True
     state = hs.read_json_salvage(hs.state_path("keep0001"))
-    assert "model_ladder_ready" not in state and hs.ladder_slice_tiers("keep0001") == []
+    assert hs.ladder_loads(state) == {} and hs.ladder_slice_tiers("keep0001") == []
+    assert not {hs.LADDER_READY_KEY, hs.LADDER_SLICE_KEY, hs.LADDER_DIGEST_KEY} & set(state)
     assert not hs.skill_in_context("keep0001", "orchestration")
     assert not hs.skill_in_context("keep0001", "instruction_quality")
 
@@ -72,9 +75,7 @@ def test_a_skill_call_and_a_full_read_both_mark_in_context(tmp_path, monkeypatch
     import _hook_state
     import skill_load_marker
     skill_load_marker.process({"tool_name": "Skill", "session_id": "mark0001", "tool_input": {"skill": "orchestration"}})
-    fired = _hook_state.read_json_salvage(_hook_state.state_path("mark0001"))["fired_since_compaction"]
-    assert fired.get(SKILL_KEY)
+    assert _hook_state.skill_in_context("mark0001", "orchestration", root=str(HOOKS.parent.parent))
     skill_load_marker.process({"tool_name": "Read", "session_id": "mark0002",
                                "tool_input": {"file_path": str(HOOKS.parent / "skills" / "testing" / "SKILL.md")}})
-    fired = _hook_state.read_json_salvage(_hook_state.state_path("mark0002"))["fired_since_compaction"]
-    assert fired.get("skill_in_context:testing")
+    assert _hook_state.skill_in_context("mark0002", "testing", root=str(HOOKS.parent.parent))

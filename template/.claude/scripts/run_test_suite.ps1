@@ -77,7 +77,8 @@ param(
     [switch] $RecompilePass,
     [switch] $ForceRecompile,
     # Run the engine windowed whatever the filter selects. Without it the run is headless unless every class the filter
-    # selects is [RequiresRenderer]-tagged (IntegrationBatches.ps1 Resolve-RunMode).
+    # selects is [RequiresRenderer]-tagged (IntegrationBatches.ps1 Resolve-RunMode); a filter mixing tagged and untagged classes
+    # is refused (STATUS=MIXED_RENDER_FILTER) unless this is passed.
     [switch] $Windowed,
     # The mode the caller decided (the pool forwards its planner's choice). Unset, the mode is derived from -Filter.
     [ValidateSet('headless', 'windowed')] [string] $RunMode,
@@ -185,12 +186,14 @@ if (-not $IgnoreEditor -and -not $ReapReport -and -not $HeldCheckout) {
     Set-Location $repo
 }
 $modeChoice = if ($ReapReport) { $null } else { Resolve-RunMode -Repo $repo -Filter $Filter -Windowed:$Windowed -Declared "$RunMode" }
-if ($modeChoice) {
-    Write-Output "MODE=$($modeChoice.mode)"
-    if (@($modeChoice.skipped).Count -gt 0) {
-        Write-Output "RENDER_SKIPPED classes=$(@($modeChoice.skipped) -join ',')  (this filter mixes renderer-tagged and untagged classes, so it runs headless and these are not rendered; filter to only tagged classes or pass -Windowed)"
-    }
+# A filter that mixes renderer-tagged and untagged classes has no mode that runs both: headless fails the tagged ones
+# (no renderer, so every assertion on a frame reads nothing), windowed is the slow mode for the rest. Excluding the tagged
+# classes would end green over a run that dropped part of what the caller selected, so the run is refused before it starts.
+if ($modeChoice -and @($modeChoice.skipped).Count -gt 0) {
+    Write-Output "STATUS=MIXED_RENDER_FILTER  label=$Label  classes=$(@($modeChoice.skipped) -join ',')  (this filter selects these renderer-tagged classes together with untagged ones; no run was started. Run the tagged classes alone, which runs windowed, and the untagged ones alone, or pass -Windowed to run the whole filter windowed)"
+    exit 126
 }
+if ($modeChoice) { Write-Output "MODE=$($modeChoice.mode)" }
 if ($RouteOnly) {
     Write-Output "ROUTE=$repo"
     exit 0
@@ -660,7 +663,8 @@ try {
         $p = Start-IsolatedNativeProcess -FilePath 'dotnet' -Arguments $testArgs -OutPath $log -ErrPath $errLog -Display:(-not $NoGodotRuntime)
         $null = $p.Handle
         Set-RuntimeSlotRunner -Lease $lease -Process $p
-        $attemptState = Wait-SuiteAttempt -Process $p -TimeoutMs $TimeoutMs -GodotLog $godotLog -WrapperLog $log -NoGodotRuntime:$NoGodotRuntime
+        $attemptState = Wait-SuiteAttempt -Process $p -TimeoutMs $TimeoutMs -GodotLog $godotLog -WrapperLog $log -NoGodotRuntime:$NoGodotRuntime `
+            -SilenceBudget { Get-FilterSilenceBudgetMs -Repo $repo -Filter $Filter }
         $sw.Stop()
         $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 

@@ -1,6 +1,6 @@
 # User-Tasks triggers — the signal catalog
 
-Read from SKILL.md §User-Tasks triggers when a candidate item may be user-only. Moved verbatim from `SKILL.md`; the threshold, the propose-line and the when-in-doubt rules stay there.
+Read from SKILL.md §User-Tasks triggers when a candidate item may be user-only. The threshold, the propose-line and the when-in-doubt rules stay in `SKILL.md`.
 
 #### Production art / animation / shader / VFX
 - **My-side:** "needs visuals for X", "needs the X sprite", "needs the rise animation", "art pass on X", "shader work for X", "this scene needs proper visuals"

@@ -88,6 +88,7 @@ def main():
     # delivers no reference); an unmapped class names all four with their read-when lines. Which sections apply
     # within a class is still the edit's content (instruction_quality §3), stated by the file itself.
     every = [os.path.basename(r) for r in REFS]
+    LOAD = "skills/instruction_quality/SKILL.md` whole (no offset or limit)"
     tails = {"commands/some_command.md": "skills_and_commands.md",
              "skills/orchestration/reference/x.md": "orchestration.md",
              "reference/some_ref.md": "claims_and_wording.md",
@@ -98,13 +99,13 @@ def main():
         if target:
             cited = "`skills/instruction_quality/reference/%s`" % target
             check("the unloaded-skill deny for %s carries its class's reference whole" % tail,
-                  "Read `skills/instruction_quality/SKILL.md` in full, no offset or limit" in head
+                  LOAD in head
                   and cited in head and ("--- skills/instruction_quality/reference/%s ---" % target) in reason,
                   (target, reason[-300:]))
         else:
             named = [n for n in every if "`%s`" % n in reason]
             check("the unloaded-skill deny for the unmapped %s names all four class files" % tail,
-                  "Read `skills/instruction_quality/SKILL.md` in full, no offset or limit" in reason
+                  LOAD in reason
                   and "Read in full each `skills/instruction_quality/reference/` file" in reason
                   and sorted(named) == sorted(every), (named, reason[-300:]))
 

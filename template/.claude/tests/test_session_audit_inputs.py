@@ -288,17 +288,18 @@ class TriggerInputsTests(DoctrineFixture):
     def test_archived_decisions_are_frozen_and_live_duplicate_wins(self):
         path = self.repo / ".claude/logs/tasks/test.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        archived = {"id": "D1", "kind": "decision", "text": "archived cause",
-                    "evidence_items": [{"owner": "yes"}], "evidence_session": "abcdefgh-full"}
+        archived = {"id": "D1", "kind": "decision", "text": "archived cause", "evidence": []}
         old = {"id": "D2", "kind": "decision", "text": "old cause"}
-        live = {"id": "D2", "text": "current cause", "evidence_items": [{"owner": "now"}]}
+        live = {"id": "D2", "text": "current cause", "evidence_items": [{"owner": "now"}],
+                "evidence_root": str(self.repo), "evidence_session": "abcdefgh-full"}
         path.write_text(json.dumps({"task_id": "test", "session_id": "abcdefgh-full",
                                     "decisions": [live]}), encoding="utf-8")
         path.with_suffix(".archive.jsonl").write_text(
             "\n".join(json.dumps(row) for row in (archived, old)) + "\n", encoding="utf-8")
         data, _ = self.freeze("--session", "abcdefgh-full")
         rows = json.loads(self.read_input(next(p for p in data["mustRead"] if p.endswith("decisions.json"))))
-        self.assertEqual([r["decision"] for r in rows], [archived, live])
+        self.assertEqual([r["decision"] for r in rows],
+                         [dict(archived, premise_check="UNCHECKED"), dict(live, premise_check="stored")])
         self.assertTrue(data["needsAudit"])
         self.assertIn("archived cause", self.read_input(data["doctrineCommits"]))
 

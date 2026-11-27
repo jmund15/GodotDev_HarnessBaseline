@@ -298,6 +298,11 @@ SC_UNSUSPEND=0
 SC_PEAK_AUTHORIZED=0   # -W: the user explicitly authorized a peak-window dispatch
 SC_PRICE_WINDOW=""; SC_PRICE_MULT=""; SC_PRICE_CHANGES=""; SC_PRICE_AT_START=""; SC_PRICE_SUMMARY=""
 SC_EFFORT=""
+# 1: this launcher's child is the Claude client, so the one registry read adds its window contract.
+SC_CLIENT_WINDOW=""
+# Empty, loaded or failed: the one registry read (sc_load_facts) answers once per launcher process.
+SC_FACTS_STATE=""
+SC_FACTS_ERROR=""
 # Empty means the caller asserted no tool change, so the kind's row in guards/tool_profiles.json
 # applies (sc_resolve_tools). `-t` is a signed DELTA (`+Bash,-Grep,+mcp:godot`); an unsigned list
 # refuses on every kind but `arm`, whose unsigned `-t` is its task row.
@@ -385,7 +390,8 @@ SC_OPTSTRING=":m:e:t:n:o:d:f:T:R:x:P:S:sNr:p:L:l:a:G:B:AUWMD:C:Z:K:Y:Q:"
 # An unknown model prints nothing.
 sc_declared_context_window() {
   local w
-  w="$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" ${SC_LONG_CONTEXT:+--max} 2>/dev/null)" || return 0
+  sc_load_facts || return 0
+  if [ -n "${SC_LONG_CONTEXT:-}" ]; then w="${SC_WINDOW_MAX:-}"; else w="${SC_WINDOW_DEFAULT:-}"; fi
   case "$w" in ''|*[!0-9]*) return 0 ;; esac
   [ "$w" -gt $(( ${SC_OUTPUT_RESERVE:-0} * 2 )) ] && w=$(( w - ${SC_OUTPUT_RESERVE:-0} ))
   printf '%s' "$w"
@@ -406,7 +412,8 @@ sc_max_output() {
     esac
   fi
   local o
-  o="$(python3 "$SC_REGISTRY_CLI" max-output "$SC_MODEL" ${SC_LONG_CONTEXT:+--max} 2>/dev/null)" || return 0
+  sc_load_facts || return 0
+  o="${SC_MAX_OUTPUT_REGISTRY:-}"
   case "$o" in ''|*[!0-9]*) return 0 ;; esac
   case "${1:-}" in ''|*[!0-9]*) ;; *) [ "$o" -gt $(( $1 / 4 )) ] && o=$(( $1 / 4 )) ;; esac
   printf '%s' "$o"
@@ -614,22 +621,17 @@ sc_apply_kind() {
   [ -n "${SC_SHAPE:-}" ] || return 0
   [ "${SC_KIND_APPLIED:-}" = "$SC_SHAPE" ] && return 0
   local row
-  row="$(python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$SC_SHAPE" 2>&1)" ||
-    sc_die 2 "${row#tool_profiles: }"
-  row="${row%$'\r'}"
-  if [ -n "$row" ]; then
+  row="$(python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$SC_SHAPE" \
+    --fields=disclosure,cacheTtl 2>&1)" || sc_die 2 "${row#tool_profiles: }"
+  IFS=$'\x1f' read -r SC_KIND_DISCLOSURE SC_KIND_CACHE_TTL <<< "${row%$'\r'}"
+  if [ -n "${SC_KIND_DISCLOSURE:-}" ]; then
     [ -z "$SC_DISCLOSURE" ] ||
       sc_die 2 "-D $SC_DISCLOSURE refused: disclosure follows the kind: pass -G <kind> and drop -D (only -G arm takes -D)"
-    SC_DISCLOSURE="$row"
+    SC_DISCLOSURE="$SC_KIND_DISCLOSURE"
   else
     [ -n "$SC_DISCLOSURE" ] || sc_die 2 "-G $SC_SHAPE needs -D <bare|pointer|full>: its row carries no disclosure"
   fi
   SC_KIND_APPLIED="$SC_SHAPE"
-}
-
-# The guard name a kind's row carries (survey|review|author|gate|common|arm), for the registry's --shape.
-sc_kind_guard() {
-  python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$1" --field=guard 2>/dev/null | tr -d '\r'
 }
 
 sc_validate_common() {
@@ -637,8 +639,9 @@ sc_validate_common() {
   # from its default (model_registry.effective_window). Elsewhere it would change nothing, so it is refused.
   if [ -n "${SC_LONG_CONTEXT:-}" ] && [ "${SC_TRANSPORT:-}" != "codex" ]; then
     local def max
-    def="$(python3 "${SC_REGISTRY_CLI:-}" context-window "${SC_MODEL:-}" 2>/dev/null)"
-    max="$(python3 "${SC_REGISTRY_CLI:-}" context-window "${SC_MODEL:-}" --max 2>/dev/null)"
+    sc_load_facts || :
+    def="${SC_WINDOW_DEFAULT:-}"
+    max="${SC_WINDOW_MAX:-}"
     if [ -z "$max" ] || [ "$max" = "$def" ]; then
       sc_die 2 "-M (long context) changes nothing for ${SC_MODEL:-this model} on ${SC_TRANSPORT:-unset}: it has no long-context price step (model_registry.py context-window <model> --max). Drop -M."
     fi
@@ -698,26 +701,13 @@ sc_resolve_tools() {
       --kind="${SC_SHAPE:-}" --tier="${SC_TIER:-}" --tools="${SC_TOOLS:-}" \
       ${base_arg[@]+"${base_arg[@]}"} \
       --config-dir="${SC_MCP_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}" \
-      --workdir="${SC_WORKDIR:-}" 2>"$err")" || {
+      --workdir="${SC_WORKDIR:-}" --field=packed 2>"$err")" || {
     cat "$err" >&2
     sc_die 2 "[sidecar] refusing to dispatch: the tool profile is invalid (resolver text above)"
   }
   rm -f "$err" 2>/dev/null || :
-  packed="$(printf '%s' "$out" | SC_ROOT="$SC_ROOT" python3 -c 'import json, sys, os
-sys.path.insert(0, os.path.join(os.environ["SC_ROOT"], "tools"))
-import tool_profiles
-p = json.load(sys.stdin)
-sys.stdout.reconfigure(newline="\n")
-print(",".join(p["builtins"]))
-print(tool_profiles.tool_spec(p, list(p["mcpRegistrations"].values())))
-print(",".join(p["denyTools"]))')" || {
-    sc_die 2 "[sidecar] could not read the resolved tool profile"; }
-  SC_TOOL_PROFILE="$out"
-  SC_RESOLVED_BUILTINS="${packed%%$'\n'*}"
-  SC_RESOLVED_TOOL_SPEC="${packed#*$'\n'}"
-  local deny=""   # the substitution above strips an empty last line: a kind with no denial leaves no newline here
-  case "$SC_RESOLVED_TOOL_SPEC" in *$'\n'*) deny="${SC_RESOLVED_TOOL_SPEC#*$'\n'}" ;; esac
-  SC_RESOLVED_TOOL_SPEC="${SC_RESOLVED_TOOL_SPEC%%$'\n'*}"
+  local deny=""
+  IFS=$'\x1f' read -r SC_TOOL_PROFILE SC_RESOLVED_BUILTINS SC_RESOLVED_TOOL_SPEC deny <<< "$out"
   # The kind's withheld MCP tools (a read-only kind holds ai-worker minus write_doc) join the denial.
   [ -n "$deny" ] && SC_DISALLOWED="${SC_DISALLOWED:+$SC_DISALLOWED,}$deny"
   # `--allowedTools` pre-approves and never bounds, but it must still name what this child may
@@ -735,59 +725,84 @@ sc_validate_effort() {
   esac
   # A transport that declares effortValues serves only those rungs; any other request is served
   # as a different rung, so the run record would name a coordinate that never ran.
-  local declared legal
   # Fails CLOSED like sc_gate_price_window: an unreadable vocabulary is not "no restriction".
-  if ! declared="$(python3 "$SC_REGISTRY_CLI" effort-values "$SC_MODEL" 2>&1)"; then
-    sc_die 2 "[sidecar] cannot read effort values for $SC_MODEL: ${declared%%$'\n'*}"
+  sc_load_facts || sc_die 2 "[sidecar] cannot read effort values for $SC_MODEL: ${SC_FACTS_ERROR:-registry unreadable}"
+  [ "${SC_FACTS_EFFORT:-}" = "$SC_EFFORT" ] ||
+    sc_die 2 "[sidecar] cannot read effort values for $SC_MODEL: the launch's registry facts were read before its -e"
+  if [ -n "${SC_EFFORT_ERROR:-}" ]; then
+    sc_die 2 "[sidecar] cannot read effort values for $SC_MODEL: $SC_EFFORT_ERROR"
   fi
-  case "$declared" in
+  case "${SC_EFFORT_VALUES_JSON:-}" in
     ""|"[]"|*"\"$SC_EFFORT\""*) ;;
     *)
-      legal="$(printf '%s' "$declared" | tr -d '[]" ' | tr ',' '|')"
-      sc_die 2 "effort '$SC_EFFORT' is not served by $SC_TRANSPORT ($legal); the provider would run another rung under this label" ;;
+      sc_die 2 "effort '$SC_EFFORT' is not served by $SC_TRANSPORT (${SC_EFFORT_LEGAL:-}); the provider would run another rung under this label" ;;
   esac
   # A rung the route serves can still be one this row's evidence marks wasteful (`effort.avoid`).
   # Only a driver-declared comparison pins it (`sidecar_fanout.py --compare` or a benchmark campaign sets
   # SC_COMPARISON); free text never does. The lookup fails closed like the vocabulary's.
-  local avoided avoid_err avoid_rc
-  avoid_err="$(mktemp)"
-  avoided="$(python3 "$SC_REGISTRY_CLI" effort-avoid "$SC_MODEL" "$SC_EFFORT" 2>"$avoid_err")"
-  avoid_rc=$?
-  if [ "$avoid_rc" -ne 0 ]; then
-    avoided="$(head -n1 "$avoid_err")"
-    rm -f "$avoid_err"
-    sc_die 2 "[sidecar] cannot read effort.avoid for $SC_MODEL: $avoided"
-  fi
-  rm -f "$avoid_err"
-  [ -n "$avoided" ] || return 0
+  [ -n "${SC_EFFORT_AVOIDED:-}" ] || return 0
   if [ -n "${SC_COMPARISON:-}" ]; then
     echo "[sidecar] effort '$SC_EFFORT' on $SC_MODEL is a rung its row avoids; pinned inside a comparison (${SC_COMPARISON})" >&2
     return 0
   fi
-  sc_die 2 "effort '$SC_EFFORT' is in $SC_MODEL's registry effort.avoid: $avoided Pin the ladder's rung."
+  sc_die 2 "effort '$SC_EFFORT' is in $SC_MODEL's registry effort.avoid: $SC_EFFORT_AVOIDED Pin the ladder's rung."
 }
 
 # --------------------------------------------------------------- model resolution
-# One registry call yields everything the dispatch path needs. Python startup dominates
-# on Windows, so several `resolve --field` calls would cost most of a second for what is
-# one dict lookup.
+# One registry process yields every fact a launch's gates read: the model row, the plan state, both
+# context windows, the output cap, the effort vocabulary and the Anthropic client window. Python
+# startup dominates on Windows, so the gates share this one read. A fact whose gate can refuse on its own travels as a `*_ERROR` field, so the refusal
+# still comes from that gate, at its own point in the order.
+#
+# The facts are shell assignments the tool prints (`NAME='value'`); they are sourced, never eval'd.
+# SC_FACTS_STATE keeps a failure sticky: the first gate that needs facts reports it.
+sc_load_facts() {
+  [ "${SC_FACTS_STATE:-}" = loaded ] && return 0
+  [ "${SC_FACTS_STATE:-}" = failed ] && return 1
+  local f err rc=0
+  f="$(mktemp)" || { SC_FACTS_STATE=failed; return 1; }
+  err="$(mktemp)" || { rm -f "$f"; SC_FACTS_STATE=failed; return 1; }
+  python3 "$SC_REGISTRY_CLI" launch-fields "$SC_MODEL" \
+    ${SC_PLAN:+--plan "$SC_PLAN"} ${SC_EFFORT:+--effort "$SC_EFFORT"} \
+    ${SC_LONG_CONTEXT:+--long} ${SC_CLIENT_WINDOW:+--client anthropic} >"$f" 2>"$err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    SC_FACTS_ERROR="$(tr -d '\r' < "$err")"
+    SC_FACTS_STATE=failed
+    rm -f "$f" "$err"
+    return 1
+  fi
+  rm -f "$err"
+  . "$f"
+  rm -f "$f"
+  SC_FACTS_STATE=loaded
+  return 0
+}
+
 sc_resolve_model() {
-  local fields
-  if ! fields="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" ${SC_PLAN:+--plan "$SC_PLAN"} 2>&1)"; then
+  if ! sc_load_facts; then
     sc_die 2 \
       "[sidecar] cannot resolve -m '$SC_MODEL':" \
-      "  $fields" \
+      "  ${SC_FACTS_ERROR:-the registry CLI printed nothing}" \
       "  registry: $SC_REGISTRY_CLI" \
       "  This is the SPENDING consumer, so it fails closed: no fallback to a" \
       "  hardcoded id, because dispatching at a tier nobody chose costs money."
   fi
-  # Column 11 is a RETIRED slot (the row's provider-band ceiling) and always reads empty. It stays
-  # in this read, and in sidecar-fields, only so apiMode keeps landing in column 12: the opencode
-  # launcher reads it positionally as `cut -d'|' -f12`, so dropping a column renumbers it silently.
-  IFS='|' read -r SC_MODEL SC_ALIAS SC_AUTH_TIER SC_MIN_BAND SC_MIN_BALANCE SC_FRESH_RATE \
-    SC_RETIRED_BALANCE_URL SC_TRANSPORT_STATE SC_TRANSPORT_REASON SC_COST_MODEL SC_MAX_PROVIDER_BAND \
-    SC_API_MODE \
-    <<< "$fields"
+}
+
+# A launcher's --check reads the registry here, before its own route checks need a fact: an
+# unusable registry is exit 2, and a row the roster excludes is exit 7. SessionStart publishes the
+# check line, so the roster answer is the same field the dispatch gate reads.
+sc_check_registry() {
+  local first
+  if ! sc_load_facts; then
+    first="${SC_FACTS_ERROR%%$'\n'*}"
+    echo "UNAVAILABLE (model registry unusable: ${first:-the registry CLI printed nothing})"
+    exit 2
+  fi
+  if [ "$SC_TRANSPORT_STATE" = "unavailable" ]; then
+    echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
+    exit 7
+  fi
 }
 
 # ------------------------------------------------- gate 0: provider exhausted marker
@@ -946,7 +961,7 @@ sc_mark_auth_failure() { # <output> <rc>
 # protects the owner's paid quota; rules/harness_tooling.md §Paid work stops on an observed fact of waste).
 sc_gate_repay() {
   [ "${SC_DISPATCH_PENDING:-0}" = 1 ] || return 0
-  local ledger="$SC_LEDGER" harness rc=0 prompt_arg=() text_file=""
+  local ledger="$SC_LEDGER" harness rc=0 prompt_arg=() check_arg=() text_file=""
   { [ -n "$ledger" ] && [ "$ledger" != "__default__" ]; } || ledger="$SC_LEDGER_DEFAULT"
   harness="$(sc_harness_revision)"
   if [ -n "${SC_PROMPT_FILE:-}" ]; then
@@ -956,17 +971,24 @@ sc_gate_repay() {
     printf '%s' "${SC_PROMPT:-}" > "$text_file"
     prompt_arg=(--prompt-text-file "$(sc_to_native "$text_file")")
   fi
-  SC_WORK_KEY="$(python3 "$SC_ROOT/tools/work_key.py" key --model "$SC_MODEL" --effort "${SC_EFFORT:-}" \
-    --label "${SC_LABEL:-}" --harness "$harness" "${prompt_arg[@]}")" || rc=$?
+  # The key and the re-pay read are one process: both read the same launch's identity, and a
+  # resume needs the key without the check.
+  if [ -n "${SC_RESUME:-}${SC_RESUMED_FROM:-}${SC_RESUME_SID:-}" ]; then
+    check_arg=(--no-check)
+  else
+    check_arg=(--ledger "$(sc_to_native "$ledger")")
+  fi
+  SC_WORK_KEY="$(python3 "$SC_ROOT/tools/work_key.py" gate --model "$SC_MODEL" --effort "${SC_EFFORT:-}" \
+    --label "${SC_LABEL:-}" --harness "$harness" "${prompt_arg[@]}" "${check_arg[@]}")" || rc=$?
   [ -z "$text_file" ] || rm -f "$text_file"
-  { [ "$rc" -eq 0 ] && [ -n "$SC_WORK_KEY" ]; } || sc_die 2 "[sidecar] the work key could not be computed (exit $rc); nothing started"
+  if [ "$rc" -eq 15 ]; then
+    sc_die 15 "[sidecar] REFUSED: the re-pay check found this work finished and paid, or could not read the spend ledger (line above); nothing started. Finished work repeats under its own label; an unreadable ledger is repaired first."
+  fi
+  if [ "$rc" -eq 2 ] || { [ "$rc" -eq 0 ] && [ -z "$SC_WORK_KEY" ]; }; then
+    sc_die 2 "[sidecar] the work key could not be computed (exit $rc); nothing started"
+  fi
+  [ "$rc" -eq 0 ] || sc_die 2 "[sidecar] the re-pay check failed (exit $rc); nothing started"
   export SC_WORK_KEY
-  [ -z "${SC_RESUME:-}${SC_RESUMED_FROM:-}${SC_RESUME_SID:-}" ] || return 0
-  rc=0
-  python3 "$SC_ROOT/tools/work_key.py" check --key "$SC_WORK_KEY" --ledger "$(sc_to_native "$ledger")" || rc=$?
-  [ "$rc" -eq 0 ] && return 0
-  [ "$rc" -eq 15 ] && sc_die 15 "[sidecar] REFUSED: the re-pay check found this work finished and paid, or could not read the spend ledger (line above); nothing started. Finished work repeats under its own label; an unreadable ledger is repaired first."
-  sc_die 2 "[sidecar] the re-pay check failed (exit $rc); nothing started"
 }
 
 # The harness revision a launch runs under: the code HEAD sc_write_record records as harnessSession, plus the
@@ -1002,140 +1024,15 @@ sc_gate_availability() {
 }
 
 # ------------------------------------------------- benchmark-arm escape guard (settings merge)
-# Every launcher passes its child settings through this, and it is the ONE --settings value the
-# child gets: the CLI keeps only the last flag, so every fragment is merged here.
-# Project rows come from each ready plugin's registration `sidecar_hooks` (tools/adaptation.py `plugins`): matcher,
-# command and optional when. when maps environment names to exact values (null means nonempty); commands remain self-gated.
-# {root}, {plugin_root}, {shape}, {prompt}, {ruler_scope}, {workdir}, {main_root} and {spill_dir} expand to shell-quoted values.
-# An unreadable plugin stops (exit 2) a launch whose guards/tool_profiles.json kind row names it in `plugin`, because that
-# launch would run without the plugin's guard; any other launch prints one stderr line and proceeds. Each launcher stops on the exit.
-#
-# The former T1 fragment — enabledPlugins.semantic-search@dreb=false for a non-arm child whose -t
-# named no search tool — is gone. Every launcher now passes --strict-mcp-config with the resolved
-# profile's own config, so a server the profile does not name is not loaded on ANY transport,
-# plugin servers included. A settings plugin switch was the only mechanism available to the one
-# launcher that passed no strict config; keeping it beside a strict config would be a second,
-# silently disagreeing answer to "which servers does this child have".
-# A bench-score child (the score daemon's driver) with a -f brief gets scoring/drift_guard.py on Workflow: the
-# call's args are checked against that brief before the paid panel runs.
+# Every launcher passes its child settings through this: the ONE --settings value the child gets,
+# because the CLI keeps only the last flag. The merge itself is scripts/lib/launch_settings.py --
+# run directly so a proof reaches the decision in process; its docstring owns the plugin, brief,
+# amendment and floor rules.
 sc_drift_guard_active() { [ "${SC_SHAPE:-}" = "bench-score" ] && [ -n "${SC_PROMPT_FILE:-}" ]; }
-# BENCH_RULER_SCOPE adds the succession ruler's staged-file Read allowlist.
 sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on stdout ("" if nothing to pass)
-  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" "${AC_AUTO_COMPACT_WINDOW:+${SC_MODEL:-}}" "${SC_RESOLVED_BUILTINS:-}" <<'PY'
-import json, os, shlex, sys
-from pathlib import Path
-base = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
-root = Path(sys.argv[2]).resolve()
-if sys.argv[4]:
-    prompt = Path(sys.argv[4]).resolve().as_posix()
-    command = 'python3 "%s" --prompt-file "%s"' % (
-        (root / "hooks/sidecar_recompact_reprompt.py").as_posix(), prompt)
-    events = [("SessionStart", "compact"), ("PreCompact", None)]
-    # A Claude child given a compaction point (AC_AUTO_COMPACT_WINDOW) below its model's real window holds its
-    # first auto-compaction until it saves its findings (the hook's --hard-window). The hold is wired only for a
-    # child whose resolved tools include one of the hook's save tools: a read-only child cannot answer the nudge.
-    hard = None
-    sys.path.insert(0, (root / "hooks").as_posix())
-    try:
-        from sidecar_recompact_reprompt import WRITE_TOOLS
-    except Exception:
-        WRITE_TOOLS = ()
-    tools = {t.strip() for t in (sys.argv[11] if len(sys.argv) > 11 else "").split(",") if t.strip()}
-    can_write = bool(tools.intersection(WRITE_TOOLS))
-    if len(sys.argv) > 10 and sys.argv[10]:
-        sys.path.insert(0, (root / "tools").as_posix())
-        import model_registry
-        entry = model_registry.resolve(sys.argv[10])
-        hard = model_registry.effective_window(entry, True) or model_registry.effective_window(entry, False)
-        if not can_write:
-            hard = None
-    # A read-only child cannot save findings itself, so the hook copies each continuation summary beside the
-    # record, where the parent's recovery reads it. An unreadable tool set or a launch with no record path fails
-    # closed: no spill.
-    record_path = sys.argv[8] or sys.argv[9]
-    if tools and not can_write and record_path:
-        command += ' --spill "%s"' % (os.path.abspath(record_path).replace("\\", "/") + ".compaction.md")
-        events += [("PostToolUse", None), ("Stop", None)]
-    if hard:
-        command += " --hard-window %d" % hard
-        events.append(("PostToolUse", None))
-    for event, matcher in events:
-        rows_ = base.setdefault("hooks", {}).setdefault(event, [])
-        if not any(row.get("matcher") == matcher and any(
-                "sidecar_recompact_reprompt.py" in hook.get("command", "")
-                for hook in row.get("hooks", [])) for row in rows_):
-            row = {"hooks": [{"type": "command", "command": command, "timeout": 15}]}
-            rows_.append({"matcher": matcher, **row} if matcher else row)
-    # The author prompt promises amendment delivery; the child's own checkout may predate the hook, so the
-    # launcher's root supplies it. Its receipts dedupe a second registration from the checkout's settings.
-    if sys.argv[3] == "author":
-        command = 'python3 "%s"' % (root / "hooks/amend_delivery.py").as_posix()
-        for event, matcher in (("PreToolUse", "*"), ("Stop", None)):
-            row = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
-            base.setdefault("hooks", {}).setdefault(event, []).append({"matcher": matcher, **row} if matcher else row)
-sys.path.insert(0, (root / "tools").as_posix())
-import adaptation, tool_profiles
-shape = sys.argv[3]
-kind_plugin = (tool_profiles.load_table()["kinds"].get(shape) or {}).get("plugin", "")
-rows = []
-for name, plugin in adaptation.plugins(root):
-    if plugin.state == "ready":
-        rows += [dict(row, _root=plugin.root) for row in plugin.manifest["sidecar_hooks"] if isinstance(row, dict)]
-    elif kind_plugin == name:
-        print("plugin %s unreadable (%s): a %s launch needs it. Fix %s/.claude/plugin.%s.json, then relaunch."
-              % (name, plugin.error, shape, plugin.root or "its root", name), file=sys.stderr)
-        sys.exit(2)
-    else:
-        print("plugin %s unreadable (%s): its hook rows are not merged." % (name, plugin.error), file=sys.stderr)
-# The launcher's own row: a child in a linked worktree may write only its workdir, spill dir and brief's writeSet.
-builtin = {"matcher": "Write|Edit|NotebookEdit|Bash", "when": {"SC_MAIN_ROOT": None},
-           "command": "python3 {root}/hooks/sidecar_workdir_guard.py {workdir} {main_root} {spill_dir} {prompt}"}
-rows = [builtin] + [row for row in (rows if isinstance(rows, list) else [])
-                    if not (isinstance(row, dict) and "sidecar_workdir_guard.py" in str(row.get("command", "")))]
-env = dict(os.environ, SC_SHAPE=sys.argv[3], SC_PROMPT_FILE=sys.argv[4],
-           BENCH_ARM=sys.argv[5], BENCH_RULER_SCOPE=sys.argv[6])
-sys.path.insert(0, (root / "hooks").as_posix())
-from _checkout_root import linked_main_root
-workdir = os.path.abspath(sys.argv[7]) if sys.argv[7] else ""
-main_root = linked_main_root(workdir) if workdir else ""
-main_root = Path(main_root).as_posix() if main_root else ""
-spill = os.path.dirname(os.path.abspath(sys.argv[8] or sys.argv[9])) if (sys.argv[8] or sys.argv[9]) else ""
-env["SC_MAIN_ROOT"] = main_root
-values = {"root": root.as_posix(), "shape": sys.argv[3], "workdir": workdir.replace("\\", "/"),
-          "main_root": main_root, "spill_dir": spill.replace("\\", "/"),
-          "prompt": os.path.abspath(sys.argv[4]).replace("\\", "/") if sys.argv[4] else "",
-          "ruler_scope": env.get("BENCH_RULER_SCOPE", "")}
-for row in rows if isinstance(rows, list) else []:
-    if not isinstance(row, dict) or not all(isinstance(row.get(k), str) for k in ("matcher", "command")):
-        continue
-    when = row.get("when", {})
-    if not isinstance(when, dict) or not all(bool(env.get(k)) if v is None else env.get(k, "") == v
-                                           for k, v in when.items()):
-        continue
-    command = row["command"]
-    for key, value in dict(values, plugin_root=Path(row["_root"]).as_posix() if row.get("_root") else "").items():
-        command = command.replace("{" + key + "}", shlex.quote(value))
-    base.setdefault("hooks", {}).setdefault("PreToolUse", []).append({
-        "matcher": row["matcher"],
-        "hooks": [{"type": "command", "command": command, "timeout": 10}],
-    })
-# A child never runs with fewer delegate guards than its dispatcher: the loss floor's one entry (hooks/pre_bash.py, which
-# carries the wait clamp) comes from the launcher's root unless the child's own checkout registers it. The hook finds
-# its siblings and tools from its own file, so a workdir with no .claude/ runs it unchanged.
-def _registers_floor(workdir):
-    for name in ("settings.json", "settings.local.json"):
-        try:
-            if "hooks/pre_bash.py" in (Path(workdir) / ".claude" / name).read_text(encoding="utf-8"):
-                return True
-        except OSError:
-            pass
-    return False
-if not _registers_floor(workdir or os.getcwd()):
-    base.setdefault("hooks", {}).setdefault("PreToolUse", []).append({
-        "matcher": "Bash|PowerShell|Monitor|TaskStop",
-        "hooks": [{"type": "command", "command": 'python3 "%s"' % (root / "hooks/pre_bash.py").as_posix(), "timeout": 75}]})
-print(json.dumps(base) if base else "")
-PY
+  python3 "$SC_ROOT/scripts/lib/launch_settings.py" "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" \
+    "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" \
+    "${AC_AUTO_COMPACT_WINDOW:+${SC_MODEL:-}}" "${SC_RESOLVED_BUILTINS:-}"
 }
 
 # --------------------------------------------------------------- gate 2: our own band
@@ -1149,7 +1046,7 @@ PY
 # child reads the seat first into SC_SEAT_PLAN. The read is `provider_capacity.py`'s: cache first, so
 # the gates of one launch share a single usage-endpoint read per cache life.
 sc_gate_band() {
-  local runner="$SC_ROOT/tools/provider_capacity.py" seat raw rc parsed status sat_rc runner_rc resolve_rc=0
+  local runner="$SC_ROOT/tools/provider_capacity.py" seat fields="" satisfies="" status rc=0 runner_rc=0 resolve_rc=0
   seat="${SC_SEAT_PLAN:-}"
   if [ -z "$seat" ]; then
     seat="$(python3 "$SC_ROOT/hooks/_session_transport.py" --plan 2>/dev/null)"
@@ -1158,29 +1055,23 @@ sc_gate_band() {
   seat="${seat:-unknown}"
   if [ "$seat" = "unknown" ]; then
     # No seat to read is an unreadable band, not a broken reader: the reader refuses a name it does not know.
-    raw=""; rc=2; runner_rc=0
+    rc=2
   else
-    raw="$(python3 "$runner" "$seat" 2>/dev/null)"; rc=$?; runner_rc=$rc
-  fi
-  if [ "$rc" -eq 0 ]; then
-    parsed="$(CAP_V="$raw" python3 -c '
-import json,os,sys
-try:
- d=json.loads(os.environ["CAP_V"]); q=d.get("quota") or {}; wins=q.get("windows") or []
- w=next((x for x in wins if x.get("name")==q.get("routingWindow")), None) or next((x for x in wins if x.get("name")==q.get("bindingWindow")), {})
- print("%s|%s|%s" % (d.get("status") or "", q.get("routingBand") or "", w.get("pressure") if w.get("pressure") is not None else ""))
-except Exception: sys.exit(1)
-' 2>/dev/null)" || rc=2
-  fi
-  if [ "$rc" -eq 0 ]; then
-    IFS='|' read -r status SC_BAND SC_BAND_P <<< "$parsed"
-    if [ "$status" = "exhausted" ]; then
-      SC_BAND="Hot"; SC_BAND_P="spent"
-    elif [ "$status" = "dispatch-floor" ]; then
-      SC_BAND="Hot"; SC_BAND_P="dispatch-floor"
-    elif [ "$status" != "available" ] || [ -z "$SC_BAND" ]; then
+    # One read answers the reading and the floor comparison: provider_capacity owns the schema, and
+    # model_registry owns the band order, so neither reduction is restated here.
+    fields="$(python3 "$runner" host-band "$seat" --min-band "$SC_MIN_BAND" 2>/dev/null)"; runner_rc=$?
+    if [ "$runner_rc" -eq 3 ]; then
+      # A reading the reducer cannot type is an unreadable band (the warning below), not a broken
+      # runner: the runner answered, and that is the posture this gate had before the field read.
+      runner_rc=0; rc=2
+    elif [ "$runner_rc" -ne 0 ]; then
       rc=2
     fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    # An empty comparison is the reducer's "no band to compare": an unreadable band.
+    IFS=$'\x1f' read -r status SC_BAND SC_BAND_P satisfies <<< "$fields"
+    [ -n "$satisfies" ] || rc=2
   fi
 
   if [ "$SC_AUTHORIZED" -eq 1 ]; then
@@ -1203,51 +1094,34 @@ except Exception: sys.exit(1)
     SC_BAND="unknown"; SC_BAND_P="?"
     return 0
   fi
-  python3 "$SC_REGISTRY_CLI" band-satisfies "$SC_BAND" "$SC_MIN_BAND"; sat_rc=$?
-  [ "$sat_rc" -eq 0 ] && return 0
-  if [ "$sat_rc" -eq 2 ]; then
-    sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): host band '$SC_BAND' for seat $seat is invalid." \
-      "  Override deliberate off-quota spend with -A."
-  fi
-  sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): host band $SC_BAND (pressure ${SC_BAND_P:-?}) for seat $seat is below floor $SC_MIN_BAND." \
-    "  Surplus < On pace < Ahead < Hot; spend expiring plan quota before marginal dollars." \
-    "  Override deliberate off-quota spend with -A."
+  case "${satisfies:-2}" in
+    0) return 0 ;;
+    1) sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): host band $SC_BAND (pressure ${SC_BAND_P:-?}) for seat $seat is below floor $SC_MIN_BAND." \
+         "  Surplus < On pace < Ahead < Hot; spend expiring plan quota before marginal dollars." \
+         "  Override deliberate off-quota spend with -A." ;;
+    *) sc_die 5 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): host band '$SC_BAND' for seat $seat is invalid." \
+         "  Override deliberate off-quota spend with -A." ;;
+  esac
 }
 
 # --------------------------------------------------------- unified provider capacity gate
 # Every transport delegates amount evidence to tools/provider_capacity.py. Expected provider
 # outcomes are normalized JSON; a nonzero exit is a runner/schema fault and refuses before launch.
 sc_gate_capacity() {
-  local runner="$SC_ROOT/tools/provider_capacity.py" raw rc parsed status band amount source detail unreadable
+  local runner="$SC_ROOT/tools/provider_capacity.py" raw rc status band amount source detail unreadable
   if [ ! -f "$runner" ]; then
     sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity runner is missing."
   fi
-  raw="$(PROVIDER_CAPACITY_TOKEN="${SC_CREDENTIAL:-}" python3 "$runner" "$SC_TRANSPORT" 2>/dev/null)"; rc=$?
-  SC_CAPACITY_JSON="$raw"
+  # provider_capacity reduces its own reading to the six fields this gate decides on.
+  raw="$(PROVIDER_CAPACITY_TOKEN="${SC_CREDENTIAL:-}" python3 "$runner" "$SC_TRANSPORT" --fields 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 3 ]; then
+    sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity output is malformed."
+  fi
   if [ "$rc" -ne 0 ]; then
     sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity runner failed (exit $rc)."
   fi
-  parsed="$(CAP_V="$raw" CAP_TOOLS_V="$(sc_to_native "$(dirname "$SC_REGISTRY_CLI")")" python3 -c '
-import json,os,sys
-try:
- d=json.loads(os.environ["CAP_V"])
- status=d["status"]; source=d["sourceKind"]
- quota=d.get("quota") or {}; balance=d.get("balance") or {}
- sys.path.insert(0, os.environ["CAP_TOOLS_V"])
- from provider_capacity import UNREADABLE, floor_refusal
- unreadable=1 if status in UNREADABLE else 0
- detail=""
- if status == "dispatch-floor":
-  detail=floor_refusal(d)
- elif unreadable:
-  detail=((d.get("error") or {}).get("message") or "")
- print("%s|%s|%s|%s|%s|%s" % (status, quota.get("dispatchBand") or "", balance.get("amount") if balance.get("amount") is not None else "", source, unreadable, detail))
-except Exception:
- sys.exit(1)
-' 2>/dev/null)" || {
-    sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity output is malformed."
-  }
-  IFS='|' read -r status band amount source unreadable detail <<< "$parsed"
+  IFS=$'\x1f' read -r status band amount source unreadable detail <<< "$raw"
+  [ -n "$status" ] || sc_die 8 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity output is malformed."
   SC_PROVIDER_BAND="$band"
   case "$status" in
     dispatch-floor)
@@ -1315,18 +1189,13 @@ except Exception:
 # -W exists because peak pricing is the user's call, not an agent's (reference/sidecar_dispatch.md).
 # SC_CHECK_MODE=1 (from sc_check_gates) prints the one-line --check answer instead.
 sc_gate_price_window() {
-  local info parsed hhmm policy out_rate
-  if ! info="$(python3 "$SC_REGISTRY_CLI" price-window "$SC_MODEL" 2>&1)"; then
+  local info hhmm policy out_rate
+  if ! info="$(python3 "$SC_REGISTRY_CLI" price-window "$SC_MODEL" --fields 2>&1)"; then
     sc_die 2 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): price-window lookup failed: ${info%%$'\n'*}"
   fi
-  parsed="$(INFO_V="$info" python3 -c '
-import json, os
-d = json.loads(os.environ["INFO_V"])
-c = d.get("changesAt") or ""
-print("|".join([d["window"], str(d["multiplier"]), c, c[11:16], d.get("peakPolicy") or "allow",
-                str((d.get("rates") or {}).get("outputPer1M", ""))]))' 2>/dev/null)" || {
-    sc_die 2 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): price-window output unparsable"; }
-  IFS='|' read -r SC_PRICE_WINDOW SC_PRICE_MULT SC_PRICE_CHANGES hhmm policy out_rate <<< "$parsed"
+  IFS=$'\x1f' read -r SC_PRICE_WINDOW SC_PRICE_MULT SC_PRICE_CHANGES hhmm policy out_rate <<< "$info"
+  [ -n "$SC_PRICE_WINDOW" ] ||
+    sc_die 2 "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): price-window output unparsable"
   SC_PRICE_AT_START="${SC_PRICE_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   if [ "$SC_PRICE_WINDOW" = "flat" ]; then
     SC_PRICE_SUMMARY=""
@@ -2076,7 +1945,7 @@ sc_build_disclosure() {
   local auto_tmp auto_arg
   auto_tmp="$(mktemp)"
   cat > "$auto_tmp" <<'SC_AUTONOMY'
-[sidecar] You run UNATTENDED. No human reads anything you write until you exit, so a question in your final message is answered by nobody and the run is recorded as having delivered nothing. Never end on a question or a request for direction. When a choice is yours to make, make it, state it in the deliverable as an assumption, and finish. When a gate, a failing suite or a missing input blocks a step, record the blocker in the deliverable and still return everything the brief asked for. Run every command whose result you need in the foreground and wait for it. This overrides any run_in_background default your instructions carry: nothing wakes you after your turn ends, so a background job you start dies with your turn. A run that outlasts the foreground Bash cap starts detached and is waited on in foreground until-loop calls (guards/common.md).
+[sidecar] You run UNATTENDED. No human reads anything you write until you exit, so a question in your final message is answered by nobody and the run is recorded as having delivered nothing. Never end on a question or a request for direction. When a choice is yours to make, make it, state it in the deliverable as an assumption, and finish. When a gate, a failing suite or a missing input blocks a step, record the blocker in the deliverable and still return everything the brief asked for. Run every command whose result you need in the foreground and wait for it. This overrides any run_in_background default your instructions carry: nothing wakes you after your turn ends, so a background job you start dies with your turn. A run that outlasts the foreground Bash cap starts in the background and is waited on in foreground calls, as guards/common.md says.
 SC_AUTONOMY
   sc_on_exit "rm -f \"$auto_tmp\" 2>/dev/null || :"
   # The CLI keeps only the last --append-system-prompt-file, so every part below goes into this one file, passed once.

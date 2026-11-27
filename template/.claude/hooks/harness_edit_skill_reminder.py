@@ -4,8 +4,9 @@ Hook: PreToolUse on Write|Edit — require `instruction_quality` in context befo
 
 What it does:
 - Classifies the tool's file_path: only .claude/ harness surfaces (see PATH RULES).
-- DENIES the edit until `instruction_quality` is in this context window: a Skill call, or a full Read of
-  its SKILL.md, recorded by skill_load_marker.py as `skill_in_context`, which a compaction clears unless the
+- DENIES the edit until the edited file's `instruction_quality` copy (`governing_root`) is in this context
+  window: a Skill call delivers the session project's copy, a full Read of a checkout's SKILL.md that checkout's.
+  skill_load_marker.py records the load as `skill_in_context`, which a compaction clears unless the
   client re-attached the skill whole and that copy's body still matches the skill's `SKILL.md`
   (`_hook_state.skill_in_context` reads both). A subagent
   (payload `agent_id`) needs its own load: the parent's does not put the skill in the subagent's context.
@@ -151,6 +152,33 @@ def reference_text(name: str) -> str:
         return ""
 
 
+def governing_root(file_path: str) -> str | None:
+    """The checkout whose `instruction_quality` copy governs `file_path`: the nearest ancestor holding `.claude/`
+    (`_checkout_root.harness_root`), when that `.claude/` holds the skill's `SKILL.md`. A load is credited for the
+    copy it delivered (`skill_load_marker`), so the gate and the Read notice judge a load against this copy. None
+    for a relative path, one inside no existing checkout, or a `.claude/` with no copy (a user-global
+    `~/.claude`), which leaves `skill_in_context`'s default, the session project."""
+    from _checkout_root import harness_root
+    from _win_path import native_path
+    path = native_path(str(file_path or ""))
+    if not os.path.isabs(path):
+        return None
+    root = harness_root(os.path.dirname(path))
+    return root if os.path.isfile(os.path.join(root, ".claude", "skills", "instruction_quality", "SKILL.md")) else None
+
+
+def load_step(file_path: str) -> str:
+    """The load that credits an edit of `file_path`. A Skill call delivers the session project's copy, so a file
+    in another checkout names the Read of that checkout's copy instead."""
+    root = governing_root(file_path)
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    if root is None or os.path.normcase(os.path.realpath(root)) == os.path.normcase(os.path.realpath(project)):
+        return ("invoke Skill(skill=\"instruction_quality\"), or with no Skill tool Read "
+                "`.claude/skills/instruction_quality/SKILL.md` whole (no offset or limit)")
+    skill = os.path.join(root, ".claude", "skills", "instruction_quality", "SKILL.md").replace("\\", "/")
+    return f"Read `{skill}` whole (no offset or limit), the copy this file's checkout holds"
+
+
 def advance_notice(file_path: str) -> str:
     """The Read-time line: the edit gate's requirement and the reference file this path's class matches, so the
     agent loads both before its first edit instead of meeting them in a deny."""
@@ -159,9 +187,7 @@ def advance_notice(file_path: str) -> str:
     files = (f"`{REFERENCE_DIR}/{target}`" if target
              else f"`{REFERENCE_DIR}/` ({', '.join(f for f, _, _ in REFERENCE_FILES)})")
     return (f"Harness file `.claude/{name}`: the harness denies any edit of it until `instruction_quality` is "
-            "loaded: invoke Skill(skill=\"instruction_quality\"), or with no Skill tool Read "
-            "`.claude/skills/instruction_quality/SKILL.md` whole (no offset/limit); "
-            f"read {files}. {PRINCIPLES}")
+            f"loaded: {load_step(file_path)}; read {files}. {PRINCIPLES}")
 
 
 def deny_text(file_path: str) -> str:
@@ -169,9 +195,8 @@ def deny_text(file_path: str) -> str:
     class names all four instead. The requirement and the next step are the same for both."""
     name = harness_tail(file_path) or file_path
     target = reference_for(file_path)
-    head = (f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in context. "
-            "Invoke Skill(skill=\"instruction_quality\") or Read `skills/instruction_quality/SKILL.md` in full, "
-            "no offset or limit")
+    head = (f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in context: "
+            f"{load_step(file_path)}")
     if not target:
         return (f"{head}, then {READ_CLASS_FILES}, then check this edit against the sections you read "
                 f"and re-issue it with any change they call for. {PRINCIPLES}")
@@ -252,7 +277,7 @@ def process(input_data):
         return {"context": note} if note else None
 
     if not skill_in_context(session_id, "instruction_quality", input_data.get("agent_id"),
-                            transcript_path=input_data.get("transcript_path")):
+                            transcript_path=input_data.get("transcript_path"), root=governing_root(file_path)):
         return {"deny": deny_text(file_path)}
     general = build_reminder(file_path) if fire_once_since_compaction(session_id, STATE_KEY) else ""
     note = _note_once(session_id, note_key, HOOK_TEXT_CAP - len(general) - 1)

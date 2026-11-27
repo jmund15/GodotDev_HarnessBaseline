@@ -20,6 +20,7 @@ if (-not (Get-Command Get-CheckoutLockName -ErrorAction SilentlyContinue)) { . (
 $script:TwinRequiredIgnored = @('.runsettings')
 $script:TwinLockWaitMs = 1800000
 $script:TwinLock = $null
+$script:TwinLeaseRow = $null
 $script:TwinHolderRecord = $false
 $script:TwinHolderTwin = ''
 
@@ -87,10 +88,20 @@ function Enter-TwinLock {
     param([Parameter(Mandatory)] [string] $Twin)
     $name = Get-CheckoutLockName -Repo $Twin
     $mutex = New-RunLock $name
+    $row = New-LeaseRow -Kind twin -Repo $Twin -Label 'twin sync' -CheckoutLock $name -Ask ([ordered]@{ checkout = $true; lane = $false; runtime = $null })
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        if (-not $mutex.WaitOne($script:TwinLockWaitMs)) { throw "twin busy past $($script:TwinLockWaitMs) ms: $Twin" }
+        if (-not $mutex.WaitOne($script:TwinLockWaitMs)) {
+            $row.wait.checkout = [math]::Round($sw.ElapsedMilliseconds / 1000.0, 3)
+            Complete-LeaseRow -Row $row -Ended 'timeout:checkout'
+            throw "twin busy past $($script:TwinLockWaitMs) ms: $Twin"
+        }
     } catch [System.Threading.AbandonedMutexException] { }
-    # Held until the process exits: the run that follows this sync owns the twin until it ends.
+    $row.wait.checkout = [math]::Round($sw.ElapsedMilliseconds / 1000.0, 3); $row.at = Get-LeaseStamp
+    Add-LeaseRow -Row $row
+    # Held until the process exits: the run that follows this sync owns the twin until it ends. A lease that ends with
+    # its process writes no end row; lease_log.py ends it where the lock's next taker begins.
+    $script:TwinLeaseRow = $row
     $script:TwinLock = $mutex
     # A waiting gate names its holder from this record; a re-entry under a lease that already wrote one leaves it alone.
     $script:TwinHolderRecord = Write-CheckoutHolder -Repo $Twin -Label 'twin sync'
@@ -101,6 +112,7 @@ function Exit-TwinLock {
     if ($script:TwinLock) {
         if ($script:TwinHolderRecord) { Remove-CheckoutHolder -Repo $script:TwinHolderTwin; $script:TwinHolderRecord = $false }
         $script:TwinLock.ReleaseMutex(); $script:TwinLock.Dispose(); $script:TwinLock = $null
+        Complete-LeaseRow -Row $script:TwinLeaseRow -Ended released; $script:TwinLeaseRow = $null
     }
 }
 

@@ -64,7 +64,9 @@ __all__ = [
     "spent_mark",
     "unspend",
     "mark_ladder_slice",
-    "adopt_ladder_digest",
+    "record_ladder_load",
+    "ladder_loads",
+    "ladder_text_digest",
     "ladder_slice_tiers",
     "stage_ladder_receipt",
     "consume_ladder_receipt",
@@ -172,13 +174,21 @@ def reattach_over_cap(root) -> list[dict]:
             rows.append({"path": ".claude/" + str(p.relative_to(root)).replace("\\", "/"), "chars": chars})
     return sorted(rows, key=lambda r: -r["chars"])
 _COMPACTED_AT_KEY = "compacted_at"
+# The single-slot ladder record an older hook writes and reads (a full-Read flag, the sliced tiers, one digest).
+# One session can run both versions on one state file (a project not yet pulled, and a base checkout it dispatches
+# from), so `ladder_loads` reads it, `record_ladder_load` never rewrites it, and a compaction clears it. It goes, with
+# the older key of `_skill_keys` and the string branch of `_skill_digests`, once no project that shares a session with
+# this base still runs a hook from before the keyed records (`ladder_loads`, `skill_loads:<name>`).
 LADDER_SLICE_KEY = "ladder_slice_tiers"
 LADDER_READY_KEY = "model_ladder_ready"
 LADDER_DIGEST_KEY = "ladder_digest"
+LADDER_LOADS_KEY = "ladder_loads"
+# Distinct texts of one doctrine file a context may hold at once: about one per checkout it dispatches from.
+DOCTRINE_DIGEST_CAP = 8
 LADDER_RECEIPT_KEY = "ladder_receipt"
 LADDER_RECEIPT_CAP = 8
 LADDER_RECEIPT_FAILURE_KEY = "ladder_receipt_failure"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, LADDER_READY_KEY, LADDER_SLICE_KEY,
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, LADDER_LOADS_KEY, LADDER_READY_KEY, LADDER_SLICE_KEY,
                           LADDER_DIGEST_KEY, LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
@@ -300,17 +310,36 @@ def _agent_suffix(agent_id):
     return "@" + agent_id if agent_id else ""
 
 
+def _skill_digests(held):
+    """The body digests a skill record holds: a list, or the one digest a record held before the list form."""
+    if isinstance(held, str):
+        return [held]
+    return [d for d in held if isinstance(d, str)] if isinstance(held, list) else []
+
+
+def _skill_keys(name, agent_id):
+    """The skill record's two keys: the list this version writes, and the single-digest key an older hook writes
+    and reads; this version reads the older key and never rewrites it (the single-slot note above LADDER_SLICE_KEY)."""
+    suffix = name + _agent_suffix(agent_id)
+    return "skill_loads:" + suffix, "skill_in_context:" + suffix
+
+
 def mark_skill_in_context(session_id, name, agent_id="", digest=None):
     """Record that skill `name` is in this context window (the subagent's when `agent_id` is given); a
-    compaction clears it. `digest` is the `SKILL.md` body the load delivered (`_compaction_record.skill_file_digest`),
-    kept with the record so `skill_in_context` can tell a held copy that the file has since left behind; a load
-    with no file on disk records True."""
-    key = "skill_in_context:" + name + _agent_suffix(agent_id)
+    compaction clears it. `digest` is the body digest of the `SKILL.md` the load delivered (`_compaction_record`),
+    added to the record's digests (the newest DOCTRINE_DIGEST_CAP kept), so a session that loaded two checkouts'
+    differing copies holds both, and `skill_in_context` can tell a held copy the file has since left behind; a
+    load with no file on disk records True."""
+    key, _ = _skill_keys(name, agent_id)
 
     def update(state):
         fired = state.get(_COMPACTION_KEY)
         fired = fired if isinstance(fired, dict) else {}
-        fired[key] = digest or True
+        if digest:
+            held = [d for d in _skill_digests(fired.get(key)) if d != digest] + [digest]
+            fired[key] = held[-DOCTRINE_DIGEST_CAP:]
+        else:
+            fired[key] = True
         state[_COMPACTION_KEY] = fired
         return True
 
@@ -327,10 +356,9 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
     `CLAUDE_PROJECT_DIR` (a Git Bash `/c/...` spelling is converted for Windows Python) else the cwd; a root
     that is no readable directory is an unknown, so no copy counts. An attachment not yet on disk, or an
     unreadable transcript, counts as not re-attached."""
-    key = "skill_in_context:" + name + _agent_suffix(agent_id)
-    state = read_json_salvage(state_path(session_id))
-    fired = state.get(_COMPACTION_KEY)
-    held = fired.get(key) if isinstance(fired, dict) else None
+    fired = (state := read_json_salvage(state_path(session_id))).get(_COMPACTION_KEY)
+    records = [fired.get(k) for k in _skill_keys(name, agent_id)] if isinstance(fired, dict) else []
+    held = True if True in records else [d for r in records for d in _skill_digests(r)]
     try:
         import _compaction_record
         import _win_path
@@ -341,7 +369,7 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
         # A recorded load carries the bytes it delivered: a file that has changed since leaves the session
         # holding an older copy, which counts only after it reloads (a record with no digest cannot be told stale).
         now = _compaction_record.skill_file_digest(name, root)
-        if held is True or now is None or held == now:
+        if held is True or now is None or now in held:
             return True
     if agent_id or not transcript_path:
         return False
@@ -360,27 +388,57 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
     return name in current
 
 
-def adopt_ladder_digest(state, digest):
-    """Inside a state update: a load of ladder text whose digest differs from the one recorded supersedes it, so the
-    earlier full Read and slices (of older text) are dropped before the new load is recorded. No digest (no ladder
-    file) records nothing."""
-    if not digest:
-        return
-    if state.get(LADDER_DIGEST_KEY) not in (None, digest):
-        state.pop(LADDER_READY_KEY, None)
-        state.pop(LADDER_SLICE_KEY, None)
-    state[LADDER_DIGEST_KEY] = digest
+def ladder_text_digest(path):
+    """The digest of the ladder file at `path` as a load delivers it (line endings normalized), else None when it
+    cannot be read. Every ladder load is keyed by it, and a reader compares it against the ladder it judges."""
+    try:
+        with open(path, "rb") as fh:
+            return stdout_sha256(fh.read().decode("utf-8", errors="replace"))
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def ladder_loads(state):
+    """The ladder loads in this context window, oldest first: {digest of the text loaded: {"full": a whole-file
+    Read, "tiers": the tiers a slice printed}}. Key "" holds a load whose text had no digest, which cannot be told
+    stale. A record of the single-slot form reads as the oldest entry, under its digest."""
+    loads = {}
+    full, tiers = state.get(LADDER_READY_KEY) is True, state.get(LADDER_SLICE_KEY)
+    tiers = [t for t in tiers if isinstance(t, str)] if isinstance(tiers, list) else []
+    if full or tiers:
+        legacy = state.get(LADDER_DIGEST_KEY)
+        loads[legacy if isinstance(legacy, str) else ""] = {"full": full, "tiers": sorted(set(tiers))}
+    raw = state.get(LADDER_LOADS_KEY)
+    for digest, entry in (raw.items() if isinstance(raw, dict) else ()):
+        if isinstance(digest, str) and isinstance(entry, dict):
+            have, got = loads.pop(digest, {"full": False, "tiers": []}), entry.get("tiers")
+            got = [t for t in got if isinstance(t, str)] if isinstance(got, list) else []
+            loads[digest] = {"full": have["full"] or entry.get("full") is True,
+                             "tiers": sorted({*have["tiers"], *got})}
+    return loads
+
+
+def record_ladder_load(state, digest, full=False, tiers=()):
+    """Inside a state update: credit a load of the ladder text whose digest is `digest` (None: none could be read),
+    as a whole-file Read when `full`, else for `tiers`. Each digest keeps its own credit and the newest
+    DOCTRINE_DIGEST_CAP stay, so loads from two checkouts both stand. The single-slot keys stay as the older hook
+    wrote them (the note above LADDER_SLICE_KEY)."""
+    loads = ladder_loads(state)
+    key = digest or ""
+    have = loads.pop(key, {"full": False, "tiers": []})
+    loads[key] = {"full": have["full"] or bool(full), "tiers": sorted({*have["tiers"], *tiers})}
+    for oldest in list(loads)[:-DOCTRINE_DIGEST_CAP]:
+        loads.pop(oldest)
+    state[LADDER_LOADS_KEY] = loads
 
 
 def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False, digest=None):
     """Record that `model_registry.py for-role` printed these tiers into this context window; a compaction
     clears them. Accumulates across runs. `clear_receipt_failure` drops the last failed-delivery note in the
-    same write, so a credit never leaves its session accusing a delivery that succeeded. `digest` is the ladder
-    file's (`model_ladder_gate.ladder_digest`) the slice was cut from. True when the record was written."""
+    same write, so a credit never leaves its session accusing a delivery that succeeded. `digest` is the
+    `ladder_text_digest` of the ladder the slice was cut from. True when the record was written."""
     def update(state):
-        adopt_ladder_digest(state, digest)
-        have = state.get(LADDER_SLICE_KEY)
-        state[LADDER_SLICE_KEY] = sorted({*(have if isinstance(have, list) else []), *tiers})
+        record_ladder_load(state, digest, tiers=[t for t in tiers if isinstance(t, str)])
         if clear_receipt_failure:
             state.pop(LADDER_RECEIPT_FAILURE_KEY, None)
         return True
@@ -390,9 +448,10 @@ def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False, digest=Non
 
 
 def ladder_slice_tiers(session_id):
-    """The tiers whose ladder slice is in this context window, else []. Reads only."""
-    have = read_json_salvage(state_path(session_id)).get(LADDER_SLICE_KEY)
-    return sorted(t for t in have if isinstance(t, str)) if isinstance(have, list) else []
+    """Every tier a ladder slice printed into this context window, whichever ladder text it was cut from, else [].
+    Reads only; the credit against one checkout's ladder is `model_ladder_gate.ladder_credit`."""
+    loads = ladder_loads(read_json_salvage(state_path(session_id)))
+    return sorted({t for entry in loads.values() for t in entry["tiers"]})
 
 
 def normalize_stdout(text):
@@ -406,8 +465,9 @@ def stdout_sha256(text):
     return hashlib.sha256(normalize_stdout(text).encode("utf-8")).hexdigest()
 
 
-def stage_ladder_receipt(session_id, sha256, tiers, text=""):
-    """Stage the text a `for-role` run is about to deliver, with the tiers it credits. The delivery hook
+def stage_ladder_receipt(session_id, sha256, tiers, text="", ladder=None):
+    """Stage the text a `for-role` run is about to deliver, with the tiers it credits and `ladder`, the
+    `ladder_text_digest` of the ladder the run cut its slice from. The delivery hook
     (`model_ladder_gate.mark_loaded`) credits them when the run's own stdout appears whole inside the delivered
     output, so one command joined with `&&` cannot void a run that reached context; the text is what containment
     compares. Receipts are keyed by sha256: a later run stages beside an earlier one, and the earlier run's
@@ -419,7 +479,7 @@ def stage_ladder_receipt(session_id, sha256, tiers, text=""):
         receipts = _ladder_receipts(state)
         receipts[sha256] = {"sha256": sha256, "text": normalize_stdout(text),
                             "tiers": sorted({t for t in tiers if isinstance(t, str)}),
-                            "at": time.time()}
+                            "ladder": ladder, "at": time.time()}
         for stale in _newest_first(receipts)[LADDER_RECEIPT_CAP:]:
             receipts.pop(stale)
         state[LADDER_RECEIPT_KEY] = receipts

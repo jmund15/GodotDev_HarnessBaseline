@@ -76,6 +76,7 @@ from typing import NamedTuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _bounded_run import run_bounded
+import _msys
 import model_ladder_gate
 try:
     import _dispatch_checks
@@ -123,15 +124,6 @@ NON_DISPATCHING_FANOUT_ARGS = frozenset({"--status", "--dry-run", "--help", "-h"
 # The whole budget stays below pre_bash_dispatch.py's 75 s settings timeout;
 # tests/test_sidecar_dispatch_context.py proves the bound.
 HOOK_BUDGET_SECONDS = 70.0
-
-
-def _git_bash():
-    """Git Bash, never WSL's: Windows Python resolves a bare `bash` to WSL (different filesystem)."""
-    for cand in (os.environ.get("CLAUDE_CODE_GIT_BASH_PATH"),
-                 "C:/Program Files/Git/bin/bash.exe", "C:/Program Files/Git/usr/bin/bash.exe"):
-        if cand and os.path.exists(cand):
-            return cand
-    return "bash" if os.name != "nt" else None
 
 
 def _variable_tracking_value(command, args, root):
@@ -203,7 +195,7 @@ def _preflight(cmd, root, deadline=None, limit=None):
     if os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0":
         return "skipped", None, None
     inv = next((c for c in sidecar_argv.launcher_invocations(cmd) if c.kind == "sidecar"), None)
-    bash = _git_bash()
+    bash = _msys.bash()
     if inv is None or not bash:
         return "skipped", None, None
     if approving_gates is None:

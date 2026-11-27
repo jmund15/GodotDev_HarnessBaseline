@@ -1,0 +1,7 @@
+{
+  "runners": [
+    {"name": "regression_gate.ps1", "word": "VERDICT=", "own": "^ENGINE="},
+    {"name": "verify.ps1", "word": "VERIFY=", "own": "^VERIFY scope="},
+    {"name": "run_test_suite.ps1", "word": "STATUS=", "note": "run_integration_batched.ps1 ends on the same line"}
+  ]
+}

@@ -6,9 +6,10 @@ Two rewrites, both through `updatedInput`, never a permission decision:
    `.claude/scripts/{run_test_suite,verify,regression_gate,run_integration_batched}.ps1` is frozen at its branch point,
    so an invocation of one runs main's copy with `-Repo <worktree>` instead. Only the invocation shape is rewritten:
    a read-only mention, main's own script, another repo's worktree and a submodule pass untouched.
-2. In a subagent or a `claude -p` child, a foreground test, build or gate call starts with run_in_background: true and
-   an additionalContext line naming how to wait. The orchestrator, an already-backgrounded call, a quick read-only
-   flag and a mention pass untouched.
+2. In a subagent or a `claude -p` child, a foreground suite or build call stays in the foreground with the caller's
+   wait clamp as its timeout and an EXIT line, so its verdict returns in that call; a scope, batched or gate run, and
+   any run the caller backgrounded, runs in the background under the tool's ceiling. The orchestrator, a quick
+   read-only flag and a mention pass untouched.
 
 Cases feed real PreToolUse payloads on stdin against a planted linked worktree (a `.git` file whose gitdir sits under
 this repo's `.git/worktrees/`) and assert on the emitted channel. An exit outside {0, 2} or a traceback is CRASH.
@@ -33,6 +34,8 @@ MAIN = REPO.replace("\\", "/")
 GATE = "regression_gate"
 GATE_SCRIPT = GATE + ".ps1"
 NAMES = ("run_test_suite", "verify", GATE, "run_integration_batched")
+CLAMP_MS = 270000  # foreground_wait_guard.wait_clamp_ms() with no 1-hour cache: the proof plants no TTL
+EXIT = '\necho "EXIT $?"'
 
 
 def plant_checkout(name, gitdir):
@@ -73,7 +76,7 @@ def call(command, tool="Bash", cwd=REPO, agent="", agent_type="workflow-subagent
     # Plant the live-editor probe's answer: the guard chain's floor guard reads this host's Godot
     # processes, so a live editor (another session's, or the owner's) would deny the build cases instead
     # of letting the router decide. A root this proof never builds in makes every checkout read not-live.
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR"}
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_PROMPT_CACHE_TTL")}
     if sidecar:
         env["CLAUDE_CODE_SIDECAR"] = sidecar
     env.update(PYTHONIOENCODING="utf-8", HARNESS_HOOK_STATE_DIR=os.path.join(TMP, state or uuid.uuid4().hex),
@@ -91,8 +94,8 @@ def call(command, tool="Bash", cwd=REPO, agent="", agent_type="workflow-subagent
         out = {}
     if r.returncode == 2:
         out["blocked"] = r.stderr[-300:]
-    if out.get('updatedInput', {}).get('command', '').endswith(' # gate: final'):
-        out['updatedInput']['command'] = out['updatedInput']['command'][:-len(' # gate: final')]
+    if ' # gate: final' in out.get('updatedInput', {}).get('command', ''):
+        out['updatedInput']['command'] = out['updatedInput']['command'].replace(' # gate: final', '', 1)
     return out
 
 
@@ -185,46 +188,70 @@ def main():
         expected = 'MSYS_NO_PATHCONV=1 ' + cmd if 'git show' in label else cmd
         untouched("must-allow, no runner rewrite: %s" % label, call(cmd), expected)
 
-    # --- 2. subagent / claude -p child: foreground test, build or gate call -> run_in_background ---
+    # --- 2. subagent / claude -p child: a suite or build waits in the foreground; a long run starts in the background ---
+    # Waiting is a delegate's next step, so the run's own call returns its verdict: one turn, not a launch plus waits.
+    # The caller's clamp bounds the call (a longer one returns to an expired prompt cache); a run still going there is
+    # moved to the background by the client, and the EXIT line ends that output file for run_wait.py.
     for label, cmd in (
             ("run_test_suite", "pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter X -Label X"),
-            ("verify", "pwsh -NoProfile -File .claude/scripts/verify.ps1 -Scope AI"),
-            (GATE, "pwsh -NoProfile -File .claude/scripts/" + GATE_SCRIPT),
-            ("run_integration_batched", "pwsh -NoProfile -File .claude/scripts/run_integration_batched.ps1 -Only AI"),
             ("engine_run", "pwsh -NoProfile -File .claude/scripts/engine_run.ps1 --path . --import"),
             ("dotnet build", "dotnet build"),
             ("dotnet test after cd", "cd C:/x && dotnet test --filter Y"),
             ("an env-prefixed dotnet build", "MSYS_NO_PATHCONV=1 dotnet build App.csproj")):
         out = call(cmd, agent="agent-wf")
-        ctx = out.get("additionalContext") or ""
+        check("a Workflow subagent's foreground %s call waits in the foreground at its clamp" % label,
+              not backgrounded(out) and timeout_of(out) == CLAMP_MS
+              and rewritten(out) == cmd + EXIT, out)
+        check("...with a line naming run_wait.py", "run_wait.py" in (out.get("additionalContext") or ""), out)
+    # A scope, batched or gate run can outlast a moved command's 10 minutes, so it starts in the background; the wait
+    # guard ends a never-woken caller's background Bash call with the EXIT line run_wait.py ends on.
+    for label, cmd in (
+            ("verify", "pwsh -NoProfile -File .claude/scripts/verify.ps1 -Scope AI"),
+            (GATE, "pwsh -NoProfile -File .claude/scripts/" + GATE_SCRIPT),
+            ("run_integration_batched", "pwsh -NoProfile -File .claude/scripts/run_integration_batched.ps1 -Only AI")):
+        out = call(cmd, agent="agent-wf")
         check("a Workflow subagent's foreground %s call starts in the background" % label,
-              backgrounded(out) and rewritten(out) == cmd, out)
-        check("...with a line naming the 270000 ms until-loop wait", "until" in ctx and "270000" in ctx, ctx)
+              backgrounded(out) and rewritten(out) == cmd + EXIT, out)
+        check("...with a line naming run_wait.py", "run_wait.py" in (out.get("additionalContext") or ""), out)
     out = call("dotnet test --filter Y", entrypoint="sdk-cli")
-    check("a claude -p child's foreground dotnet test starts in the background",
-          backgrounded(out) and "until" in (out.get("additionalContext") or ""), out)
+    check("a claude -p child's foreground dotnet test waits in the foreground at its clamp",
+          not backgrounded(out) and timeout_of(out) == CLAMP_MS, out)
     out = call("dotnet test --filter Y", sidecar="deepseek")
-    check("a seat launcher's child (entrypoint cli, CLAUDE_CODE_SIDECAR set) is a delegate: its foreground dotnet test starts in the background",
-          backgrounded(out) and "until" in (out.get("additionalContext") or ""), out)
+    check("a seat launcher's child (entrypoint cli, CLAUDE_CODE_SIDECAR set) is a delegate: its dotnet test waits at its clamp",
+          not backgrounded(out) and timeout_of(out) == CLAMP_MS, out)
     out = call("dotnet build", agent="agent-tool", agent_type="general-purpose",
                transcript=plant_agent_tool("rcr00001", "agent-tool"))
+    check("an Agent-tool subagent's dotnet build waits in the foreground at its clamp",
+          not backgrounded(out) and timeout_of(out) == CLAMP_MS, out)
+    out = call("dotnet build", agent="agent-tool", agent_type="general-purpose", background=True, state="agent-bg",
+               transcript=plant_agent_tool("rcr00001", "agent-tool"))
+    check("an Agent-tool subagent's backgrounded dotnet build stays in the background under the ceiling",
+          backgrounded(out) and timeout_of(out) == 7200000, out)
+    out = call("pwsh -NoProfile -File .claude/scripts/verify.ps1 -Scope AI", agent="agent-tool",
+               agent_type="general-purpose", transcript=plant_agent_tool("rcr00001", "agent-tool"))
     ctx = out.get("additionalContext") or ""
-    check("an Agent-tool subagent's dotnet build starts in the background, told its exit wakes it",
-          backgrounded(out) and ctx and "until" not in ctx, out)
+    check("an Agent-tool subagent's scope run starts in the background, told its exit wakes it",
+          backgrounded(out) and "wakes you" in ctx and "run_wait.py" not in ctx, out)
     cmd = "pwsh -NoProfile -File %s/.claude/scripts/run_test_suite.ps1 -Filter X" % WT
     out = call(cmd, agent="agent-wf")
-    check("a subagent's worktree run is both redirected to main and backgrounded",
-          backgrounded(out) and rewritten(out) == "pwsh -NoProfile -File %s/.claude/scripts/run_test_suite.ps1 -Repo "
-                                                  "%s -Filter X" % (MAIN, WT), out)
+    check("a subagent's worktree run is redirected to main and waits in the foreground",
+          not backgrounded(out) and rewritten(out) == "pwsh -NoProfile -File %s/.claude/scripts/run_test_suite.ps1 -Repo "
+                                                      "%s -Filter X%s" % (MAIN, WT, EXIT), out)
 
-    # A `claude -p` child's client kills a background call at its own `timeout` (a foreground 600000 would end a run
-    # still waiting for its machine lane), while the runner bounds its own life (Get-SuiteRunBounds): the router
-    # gives every run it backgrounds the Bash tool's ceiling, so the runner's bound is the only one that fires.
+    # A `claude -p` child's client kills a background call at its own `timeout`, while the runner bounds its own life
+    # (Get-SuiteRunBounds): the router gives every run it backgrounds the Bash tool's ceiling, so the runner's bound is
+    # the only one that fires. A foreground run's timeout is the caller's clamp, whatever the caller sent.
     run = "pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter X -TimeoutMs 1500000"
     for label, cmd, kw in (
-            ("a delegate's foreground run with a short timeout", run, {"agent": "agent-wf", "timeout": 600000}),
+            ("a delegate's foreground run with a long timeout", run, {"agent": "agent-wf", "timeout": 600000}),
             ("a delegate's foreground run with no timeout", run, {"agent": "agent-wf"}),
-            ("a delegate's foreground dotnet test", "dotnet test", {"agent": "agent-wf", "timeout": 120000}),
+            ("a delegate's foreground dotnet test", "dotnet test", {"agent": "agent-wf", "timeout": 120000})):
+        out = call(cmd, **kw)
+        check("%s runs in the foreground at the caller's clamp" % label,
+              not backgrounded(out) and timeout_of(out) == CLAMP_MS, out)
+    for label, cmd, kw in (
+            ("a delegate's foreground scope run", "pwsh -NoProfile -File .claude/scripts/verify.ps1 -Scope AI",
+             {"agent": "agent-wf", "timeout": 600000}),
             ("a delegate's run it already backgrounded with a short timeout", run,
              {"agent": "agent-wf", "background": True, "timeout": 900000}),
             ("an orchestrator's foreground non-detached gate", "pwsh -File .claude/scripts/" + GATE_SCRIPT,
@@ -255,7 +282,8 @@ def main():
         out = call(cmd, **kw)
         ui = out.get("updatedInput")
         ok = "crash" not in out and "blocked" not in out and (
-            ui is None or (ui.get("command") == cmd and ui.get("run_in_background") == kw.get("background")))
+            ui is None or (ui.get("command") == (cmd + EXIT if kw.get("background") else cmd)
+                           and ui.get("run_in_background") == kw.get("background")))
         check("untouched: %s" % label, ok, out)
 
     for cmd in ('pwsh -File .claude/scripts/' + GATE_SCRIPT,
@@ -267,7 +295,8 @@ def main():
 
     for cmd in ('pwsh -Command "dotnet build"', 'env TEST=1 dotnet test'):
         out = call(cmd, agent='agent-wf')
-        check('wrapped native build/test action is backgrounded: ' + cmd, backgrounded(out), out)
+        check('wrapped native build/test action waits in the foreground at its clamp: ' + cmd,
+              not backgrounded(out) and timeout_of(out) == CLAMP_MS, out)
     cmd = 'pwsh -Command "Get-Content .claude/scripts/verify.ps1"'
     untouched('wrapped PowerShell mention stays untouched in a delegate', call(cmd, agent='agent-wf'), cmd)
 
